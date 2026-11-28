@@ -31,6 +31,7 @@ const inputFields = [
   ['uvFootprint0', 'vec4<f32>'],
   ['uvFootprint1', 'vec4<f32>'],
   ['frameTime', 'f32'],
+  ['materialTextureMipBias', 'f32'],
 ] as const;
 
 const dataFields = [

@@ -14,6 +14,7 @@ import {
   MeshRenderer,
   TONEMAP_NONE,
 } from '@forgeax/engine-render';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import {
@@ -30,6 +31,9 @@ it('preserves color through DoF attachment topology changes and component remova
   const width = 129;
   const height = 73;
   const fixture = await createBarrelRendererFixture({ width, height });
+  const profile = { ...fixture.renderer.inspect().profile, renderPath: 'forward' as const };
+  const profileResult = fixture.renderer.setProfile(profile);
+  if (!profileResult.ok) throw profileResult.error;
   const world = new World();
   const releaseTransforms = registerPropagateTransforms(world);
   try {
@@ -70,6 +74,8 @@ it('preserves color through DoF attachment topology changes and component remova
       await fixture.device.queue.onSubmittedWorkDone();
       return readBarrelPixels(fixture.device, fixture.renderTarget, width, height);
     };
+    const constructions = renderGraphCompileCount();
+    const direct = renderOrderedViewBindCount();
     const baseline = await read();
     const center = pixelOffset(64, 36, width);
     expect(baseline[center]).toBeGreaterThan(100);
@@ -101,6 +107,8 @@ it('preserves color through DoF attachment topology changes and component remova
     world.removeComponent(camera, DepthOfField).unwrap();
     expect(maxRgbDelta(baseline, await read())).toBe(0);
     expect(fixture.renderer.inspect().depthOfField).toMatchObject({ status: 'off', passCount: 0 });
+    expect(renderOrderedViewBindCount() - direct).toBeGreaterThanOrEqual(6);
+    expect(renderGraphCompileCount() - constructions).toBe(renderOrderedViewBindCount() - direct);
   } finally {
     releaseTransforms();
     await fixture.renderer.dispose();
@@ -201,6 +209,8 @@ it.each([
   });
   const { world, camera } = createDepthOfFieldScene(width, height, antialias, scale);
   const releaseTransforms = registerPropagateTransforms(world);
+  const totalBefore = renderGraphCompileCount();
+  const directBefore = renderOrderedViewBindCount();
   try {
     const read = async () => {
       (await drawPublished(fixture.renderer, world)).unwrap();
@@ -253,6 +263,82 @@ it.each([
     const refocused = await read();
     expect(refocused[outside]).toBeLessThanOrEqual(8);
     expect(refocused[inside]).toBeGreaterThan(100);
+    if (antialias === ANTIALIAS_TAA || antialias === ANTIALIAS_TSR) {
+      expect(renderOrderedViewBindCount() - directBefore).toBeGreaterThan(0);
+      expect(renderGraphCompileCount() - totalBefore).toBe(
+        renderOrderedViewBindCount() - directBefore,
+      );
+    }
+  } finally {
+    releaseTransforms();
+    await fixture.renderer.dispose();
+  }
+}, 60_000);
+
+// UE runs DiaphragmDOF on the pre-TSR scene color (PostProcessing.cpp), so TSR resolves the blur.
+it('blurs before the TSR resolve and keeps the blur through it', async () => {
+  const width = 129;
+  const height = 73;
+  const fixture = await createBarrelRendererFixture({ width, height });
+  const world = new World();
+  const releaseTransforms = registerPropagateTransforms(world);
+  try {
+    const material = testAssets(world)
+      .create(Materials.unlit([0.8, 0.2, 0.1, 1]))
+      .unwrap();
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, -6], scale: [4, 4, 1] } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
+        { component: MeshRenderer, data: { materials: [material] } },
+      )
+      .unwrap();
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 4] } },
+        {
+          component: Camera,
+          data: {
+            fov: Math.PI / 3,
+            aspect: width / height,
+            near: 0.1,
+            far: 100,
+            antialias: ANTIALIAS_TSR,
+            tonemap: TONEMAP_NONE,
+            clearColor: [0, 0, 0, 1],
+          },
+        },
+        {
+          component: DepthOfField,
+          data: {
+            focusDistance: 1,
+            fStop: 0.7,
+            sensorHeight: 0.24,
+            maxRadiusPixels: 10,
+            blurSide: DepthOfFieldSideValue.far,
+          },
+        },
+      )
+      .unwrap();
+    let pixels = new Uint8Array();
+    for (let i = 0; i < 6; i++) {
+      (await drawPublished(fixture.renderer, world)).unwrap();
+      await fixture.device.queue.onSubmittedWorkDone();
+      pixels = await readBarrelPixels(fixture.device, fixture.renderTarget, width, height);
+    }
+    const names = fixture.renderer.inspect().perFramePassNames;
+    const focus = names.indexOf('dof-composite');
+    const resolve = names.indexOf('tsr-analyze');
+    expect(focus).toBeGreaterThan(-1);
+    expect(resolve).toBeGreaterThan(focus);
+    // The cube spans roughly x 51..77 on the center row; x 80 is cleared background.
+    expect(pixels[pixelOffset(80, 36, width)]).toBeGreaterThan(10);
+    expect(pixels[pixelOffset(64, 36, width)]).toBeGreaterThan(100);
   } finally {
     releaseTransforms();
     await fixture.renderer.dispose();

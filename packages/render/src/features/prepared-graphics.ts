@@ -83,6 +83,10 @@ export interface RenderFeatureWaterMaterialInput {
   readonly bodyGeneration: number;
   readonly zoneGeneration: number;
   readonly programInputs: import('../material-program-inputs').MaterialProgramInputs;
+  readonly surfaceSource?: Pick<
+    import('@forgeax/engine-water').WaterGerstnerSurfaceSource,
+    'model' | 'waveSetDigest'
+  >;
 }
 
 export interface RenderFeatureBindingsDescriptor {
@@ -166,6 +170,12 @@ export interface RenderFeatureColorAttachment {
   readonly resource: string | RenderFeatureTargetHandle;
   readonly format: TextureFormat;
   readonly loadOp: 'load' | 'clear';
+  readonly clearValue?: {
+    readonly r: number;
+    readonly g: number;
+    readonly b: number;
+    readonly a: number;
+  };
   readonly storeOp: 'store' | 'discard';
 }
 

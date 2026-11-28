@@ -1,0 +1,17 @@
+[package]
+name = "forgeax-render-kernel-wasm"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Lightweight pure-compute WASM bindings for ForgeAX RenderKernel (zero wgpu dependency; emits linear physical command stream for browser WebGPU / RHI replay)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+forgeax-render-kernel-core = { path = "../kernel-core" }
+wasm-bindgen = "=0.2.129"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

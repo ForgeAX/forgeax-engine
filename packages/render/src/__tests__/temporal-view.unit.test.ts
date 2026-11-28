@@ -5,24 +5,45 @@ import type { CameraSnapshot } from '../render-contract';
 import type { DirectionalLightSnapshot } from '../render-system-extract';
 import {
   createTemporalView,
-  HALTON_23_8,
   resolveTemporalReset,
   type TemporalResetReason,
+  temporalJitterSample,
+  temporalJitterSampleCount,
 } from '../temporal/view';
 import type { ViewLights } from '../world/render-lights';
 
 describe('TemporalView v1', () => {
-  it('uses the fixed eight-sample Halton(2,3) sequence', () => {
-    expect(HALTON_23_8).toEqual([
+  it('uses the Halton(2,3) sequence starting at index one', () => {
+    const samples = Array.from({ length: 8 }, (_, i) => temporalJitterSample(i));
+    const expected = [
       [0, -1 / 6],
       [-0.25, 1 / 6],
-      [0.25, -5 / 18],
+      [0.25, -7 / 18],
       [-0.375, -1 / 18],
       [0.125, 5 / 18],
-      [-0.125, -7 / 54],
-      [0.375, 11 / 54],
+      [-0.125, -5 / 18],
+      [0.375, 1 / 18],
       [-0.4375, 7 / 18],
-    ]);
+    ];
+    samples.forEach((sample, i) => {
+      expect(sample[0]).toBeCloseTo(expected[i]?.[0] ?? Number.NaN, 12);
+      expect(sample[1]).toBeCloseTo(expected[i]?.[1] ?? Number.NaN, 12);
+    });
+  });
+
+  it('sizes the sequence like UE: scaled by fraction, prime for TSR', () => {
+    expect(temporalJitterSampleCount('taa', 1)).toBe(8);
+    expect(temporalJitterSampleCount('taa', 0.5)).toBe(32);
+    expect(temporalJitterSampleCount('tsr', 1)).toBe(11);
+    expect(temporalJitterSampleCount('tsr', 0.5)).toBe(37);
+    expect(temporalJitterSampleCount('tsr', 2 / 3)).toBe(19);
+  });
+
+  it('cycles TSR jitter through eleven samples at native resolution', () => {
+    const at = (frameIndex: number) =>
+      createTemporalView({ antialias: 'tsr', width: 64, height: 64, frameIndex }).jitter;
+    expect(at(11)).toEqual(at(0));
+    expect(at(8)).toEqual(temporalJitterSample(8));
   });
 
   it('keeps jittered current projection separate from unjittered previous projection', () => {
@@ -33,7 +54,7 @@ describe('TemporalView v1', () => {
       frameIndex: 3,
       viewIdentity: 'camera:main',
     });
-    const jitter = (HALTON_23_8[3] ?? [0, 0]) as readonly [number, number];
+    const jitter = temporalJitterSample(3);
     expect(view.jitter).toEqual(jitter);
     expect(view.currentProjection).toBe('jittered');
     expect(view.previousProjection).toBe('unjittered');
@@ -49,7 +70,7 @@ describe('TemporalView v1', () => {
       internalHeight: 96,
       frameIndex: 1,
     });
-    const jitter = (HALTON_23_8[1] ?? [0, 0]) as readonly [number, number];
+    const jitter = temporalJitterSample(1);
     expect(view.input.width).toBe(200);
     expect(view.input.height).toBe(150);
     expect(view.input.internalWidth).toBe(128);

@@ -1,6 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { maxOf, minOf } from './arrays';
-import { setFlag } from './crease';
+import { mergeFlags, setFlag } from './crease';
 import { atan2, hypot2 } from './dmath';
 import { type ModelingError, modelingError } from './errors';
 import {
@@ -138,6 +138,36 @@ export function addFaces(
   }
   counts[role] = (counts[role] ?? 0) + faces.length;
   return ok(faces);
+}
+
+/** Set the flag on the edge between two vertices (no-op when they share no edge). */
+export function flagEdge(mesh: EditMesh, a: number, b: number, flag: number): void {
+  const h = mesh.findHalf(a, b);
+  if (h !== NONE) mesh.eFlags[h >> 1] = mergeFlags(mesh.eFlags[h >> 1] as number, flag);
+}
+
+/** Write one uv0 value per corner of each face (`corners[k]` follows the loop order of `faces[k]`). */
+export function setFaceUv(
+  mesh: EditMesh,
+  faces: readonly number[],
+  corners: readonly (readonly (readonly [number, number])[])[],
+): void {
+  for (const [k, f] of faces.entries()) {
+    const uv = corners[k] as readonly (readonly [number, number])[];
+    for (const [c, h] of mesh.faceHalves(f).entries())
+      mesh.setCorner('uv0', h, uv[c] as readonly [number, number]);
+  }
+}
+
+/** Planar cap UVs (metres) of a loop, mirrored in u when needed so the chart winds counter-clockwise like the face. */
+export function planarCapUv(loop: readonly (readonly [number, number])[]): [number, number][] {
+  let area = 0;
+  for (let i = 0; i < loop.length; i++) {
+    const a = loop[i] as readonly [number, number];
+    const b = loop[(i + 1) % loop.length] as readonly [number, number];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  return loop.map((p) => [area < 0 ? -p[0] : p[0], p[1]]);
 }
 
 // ---- region operations ----------------------------------------------------------
@@ -293,7 +323,23 @@ export function markRole(
 }
 
 /** How selected faces group: one region, one per face, or one per edge-connected island. */
-export type RegionMode = 'merged' | 'perFace' | 'perIsland';
+export const REGION_MODES = ['merged', 'perFace', 'perIsland'] as const;
+export type RegionMode = (typeof REGION_MODES)[number];
+
+/** Reject a region mode outside {@link REGION_MODES} (untyped callers reach here with any string). */
+export function requireRegionMode(value: RegionMode): Result<RegionMode, ModelingError> {
+  if (!(REGION_MODES as readonly unknown[]).includes(value)) {
+    return err(
+      modelingError(
+        'model-invalid-argument',
+        `region is one of ${REGION_MODES.map((m) => `'${m}'`).join(', ')}`,
+        { region: value, allowed: REGION_MODES },
+        `set region to ${REGION_MODES.join(', ')}: one group, one per face, or one per edge-connected island`,
+      ),
+    );
+  }
+  return ok(value);
+}
 
 /** Split selected faces into the groups a region operation treats independently. */
 export function regionGroups(
@@ -560,6 +606,8 @@ export function extrude(
   if (options.distance === 0) {
     return err(modelingError('model-invalid-argument', 'distance is non-zero', { distance: 0 }));
   }
+  const region = requireRegionMode(options.region);
+  if (!region.ok) return region;
   const closed = isClosed(mesh);
   // Volumes about a local point: far from the origin, world-origin tetrahedra cancel
   // catastrophically (a box at 1e5 m reported the wrong sign for a 1 cm extrusion).
@@ -663,6 +711,8 @@ export function offset(
   if (options.distance === 0) {
     return err(modelingError('model-invalid-argument', 'distance is non-zero', { distance: 0 }));
   }
+  const region = requireRegionMode(options.region);
+  if (!region.ok) return region;
   const counts: RoleCounts = {};
   const off: { face: number; moved: number; clamped: boolean }[] = [];
   for (const group of regionGroups(mesh, faces, options.region)) {
@@ -745,6 +795,8 @@ export function inset(
 ): Result<RoleCounts, ModelingError> {
   const thickness = requirePositive('thickness', options.thickness);
   if (!thickness.ok) return thickness;
+  const region = requireRegionMode(options.region);
+  if (!region.ok) return region;
   const counts: RoleCounts = {};
   for (const group of regionGroups(mesh, faces, options.region)) {
     const targets = insetTargets(mesh, group, options.thickness);

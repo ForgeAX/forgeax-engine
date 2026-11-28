@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { getHeapStatistics } from 'node:v8';
@@ -10,6 +11,19 @@ import {
 // Self-reference keeps one modeling module instance shared with the job's own imports.
 import { buildMeshJobSet, type MeshJobRequest } from '@forgeax/engine-modeling';
 import type { ByteCache } from '@forgeax/engine-types';
+import {
+  getModelingKernelWasm,
+  initModelingKernelWasmSync,
+  modelingKernelWasmUrl,
+} from '@forgeax/modeling-kernel';
+
+if (getModelingKernelWasm() === undefined) {
+  try {
+    initModelingKernelWasmSync(readFileSync(modelingKernelWasmUrl()));
+  } catch {
+    // Fall back silently to the pure TypeScript backend if the WASM payload is absent.
+  }
+}
 
 /** One Worker serves builds one at a time; job modules stay loaded between them. */
 export interface MeshJobWorkerData {

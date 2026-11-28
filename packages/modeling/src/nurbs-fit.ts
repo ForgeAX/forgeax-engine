@@ -1,4 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { WorkMeter } from './compute/job';
+import { solveSparse, TripletList } from './compute/sparse';
 import { cos } from './dmath';
 import { type ModelingError, modelingError } from './errors';
 import type { Tuple3 } from './geom';
@@ -6,6 +8,7 @@ import {
   basisDerivatives,
   basisFunctions,
   checkCurve,
+  checkSurface,
   elevate,
   findSpan,
   mergeKnots,
@@ -585,4 +588,104 @@ export function fitSurface(
   const fit = solveFit(problem, U, V);
   if (!fit.ok) return fit;
   return ok({ ...fit.value, converged: true });
+}
+
+export interface FairSurfaceOptions {
+  /** Fairing weights against the mean squared control-point move (the `fitSurface` scale). */
+  readonly fair: { readonly stretch?: number; readonly bend?: number; readonly rate?: number };
+  /** Control rows that stay put (default 'boundary': the four outer rows). */
+  readonly keep?: 'boundary' | 'none';
+}
+
+/**
+ * Fair a non-rational surface (equal weights count as non-rational; the result has none)
+ * in place of its knots: the control net minimizing the mean
+ * squared move plus the `fitSurface` fairing energy, solved sparse (Jacobi-preconditioned
+ * CG, started at the input net, so a net already at the minimum comes back unchanged).
+ */
+export function fairSurface(
+  s: NurbsSurface,
+  options: FairSurfaceOptions,
+): Result<NurbsSurface, ModelingError> {
+  const checked = checkSurface(s);
+  if (!checked.ok) return checked;
+  const w0 = s.weights?.[0]?.[0] ?? 1;
+  if (s.weights?.some((row) => row.some((w) => Math.abs(w - w0) > Math.abs(w0) * 1e-12)) === true)
+    return err(
+      modelingError(
+        'model-precondition',
+        'a faired surface is non-rational',
+        {},
+        'refit the surface with nurbs.fitSurface first',
+      ),
+    );
+  const fair = {
+    stretch: options.fair.stretch ?? 0,
+    bend: options.fair.bend ?? 0,
+    rate: options.fair.rate ?? 0,
+  };
+  if (![fair.stretch, fair.bend, fair.rate].every((w) => Number.isFinite(w) && w >= 0))
+    return err(invalid('fair weights are finite and >= 0', { fair: options.fair }));
+  const keep = options.keep ?? 'boundary';
+  if (keep !== 'boundary' && keep !== 'none')
+    return err(invalid("keep is 'boundary' or 'none'", { keep }));
+  const { degreeU: p, degreeV: q, knotsU: U, knotsV: V } = s;
+  const nu = s.points.length;
+  const nv = (s.points[0] as readonly Tuple3[]).length;
+  const at = (k: number) => (s.points[Math.floor(k / nv)] as readonly Tuple3[])[k % nv] as Tuple3;
+  const index = new Int32Array(nu * nv).fill(-1);
+  let unknowns = 0;
+  for (let i = 0; i < nu; i++)
+    for (let j = 0; j < nv; j++) {
+      const outer = i === 0 || j === 0 || i === nu - 1 || j === nv - 1;
+      if (keep === 'none' || !outer) index[i * nv + j] = unknowns++;
+    }
+  if (unknowns === 0) return ok(s);
+  const A = new TripletList(unknowns, unknowns);
+  const B = [0, 1, 2].map(() => new Float64Array(unknowns));
+  const move = 1 / unknowns;
+  for (let k = 0; k < nu * nv; k++) {
+    const f = index[k] as number;
+    if (f < 0) continue;
+    A.add(f, f, move);
+    for (let c = 0; c < 3; c++) (B[c] as Float64Array)[f] = move * (at(k)[c] as number);
+  }
+  forEachFairing(p, U, q, V, fair, (ki, kj, g) => {
+    const fi = index[ki] as number;
+    if (fi < 0) return;
+    const fj = index[kj] as number;
+    if (fj >= 0) A.add(fi, fj, g);
+    else
+      for (let c = 0; c < 3; c++) {
+        const b = B[c] as Float64Array;
+        b[fi] = (b[fi] as number) - g * (at(kj)[c] as number);
+      }
+  });
+  const matrix = A.toCsr();
+  const solved: Float64Array[] = [];
+  for (let c = 0; c < 3; c++) {
+    const initial = new Float64Array(unknowns);
+    for (let k = 0; k < nu * nv; k++) {
+      const f = index[k] as number;
+      if (f >= 0) initial[f] = at(k)[c] as number;
+    }
+    const x = solveSparse(
+      matrix,
+      B[c] as Float64Array,
+      { method: 'pcg-jacobi', tolerance: 1e-13 },
+      new WorkMeter(Number.POSITIVE_INFINITY),
+      initial,
+    );
+    if (!x.ok) return x;
+    solved.push(x.value.x);
+  }
+  const points = Array.from({ length: nu }, (_, i) =>
+    Array.from({ length: nv }, (_, j): Tuple3 => {
+      const f = index[i * nv + j] as number;
+      return f < 0
+        ? at(i * nv + j)
+        : [solved[0]?.[f] as number, solved[1]?.[f] as number, solved[2]?.[f] as number];
+    }),
+  );
+  return ok({ degreeU: p, degreeV: q, points, knotsU: [...U], knotsV: [...V] });
 }

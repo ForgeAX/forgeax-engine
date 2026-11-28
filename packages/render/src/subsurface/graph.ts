@@ -131,6 +131,13 @@ export function addSubsurfaceDiffusion(
   const vertical = halfTarget('subsurface-half-vertical');
   if (!vertical.ok) return vertical;
 
+  const payload = new ArrayBuffer(PARAM_BYTES);
+  const viewParams = new Float32Array(payload, 0, 8);
+  const profiles = new Uint32Array(payload, viewParams.byteLength);
+  viewParams[3] = input.quality === 'low' ? 2 : 3;
+  viewParams[4] = input.scale[0] * (size.width / input.size.width);
+  viewParams[5] = input.scale[1] * (size.height / input.size.height);
+  viewParams[7] = input.quality === 'low' ? 6 : 9;
   const upload = graph.addCopyPass(
     'subsurface-prepare',
     {
@@ -157,21 +164,16 @@ export function addSubsurfaceDiffusion(
           });
         encoder.clearBuffer(resources.buffer(tiles.value).unwrap(), 0, tileBytes);
         encoder.clearBuffer(resources.buffer(commands.value).unwrap(), 0, COMMAND_BYTES);
-        const payload = new ArrayBuffer(PARAM_BYTES);
-        new Float32Array(payload).set([
-          camera.near,
-          camera.far,
-          camera.projection === 'orthographic' ? 1 : 0,
-          input.quality === 'low' ? 2 : 3,
-          input.scale[0] * (size.width / input.size.width),
-          input.scale[1] * (size.height / input.size.height),
-          rowLength,
-          input.quality === 'low' ? 6 : 9,
-        ]);
-        const profileTable = (frame as _InternalRenderPipelineContext).frameState
-          .compactSubsurfaceProfiles;
-        if (input.compact === true && profileTable !== undefined)
-          new Uint32Array(payload, 32).set(profileTable);
+        viewParams[0] = camera.near;
+        viewParams[1] = camera.far;
+        viewParams[2] = Number(camera.projection === 'orthographic');
+        viewParams[6] = rowLength;
+        if (input.compact === true) {
+          const profileTable = (frame as _InternalRenderPipelineContext).frameState
+            .compactSubsurfaceProfiles;
+          profiles.fill(0, profileTable?.length ?? 0);
+          if (profileTable !== undefined) profiles.set(profileTable);
+        }
         runtime.device.queue
           .writeBuffer(resources.buffer(params.value).unwrap(), 0, payload)
           .unwrap();

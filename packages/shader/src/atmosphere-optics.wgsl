@@ -149,6 +149,50 @@ texture_2d<f32>
   return atmosphere_table_sample(lut,filtering,atmosphere_sub_uv(uv,atmosphere_table_dimensions(lut,1u)),1u)*m.geometry.y;
 }
 // Sky View, AP, capture and direct reference all use this finite-segment kernel.
+fn atmosphere_integrate_with_sampling(m: AtmosphereMedium, origin: vec3<f32>, direction: vec3<f32>, distance: f32, sun: vec3<f32>, irradiance: vec3<f32>, transmittance:
+#ifdef STORAGE_BUFFER_AVAILABLE
+texture_2d<f32>
+#else
+#ifdef CLUSTER_FORWARD_AVAILABLE
+texture_2d<u32>
+#else
+texture_2d<f32>
+#endif
+#endif
+, multiple:
+#ifdef STORAGE_BUFFER_AVAILABLE
+texture_2d<f32>
+#else
+#ifdef CLUSTER_FORWARD_AVAILABLE
+texture_2d<u32>
+#else
+texture_2d<f32>
+#endif
+#endif
+, filtering: sampler, sampleCount: u32, opticalScale: f32, phases: vec2<f32>, quadratic: bool) -> AtmosphereTransport {
+  let interval=atmosphere_interval(m,origin,direction,distance);
+  var result=AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));
+  let count=max(sampleCount,1u);
+  let length=interval.y-interval.x;
+  let phaseR=phases.x;
+  let phaseM=phases.y;
+  for(var i=0u;i<count;i+=1u) {
+    let t0 = f32(i) / f32(count);
+    let t1 = f32(i + 1u) / f32(count);
+    let begin = select(t0, t0 * t0, quadratic) * length;
+    let end = select(t1, t1 * t1, quadratic) * length;
+    let step=end-begin;
+    let p=origin+direction*(interval.x + begin + step * select(0.3, 0.5, quadratic));
+    let medium=atmosphere_medium(m,p);
+    let solar=atmosphere_solar_transmittance(m,p,sun,transmittance,filtering)*atmosphere_scene_visibility(m,p);
+    let multi=atmosphere_multi_source(m,p,sun,multiple,filtering);
+    let source=irradiance*(solar*(medium.rayleigh*phaseR+medium.mie*phaseM)+multi*(medium.rayleigh+medium.mie));
+    result.luminance += result.transmittance*source*atmosphere_segment(medium.extinction,step*opticalScale);
+    result.transmittance *= exp(-medium.extinction*step*opticalScale);
+  }
+  return result;
+}
+
 fn atmosphere_integrate_phases(m: AtmosphereMedium, origin: vec3<f32>, direction: vec3<f32>, distance: f32, sun: vec3<f32>, irradiance: vec3<f32>, transmittance:
 #ifdef STORAGE_BUFFER_AVAILABLE
 texture_2d<f32>
@@ -170,25 +214,8 @@ texture_2d<f32>
 #endif
 #endif
 , filtering: sampler, sampleCount: u32, opticalScale: f32, phases: vec2<f32>) -> AtmosphereTransport {
-  let interval=atmosphere_interval(m,origin,direction,distance);
-  var result=AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));
-  let count=max(sampleCount,1u);
-  let length=interval.y-interval.x;
-  let phaseR=phases.x;
-  let phaseM=phases.y;
-  for(var i=0u;i<count;i+=1u) {
-    let begin=pow(f32(i)/f32(count),2.0)*length;
-    let end=pow(f32(i+1u)/f32(count),2.0)*length;
-    let step=end-begin;
-    let p=origin+direction*(interval.x+(begin+end)*0.5);
-    let medium=atmosphere_medium(m,p);
-    let solar=atmosphere_solar_transmittance(m,p,sun,transmittance,filtering)*atmosphere_scene_visibility(m,p);
-    let multi=atmosphere_multi_source(m,p,sun,multiple,filtering);
-    let source=irradiance*(solar*(medium.rayleigh*phaseR+medium.mie*phaseM)+multi*(medium.rayleigh+medium.mie));
-    result.luminance += result.transmittance*source*atmosphere_segment(medium.extinction,step*opticalScale);
-    result.transmittance *= exp(-medium.extinction*step*opticalScale);
-  }
-  return result;
+  return atmosphere_integrate_with_sampling(m, origin, direction, distance, sun, irradiance,
+    transmittance, multiple, filtering, sampleCount, opticalScale, phases, true);
 }
 
 fn atmosphere_integrate(m: AtmosphereMedium, origin: vec3<f32>, direction: vec3<f32>, distance: f32, sun: vec3<f32>, irradiance: vec3<f32>, transmittance:

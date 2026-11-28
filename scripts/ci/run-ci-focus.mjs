@@ -81,7 +81,6 @@ const sourceOnlyNodeFiles = new Set([
   'scripts/ci/__tests__/prepare-ci-inputs.test.mjs',
   'scripts/ci/__tests__/recover-repair-shader-inputs.test.mjs',
   'scripts/ci/__tests__/run-split-vitest-browser.test.mjs',
-  'scripts/ci/__tests__/run-split-vitest-coverage.test.mjs',
   'scripts/ci/__tests__/run-with-runner-cpu-affinity.test.mjs',
   'scripts/ci/__tests__/sdk-shader-artifacts.test.mjs',
   'scripts/ci/__tests__/source-budget-progress.test.mjs',

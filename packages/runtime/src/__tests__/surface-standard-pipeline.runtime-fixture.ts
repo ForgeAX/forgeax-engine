@@ -3653,12 +3653,7 @@ async function captureSurfaceMsaaEdgeFrame(input: {
   );
   const expectedPasses =
     input.sampleCount === 4
-      ? [
-          'single-layer-medium-opaque-resolve-color-producer',
-          'single-layer-medium-opaque-resolve-depth-producer',
-          'single-layer-medium-nearest-resolve-color-producer',
-          'single-layer-medium-nearest-resolve-depth-producer',
-        ]
+      ? ['single-layer-medium-opaque-resolve', 'single-layer-medium-nearest-resolve']
       : [
           'single-layer-medium-raw-depth-producer',
           'single-layer-medium-nearest-depth-sampled-producer',

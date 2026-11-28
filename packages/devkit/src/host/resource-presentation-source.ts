@@ -41,7 +41,21 @@ export const previewVfxBoundsSource = `function previewVfxBounds(payload) {
 `;
 
 export const resourcePresentationSource = `async function prepareResourcePreview(app, resource, previewCanvas = canvas, presentation = {}) {
-const resourceVfx = previewVfxHosts.get(app) ?? (resource?.kind === 'vfx' ? ensureVfxRuntimeHost() : undefined);
+const [appPreview, geometry, render, scene, vfx, preview] = await Promise.all([
+  import('@forgeax/engine/app'),
+  import('@forgeax/engine/geometry'),
+  import('@forgeax/engine/render'),
+  import('@forgeax/engine/scene'),
+  import('@forgeax/engine/vfx'),
+  import('@forgeax/engine/preview'),
+]);
+const { captureEngineWorkspaceAssetBinding, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, fitToolPreviewCameraToAabb, loadEngineWorkspaceMaterialSlots } = appPreview;
+const { createPrimitiveMesh } = geometry;
+const { Camera, DirectionalLight, MeshFilter, MeshRenderer, Skylight, SkyboxBackground, TONEMAP_REINHARD_EXTENDED, materialSampledTextureBudget } = render;
+const { Transform } = scene;
+const { ParticleEffectPlayer } = vfx;
+const { textureViewSource } = preview;
+const resourceVfx = previewVfxHosts.get(app) ?? (resource?.kind === 'vfx' ? await ensureVfxRuntimeHost() : undefined);
 let preparedResourceBinding;
 await prepareAssetRegistry(app.assets);
 const assets = app.assets;

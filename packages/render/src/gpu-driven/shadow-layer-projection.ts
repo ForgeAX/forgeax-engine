@@ -273,7 +273,7 @@ export function projectShadowLayer(
       members.heldSlots(slots, batchSlots);
       if (row.source.candidates !== members) {
         membershipKnown = false;
-        members.changesSince(row.source.candidates as MemberCandidates, (slot) =>
+        members.changedSlotsSince(row.source.candidates as MemberCandidates, (slot) =>
           batchSlots.push(slot),
         );
       }

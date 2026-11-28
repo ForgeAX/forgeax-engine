@@ -124,6 +124,7 @@ export function temporalSupport(input: TemporalSupportInput = {}) {
   const text = body('temporalScreenProbeAt')
     .replace('probeFrame.previousViewProj * vec4f(position, 1.0)', 'vec4f(0,0,0,1)')
     .replace('clip.xy / max(clip.w, 1e-8) * vec2f(0.5, -0.5) + vec2f(0.5)', 'historyUv')
+    .replace('uv += probeFrame.previousJitter.xy;', '')
     .replace('all(uv >= vec2f(0.0))', 'inside(uv)')
     .replace('all(uv < vec2f(1.0))', 'true')
     .replace('uv * vec2f(extent) - vec2f(0.5)', 'v2(uv.x*extent.x-.5,uv.y*extent.y-.5)')

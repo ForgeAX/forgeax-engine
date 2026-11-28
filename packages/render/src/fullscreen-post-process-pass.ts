@@ -109,6 +109,8 @@ export interface PostProcessShaderEntry {
    * (texture@0 + sampler@1 + buffer@2). feat-20260621 M-A2 / D-2.
    */
   readonly params?: PostProcessParamsSchema | undefined;
+  /** @internal Only the size of a view-owned block participates in shader identity. */
+  readonly paramsSource?: 'current-view' | undefined;
   /** @internal Frame-local uniform bytes supplied by the admitted Feature. */
   readonly frameParams?: Uint8Array | undefined;
   /**
@@ -176,6 +178,7 @@ interface PostProcessSignatureCapture {
   readonly params: PostProcessParamsSchema | undefined;
   readonly byteSize: number | undefined;
   readonly defaultValue: Uint8Array | undefined;
+  readonly currentParams: boolean;
   readonly reads: PostProcessShaderEntry['reads'];
   readonly readKeys: readonly (string | undefined)[] | undefined;
   readonly readSampleTypes: readonly (PostProcessReadSampleType | undefined)[] | undefined;
@@ -217,19 +220,21 @@ function sameSignatureInputs(
     entry.params === captured.params &&
     entry.reads === captured.reads &&
     entry.storageBindings === captured.storageBindings &&
-    sameParamsBytes(entry.params, captured) &&
+    sameParamsBytes(entry, captured) &&
     sameReads(entry.reads, captured) &&
     sameNumbers(entry.storageBindings, captured.storageBindingValues)
   );
 }
 
 function sameParamsBytes(
-  params: PostProcessParamsSchema | undefined,
+  { params, paramsSource }: PostProcessShaderEntry,
   captured: PostProcessSignatureCapture,
 ): boolean {
   if (params === undefined) return true;
   if (params.byteSize !== captured.byteSize) return false;
-  return sameNumbers(params.defaultValue, captured.defaultValue);
+  return paramsSource === undefined
+    ? !captured.currentParams && sameNumbers(params.defaultValue, captured.defaultValue)
+    : captured.currentParams;
 }
 
 function sameNumbers(
@@ -301,7 +306,9 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
         ? undefined
         : {
             byteSize: entry.params.byteSize,
-            defaultValue: Array.from(entry.params.defaultValue),
+            ...(entry.paramsSource === undefined
+              ? { defaultValue: Array.from(entry.params.defaultValue) }
+              : {}),
           },
     reads,
     usesView: entry.usesView,
@@ -319,7 +326,8 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
     stencilMask: entry.stencilMask,
     params: entry.params,
     byteSize: entry.params?.byteSize,
-    defaultValue: entry.params === undefined ? undefined : entry.params.defaultValue.slice(),
+    defaultValue: entry.paramsSource === undefined ? entry.params?.defaultValue.slice() : undefined,
+    currentParams: entry.paramsSource === 'current-view',
     reads,
     readKeys: reads?.map((read) => (typeof read === 'string' ? read : read.key)),
     readSampleTypes: reads?.map((read) => (typeof read === 'string' ? undefined : read.sampleType)),

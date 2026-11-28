@@ -1,0 +1,287 @@
+{
+  "schema": "forgeax-modeling-brep-e1-corpus/1",
+  "labels": {
+    "plane-sphere/circle": "full",
+    "plane-sphere/great-circle-poles": "full",
+    "plane-sphere/near-tangent": "full",
+    "plane-sphere/tangent": "tangent-partial",
+    "plane-cylinder/circle": "full",
+    "plane-cylinder/ellipse": "full",
+    "plane-cylinder/two-lines": "full",
+    "plane-cylinder/near-tangent": "full",
+    "plane-cylinder/tangent": "tangent-partial",
+    "plane-cone/circle": "full",
+    "plane-cone/ellipse": "full",
+    "plane-cone/parabola": "full",
+    "plane-cone/hyperbola-two-nappes": "full",
+    "plane-cone/apex-lines": "full",
+    "plane-cone/near-tangent-apex": "full",
+    "plane-torus/two-circles": "full",
+    "plane-torus/meridian-on-seam": "full",
+    "plane-torus/near-tangent-top": "full",
+    "plane-torus/spiric-loop": "full",
+    "plane-torus/node-tangent": "tangent-partial",
+    "plane-torus/near-node": "full",
+    "sphere-sphere/circle": "full",
+    "sphere-sphere/near-tangent-external": "full",
+    "sphere-sphere/near-tangent-internal": "full",
+    "sphere-cylinder/coaxial": "full",
+    "sphere-cylinder/coaxial-near-tangent": "full",
+    "sphere-cylinder/offset-two-loops": "full",
+    "sphere-cylinder/offset-one-loop": "full",
+    "sphere-cone/coaxial": "full",
+    "cylinder-cylinder/parallel-lines": "full",
+    "cylinder-cylinder/parallel-near-tangent": "full",
+    "cylinder-cylinder/perpendicular-two-loops": "full",
+    "cylinder-cylinder/perpendicular-skew-one-loop": "full",
+    "cylinder-cylinder/perpendicular-equal-steinmetz": "tangent-partial",
+    "cylinder-cone/coaxial": "full",
+    "cone-cone/coaxial": "full",
+    "sphere-torus/coaxial": "full",
+    "cylinder-torus/coaxial": "full",
+    "cylinder-torus/coaxial-near-tangent": "full",
+    "cone-torus/coaxial": "full"
+  },
+  "seams": {
+    "plane-sphere/circle": {
+      "a": [0],
+      "b": [0],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-sphere/great-circle-poles": {
+      "a": [0],
+      "b": [1],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-sphere/near-tangent": {
+      "a": [0],
+      "b": [0],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-sphere/tangent": {
+      "a": [0],
+      "b": [0],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-cylinder/circle": {
+      "a": [0],
+      "b": [1],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-cylinder/ellipse": {
+      "a": [0],
+      "b": [1],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-cylinder/two-lines": {
+      "a": [0, 0],
+      "b": [0, 0],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "plane-cylinder/near-tangent": {
+      "a": [0, 0],
+      "b": [0, 0],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "plane-cylinder/tangent": {
+      "a": [0],
+      "b": [0],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-cone/circle": {
+      "a": [0],
+      "b": [1],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-cone/ellipse": {
+      "a": [0],
+      "b": [1],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-cone/parabola": {
+      "a": [0],
+      "b": [1],
+      "aV": [0],
+      "bV": [0]
+    },
+    "plane-cone/hyperbola-two-nappes": {
+      "a": [0, 0],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "plane-cone/apex-lines": {
+      "a": [0, 0],
+      "b": [0, 0],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "plane-cone/near-tangent-apex": {
+      "a": [0, 0],
+      "b": [0, 0],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "plane-torus/two-circles": {
+      "a": [0, 0],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "plane-torus/meridian-on-seam": {
+      "a": [0, 0],
+      "b": [-1, 0],
+      "aV": [0, 0],
+      "bV": [1, 1]
+    },
+    "plane-torus/near-tangent-top": {
+      "a": [0, 0],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "plane-torus/spiric-loop": {
+      "a": [0],
+      "b": [0],
+      "aV": [0],
+      "bV": [2]
+    },
+    "plane-torus/node-tangent": {
+      "a": [0, 0],
+      "b": [2, 0],
+      "aV": [0, 0],
+      "bV": [1, 1]
+    },
+    "plane-torus/near-node": {
+      "a": [0, 0],
+      "b": [0, 2],
+      "aV": [0, 0],
+      "bV": [1, 1]
+    },
+    "sphere-sphere/circle": {
+      "a": [1],
+      "b": [2],
+      "aV": [0],
+      "bV": [0]
+    },
+    "sphere-sphere/near-tangent-external": {
+      "a": [1],
+      "b": [0],
+      "aV": [0],
+      "bV": [0]
+    },
+    "sphere-sphere/near-tangent-internal": {
+      "a": [1],
+      "b": [0],
+      "aV": [0],
+      "bV": [0]
+    },
+    "sphere-cylinder/coaxial": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "sphere-cylinder/coaxial-near-tangent": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "sphere-cylinder/offset-two-loops": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "sphere-cylinder/offset-one-loop": {
+      "a": [2],
+      "b": [0],
+      "aV": [0],
+      "bV": [0]
+    },
+    "sphere-cone/coaxial": {
+      "a": [1, 1],
+      "b": [1, 0],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cylinder-cylinder/parallel-lines": {
+      "a": [0, 0],
+      "b": [0, 0],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cylinder-cylinder/parallel-near-tangent": {
+      "a": [0, 0],
+      "b": [0, 0],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cylinder-cylinder/perpendicular-two-loops": {
+      "a": [0, 0],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cylinder-cylinder/perpendicular-skew-one-loop": {
+      "a": [0],
+      "b": [2],
+      "aV": [0],
+      "bV": [0]
+    },
+    "cylinder-cylinder/perpendicular-equal-steinmetz": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cylinder-cone/coaxial": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cone-cone/coaxial": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "sphere-torus/coaxial": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cylinder-torus/coaxial": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cylinder-torus/coaxial-near-tangent": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    },
+    "cone-torus/coaxial": {
+      "a": [1, 1],
+      "b": [1, 1],
+      "aV": [0, 0],
+      "bV": [0, 0]
+    }
+  }
+}

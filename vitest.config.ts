@@ -181,7 +181,7 @@ export default defineConfig({
             commands: { prepareWaterImpulseNoise: () => prepareWaterImpulseNoise() },
             provider: playwrightWithBackgroundPages({
               launchOptions: {
-                ...selectBrowserExecutable({ channel: 'chrome-beta' }),
+                ...selectBrowserExecutable({ channel: 'chrome' }),
                 chromiumSandbox: true,
                 args: [
                   '--disable-features=WebGPU,WebGPUService,MacAppCodeSignClone',

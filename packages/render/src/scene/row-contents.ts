@@ -1,4 +1,4 @@
-import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
+import { getOpaqueResourceIdentity } from '../opaque-resource-identity';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { MaterialFrame } from './material-dispatch';
 import { boundDisplacementRadius } from './render-scene-snapshots';
@@ -35,12 +35,10 @@ interface ArrayBinding {
   readonly key: string;
   readonly value: readonly unknown[];
   holders: number;
-  /** A resident content using this materials list. Cleared at its final release. */
-  content?: ContentBinding;
 }
 
 interface ContentBinding {
-  readonly key: string;
+  readonly key: number;
   readonly value: RowContent;
   readonly fieldCount: number;
   boundsRevision: number;
@@ -48,6 +46,7 @@ interface ContentBinding {
   displacement: number;
   readonly arrays: readonly ArrayBinding[];
   holders: number;
+  next: ContentBinding | undefined;
 }
 
 function sameList(a: readonly unknown[], b: readonly unknown[]): boolean {
@@ -65,6 +64,7 @@ function sameFields(source: Fields, bound: ContentBinding): boolean {
     const value = source[field];
     if (value === undefined) continue;
     const fact = facts[field];
+    if (!Object.hasOwn(facts, field)) return false;
     if (
       !Object.is(value, fact) &&
       !(Array.isArray(value) && Array.isArray(fact) && sameList(value, fact))
@@ -75,6 +75,57 @@ function sameFields(source: Fields, bound: ContentBinding): boolean {
   return count === bound.fieldCount;
 }
 
+function textHash(text: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193);
+  return hash;
+}
+
+const numericWord = new Float64Array(1);
+const numericBits = new Int32Array(numericWord.buffer);
+
+function mixWord(value: number): number {
+  const mixed = Math.imul(value ^ (value >>> 16), 0x85ebca6b);
+  return mixed ^ (mixed >>> 13);
+}
+
+function atomHash(value: unknown): number {
+  switch (typeof value) {
+    case 'number':
+      // Object.is treats all NaNs alike, including NaNs read from foreign numeric storage.
+      numericWord[0] = Number.isNaN(value) ? NaN : value;
+      return mixWord((numericBits[0] as number) ^ Math.imul(numericBits[1] as number, 31));
+    case 'string':
+      return textHash(value);
+    case 'object':
+    case 'function':
+      return value === null ? 7 : getOpaqueResourceIdentity(value);
+    case 'boolean':
+      return value ? 11 : 13;
+    default:
+      return 0;
+  }
+}
+
+function fieldValueHash(value: unknown): number {
+  if (!Array.isArray(value)) return atomHash(value);
+  let hash = value.length;
+  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ atomHash(value[i]), 0x01000193);
+  return hash;
+}
+
+/** Field order is irrelevant. The hash only locates a bucket; equality is still exact. */
+function rowContentHash(source: Fields): number {
+  let hash = 0;
+  for (const field in source) {
+    if (EXCLUDED.has(field)) continue;
+    const value = source[field];
+    if (value === undefined) continue;
+    hash ^= mixWord(textHash(field) ^ fieldValueHash(value));
+  }
+  return hash;
+}
+
 function arrayKey(field: string, value: readonly unknown[]): string {
   let key = `${field}:${value.length}`;
   for (const element of value) key += `,${token(element)}`;
@@ -83,13 +134,14 @@ function arrayKey(field: string, value: readonly unknown[]): string {
 
 /** Shared, immutable draw facts. Every strong binding is held by a live scene row. */
 export class RowContents {
-  private readonly contents = new Map<string, ContentBinding>();
+  private readonly contents = new Map<number, ContentBinding>();
   private byContent = new WeakMap<RowContent, ContentBinding>();
   private readonly arrays = new Map<string, ArrayBinding>();
   private byArray = new WeakMap<readonly unknown[], ArrayBinding>();
+  private liveContents = 0;
 
   get size(): number {
-    return this.contents.size;
+    return this.liveContents;
   }
 
   private resolveArray(field: string, input: readonly unknown[]): ArrayBinding {
@@ -107,58 +159,64 @@ export class RowContents {
   }
 
   /** Acquire current drawable facts without retaining the producer's row, pose or mutable lists. */
-  acquire(snapshot: RenderableSnapshot | RowContent): RowContent {
-    const materials = this.resolveArray('materials', snapshot.materials);
+  acquire(snapshot: RenderableSnapshot | RowContent, before?: RowContent): RowContent {
     const source = snapshot as unknown as Fields;
-    const bound = materials.content;
-    if (bound !== undefined && sameFields(source, bound)) {
-      bound.holders++;
-      return bound.value;
+    const current = before === undefined ? undefined : this.byContent.get(before);
+    if (current !== undefined && (snapshot === before || sameFields(source, current))) {
+      current.holders++;
+      return current.value;
     }
-    return this.acquireKeyed(source, materials).value;
+    return this.acquireIndexed(source);
   }
 
-  private acquireKeyed(source: Fields, materials: ArrayBinding): ContentBinding {
+  private acquireIndexed(source: Fields): RowContent {
+    const key = rowContentHash(source);
+    for (let entry = this.contents.get(key); entry !== undefined; entry = entry.next) {
+      if (sameFields(source, entry)) {
+        entry.holders++;
+        return entry.value;
+      }
+    }
+    return this.addContent(source, key);
+  }
+
+  private addContent(source: Fields, key: number): RowContent {
     const facts: Record<string, unknown> = {};
     const arrays: ArrayBinding[] = [];
+    let fieldCount = 0;
     for (const field in source) {
       if (EXCLUDED.has(field)) continue;
-      const value = field === 'materials' ? materials.value : source[field];
+      const value = source[field];
       if (value === undefined) continue;
       if (Array.isArray(value)) {
-        const binding = field === 'materials' ? materials : this.resolveArray(field, value);
+        const binding = this.resolveArray(field, value);
         arrays.push(binding);
         facts[field] = binding.value;
       } else facts[field] = value;
+      fieldCount++;
     }
-    const fields = Object.keys(facts).sort();
-    let key = '';
-    for (const field of fields) key += `${field}=${token(facts[field])};`;
-    let entry = this.contents.get(key);
-    if (entry === undefined) {
-      const value = Object.freeze(facts) as unknown as RowContent;
-      entry = {
-        value,
-        key,
-        fieldCount: fields.length,
-        arrays,
-        holders: 0,
-        boundsRevision: 0,
-        boundsBinding: 0,
-        displacement: 0,
-      };
-      for (const array of arrays) {
-        if (array.holders++ === 0) {
-          this.arrays.set(array.key, array);
-          this.byArray.set(array.value, array);
-        }
+    const value = Object.freeze(facts) as unknown as RowContent;
+    const entry = {
+      value,
+      key,
+      fieldCount,
+      arrays,
+      holders: 1,
+      boundsRevision: 0,
+      boundsBinding: 0,
+      displacement: 0,
+      next: this.contents.get(key),
+    };
+    for (const array of arrays) {
+      if (array.holders++ === 0) {
+        this.arrays.set(array.key, array);
+        this.byArray.set(array.value, array);
       }
-      this.contents.set(key, entry);
-      this.byContent.set(value, entry);
     }
-    materials.content = entry;
-    entry.holders++;
-    return entry;
+    this.contents.set(key, entry);
+    this.byContent.set(value, entry);
+    this.liveContents++;
+    return value;
   }
 
   /** Pose-independent radius of a live content and its effective fixed material slots. */
@@ -183,10 +241,20 @@ export class RowContents {
   release(content: RowContent): void {
     const entry = this.byContent.get(content);
     if (entry === undefined || --entry.holders !== 0) return;
-    this.contents.delete(entry.key);
+    const head = this.contents.get(entry.key);
+    if (head === entry) {
+      if (entry.next === undefined) this.contents.delete(entry.key);
+      else this.contents.set(entry.key, entry.next);
+    } else {
+      for (let previous = head; previous !== undefined; previous = previous.next) {
+        if (previous.next !== entry) continue;
+        previous.next = entry.next;
+        break;
+      }
+    }
+    this.liveContents--;
     this.byContent.delete(content);
     for (const array of entry.arrays) {
-      if (array.content === entry) delete array.content;
       if (--array.holders !== 0) continue;
       this.arrays.delete(array.key);
       if (this.byArray.get(array.value) === array) this.byArray.delete(array.value);
@@ -195,6 +263,7 @@ export class RowContents {
 
   clear(): void {
     this.contents.clear();
+    this.liveContents = 0;
     this.arrays.clear();
     this.byArray = new WeakMap();
     this.byContent = new WeakMap();

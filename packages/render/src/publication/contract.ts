@@ -232,6 +232,8 @@ export interface PublishedRenderFrameInput {
    * transport's publication namespace is not an ECS World identity. */
   readonly geometryObservationSourceWorldIdentity?: string;
   readonly geometryLane?: RenderFrameInput['geometryLane'];
+  /** Request source-template programs once a view admits the GPU-driven lane. */
+  readonly onSourceSceneIndexDemand?: () => void;
   /** Realm-local adapter invoked only after the feature's graph is submitted. */
   readonly onFeatureSourceSubmitted?: (
     identity: string,

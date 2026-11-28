@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeSnapshot, encodeSnapshot } from '../fxem';
 import { model } from '../model';
 import { sel } from '../selectors';
+import { type FuzzOp, scene } from './support/fuzz';
 
 const HEADER = 64;
 const ENTRY = 24;
@@ -15,7 +16,12 @@ function seeds(): Uint8Array[] {
   a.uv.project({ mode: 'box', scale: 1 });
   const b = model();
   b.box({ size: [1, 2, 3] });
-  return [a.snapshot(), b.snapshot()];
+  const scenes = [11, 12, 13].map((seed) => {
+    const m = model();
+    scene(seed, { primitives: 3, ops: ['union', 'difference'] as FuzzOp[] }).build(m);
+    return m.snapshot();
+  });
+  return [a.snapshot(), b.snapshot(), ...scenes];
 }
 
 const edit = fc.oneof(

@@ -12,7 +12,7 @@
 // Pipeline:
 //   1. spawn vite preview on port 5184 (vite.config.ts strictPort).
 //   2. wait-on tcp 30s.
-//   3. chromium.launch(channel: chrome-beta) with the WebGPU flag set
+//   3. chromium.launch(channel: chrome) with the WebGPU flag set
 //      mirroring scripts/bench/pixel-parity.mjs (charter F2 image
 //      capture must run in the same browser the bench reads from).
 //   4. page.goto -> wait for `[learn-render 1.5 transformations] backend=...`
@@ -116,7 +116,7 @@ async function main() {
 
     browser = await chromium.launch({
       headless: true,
-      channel: 'chrome-beta',
+      channel: 'chrome',
       args: [
         '--enable-unsafe-webgpu',
         '--enable-features=Vulkan',

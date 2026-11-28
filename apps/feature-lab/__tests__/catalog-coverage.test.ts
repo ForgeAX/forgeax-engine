@@ -20,6 +20,10 @@ const GATE_PROVED_ROWS = new Set([
   'Custom ShadowCaster pass',
   // Water owner/cook/publication tests, native Dawn, browser distribution and R3 project pixels.
   'Water system',
+  // Water source/receiving-frame checks and actual Browser/Dawn shader conformance.
+  'Shared Gerstner geometry sampling',
+  'Refractive optical primitives',
+  'Water caustics field and receiver',
   // R5 independent project GPU stages and actual Worker solver lifetimes.
   'GPU WaterMesh',
   'Async water solver buoyancy',
@@ -79,9 +83,6 @@ const GATE_PROVED_ROWS = new Set([
   // A scripted gameplay journey owns its own project, browser and final-frame gate.
   'Scripted gameplay verification',
   'RHI debug viewer',
-  // DeepSeek Harness federation.
-  'DSH Engine panel',
-  'DSH Activity provider',
   // Native PCM output and real bounded Range responses use the owning HTTP fixture.
   'Long audio windows',
   // Packaging, SDK and release.

@@ -75,7 +75,10 @@ export type EdgeDrawerController = {
   dispose: () => void;
 };
 
-export type EdgeDrawerOptions = { edges?: readonly WorkbenchEdge[] };
+export type EdgeDrawerOptions = {
+  edges?: readonly WorkbenchEdge[];
+  bottomDrawerHost?: HTMLElement;
+};
 
 function edgeGroups(api: DockviewApi) {
   return api.groups.filter((g) => g.api.location.type === 'edge');
@@ -112,7 +115,7 @@ function isDismissExemptTarget(target: Element | null) {
 export function installEdgeDrawer(
   api: DockviewApi,
   root: HTMLElement,
-  { edges = ALL_EDGES }: EdgeDrawerOptions = {},
+  { edges = ALL_EDGES, bottomDrawerHost }: EdgeDrawerOptions = {},
 ): EdgeDrawerController {
   let openGroup: DockviewApi['groups'][number] | null = null;
   /** Edge group id to re-open after page suspend when pin drawer was showing. */
@@ -134,13 +137,12 @@ export function installEdgeDrawer(
     return Boolean(active && pinnedPanelId(group) === active.id);
   };
 
-  const ensureDrawerPortalHost = () => {
-    if (drawerPortalHost) return drawerPortalHost;
-    const host = document.createElement('div');
-    host.className = PORTAL_HOST_CLASS;
-    document.body.appendChild(host);
-    drawerPortalHost = host;
-    return host;
+  const ensureDrawerPortalHost = (edge: WorkbenchEdge) => {
+    drawerPortalHost ??= document.createElement('div');
+    drawerPortalHost.className = PORTAL_HOST_CLASS;
+    const parent = (edge === 'bottom' ? bottomDrawerHost : undefined) ?? document.body;
+    if (drawerPortalHost.parentElement !== parent) parent.appendChild(drawerPortalHost);
+    return drawerPortalHost;
   };
 
   const copyDrawerVars = (from: CSSStyleDeclaration, to: HTMLElement) => {
@@ -200,12 +202,13 @@ export function installEdgeDrawer(
   const portalDrawerFlyout = (group: DockviewApi['groups'][number]) => {
     const flyout = contentContainerOf(group);
     if (!(flyout instanceof HTMLElement)) return;
-    const host = ensureDrawerPortalHost();
+    const host = ensureDrawerPortalHost(edgeOf(group));
     flyout.classList.add(FLYOUT_CLASS);
     syncFlyoutDirectionClasses(group, flyout);
     syncFlyoutTitleState(group, flyout);
     copyDrawerVars(group.element.style, host);
     portaledFlyout = flyout;
+    grip.removeAttribute('style');
     host.appendChild(flyout);
     host.appendChild(grip);
     positionGrip(group);
@@ -213,6 +216,7 @@ export function installEdgeDrawer(
 
   const positionGrip = (group: DockviewApi['groups'][number]) => {
     const e = edgeOf(group);
+    if (e === 'bottom' && bottomDrawerHost) return;
     const r = group.element.getBoundingClientRect();
     const maxWidth = parseFloat(group.element.style.getPropertyValue('--fx-edge-drawer-max-width'));
     const size = e === 'bottom' ? readDrawerSize(group, e) : Math.min(readDrawerSize(group, e), maxWidth);
@@ -244,6 +248,7 @@ export function installEdgeDrawer(
 
   const positionDrawer = (group: DockviewApi['groups'][number]) => {
     const edge = edgeOf(group);
+    if (edge === 'bottom' && bottomDrawerHost) return;
     const style = group.element.style;
     const r = group.element.getBoundingClientRect();
     const occupied = (side: WorkbenchEdge) => edgeGroups(api).find(candidate =>
@@ -494,6 +499,7 @@ export function installEdgeDrawer(
     root.style.setProperty('--fx-bottom-edge-width', `${host.width}px`);
     root.style.setProperty('--fx-bottom-edge-height', `${strip.height}px`);
     slot.classList.add(BOTTOM_SPAN_CLASS);
+    if (openGroup === group) positionDrawer(group);
   };
   let bottomSpanFrame: number | null = null;
   let bottomPreviewObserver: MutationObserver | null = null;
@@ -513,6 +519,7 @@ export function installEdgeDrawer(
     if (!groupEl || !root.contains(groupEl)) return;
     const group = edgeGroups(api).find((g) => g.element === groupEl);
     if (!group) return;
+    if (target?.closest('.fx-dock-tab-close')) return;
     event.preventDefault();
     event.stopPropagation();
     const pinBtn = target?.closest(`.${EDGE_PIN_CLASS}`);

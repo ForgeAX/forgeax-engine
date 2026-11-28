@@ -1,0 +1,9 @@
+[package]
+name = "forgeax-render-kernel-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Backend-agnostic Rust rendering kernel core: generational handles, FrameBumpArena, FXK1 SceneDelta, 128-bit PsoKey, frustum culling, two-pass transient RT pooling, draw sorting, and physical command stream emission."
+
+[dependencies]

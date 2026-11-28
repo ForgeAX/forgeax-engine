@@ -4,3 +4,8 @@ export * from './scene-data';
 export * from './scene-data-catalog';
 export * from './standard-scene-data';
 export * from './temporal-view';
+export {
+  temporalJitterSample,
+  temporalJitterSampleCount,
+  temporalMaterialTextureMipBias,
+} from './view';

@@ -1,18 +1,10 @@
-import {
-  defineComponent,
-  defineSystem,
-  type EntityHandle,
-  type QueryRow,
-  type World,
-} from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, type QueryRow, type World } from '@forgeax/engine-ecs';
 import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
 import { AssetError } from '@forgeax/engine-types';
 import { MotionBlurValidationError } from '../features/motion-blur/motion-blur-params';
 import { discardStandardOutputStates } from '../pipeline/standard-output/resources';
 import {
   createFrameRecordingAttempt,
-  type FrameRecordingAttempt,
-  type FrameRecordingInput,
   prepareFrameGraphInputs,
   releaseFrameRecordingAttempt,
   settlePreparedViewGraph,
@@ -21,15 +13,12 @@ import {
 } from '../record/frame';
 import { activeRenderProfileSession } from '../record/profile-session';
 import { disposeTargetCaptureLighting } from '../record/target-capture-lighting';
-import type { ExtractedFrame } from '../render-system-extract';
 import {
+  admitRecordFeatures,
   beginGeometryObservation,
   beginRecordAttempt,
-  prepareRecordFeatures,
   prepareRecordScene,
   prepareViewFrameInput,
-  type RecordScene,
-  type RecordView,
   reportRecordFailure,
   selectRecordView,
   stageRecordQueue,
@@ -51,12 +40,7 @@ import { sharedFeatureGraphStaged, stageSharedFeatureGraph } from './feature-gra
 import { frameSubmitOutcome } from './frame-submit-systems';
 import { FrameViewList } from './frame-view-list';
 
-import {
-  stagePreparedViewGraph,
-  ViewGraphSeal,
-  type ViewGraphSealState,
-} from './graph-seal-systems';
-
+import { stagePreparedViewGraph } from './graph-seal-systems';
 import { viewPhaseQueue } from './queue-systems';
 import { ViewRecordHistory, viewRecordHistory } from './record-history';
 import { RenderRecordInput } from './record-systems';
@@ -68,76 +52,17 @@ import {
   renderSubmission,
   renderWorldFor,
 } from './render-world';
-import { readViewState, requireViewField } from './view-field';
+import { requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState, viewFrameScopes } from './view-frame-systems';
 import { viewComposition } from './view-output-systems';
+import { ViewRecordAttempt, type ViewRecordAttemptState } from './view-record-attempt';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 
-type ViewFacts = {
-  readonly frame: ExtractedFrame;
-  readonly view: RecordView;
-  readonly scene: RecordScene;
-};
-type ViewPreparation =
-  | {
-      readonly kind: 'queued';
-      readonly facts: ViewFacts;
-      readonly queue: ReturnType<typeof stageRecordQueue>;
-    }
-  | {
-      readonly kind: 'graph';
-      readonly facts: ViewFacts;
-      readonly draws: ReturnType<typeof prepareViewFrameInput>['draws'];
-    }
-  | { readonly kind: 'pending' | 'held' | 'rejected' }
-  | { readonly kind: 'failed'; readonly cause: unknown; readonly reported: boolean };
-
-/** One attempt per view and frame. All continuation facts are data; no view generator. */
-export interface ViewRecordAttemptState {
-  frame: number;
-  generation: number;
-  attempt: RecordAttempt | undefined;
-  ownsProfileFrame: boolean;
-  preparation: ViewPreparation | undefined;
-  recording:
-    | { readonly input: FrameRecordingInput; readonly attempt: FrameRecordingAttempt }
-    | undefined;
-  settled: boolean;
-}
-export const ViewRecordAttempt = defineComponent('ViewRecordAttempt', {
-  state: 'unique<ViewRecordAttempt>',
-});
 export const RENDER_VIEW_RECORD_START_SYSTEM = 'render-view-record-start';
 export const RENDER_VIEW_GRAPH_PREPARE_SYSTEM = 'render-view-graph-prepare';
 export const RENDER_VIEW_RECORD_SETTLE_SYSTEM = 'render-view-record-settle';
 export const RENDER_VIEW_RECORD_RELEASE_SYSTEM = 'render-view-record-release';
-
-export function adoptViewRecordAttempt(world: World, entity: EntityHandle): void {
-  if (!world.hasComponent(entity, ViewSubmission))
-    world
-      .addComponent(entity, {
-        component: ViewSubmission,
-        data: { accepted: false, attempt: 0, scene: false, temporal: false },
-      })
-      .unwrap();
-  if (world.hasComponent(entity, ViewRecordAttempt)) return;
-  const state: ViewRecordAttemptState = {
-    frame: -1,
-    generation: 0,
-    attempt: undefined,
-    ownsProfileFrame: false,
-    preparation: undefined,
-    recording: undefined,
-    settled: false,
-  };
-  world
-    .addComponent(entity, {
-      component: ViewRecordAttempt,
-      data: { state: world.allocUniqueRef('ViewRecordAttempt', state) },
-    })
-    .unwrap();
-}
 
 function prepareFailure(
   owner: ViewSettlementOwner,
@@ -257,8 +182,7 @@ function prepareGraph(
     return;
   try {
     const { frame, view, scene } = queued.facts;
-    const features = prepareRecordFeatures(owner, attempt, frame, view);
-    if (features === undefined) {
+    if (!admitRecordFeatures(owner, attempt, frame, view)) {
       state.preparation = {
         kind: owner.frameState.pipelinePreparationPending ? 'pending' : 'rejected',
       };
@@ -275,10 +199,18 @@ function prepareGraph(
       return;
     }
     const dispatch = queued.queue.sorted ? viewPhaseQueue(world, entity).take() : frame.dispatch;
-    const preparedInput = prepareViewFrameInput(owner, attempt, frame, view, scene, features, {
-      ...queued.queue,
-      dispatch,
-    });
+    const preparedInput = prepareViewFrameInput(
+      owner,
+      attempt,
+      frame,
+      view,
+      scene,
+      queued.queue.captures,
+      {
+        ...queued.queue,
+        dispatch,
+      },
+    );
     const recording = createFrameRecordingAttempt(preparedInput.input.volumetricFog);
     state.recording = { input: preparedInput.input, attempt: recording };
     state.preparation = { kind: 'graph', facts: queued.facts, draws: preparedInput.draws };
@@ -292,38 +224,34 @@ function prepareGraph(
       state.preparation = { kind: 'rejected' };
       return;
     }
-    stagePreparedViewGraph(prepared);
+    stagePreparedViewGraph(state, prepared);
   } catch (cause) {
     prepareFailure(owner, state, cause);
   }
 }
 
-function settleViewRecording(
-  owner: ViewSettlementOwner,
-  state: ViewRecordAttemptState,
-  seal: ViewGraphSealState | undefined,
-): void {
+function settleViewRecording(owner: ViewSettlementOwner, state: ViewRecordAttemptState): void {
   const attempt = state.attempt;
   if (attempt === undefined) return;
   const result = frameSubmitOutcome(renderWorldFor(owner.internals)).result;
   const ready = state.preparation;
   if (
     ready?.kind === 'graph' &&
-    seal?.prepared !== undefined &&
-    seal.outcome?.kind === 'sealed' &&
-    seal.encoding?.kind === 'encoded'
+    state.prepared !== undefined &&
+    state.outcome?.kind === 'sealed' &&
+    state.encoding?.kind === 'encoded'
   ) {
     attempt.submitted = settlePreparedViewGraph(
-      seal.prepared,
-      seal.outcome,
-      seal.encoding.value,
+      state.prepared,
+      state.outcome,
+      state.encoding.value,
       result,
     );
     attempt.sceneSubmitted = attempt.submitted && owner.frameState.frameOutputs.sceneSubmitted;
   } else if (
     ready?.kind === 'pending' ||
     ready?.kind === 'held' ||
-    seal?.encoding?.kind === 'pending'
+    state.encoding?.kind === 'pending'
   ) {
     attempt.submitted = result.ok;
     if (state.recording !== undefined) state.recording.attempt.submitted = result.ok;
@@ -333,10 +261,9 @@ function settleViewRecording(
     attempt.outcome = {
       frame,
       lights: view.lights,
-      cameraCount: view.cameras.length,
+      camera: view.cameras[0],
       presentation: scene.presentation,
       captureAdmits: state.recording?.attempt.captureAdmits,
-      presentationRenderables: scene.presentationRenderables,
       draws: {
         presentedDraws: ready.draws.presentedDraws,
         drawObservation: ready.draws.drawObservation,
@@ -355,14 +282,13 @@ function settleAttempt(
   entity: EntityHandle,
   owner: ViewSettlementOwner,
   state: ViewRecordAttemptState,
-  seal: ViewGraphSealState | undefined,
 ): void {
   const attempt = state.attempt;
   if (state.frame !== renderSubmission(world).frame || state.settled || attempt === undefined)
     return;
   state.settled = true;
   try {
-    settleViewRecording(owner, state, seal);
+    settleViewRecording(owner, state);
   } catch (cause) {
     prepareFailure(owner, state, cause);
   } finally {
@@ -375,7 +301,7 @@ function settleAttempt(
           owner.frameState,
           recording,
           input.cubeCapture,
-          seal?.encoding?.kind === 'encoded',
+          state.encoding?.kind === 'encoded',
         );
       } catch (cause) {
         prepareFailure(owner, state, cause);
@@ -389,17 +315,16 @@ function settleAttempt(
       scene: attempt.sceneSubmitted,
       temporal: false,
     });
-    const sealed = seal?.outcome;
+    const sealed = state.outcome;
     const revision = sealed?.kind === 'sealed' ? sealed.configurationRevision : undefined;
-    const installed = owner.frameState.compiledFrameGraph;
+    const display = sealed?.kind === 'sealed' ? sealed.display : undefined;
     if (
       viewAccepted &&
       attempt.sceneSubmitted &&
-      installed !== null &&
-      sealed?.kind === 'sealed' &&
-      installed.graph === sealed.graph
+      display !== undefined &&
+      owner.frameState.compiledFrameGraph === display
     )
-      installed.configurationRevision = revision;
+      display.configurationRevision = revision;
     viewRecordHistory(world, entity)?.stage({
       configurationRevision: revision,
       frame,
@@ -420,7 +345,6 @@ export function registerViewRecordSystems(world: World): void {
   const owners: ViewSettlementOwner[] = [];
   const attempts: ViewRecordAttemptState[] = [];
   const staged: ViewFrameState[] = [];
-  const seals: (ViewGraphSealState | undefined)[] = [];
   type ViewRow = Pick<QueryRow, 'entity'>;
   type Rows = { forEach(visit: (row: ViewRow) => void): void };
   const collect = (entity: EntityHandle): void => {
@@ -447,24 +371,21 @@ export function registerViewRecordSystems(world: World): void {
         .unwrap(),
     );
   };
-  const collectSettlement = ({ entity }: ViewRow): void => {
-    collect(entity);
-    seals.push(readViewState<ViewGraphSealState>(world, entity, ViewGraphSeal));
-  };
   const clear = (): void => {
     order.clear();
-    entities.length = owners.length = attempts.length = staged.length = seals.length = 0;
+    entities.length = owners.length = attempts.length = staged.length = 0;
   };
   const settleRows = (rows: Rows): void => {
     try {
-      rows.forEach(collectSettlement);
+      rows.forEach(({ entity }) => {
+        collect(entity);
+      });
       for (let i = 0; i < entities.length; i++)
         settleAttempt(
           world,
           entities[i] as EntityHandle,
           owners[i] as ViewSettlementOwner,
           attempts[i] as ViewRecordAttemptState,
-          seals[i],
         );
     } finally {
       clear();
@@ -531,7 +452,7 @@ export function registerViewRecordSystems(world: World): void {
       {
         read: [ViewRecorder, ViewFrame],
         write: [ViewRecordAttempt, ViewSubmission],
-        optional: [ViewGraphSeal, ViewRecordHistory],
+        optional: [ViewRecordHistory],
       },
     ],
     fn: (_world, [rows]) => {
@@ -547,7 +468,7 @@ export function registerViewRecordSystems(world: World): void {
       {
         read: [ViewRecorder, ViewFrame],
         write: [ViewRecordAttempt, ViewSubmission],
-        optional: [ViewGraphSeal, ViewRecordHistory],
+        optional: [ViewRecordHistory],
       },
     ],
     fn: (world, [rows]) => {

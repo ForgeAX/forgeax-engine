@@ -75,8 +75,10 @@ export function definePhysicsPlugin<T extends PhysicsWorld | PhysicsWorld2D>(
       let native: unknown;
       try {
         native = await backend.load();
+        if (ctx.fiber.uid === null) return;
         if (native instanceof PhysicsError) throw native;
       } catch (cause) {
+        if (ctx.fiber.uid === null) return;
         if (cause instanceof PhysicsError && cause.code === 'wasm-load-failed') throw cause;
         const reason = cause instanceof Error ? cause.message : String(cause);
         throw new PhysicsError({

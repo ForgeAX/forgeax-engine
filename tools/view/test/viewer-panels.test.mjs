@@ -1071,8 +1071,10 @@ describe('display Frontend Fiber surface ownership', () => {
   it('owns the platform Play document without navigating loopback', async () => {
     const { document, root } = fakeDocument();
     document.body = root;
-    document.defaultView.addEventListener = () => {};
-    document.defaultView.removeEventListener = () => {};
+    const listeners = new Map();
+    document.defaultView.addEventListener = (type, listener) => listeners.set(type, listener);
+    document.defaultView.removeEventListener = type => listeners.delete(type);
+    document.defaultView.PointerEvent = Event;
     const target = { targetId: 'play-1', generation: 1, width: 1280, height: 720, url: 'http://localhost:1234/' };
     let state = { projectPhase: 'running', targetBinding: 'play', play: { target } };
     let publish;
@@ -1083,6 +1085,8 @@ describe('display Frontend Fiber surface ownership', () => {
     });
     const surface = document.createElement('iframe');
     surface.srcdoc = '<canvas></canvas>';
+    const outsidePresses = [];
+    surface.dispatchEvent = event => outsidePresses.push(event);
     root.append(surface);
     const created = [], detached = [];
     context.provide('frontendPlatform', {
@@ -1094,19 +1098,30 @@ describe('display Frontend Fiber surface ownership', () => {
       },
     });
     await context.plugin(viewPlayPresentationPlugin, { document });
+    const viewport = document.createElement('div');
+    viewport.getBoundingClientRect = () => ({ left: 0, top: 0, width: 800, height: 600 });
+    context.get('viewPlayPresentation').attach(viewport);
     assert.deepEqual(created, [target.url]);
     assert.equal(walk(root).filter(element => element.tagName === 'IFRAME').length, 1);
     assert.equal(surface.src, undefined);
     assert.equal(surface.srcdoc, '<canvas></canvas>');
+    document.activeElement = surface;
+    listeners.get('blur')();
+    assert.equal(outsidePresses.length, 1);
+    assert.equal(outsidePresses[0].type, 'pointerdown');
+    assert.equal(outsidePresses[0].bubbles, true);
     state = { ...state, targetBinding: 'scene' };
     publish(state);
     assert.equal(surface.style.visibility, 'visible', 'An adopted Play must retain native frames until Engine acknowledges cleanup');
     assert.equal(surface.style.opacity, '0');
     assert.equal(surface.style.pointerEvents, 'none');
+    listeners.get('blur')();
+    assert.equal(outsidePresses.length, 1);
     assert.deepEqual(detached, []);
     state = { projectPhase: 'running', targetBinding: 'scene' };
     publish(state);
     await context.fiber.dispose();
+    assert.equal(listeners.has('blur'), false);
     assert.deepEqual(detached, [target.url]);
     assert.equal(walk(root).filter(element => element.tagName === 'IFRAME').length, 0);
   });

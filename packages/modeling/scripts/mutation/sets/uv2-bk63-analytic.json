@@ -1,0 +1,282 @@
+{
+  "tests": [
+    "src/__tests__/bake-analytic.unit.test.ts",
+    "src/__tests__/bake-analytic-audit.unit.test.ts"
+  ],
+  "mutations": [
+    {
+      "id": "m1-residual-accept",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (!(r <= rules.residual)) return undefined;",
+      "new": "if (false) return undefined;"
+    },
+    {
+      "id": "m2-height-span",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (!(height >= rules.lo - rules.residual && height <= rules.hi + rules.residual)) {",
+      "new": "if (false) {"
+    },
+    {
+      "id": "m3-tol-height",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "height: Math.max(steps.height, patch.chord),",
+      "new": "height: Math.max(steps.height, patch.chord) * 100,"
+    },
+    {
+      "id": "m4-tol-normal",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "normal: (turn >= 0 ? turn : patch.angle) + steps.normal,",
+      "new": "normal: (turn >= 0 ? turn : patch.angle) + steps.normal + 60,"
+    },
+    {
+      "id": "m5-tol-position",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "position: Math.max(steps.position, patch.chord),",
+      "new": "position: Math.max(steps.position, patch.chord) * 100,"
+    },
+    {
+      "id": "m6-note-cmp",
+      "file": "src/compute/bake-ts.ts",
+      "old": "if (!(x > limit)) return;",
+      "new": "if (!(x > limit * 100)) return;"
+    },
+    {
+      "id": "m7-strat-area",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "const target = ((k + 0.5) / count) * total;",
+      "new": "const target = ((k + 0.5) / count) * cumulative.length;"
+    },
+    {
+      "id": "m8-fallback-count",
+      "file": "src/compute/bake-ts.ts",
+      "old": "if (exact === undefined) group.raySamples++;",
+      "new": "if (exact === undefined) group.raySamples += 0;"
+    },
+    {
+      "id": "m9-byte-identity",
+      "file": "src/compute/bake-ts.ts",
+      "old": "if (exact !== undefined && !analytic?.needRay) {",
+      "new": "if (exact !== undefined) {"
+    },
+    {
+      "id": "m10-mismatch-inactive",
+      "file": "src/compute/bake-ts.ts",
+      "old": "plan.active[e.group] = 0;",
+      "new": "plan.active[e.group] = 1;"
+    },
+    {
+      "id": "m11-facing",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (!(dot(normal, c) > rules.facingMin)) return undefined;",
+      "new": "if (false) return undefined;"
+    },
+    {
+      "id": "m12-tiled",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (input.tiled) reason.push('tiled-detail');",
+      "new": "if (false) reason.push('tiled-detail');"
+    },
+    {
+      "id": "m13-floater",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (matched.length === 0 || input.floater[f] === 1) described[g] = false;",
+      "new": "if (matched.length === 0) described[g] = false;"
+    },
+    {
+      "id": "m14-verify-count",
+      "file": "src/compute/bake-ts.ts",
+      "old": "const VERIFY_SAMPLES = 256;",
+      "new": "const VERIFY_SAMPLES = 2;"
+    },
+    {
+      "id": "m15-iterations",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "const MAX_ITERATIONS = 8;",
+      "new": "const MAX_ITERATIONS = 0;"
+    },
+    {
+      "id": "m16-ownside",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (averaged && rules.ownSideCos !== undefined && dot(normal, shading) < rules.ownSideCos) {",
+      "new": "if (false) {"
+    },
+    {
+      "id": "m17-best",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (best === undefined || Math.abs(solved.height) < Math.abs(best.height))",
+      "new": "if (best === undefined)"
+    },
+    {
+      "id": "m18-all-skip",
+      "file": "src/compute/bake-ts.ts",
+      "old": "const [p0, p1, p2] = uv as [[number, number], [number, number], [number, number]];\n        const area = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]);\n        if (area === 0) continue;",
+      "new": "const [p0, p1, p2] = uv as [[number, number], [number, number], [number, number]];\n        const area = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]);\n        if (false) continue;",
+      "survives": "Equivalent: a zero-area UV triangle covers no texel, so the verifier loop never visits a sample there and the zero-area skip is unobservable."
+    },
+    {
+      "id": "g1-guard-chord",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (d > patch.chord) moved++;",
+      "new": "if (d > patch.chord * 1000) moved++;"
+    },
+    {
+      "id": "g2-default-verify",
+      "file": "src/bake.ts",
+      "old": "verify: options.verify ?? 'all'",
+      "new": "verify: options.verify ?? 'sample'"
+    },
+    {
+      "id": "g3-turn",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "normal: (turn >= 0 ? turn : patch.angle) + steps.normal,",
+      "new": "normal: patch.angle + steps.normal,"
+    },
+    {
+      "id": "g4-stale-reason",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "else if (movedGroups.has(g)) {",
+      "new": "else if (false) {"
+    },
+    {
+      "id": "g6-metrics",
+      "file": "src/compute/bake-ts.ts",
+      "old": "...(analytic === undefined ? {} : { analyticSamples: analytic.analyticSamples }),",
+      "new": "...{},"
+    },
+    {
+      "id": "g7-stale-mismatch",
+      "file": "src/compute/bake-ts.ts",
+      "old": "count: x.guard.moved,",
+      "new": "count: 0,"
+    },
+    {
+      "id": "g8-guard-exact-tag",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "const tag = detail.tagIndex(patch.name, false);",
+      "new": "const tag = -1 + 0 * detail.tagIndex(patch.name, false);"
+    },
+    {
+      "id": "g9-others-tag",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "&& !others.some((t) => detail.hasTag(f, t))",
+      "new": "&& true"
+    },
+    {
+      "id": "n2-turn-last-face",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "if (a !== undefined && b !== undefined) turn = Math.max(turn, angleBetween(a, b));",
+      "new": "if (a !== undefined && b !== undefined) turn = angleBetween(a, b);"
+    },
+    {
+      "id": "n3-stale-unfiltered",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "stale: stale.filter((x) => reason[x.group] === 'detail-moved'),",
+      "new": "stale,"
+    },
+    {
+      "id": "n6-normal-step",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "normal: (turn >= 0 ? turn : patch.angle) + steps.normal,",
+      "new": "normal: (turn >= 0 ? turn : patch.angle),"
+    },
+    {
+      "id": "n7-guard-base-channel",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "guardPatches(detail, patches, input.detailDomain)",
+      "new": "guardPatches(detail, patches, input.domain)"
+    },
+    {
+      "id": "n9-turn-wrap",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "const b = normals[(k + 1) % normals.length];",
+      "new": "const b = normals[k + 1];"
+    },
+    {
+      "id": "n10-domain-clamp",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "normals.push(normalAt(patch, clamp01(st[0] as number), clamp01(st[1] as number)));",
+      "new": "normals.push(normalAt(patch, st[0] as number, st[1] as number));"
+    },
+    {
+      "id": "f1-facet-dropped",
+      "file": "src/compute/bake-ts.ts",
+      "old": "if (kinds.includes('normal') && ray.facet !== undefined) {",
+      "new": "if (false) {"
+    },
+    {
+      "id": "f2-facet-normal-zero",
+      "file": "src/compute/bake-ts.ts",
+      "old": "const d = angleBetween(ray.facet, exact.normal);",
+      "new": "const d = 0;"
+    },
+    {
+      "id": "f3-facet-side-fixed",
+      "file": "src/compute/bake-ts.ts",
+      "old": "const side = dot(g, shading.reduce(add, [0, 0, 0] as Tuple3)) < 0 ? -1 : 1;",
+      "new": "const side = 1;",
+      "survives": "Unreached on reachable geometry, not proven equivalent in general: the flipped fixture (flip true) keeps the facet normal aligned with its shading (normal max 2.2491 vs 2.2491), so the sign test never changes a verdict there; a detail whose facet opposes its shading would need a fixture."
+    },
+    {
+      "id": "f4-facet-area-ge0",
+      "file": "src/compute/bake-ts.ts",
+      "old": "if (area > 0) {",
+      "new": "if (area >= 0) {",
+      "survives": "Unreached on reachable geometry: only a zero-area triangle takes this branch; the smallest honest sphere detail triangle at chord 0.001 is 1.99e-4 m^2, and no fixture yields a zero-area ray hit."
+    },
+    {
+      "id": "f5-facet-area-eps",
+      "file": "src/compute/bake-ts.ts",
+      "old": "if (area > 0) {",
+      "new": "if (area > 1e-4) {",
+      "survives": "Unreached on reachable geometry: only a triangle under 1e-4 m^2 is affected; the smallest honest sphere detail triangle is 1.99e-4 m^2, and no fixture yields a sub-threshold ray hit."
+    },
+    {
+      "id": "f6-facet-normal-used-as-shading",
+      "file": "src/compute/bake-ts.ts",
+      "old": "const d = angleBetween(ray.facet, exact.normal);",
+      "new": "const d = angleBetween(ray.facet, [0, 0, 1] as Tuple3);"
+    },
+    {
+      "id": "o9-others-all-tags",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "return t < 0 || t === tag ? [] : [t];",
+      "new": "return t < 0 ? [] : [t];"
+    },
+    {
+      "id": "o10-others-inverted",
+      "file": "src/compute/bake-analytic.ts",
+      "old": ".filter((f) => detail.hasTag(f, tag) && !others.some((t) => detail.hasTag(f, t)));",
+      "new": ".filter((f) => detail.hasTag(f, tag) && others.some((t) => detail.hasTag(f, t)));"
+    },
+    {
+      "id": "o11-others-every",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "!others.some((t) => detail.hasTag(f, t))",
+      "new": "!others.every((t) => detail.hasTag(f, t))"
+    },
+    {
+      "id": "o12-others-nonneg",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "return t < 0 || t === tag ? [] : [t];",
+      "new": "return t === tag ? [] : [t];"
+    },
+    {
+      "id": "g10-stride-off",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "const stride = Math.max(1, Math.ceil(faces.length / GUARD_FACES));",
+      "new": "const stride = 1;"
+    },
+    {
+      "id": "g11-stride-first-only",
+      "file": "src/compute/bake-analytic.ts",
+      "old": "for (let i = 0; i < faces.length; i += stride) {",
+      "new": "for (let i = 0; i < Math.min(faces.length, GUARD_FACES); i += 1) {"
+    },
+    {
+      "id": "v1-sample-no-stratify",
+      "file": "src/compute/bake-ts.ts",
+      "old": "const VERIFY_SAMPLES = 256;",
+      "new": "const VERIFY_SAMPLES = 0;"
+    }
+  ]
+}

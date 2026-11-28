@@ -96,11 +96,12 @@ describe('local App execution fault projection', () => {
       if (first === undefined) throw new Error('App did not dispatch the Update failure');
       expect(first.fault).toMatchObject({
         source: 'world',
-        code: app.world.execution.fault?.code,
+        code: 'system-failed',
         partialWrite: true,
         retryable: false,
         detail: {
-          kernelName: 'system:local-faulting-update',
+          systemName: 'local-faulting-update',
+          schedule: 'Update',
           cause: expect.objectContaining({
             message: cause.message,
             code: cause.code,

@@ -16,6 +16,7 @@ import {
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { err, manifestMalformed, ok, type Result, type ShaderError } from './errors.js';
+import { digestShaderBytes } from './manifest-publication.js';
 import { isSupportedVariantDefines } from './variant-permutation-rules.js';
 
 /** Serializable compiler inputs. Instance values and GPU state are not program features. */
@@ -342,6 +343,40 @@ function admitTemplate(
   } catch {
     return failure('template is not serializable source data');
   }
+  return admitDetachedTemplate(value, sourceDigests);
+}
+
+interface TemplateModuleIdentities {
+  readonly source: string;
+  readonly imports: Readonly<Record<string, unknown>>;
+}
+
+function templateModuleIdentities(
+  template: ShaderProgramTemplate,
+  verified: Map<string, string> | TemplateModuleIdentities,
+): TemplateModuleIdentities {
+  if (!(verified instanceof Map)) return verified;
+  const reference = (source: string): string => {
+    let digest = verified.get(source);
+    if (digest === undefined) {
+      digest = textDigest(source);
+      verified.set(source, digest);
+    }
+    return digest;
+  };
+  return {
+    source: reference(template.source),
+    imports: Object.fromEntries(
+      Object.entries(template.imports).map(([id, source]) => [id, reference(source)]),
+    ),
+  };
+}
+
+/** Both standalone templates and wire libraries detach their inputs before this step. */
+function admitDetachedTemplate(
+  value: unknown,
+  verified: Map<string, string> | TemplateModuleIdentities,
+): Result<AdmittedShaderProgramTemplate, ShaderError> {
   if (
     !isRecord(value) ||
     Object.keys(value).some((key) => !templateFields.has(key)) ||
@@ -365,22 +400,11 @@ function admitTemplate(
   if (template.axes.some((axis) => Object.hasOwn(fixed, axis))) {
     return failure('a selectable axis cannot also be a fixed define');
   }
-  const reference = (source: string): string => {
-    let digest = sourceDigests.get(source);
-    if (digest === undefined) {
-      digest = textDigest(source);
-      sourceDigests.set(source, digest);
-    }
-    return digest;
-  };
   const identity = textDigest(
     canonicalJson({
       ...template,
       axes: template.axes.slice().sort(),
-      source: reference(template.source),
-      imports: Object.fromEntries(
-        Object.entries(template.imports).map(([id, source]) => [id, reference(source)]),
-      ),
+      ...templateModuleIdentities(template, verified),
     }),
   );
   freezeTree(template);
@@ -518,6 +542,25 @@ function validLibraryModule(digest: string, source: unknown): source is string {
   );
 }
 
+type TemplateLibraryHeader = {
+  readonly compilerProfile: ShaderCompilerProfile;
+  readonly sources: Readonly<Record<string, unknown>>;
+  readonly programs: Readonly<Record<string, unknown>>;
+};
+
+function libraryHeader(value: unknown): value is TemplateLibraryHeader {
+  return (
+    isRecord(value) &&
+    value.schemaVersion === 'shader-template-library/1' &&
+    Object.keys(value).every((key) =>
+      ['schemaVersion', 'compilerProfile', 'sources', 'programs'].includes(key),
+    ) &&
+    isShaderCompilerProfile(value.compilerProfile) &&
+    isRecord(value.sources) &&
+    isRecord(value.programs)
+  );
+}
+
 /** Verify the complete wire library before publishing a single program declaration. */
 export function readShaderProgramTemplates(
   input: unknown,
@@ -528,26 +571,73 @@ export function readShaderProgramTemplates(
   } catch {
     return failure('library is not serializable source data');
   }
-  if (
-    !isRecord(library) ||
-    library.schemaVersion !== 'shader-template-library/1' ||
-    Object.keys(library).some(
-      (key) => !['schemaVersion', 'compilerProfile', 'sources', 'programs'].includes(key),
-    ) ||
-    !isShaderCompilerProfile(library.compilerProfile) ||
-    !isRecord(library.sources) ||
-    !isRecord(library.programs)
-  ) {
-    return failure('invalid template library header or module table');
-  }
+  if (!libraryHeader(library)) return failure('invalid template library header or module table');
   const sources = new Map<string, string>();
-  const sourceDigests = new Map<string, string>();
   for (const [digest, source] of Object.entries(library.sources)) {
     if (!validLibraryModule(digest, source))
       return failure('template module digest does not match its UTF-8 source');
     sources.set(digest, source);
-    sourceDigests.set(source, digest);
   }
+  return admitVerifiedPrograms(library, sources);
+}
+
+/** JSON.parse can round an exponent outside the finite range to infinity. */
+function freezeOwnedLibraryJson(library: TemplateLibraryHeader): boolean {
+  const pending: object[] = [library];
+  while (pending.length > 0) {
+    const next = pending.pop() as object;
+    for (const child of Object.values(next) as unknown[]) {
+      if (typeof child === 'number' && !Number.isFinite(child)) return false;
+      if (child !== null && typeof child === 'object') pending.push(child);
+    }
+    Object.freeze(next);
+  }
+  return true;
+}
+
+/** The Registry passes freshly parsed JSON; the program facts can own it in place. */
+export async function readOwnedShaderProgramTemplates(
+  library: unknown,
+): Promise<Result<ReadonlyMap<string, AdmittedShaderProgramTemplate>, ShaderError>> {
+  if (!libraryHeader(library)) return failure('invalid template library header or module table');
+  if (!freezeOwnedLibraryJson(library)) return failure('library contains non-finite JSON data');
+  const sources = new Map<string, string>();
+  for (const [digest, source] of Object.entries(library.sources)) {
+    if (typeof source !== 'string' || !/^[a-f0-9]{64}$/.test(digest))
+      return failure('invalid template module digest or source');
+    sources.set(digest, source);
+  }
+  if (!(await verifyOwnedShaderDigests(sources)))
+    return failure('template module digest does not match its UTF-8 source');
+  return admitVerifiedPrograms(library, sources);
+}
+
+/** Native digest jobs are bounded by count and submitted in publication order. */
+export async function verifyOwnedShaderDigests(
+  sources: ReadonlyMap<string, string>,
+): Promise<boolean> {
+  if (sources.size === 0) return true;
+  const encoder = new TextEncoder();
+  const pending: Promise<boolean>[] = [];
+  try {
+    for (const [digest, source] of sources) {
+      pending.push(
+        digestShaderBytes(encoder.encode(source)).then((value) => bytesToHex(value) === digest),
+      );
+      if (pending.length < 16) continue;
+      if (!(await Promise.all(pending)).every(Boolean)) return false;
+      pending.length = 0;
+    }
+    return (await Promise.all(pending)).every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
+function admitVerifiedPrograms(
+  library: TemplateLibraryHeader,
+  sources: ReadonlyMap<string, string>,
+): Result<ReadonlyMap<string, AdmittedShaderProgramTemplate>, ShaderError> {
   const referenced = new Set<string>();
   const declarations = new Map<string, AdmittedShaderProgramTemplate>();
   for (const [identifier, candidate] of Object.entries(library.programs)) {
@@ -564,7 +654,9 @@ export function readShaderProgramTemplates(
       referenced.add(digest);
       imports[moduleId] = imported;
     }
-    const admitted = admitTemplate(
+    // The library owns these JSON facts. Its private axes, options and
+    // schemas can become the immutable inputs of these programs directly.
+    const admitted = admitDetachedTemplate(
       {
         ...candidate,
         schemaVersion: 'shader-program-template/1',
@@ -572,7 +664,7 @@ export function readShaderProgramTemplates(
         source,
         imports,
       },
-      sourceDigests,
+      { source: candidate.source, imports: candidate.imports },
     );
     if (!admitted.ok) return admitted;
     declarations.set(identifier, admitted.value);

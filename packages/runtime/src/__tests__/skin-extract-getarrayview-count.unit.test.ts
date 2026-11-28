@@ -26,7 +26,21 @@ describe('_getArrayView count (AC-03 gate)', () => {
     const composition = readFileSync(join(renderSource, 'scene', 'composition-skin.ts'), 'utf8');
     expect(composition).toContain('createPresentationMatrixReader(world)');
     expect(composition).toContain('entry.jointMatrices.visit(entities, skin.hasJoint, skin.joint)');
-    expect(composition).toContain('skin.joint(entities[index] as number, transforms, index * 16)');
+    expect(composition).toContain('skin.publishedJoints(rows, entities, transforms)');
+    const publishedInputs = readFileSync(
+      join(renderSource, 'scene', 'skin-scene-inputs.ts'),
+      'utf8',
+    );
+    expect(publishedInputs).toContain('const start = row * 16');
+    expect(publishedInputs).toContain(
+      'new Int32Array(buffer, transforms.byteOffset, transforms.length)',
+    );
+    expect(publishedInputs).toContain(
+      'this.inputs.setPublishedJoint(source.slot, entity, words, start)',
+    );
+    expect(publishedInputs).toContain(
+      'this.inputs.setJoint(source.slot, entity, transforms, start)',
+    );
     const presentation = readFileSync(
       join(dirname(extractPaths[0]), '..', '..', 'scene', 'src', 'presentation.ts'),
       'utf8',

@@ -8,6 +8,19 @@ export function initialHardwareRayTracing(value = 'on') {
   throw new TypeError('--hardware-ray-tracing must be on or off');
 }
 
+/** The initial CLI request and the L control share one HWRT reflection state. */
+export function initialReflections(value = 'on') {
+  if (value === 'on') return true;
+  if (value === 'off') return false;
+  throw new TypeError('--reflections must be on or off');
+}
+
+/** Sky miss radiance source for Sponza: sun-derived physical sky or legacy constant. */
+export function initialSkyEnvironment(value = 'legacy') {
+  if (value === 'sun' || value === 'legacy') return value;
+  throw new TypeError('--sky-environment must be sun or legacy');
+}
+
 /** Apply one native event batch without losing key edges or held-key state. */
 export function consumeNativeWindowEvents(heldKeys, events, onEvent = () => {}) {
   const pressed = [];
@@ -159,7 +172,7 @@ export function consumeNativePointerEvents(state, events, input, scaleFactor) {
 export function commandForKey(code) {
   return ({ Digit1: 'off', Digit2: 'irradiance-field', Digit3: 'screen-probe',
     KeyF: 'toggle-exposure', BracketLeft: 'exposure-down', BracketRight: 'exposure-up',
-    KeyR: 'reset-camera', KeyH: 'toggle-hardware' })[code];
+    KeyR: 'reset-camera', KeyH: 'toggle-hardware', KeyL: 'toggle-reflections' })[code];
 }
 
 /** Exposure is Camera-owned; this only constructs its public authoring value.

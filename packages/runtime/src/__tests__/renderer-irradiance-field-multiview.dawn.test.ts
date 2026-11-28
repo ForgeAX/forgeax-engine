@@ -212,22 +212,25 @@ it('splits one Renderer GI budget fairly between two CameraViews in different ro
         shares.push(split);
       }
       const lateSamples: { frame: number; energy: number[] }[] = [];
+      let lastImage: FieldImage | undefined;
       for (let i = 0; i < 240; i++) {
         if (i % 16 === 15) {
           const image = await h.surfaceImage();
+          lastImage = image;
           lateSamples.push({
             frame: observations + i + 1,
             energy: [half(image, 0), half(image, 1)],
           });
         } else await h.draw();
       }
-      const tail: FieldImage[] = [];
-      for (let i = 0; i < 8; i++) tail.push(await h.surfaceImage());
-      const lastImage = tail.at(-1);
       assert(lastImage);
       saveImage(lastImage, 'reference');
+      // Average across the 15 decorrelated steady-state samples (16 frames apart
+      // over 240 frames) so halved shared budgets span full probe/radiosity cycles.
       const reference = ([0, 1] as const).map(
-        (side) => tail.reduce((sum, image) => sum + half(image, side), 0) / tail.length,
+        (side) =>
+          lateSamples.reduce((sum, sample) => sum + (sample.energy[side] ?? 0), 0) /
+          lateSamples.length,
       );
       const settled = ([0, 1] as const).map((side) =>
         settledAt(series[side], reference[side] ?? Number.NaN),

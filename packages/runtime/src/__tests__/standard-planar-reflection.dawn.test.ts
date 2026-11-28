@@ -31,9 +31,12 @@ const SIZE = 64;
  * mip: lower variance than the polished floor, more energy than the fade. The
  * floor renders forward on both paths and both lanes.
  */
-it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
+it.each([
+  'forward',
+  'deferred',
+] as const)('mirrors the PlanarReflection capture on a Standard %s floor', {
   timeout: 240_000,
-}, async () => {
+}, async (renderPath) => {
   process.env.FORGEAX_SURFACE_ONLY = '1';
   const loaded = await loadConfigFromFile(
     { command: 'serve', mode: 'test' },
@@ -219,10 +222,17 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
       try {
-        for (let i = 0; i < 4; i++) await drawReadyFrame(renderer, { source: lease });
+        const start = await drawReadyFrame(renderer, { source: lease });
+        for (let i = 1; i < 4; i++) {
+          const next = await drawReadyFrame(renderer, { source: lease });
+          expect(next.graphGeneration).toBe(start.graphGeneration);
+        }
+        expect(
+          renderer.inspect({ fields: ['featureGraph'] }).featureGraph?.last.topologyKey,
+        ).toContain(renderPath === 'forward' ? '"forwardDisplay"' : '"deferredDisplay"');
       } catch (cause) {
         throw new Error(
-          `Planar frame (${planar}, deferred GPU-driven): ${JSON.stringify({
+          `Planar frame (${planar}, ${renderPath}): ${JSON.stringify({
             cause,
             errors,
             nativeErrors,
@@ -235,12 +245,12 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
     const frame = async (planar: boolean, material: typeof mirror) =>
       (await frameStats(planar ? 'game' : 'none', material)).count;
     const profile = renderer.inspect().profile;
-    // This scene owns the Standard receiver on GPU-driven deferred geometry.
+    // The selected Standard path owns the receiver geometry.
     // The separate water capture owns direct geometry and the reflection clip plane.
     renderValue(
       renderer.setProfile({
         ...profile,
-        renderPath: 'deferred',
+        renderPath,
         ambientOcclusion: { enabled: false },
       }),
     );

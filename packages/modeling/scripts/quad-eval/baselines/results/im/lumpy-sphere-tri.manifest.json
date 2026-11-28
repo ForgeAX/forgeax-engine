@@ -1,0 +1,33 @@
+{
+  "tool": "im",
+  "case": "lumpy-sphere-tri",
+  "available": true,
+  "toolCommit": "7b3160864a2e1025af498c84cfed91cbfb613698",
+  "inputSha256": "8ac420666e6cac0d65c57ff52b312f6d6f2f939f960e01a2c9fde6aba65f539c",
+  "inputFaces": 3968,
+  "targetFaces": 800,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-f", "200", "-c", "30", "-d", "-t", "1", "-o", "<out.obj>", "<in.obj>"],
+      "cwd": null,
+      "wallSeconds": 0.062942368,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 200,
+        "crease": 30,
+        "mode": "pure quad, -f target/4 (pure-quad 2x2 subdivision)"
+      }
+    }
+  ],
+  "wallSeconds": 0.062942368,
+  "outcome": "ok",
+  "outputSha256": "8282af06e13fdbb094adec3a8965f3bfcc46a60a3de01045c06443d7f8d5a815",
+  "rawOutputSha256": "2df13327ce5fbc35d6f7809dfbd00c366599e425093d61a5de1f277817d929bf",
+  "outputFaces": 814,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

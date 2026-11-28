@@ -29,6 +29,8 @@ const mapFields = [
   'shadowStrength',
   'shadowResolution',
   'shadowMapSamples',
+  'shadowMapUe5Reference',
+  'shadowMapSpatialPasses',
 ] as const;
 const rayFields = ['shadowSamples', 'shadowDistanceMeters'] as const;
 
@@ -73,6 +75,8 @@ function captureShadowMap(
     values.shadowStrength = Math.fround(map.strength);
     values.shadowResolution = map.resolution;
     values.shadowMapSamples = map.mapSamples;
+    values.shadowMapUe5Reference = map.ue5Reference ?? false;
+    values.shadowMapSpatialPasses = map.spatialPasses ?? 1;
   } else unavailable(mapFields, 'inactive');
 }
 

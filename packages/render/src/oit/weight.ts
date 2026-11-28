@@ -7,23 +7,20 @@
  * values from this module, so the probes and the shader share one formula.
  */
 export const OIT_WEIGHT_MIN = 0.01;
-export const OIT_WEIGHT_MAX = 500.0;
-export const OIT_WEIGHT_SCALE = 10.0;
-export const OIT_WEIGHT_NEAR = 5.0;
-export const OIT_WEIGHT_FAR = 200.0;
+export const OIT_WEIGHT_MAX = 3000.0;
+export const OIT_WEIGHT_NUMERATOR = 0.03;
+export const OIT_WEIGHT_DEPTH_SCALE = 200.0;
 export const OIT_WEIGHT_BIAS = 0.00001;
-export const OIT_MIN_ALPHA = 0.001;
+export const OIT_STORAGE_SCALE = 0.125;
 /** Composite guard on the accumulated weight denominator. */
-export const OIT_COMPOSITE_EPSILON = 0.00001;
+export const OIT_COMPOSITE_EPSILON = 0.00001 * OIT_STORAGE_SCALE;
 
-/** McGuire-Bavoil depth weight on linear camera distance. */
-export function oitDepthWeight(viewDistance: number): number {
-  const d = Math.max(viewDistance, 0);
-  const near = d / OIT_WEIGHT_NEAR;
-  const far = d / OIT_WEIGHT_FAR;
-  const far2 = far * far;
-  const denominator = OIT_WEIGHT_BIAS + near * near + far2 * far2 * far2;
-  return Math.min(Math.max(OIT_WEIGHT_SCALE / denominator, OIT_WEIGHT_MIN), OIT_WEIGHT_MAX);
+/** Depth term of McGuire-Bavoil equation (9), using linear view depth. */
+export function oitDepthWeight(viewDepth: number): number {
+  const depth = Math.max(viewDepth, 0) / OIT_WEIGHT_DEPTH_SCALE;
+  const depthSquared = depth * depth;
+  const denominator = OIT_WEIGHT_BIAS + depthSquared * depthSquared;
+  return Math.min(Math.max(OIT_WEIGHT_NUMERATOR / denominator, OIT_WEIGHT_MIN), OIT_WEIGHT_MAX);
 }
 
 /** One transparent fragment as seen by the reference model. */
@@ -31,7 +28,7 @@ export interface OitFragment {
   /** Straight (non-premultiplied) linear color. */
   readonly color: readonly [number, number, number];
   readonly alpha: number;
-  readonly viewDistance: number;
+  readonly viewDepth: number;
 }
 
 /** The accumulation targets after every fragment: accum rgba and weight r. */
@@ -50,9 +47,9 @@ export function oitAccumulation(fragments: readonly OitFragment[]): OitAccumulat
   let weight = 0;
   let revealage = 1;
   for (const fragment of fragments) {
-    if (!(fragment.alpha >= OIT_MIN_ALPHA)) continue;
+    if (!(fragment.alpha > 0)) continue;
     const a = Math.min(fragment.alpha, 1);
-    const w = oitDepthWeight(fragment.viewDistance);
+    const w = a * oitDepthWeight(fragment.viewDepth) * OIT_STORAGE_SCALE;
     for (let i = 0; i < 3; i += 1) color[i] = (color[i] ?? 0) + (fragment.color[i] ?? 0) * a * w;
     weight += a * w;
     revealage *= 1 - a;
@@ -77,12 +74,12 @@ export function oitComposite(
   ) as [number, number, number];
 }
 
-/** Exact back-to-front over compositing; fragments are sorted by distance. */
+/** Exact back-to-front over compositing; fragments are sorted by view depth. */
 export function sortedComposite(
   fragments: readonly OitFragment[],
   background: readonly [number, number, number],
 ): [number, number, number] {
-  const ordered = [...fragments].sort((a, b) => b.viewDistance - a.viewDistance);
+  const ordered = [...fragments].sort((a, b) => b.viewDepth - a.viewDepth);
   const out: [number, number, number] = [background[0], background[1], background[2]];
   for (const fragment of ordered) {
     const a = Math.min(Math.max(fragment.alpha, 0), 1);

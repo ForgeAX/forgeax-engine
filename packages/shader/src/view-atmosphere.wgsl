@@ -1,5 +1,5 @@
 #define_import_path forgeax_view::atmosphere
-#import forgeax_view::common::{View, view_atmosphere_aerial_enabled, view_atmosphere_light_enabled}
+#import forgeax_view::common::{View, view_atmosphere_aerial_enabled, view_atmosphere_light_enabled, view_atmosphere_ue5}
 #import forgeax_cloud::layer::{cloud_direct_solar_factor}
 #import forgeax_atmosphere::optics::{AtmosphereTransport, atmosphere_position, atmosphere_solar_transmittance, atmosphere_sun_luminance, atmosphere_ground_solar_transmittance}
 #import forgeax_cloud::layer::{viewLinearSampler}
@@ -11,7 +11,7 @@
 #endif
 #endif
 #ifdef ATMOSPHERE_AVAILABLE
-#import forgeax_view::common::{atmosphereTransmittance, atmosphereMultiple, atmosphereAerialLuminance, atmosphereAerialTransmittance, atmosphereDistantSkyLight}
+#import forgeax_view::common::{atmosphereTransmittance, atmosphereMultiple, atmosphereAerialLuminance, atmosphereAerialTransmittance, atmosphereDistantSkyLight, atmosphereDistantSkyBuffer}
 #import forgeax_atmosphere::sampling::{atmosphere_aerial_sample}
 #endif
 
@@ -50,7 +50,7 @@ fn view_apply_direct_solar(v:View, radiance:vec3<f32>, position:vec3<f32>)->vec3
 #else
   var solar=v.groundSolar.rgb;
   if v.groundSolar.w!=1.0 {solar=view_solar_transmittance(v,position);}
-  return radiance*solar*cloud_direct_solar_factor(position,v.cloudShadowOrigin.xyz,v.cloudShadowRight.xyz,v.cloudShadowUp.xyz,v.cloudShadowProjection);
+  return radiance*solar*cloud_direct_solar_factor(position,v.cloudShadowOrigin,v.cloudShadowRight.xyz,v.cloudShadowUp.xyz,v.cloudShadowProjection);
 #endif
 }
 
@@ -66,11 +66,12 @@ fn view_ground_solar_transmittance(v: View) -> vec3<f32> {
 
 fn view_apply_ground_direct_solar(v: View, radiance: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
   return radiance * view_ground_solar_transmittance(v)
-    * cloud_direct_solar_factor(position,v.cloudShadowOrigin.xyz,v.cloudShadowRight.xyz,v.cloudShadowUp.xyz,v.cloudShadowProjection);
+    * cloud_direct_solar_factor(position,v.cloudShadowOrigin,v.cloudShadowRight.xyz,v.cloudShadowUp.xyz,v.cloudShadowProjection);
 }
 
 fn view_distant_sky_light(v:View)->vec3<f32>{
 #ifdef ATMOSPHERE_AVAILABLE
+  if view_atmosphere_ue5(v) { return atmosphereDistantSkyBuffer.rgb; }
   if view_atmosphere_aerial_enabled(v) { return textureLoad(atmosphereDistantSkyLight,vec2<i32>(0),0).rgb*atmosphere_sun_luminance(v.lightColor); }
 #endif
 #ifndef STORAGE_BUFFER_AVAILABLE

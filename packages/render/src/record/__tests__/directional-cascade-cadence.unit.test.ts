@@ -17,7 +17,6 @@ import {
 } from '../directional-cascade-cadence';
 import { prepareDirectionalShadowCache } from '../directional-shadow-cache';
 import type { RenderFrameState } from '../frame-snapshot';
-import type { RenderSystemInternals } from '../render-context';
 
 const matrices = () =>
   Array.from({ length: 4 }, (_, index) => {
@@ -77,10 +76,6 @@ describe('authored CPU directional cascade cadence', () => {
     const lease = createRenderReadLease(world);
     // The existing terrain shadow-cache owner fixture uses the same narrow
     // record-stage inputs; no renderer/device is constructed by this test.
-    const internals = {
-      assets: { catalogEpoch: 1 },
-      gpuStore: { meshResidencyEpoch: 1 },
-    } as unknown as RenderSystemInternals;
     const state = {
       compiledFrameGraph: { topologyKey: 'same-light-graph' },
       installedPipelineHandle: 9,
@@ -124,7 +119,6 @@ describe('authored CPU directional cascade cadence', () => {
       }) satisfies PersistentShadowCasterProjection;
     const decide = (dispatchRevision: number, proven = true) =>
       prepareDirectionalShadowCache(
-        internals,
         state,
         worldRenderResources(world),
         proven ? lease : undefined,

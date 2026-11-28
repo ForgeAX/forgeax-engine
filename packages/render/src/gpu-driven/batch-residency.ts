@@ -153,7 +153,7 @@ export class BatchResidency {
 
   /** Validate fixed claims before batch mutation, then consume real row retirements. */
   beginDelta(delta: RenderSceneApplyResult): void {
-    for (const updated of delta.updatedSlots) {
+    for (const updated of delta.contentUpdatedSlots) {
       const previous = delta.previous.get(updated);
       if (
         previous !== undefined &&

@@ -1,5 +1,6 @@
+import { configureNativeMipmapCompiler, mipmapCacheSize } from '@forgeax/engine-assets-runtime';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { nativeDeviceFixture } from './native-device-fixture';
 import { verifyPlanarMipChain } from './planar-mip-passes.gpu-fixture';
 
@@ -12,14 +13,13 @@ for (const format of ['rgba8unorm', 'rgba8unorm-srgb', 'rgba16float'] as const)
       requiredFeatures: ['depth32float-stencil8'],
     });
     native.pushErrorScope('validation');
+    const compile = vi.fn(gpu.createShaderModuleImmediate);
+    configureNativeMipmapCompiler(device, compile);
+    expect(mipmapCacheSize(device)).toBe(0);
     try {
-      await verifyPlanarMipChain(
-        device,
-        (_device, descriptor) => gpu.createShaderModule(device, descriptor),
-        format,
-        width,
-        height,
-      );
+      await verifyPlanarMipChain(device, undefined, format, width, height);
+      expect(compile).toHaveBeenCalledTimes(1);
+      expect(mipmapCacheSize(device)).toBe(1);
       expect(await native.popErrorScope()).toBeNull();
     } finally {
       native.destroy();

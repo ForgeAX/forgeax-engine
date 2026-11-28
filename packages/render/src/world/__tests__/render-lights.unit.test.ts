@@ -1,7 +1,7 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { defineSystem, World } from '@forgeax/engine-ecs';
 import { mat4, vec3 } from '@forgeax/engine-math';
-import { describe, expect, it, vi } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
 import { viewSourceFixture } from '../../__tests__/view-source.fixture';
@@ -238,6 +238,49 @@ describe('RenderLights', () => {
     ).toBeUndefined();
   });
 
+  it('shares Cluster operands across views while moving and reordering accepted lights', () => {
+    const { owner, frame } = fixture();
+    const cameras = [{}, {}, {}];
+    const read = (roster: LightRoster) =>
+      cameras.map((camera) => owner.viewLights(camera, roster, { camera: undefined }));
+    const initial = frame(lights([10, 11], [20, 21]));
+    const [first] = read(initial);
+    const firstWork = first?.localLightPublication?.work;
+    assert(firstWork !== undefined);
+    expect(firstWork.shadowSlots).toEqual([0, 1, 2, 3]);
+    let previous = firstWork.local;
+    for (let tick = 1; tick <= 32; tick++) {
+      const points = tick % 2 ? [11, 10] : [10, 11];
+      const spots = tick % 2 ? [21, 20] : [20, 21];
+      const source = lights(points, spots, { 11: 40 + tick });
+      const movingSpot = spots.indexOf(21);
+      const roster = frame({
+        ...source,
+        spot: source.spot.map((row, i) =>
+          i === movingSpot ? { ...row, cosOuter: 0.6 + tick * 0.005 } : row,
+        ),
+      });
+      const views = read(roster);
+      const publication = views[0]?.localLightPublication;
+      assert(publication !== undefined);
+      expect(views[1]?.localLightPublication).toBe(publication);
+      expect(views[2]?.localLightPublication).toBe(publication);
+      expect(publication.work.local.map((row) => row.source)).toEqual([
+        ...roster.point,
+        ...roster.spot,
+      ]);
+      expect(publication.work.local.filter((row) => !previous.includes(row))).toHaveLength(2);
+      expect(publication.work.local[points.indexOf(11)]?.position[0]).toBe(40 + tick);
+      expect(publication.work.local[2 + movingSpot]?.cone?.cosOuter).toBe(0.6 + tick * 0.005);
+      previous = publication.work.local;
+    }
+    expect(firstWork.local[1]?.position[0]).toBe(11);
+    expect(firstWork.local[3]?.cone?.cosOuter).toBe(0.8);
+    expect(
+      read({ ...initial, point: [...initial.point] })[0]?.localLightPublication,
+    ).toBeUndefined();
+  });
+
   it('publishes the unshadowed point facts when a live caster gives up its layer', () => {
     const { frame } = fixture();
     const source = lights([10, 11]);
@@ -355,6 +398,36 @@ describe('RenderLights', () => {
     expect(layers(frame(lights([1, 3, 4, 5])))).toEqual([0, 2, 3, 1]);
     const roster = frame(lights([], [1, 2, 3, 4, 5]));
     expect(roster.spot.map((light) => light.shadowAtlasTile)).toEqual([0, 1, 2, 3, -1]);
+  });
+
+  it('publishes current point and spot rows after releasing their departed shadow layers', () => {
+    const { frame, owner } = lightWorld();
+    const pointRows = [point(1), point(2)];
+    const cubes = [pointShadow(2), pointShadow(1)];
+    const spotRows = [spot(1), spot(2), spot(3), spot(4), spot(5)];
+    const input = { ...lights([]), point: pointRows, pointShadow: cubes, spot: spotRows };
+    const before = frame(input);
+    expect(before.point.map((light) => light.shadowAtlasLayer)).toEqual([1, 0]);
+    expect(before.spot.map((light) => light.shadowAtlasTile)).toEqual([0, 1, 2, 3, -1]);
+
+    for (let edit = 0; edit < 32; edit++) {
+      const added = edit + 100;
+      pointRows.splice(0, 2, point(added, added), point(2, added));
+      cubes.splice(0, 2, pointShadow(added, added), pointShadow(2, added));
+      spotRows.splice(0, 5, spot(added), spot(5), spot(4), spot(3), spot(2));
+      const published = frame(input);
+      expect(published.point.map((light) => light.entity)).toEqual([added, 2]);
+      expect(published.point.map((light) => light.shadowAtlasLayer)).toEqual([1, 0]);
+      expect(published.spot.map((light) => light.shadowAtlasTile)).toEqual([0, -1, 3, 2, 1]);
+      expect(owner.shadowViews.map(({ identity }) => identity.index)).toEqual([
+        1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 2, 1,
+      ]);
+    }
+    expect(before.point.map((light) => light.entity)).toEqual([1, 2]);
+    expect(before.spot.map((light) => light.entity)).toEqual([1, 2, 3, 4, 5]);
+    expect(frame(lights([])).spot).toEqual([]);
+    expect(owner.shadowViews).toEqual([]);
+    expect(frame(lights([2], [5])).spot[0]?.shadowAtlasTile).toBe(0);
   });
 
   it('gives no tile to a spot that does not cast', () => {

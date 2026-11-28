@@ -61,6 +61,42 @@ function verifySeededTsrHistory(
 }
 
 /** Both physical carriers execute exactly the same lifecycle and replay oracle. */
+// 40 bytes of color, temporal and stability history plus two FP16 Guides, two FP16 Moire
+// histories and two persistent resurrection snapshots (FP16 guide + FP16 color + RGBA8 stability).
+const TSR_HISTORY_BYTES = 40 + 2 * (8 + 8) + 2 * (8 + 8 + 4);
+
+function expectedTsrEntries(raster: boolean): readonly string[] {
+  if (raster) {
+    return [
+      'tsr_measure_opaque',
+      'tsr_dilate',
+      'tsr_analyze',
+      'tsr_resurrect_guide',
+      'tsr_moire_clamp',
+      'tsr_moire_measure',
+      'tsr_moire_update',
+      'tsr_moire_history',
+      'tsr_clamp',
+      'tsr_measure',
+      'tsr_clamp',
+      'tsr_resurrect_measure',
+      'tsr_reject',
+      'tsr_spatial',
+      'tsr_reconstruct',
+    ].map((entry) => `${entry}_fragment`);
+  }
+  return [
+    'tsr_measure_opaque',
+    'tsr_dilate',
+    'tsr_analyze',
+    'tsr_resurrect_guide',
+    'tsr_moire',
+    'tsr_reject_fused',
+    'tsr_spatial',
+    'tsr_reconstruct',
+  ];
+}
+
 export async function verifyTsrRenderer(
   canvas: { width: number; height: number },
   shaderManifestUrl?: string,
@@ -174,11 +210,7 @@ export async function verifyTsrRenderer(
     const raster = !compute || !storageTexture;
     expect(
       tsr.map((w) => w.pipeline.shaders.find((s) => s.entryPoint !== 'tsr_fullscreen')?.entryPoint),
-    ).toEqual(
-      ['tsr_measure_opaque', 'tsr_analyze', 'tsr_reconstruct'].map((entry) =>
-        raster ? `${entry}_fragment` : entry,
-      ),
-    );
+    ).toEqual(expectedTsrEntries(raster));
     if (raster) expect(model.works.some((work) => work.kind === 'dispatchWorkgroups')).toBe(false);
     verifySeededTsrHistory(model, tape);
     expect(checkPixels(live.rgba, 'srgb').every((c) => c.error <= 3)).toBe(true);
@@ -191,6 +223,7 @@ export async function verifyTsrRenderer(
       bytes: artifact.bytes,
       model,
       tsr,
+      raster,
       live,
       temporal,
       backend,
@@ -205,7 +238,7 @@ export async function verifyTsrRenderer(
     expect(renderer.inspect().temporal.historyValid).toBe(true);
     scene.world.removeComponent(camera, DynamicResolution).unwrap();
     await scene.drawReady();
-    expect(renderer.inspect().temporal.resources.activeBytes).toBe(64 * 64 * 64);
+    expect(renderer.inspect().temporal.resources.activeBytes).toBe(TSR_HISTORY_BYTES * 64 * 64);
     scene.world.set(camera, Camera, { antialias: ANTIALIAS_TAA }).unwrap();
     await scene.drawReady();
     expect(renderer.inspect().temporal.mode).toBe('taa');
@@ -304,7 +337,7 @@ export async function verifyTsrRenderer(
       .find(({ pipeline }) =>
         pipeline.shaders.some(({ entryPoint }) => entryPoint === 'tsr_reconstruct'),
       )
-      ?.bindings.find(({ groupIndex, binding }) => groupIndex === 0 && binding === 13);
+      ?.bindings.find(({ groupIndex, binding }) => groupIndex === 0 && binding === 17);
     expect(flareSource).toBeDefined();
     expect(flareSource).toBe(halfDraw?.attachments?.colorViewHandleIds[0] ?? fusedHalf?.resourceId);
     scene.world.removeComponent(camera, LensFlare).unwrap();
@@ -394,7 +427,9 @@ async function verifyTsrViews(
   for (let i = 0; i < 60; i++) await scene.drawReady();
   const views = renderer.inspect().views;
   expect(views?.map((v) => v.temporal.mode)).toEqual(['tsr', 'tsr']);
-  expect(views?.every((v) => v.temporal.resources.activeBytes === 32 * 64 * 64)).toBe(true);
+  expect(
+    views?.every((v) => v.temporal.resources.activeBytes === (TSR_HISTORY_BYTES / 2) * 64 * 64),
+  ).toBe(true);
   const multiPending = recorder.captureFrame();
   (await recorder.frameBoundary()).unwrap();
   const multiLive = await scene.readFinal();
@@ -470,7 +505,7 @@ async function verifyPostDownsampleReplay(
     if (!reconstruct) throw new Error('missing captured TSR reconstruction');
     const result = (await replay.inspectWork(reconstruct.workIndex, ['outputs'])).unwrap();
     const full = result.outputs
-      ?.find(({ name }) => name === (raster ? 'color0' : '@group(0)@binding(10)'))
+      ?.find(({ name }) => name === (raster ? 'color0' : '@group(0)@binding(14)'))
       ?.result.unwrap();
     const halfPass = raster
       ? summarizePasses(model).find(({ label }) => label === 'post-scene-color-half')
@@ -481,7 +516,7 @@ async function verifyPostDownsampleReplay(
         : model.works.find(({ passIndex }) => passIndex === halfPass.passIndex);
     const half =
       filtered === undefined
-        ? result.outputs?.find(({ name }) => name === '@group(0)@binding(13)')?.result.unwrap()
+        ? result.outputs?.find(({ name }) => name === '@group(0)@binding(17)')?.result.unwrap()
         : (await replay.inspectWork(filtered.workIndex, ['pixels'])).unwrap().attachment;
     expect(full?.width).toBe(width);
     expect(full?.height).toBe(height);
@@ -556,6 +591,7 @@ async function verifyTsrReplay(input: {
   readonly bytes: Uint8Array;
   readonly model: ReturnType<typeof buildFrameModel>;
   readonly tsr: ReturnType<typeof buildFrameModel>['works'];
+  readonly raster: boolean;
   readonly live: { readonly rgba: Uint8Array };
   readonly temporal: ReturnType<Renderer['inspect']>['temporal'];
   readonly backend: Parameters<typeof attachRecorder>[0];
@@ -564,7 +600,7 @@ async function verifyTsrReplay(input: {
     | undefined;
   readonly save?: EvidenceWriter | undefined;
 }) {
-  const { tape, bytes, model, tsr, live, temporal, backend, replayCanvas, save } = input;
+  const { tape, bytes, model, tsr, raster, live, temporal, backend, replayCanvas, save } = input;
   const adapter = (await backend.rhi.requestAdapter({}, replayCanvas)).unwrap();
   const device = (
     await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))
@@ -573,13 +609,21 @@ async function verifyTsrReplay(input: {
     await openReplay(tape, { device, createShaderModule: backend.createShaderModule })
   ).unwrap();
   try {
+    // Compute lane (8 passes): measure_opaque, dilate, analyze, resurrect_guide, moire,
+    // reject_fused, spatial, reconstruct.
+    // Raster lane (15 passes): measure_opaque, dilate, analyze, resurrect_guide, moire_clamp,
+    // moire_measure, moire_update, moire_history, clamp, measure, resurrect_clamp,
+    // resurrect_measure, reject, spatial, reconstruct.
+    const attachments = raster
+      ? [1, 2, 4, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 3]
+      : [1, 2, 4, 1, 2, 2, 1, 3];
     const inspections = [];
-    for (const work of tsr) {
+    for (const [index, work] of tsr.entries()) {
       const inspected = (
         await replay.inspectWork(work.workIndex, ['pipeline', 'bindings', 'outputs'])
       ).unwrap();
       expect(inspected.pipeline?.status).toBe('available');
-      expect(inspected.outputs?.length).toBe(work === tsr[0] ? 1 : 3);
+      expect(inspected.outputs?.length).toBe(attachments[index]);
       expect(inspected.outputs?.every((o) => o.result.ok)).toBe(true);
       inspections.push(inspected);
     }

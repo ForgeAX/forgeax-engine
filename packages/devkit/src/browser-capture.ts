@@ -450,17 +450,18 @@ export async function resolveBrowserExecutable(
     ...[process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
       .filter((root): root is string => root !== undefined && root.length > 0)
       .flatMap((root) => [
-        join(root, 'Google', 'Chrome Beta', 'Application', 'chrome.exe'),
         join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'),
+        join(root, 'Google', 'Chrome Beta', 'Application', 'chrome.exe'),
       ]),
-    '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Chromium.app/Contents/MacOS/Chromium',
-    '/opt/google/chrome-beta/chrome',
+    '/opt/google/chrome/chrome',
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
+    '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
+    '/opt/google/chrome-beta/chrome',
     typeof chromium.executablePath === 'function' ? chromium.executablePath() : undefined,
   ].filter((candidate): candidate is string => candidate !== undefined && candidate.length > 0);
   for (const candidate of candidates) {
@@ -468,7 +469,7 @@ export async function resolveBrowserExecutable(
   }
   // Playwright can supply a managed browser when its browser cache is present.
   // Leave executablePath unset so the caller receives Playwright's own diagnostic
-  // rather than a misleading Chrome-Beta-only error.
+  // rather than a misleading single-channel error.
   return undefined;
 }
 

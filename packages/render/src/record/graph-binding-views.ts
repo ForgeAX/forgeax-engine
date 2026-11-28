@@ -1,6 +1,5 @@
-import type { CompiledRenderGraph, GraphTextureView } from '@forgeax/engine-render-graph';
+import type { BoundRenderGraphResources, GraphTextureView } from '@forgeax/engine-render-graph';
 import type { TextureView } from '@forgeax/engine-rhi';
-import type { RenderPipelineFrame } from '../render-pipeline';
 
 type GraphBindingViewRole = 'backdrop' | 'raw-depth' | 'nearest-layer' | 'nearest-depth' | 'ssao';
 
@@ -14,15 +13,15 @@ type BindingPort = GraphTextureView | NativeMaterialView;
 
 function viewAt(facts: GraphBindingViews, port: BindingPort): TextureView | undefined {
   return 'currentTextureView' in port
-    ? facts.graph.isRetired()
+    ? facts.resources.isRetired()
       ? undefined
       : port.currentTextureView()
-    : facts.graph.createdTextureView(port);
+    : facts.resources.createdTextureView(port);
 }
 
 /** Borrowed fixed graph allocations; never a frame resolver or a resource lease. */
 export interface GraphBindingViews {
-  readonly graph: CompiledRenderGraph<RenderPipelineFrame>;
+  readonly resources: BoundRenderGraphResources;
   readonly views: readonly (readonly [GraphBindingViewRole, BindingPort, TextureView])[];
 }
 
@@ -78,7 +77,7 @@ export function sameGraphBindingViews(
     a === b ||
     (a !== undefined &&
       b !== undefined &&
-      a.graph === b.graph &&
+      a.resources === b.resources &&
       a.views.length === b.views.length &&
       a.views.every(([role, port, view], index) => {
         const other = b.views[index];

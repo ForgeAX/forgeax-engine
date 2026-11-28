@@ -1,6 +1,7 @@
 import type { Tuple3 } from '../geom';
 import { type Model, model, type OpReport } from '../model';
 import { sel } from '../selectors';
+import { mulberry32 } from './support/fuzz';
 
 /**
  * Design 16 boolean spike gate set: parametric hard-surface parts (plate holes, slot
@@ -33,17 +34,6 @@ export interface IdentityCheck {
   readonly shared: number;
 }
 
-function rng(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 export function prism(n: number, r: number, h: number): number {
   return (n / 2) * r * r * Math.sin((2 * Math.PI) / n) * h;
 }
@@ -71,7 +61,7 @@ function differenceWithIdentity(
 }
 
 function plateHoles(seed: number): SpikeCase {
-  const r = rng(seed);
+  const r = mulberry32(seed);
   const cols = 1 + Math.floor(r() * 6);
   const rows = 1 + Math.floor(r() * 4);
   const segments = 8 + 2 * Math.floor(r() * 9);
@@ -106,7 +96,7 @@ function plateHoles(seed: number): SpikeCase {
 }
 
 function slots(seed: number): SpikeCase {
-  const r = rng(seed);
+  const r = mulberry32(seed);
   const count = 1 + Math.floor(r() * 5);
   const rounded = r() < 0.6;
   const blind = r() < 0.4;
@@ -156,7 +146,7 @@ function slots(seed: number): SpikeCase {
 }
 
 function nested(seed: number): SpikeCase {
-  const r = rng(seed);
+  const r = mulberry32(seed);
   const t = round(0.015 + r() * 0.015);
   const L = round(0.12 + r() * 0.1);
   const W = round(0.1 + r() * 0.08);
@@ -223,7 +213,7 @@ function nested(seed: number): SpikeCase {
 }
 
 function coplanar(seed: number): SpikeCase {
-  const r = rng(seed);
+  const r = mulberry32(seed);
   const kind = Math.floor(r() * 5);
   const a = round(0.05 + r() * 0.1);
   const b = round(0.04 + r() * 0.08);
@@ -281,7 +271,7 @@ function coplanar(seed: number): SpikeCase {
 }
 
 function radial(seed: number): SpikeCase {
-  const r = rng(seed);
+  const r = mulberry32(seed);
   const count = 3 + Math.floor(r() * 6);
   const kind = Math.floor(r() * 3);
   const segments = 8 + 4 * Math.floor(r() * 3);
@@ -377,7 +367,7 @@ function radial(seed: number): SpikeCase {
  * spoke plane meets the lip, so split planes graze long spoke-face triangle edges.
  */
 function radialWindows(seed: number): SpikeCase {
-  const r = rng(seed);
+  const r = mulberry32(seed);
   const spokes = 5 + Math.floor(r() * 8);
   const R = round(0.2 + r() * 0.1, 0.0005);
   const share = 0.35 + r() * 0.35;
@@ -474,7 +464,7 @@ function radialWindows(seed: number): SpikeCase {
 }
 
 function freeform(seed: number): SpikeCase {
-  const r = rng(seed);
+  const r = mulberry32(seed);
   const count = 2 + Math.floor(r() * 5);
   const union = r() < 0.3;
   return {

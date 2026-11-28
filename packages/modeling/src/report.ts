@@ -15,9 +15,15 @@ export interface Issue<C extends string> {
  * Why a gate did not evaluate an invariant on a subject. `not-requested`: the caller left out the
  * option that turns the check on. `missing-input`: the option was given but the subject lacks what
  * the check needs. `unsupported`: the gate cannot evaluate this kind of subject. `budget`: a
- * sample, voxel or size limit stopped it.
+ * sample, voxel or size limit stopped it. `session-poisoned`: an earlier operation failed, so the
+ * session's mesh is partial and no check ran on it.
  */
-export type UncheckedReason = 'missing-input' | 'not-requested' | 'unsupported' | 'budget';
+export type UncheckedReason =
+  | 'missing-input'
+  | 'not-requested'
+  | 'unsupported'
+  | 'budget'
+  | 'session-poisoned';
 
 /**
  * What a gate looked at, by the gate's own issue codes: subjects evaluated per code, and subjects

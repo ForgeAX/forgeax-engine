@@ -36,6 +36,16 @@ import { addAuthoredVolumetricFogPasses } from '../volume/passes';
 import { renderInternalCopySize } from './render-extent';
 import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 
+export function forwardOpaqueFogSplit(topology: RenderPipelineTopology): boolean {
+  return (
+    topology.opaque.lane === 'forward' &&
+    topology.atmosphere === true &&
+    topology.atmosphereBackgroundOnly !== true &&
+    topology.unfoggedOpaque === true &&
+    topology.analyticFog === true
+  );
+}
+
 export const ANALYTIC_FOG_POST_PROCESS_ID = 'forgeax.analytic-fog';
 
 /** Full atmosphere composition still requires single-sample scene depth. */

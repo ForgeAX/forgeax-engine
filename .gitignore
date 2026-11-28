@@ -6,7 +6,6 @@
 /apps/hello/lod-occlusion/artifacts/
 node_modules
 dist/
-packages/dsh/lib/
 .turbo/
 coverage/
 report/

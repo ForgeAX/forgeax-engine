@@ -1,4 +1,4 @@
-import { handleData } from './kernel-internal.js';
+import { handleData, type PhysicalGraphSlots } from './kernel-internal.js';
 import type { GraphAccess, GraphAccessUsage } from './types.js';
 
 const role = {
@@ -54,16 +54,14 @@ export class SubgraphBindings {
   readonly next: Uint32Array;
   private readonly permissions = new WeakMap<readonly GraphAccess[], ReadonlyMap<number, number>>();
 
-  constructor(
-    capacity: number,
-    buffers: readonly (object | undefined)[],
-    views: readonly (object | undefined)[],
-  ) {
-    this.previous = new Uint32Array(capacity);
-    this.next = new Uint32Array(capacity);
-    for (let id = 1; id < buffers.length; id++) this.replace('buffer', id, undefined, buffers[id]);
-    for (let id = 1; id < views.length; id++)
-      this.replace('texture-view', id, undefined, views[id]);
+  constructor(physical: Pick<PhysicalGraphSlots<never>, 'addressCount' | 'entries'>) {
+    this.previous = new Uint32Array(physical.addressCount);
+    this.next = new Uint32Array(physical.addressCount);
+    for (const slot of physical.entries()) {
+      if (slot?.handle === undefined) continue;
+      if ('textureId' in slot) this.replace('texture-view', slot.id, undefined, slot.handle);
+      else if (slot.kind === 'buffer') this.replace('buffer', slot.id, undefined, slot.handle);
+    }
   }
 
   replace(

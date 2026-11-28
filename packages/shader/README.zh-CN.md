@@ -46,6 +46,8 @@ Shader 提供运行时着色器发布、模块目录、材质程序契约和共�
 
 发布元数据在同一次接纳中共享不可变事实；后续发布重新读取自己的源与事实。宿主显式提供编译器，Registry 按请求从 `7.0.0` 模板准备变体，也可从 `8.0.0` 清单读入项目已 Cook 的材质。编译后的 CPU 程序和 GPU 模块分别受 Registry 与设备生命周期管理。
 
+构建端为共享聚簇布局探针发布可选的 `preparedReflection`，绑定确切的程序配方、功能选择和源码摘要。Render 启动时直接校验反射中的字节布局。实际读取探针源码时，Registry 核对编译所得的摘要。旧清单仍可通过实际选择的程序读取反射。
+
 错误按 `code`、结构化 `detail` 和 `hint` 恢复。修复 WGSL、schema 或生产者，再重新编译和构建；不要编辑缓存中的反射或在运行时猜测 ABI。具体流程见[错误恢复](README.md#error-recovery)。
 
 相关包：[Shader Compiler](../shader-compiler/README.zh-CN.md)、[Vite 插件](../vite-plugin-shader/README.zh-CN.md)、[Types](../types/README.zh-CN.md)、[Render](../render/README.zh-CN.md)。

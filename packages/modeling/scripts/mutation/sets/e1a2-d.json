@@ -1,0 +1,49 @@
+{
+ "tests": [
+  "src/brep/__tests__/e1a2-intersect.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "e1a2-d-steinmetz-gate",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (px <= tol && Math.abs(r1 - r2) <= tol) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "e1a2-d-steinmetz-or",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (px <= tol && Math.abs(r1 - r2) <= tol) {",
+   "new": "if (px <= tol || Math.abs(r1 - r2) <= tol) {"
+  },
+  {
+   "id": "e1a2-d-steinmetz-offset",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (px <= tol && Math.abs(r1 - r2) <= tol) {",
+   "new": "if (Math.abs(r1 - r2) <= tol) {"
+  },
+  {
+   "id": "e1a2-d-steinmetz-radius",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (px <= tol && Math.abs(r1 - r2) <= tol) {",
+   "new": "if (px <= tol) {"
+  },
+  {
+   "id": "e1a2-d-steinmetz-wide",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (px <= tol && Math.abs(r1 - r2) <= tol) {",
+   "new": "if (px <= 10 * tol && Math.abs(r1 - r2) <= 10 * tol) {"
+  },
+  {
+   "id": "e1a2-d-steinmetz-gap",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "return touching(r1 - r2, madd3(p.frame.o, x, r1));",
+   "new": "return touching(0, madd3(p.frame.o, x, r1));"
+  },
+  {
+   "id": "e1a2-d-steinmetz-contact",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "return touching(r1 - r2, madd3(p.frame.o, x, r1));",
+   "new": "return touching(r1 - r2, p.frame.o);"
+  }
+ ]
+}

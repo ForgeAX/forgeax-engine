@@ -67,16 +67,16 @@ function worldPoint(probe: OitProbe): [number, number] {
   return [((probe.x + 0.5) / OIT_SIZE) * 2 - 1, 1 - ((probe.y + 0.5) / OIT_SIZE) * 2];
 }
 
-/** The fragments the probe ray crosses, with the shader's camera distance. */
+/** The fragments the probe ray crosses, with the shader's linear view depth. */
 export function probeFragments(probe: OitProbe): OitFragment[] {
-  const [x, y] = worldPoint(probe);
+  const [x] = worldPoint(probe);
   if (probe.name === 'background' || probe.name === 'occluded') return [];
   return OIT_LAYERS.map((layer) => {
     const z = -x * Math.tan(layer.tilt);
     return {
       color: layer.color,
       alpha: layer.alpha,
-      viewDistance: Math.hypot(x, y, CAMERA_Z - z),
+      viewDepth: CAMERA_Z - z,
     };
   });
 }
@@ -264,6 +264,30 @@ export async function createOitScene(renderer: Renderer, options: OitSceneOption
       await capture.onTape((await pending).unwrap(), probes);
     return { probes, observation };
   };
+  const spawnAdditiveLayer = () =>
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 1] } },
+        { component: MeshFilter, data: { assetHandle: layerMesh } },
+        {
+          component: MeshRenderer,
+          data: {
+            materials: [
+              layerMaterial(
+                { name: 'red', color: [0.25, 0, 0], alpha: 1, tilt: 0 },
+                {
+                  depthWriteEnabled: false,
+                  blend: {
+                    color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+                    alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
+                  },
+                },
+              ),
+            ],
+          },
+        },
+      )
+      .unwrap();
   const spawnFog = () =>
     world
       .spawn({
@@ -276,6 +300,7 @@ export async function createOitScene(renderer: Renderer, options: OitSceneOption
     camera,
     errors,
     spawnLayers,
+    spawnAdditiveLayer,
     spawnFog,
     setTransparency,
     sample,
@@ -342,6 +367,18 @@ export async function verifyOit(
     const oitOrderDelta = maxProbeDelta(forward.probes, reversed);
     expect(oitOrderDelta).toBeLessThanOrEqual(0.01);
 
+    // The additive layer provides background color for the OIT composite.
+    const additive = scene.spawnAdditiveLayer();
+    const mixed = (await scene.sample()).probes;
+    const mixedResidualDelta = mixed.left[0] - reversed.left[0];
+    expect(renderer.inspect().transparency).toMatchObject({
+      accumulatedDrawCount: 3,
+      sortedDrawCount: 1,
+    });
+    const expectedResidualDelta = 0.25 * OIT_LAYERS.reduce((t, layer) => t * (1 - layer.alpha), 1);
+    expect(Math.abs(mixedResidualDelta - expectedResidualDelta)).toBeLessThanOrEqual(0.01);
+    scene.world.despawn(additive).unwrap();
+
     scene.setTransparency('sorted');
     scene.spawnLayers([0, 1, 2]);
     await scene.sample();
@@ -374,6 +411,7 @@ export async function verifyOit(
       weightedBlendedReversed: reversed,
       reference: Object.fromEntries(OIT_PROBES.map((probe) => [probe.name, probeReference(probe)])),
       oitOrderDelta,
+      mixedResidualDelta,
       sortedA,
       sortedB,
       sortedOrderDelta,

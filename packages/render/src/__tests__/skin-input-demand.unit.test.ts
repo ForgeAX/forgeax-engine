@@ -45,23 +45,22 @@ it('retains capsule-only edits in the same fixed Skeleton row and resets history
   const f = fixture(input),
     old = f.skin.capture();
   const out = new Float32Array(16),
-    m = mat4.create(),
-    inverse = mat4.create();
+    m = mat4.create();
   try {
     expect(old.capsuleCount(11)).toBe(2);
-    expect(old.capsules(11, out, m, inverse)).toBe(true);
+    expect(old.capsules(11, out, m)).toBe(true);
     const expected = Array.from(out);
     input.shapes.fill(0); // No caller-owned capsule storage survives admission.
     input.joints.fill(1);
-    expect(old.capsules(11, out, m, inverse)).toBe(true);
+    expect(old.capsules(11, out, m)).toBe(true);
     expect(Array.from(out)).toEqual(expected);
     f.skin.updateSkeleton(f.skeleton, 2, f.inverse, capsules(4));
     const next = f.skin.capture();
     try {
       expect(next.historyCompatible(old, 11)).toBe(false);
-      expect(next.capsules(11, out, m, inverse)).toBe(true);
+      expect(next.capsules(11, out, m)).toBe(true);
       expect(out[3]).toBe(4);
-      expect(old.capsules(11, out, m, inverse)).toBe(true);
+      expect(old.capsules(11, out, m)).toBe(true);
       expect(Array.from(out)).toEqual(expected);
     } finally {
       next.release();
@@ -88,7 +87,7 @@ it('matches existing capsule semantics for nonuniform and reflected scales witho
   const frame = f.skin.capture();
   try {
     const out = new Float32Array(16);
-    expect(frame.capsules(11, out, mat4.create(), mat4.create())).toBe(true);
+    expect(frame.capsules(11, out, mat4.create())).toBe(true);
     const expected = poseShadowCapsules(set, [matrix(1), matrix(3)], [first, second]);
     expect(Array.from(out)).toEqual(Array.from(expected));
     expect(out[3]).toBe(6);
@@ -111,11 +110,11 @@ it('preserves distinct absent and empty capsule sets, including removal while an
     const empty = f.skin.capture();
     try {
       expect(absent.capsuleCount(11)).toBeUndefined();
-      expect(absent.capsules(11, new Float32Array(16), mat4.create(), mat4.create())).toBe(false);
+      expect(absent.capsules(11, new Float32Array(16), mat4.create())).toBe(false);
       expect(empty.capsuleCount(11)).toBe(0);
-      expect(empty.capsules(11, new Float32Array(), mat4.create(), mat4.create())).toBe(true);
+      expect(empty.capsules(11, new Float32Array(), mat4.create())).toBe(true);
       expect(old.capsuleCount(11)).toBe(2);
-      expect(old.capsules(11, new Float32Array(16), mat4.create(), mat4.create())).toBe(true);
+      expect(old.capsules(11, new Float32Array(16), mat4.create())).toBe(true);
     } finally {
       absent.release();
       empty.release();
@@ -195,17 +194,17 @@ it('rejects a whole unavailable pose before writing any palette or capsules, the
     palette = new Float32Array(32).fill(87),
     out = new Float32Array(16).fill(97);
   try {
-    expect(missing.palette(11, palette, mat4.create(), mat4.create())).toBe(false);
-    expect(missing.capsules(11, out, mat4.create(), mat4.create())).toBe(false);
+    expect(missing.palette(11, palette)).toBe(false);
+    expect(missing.capsules(11, out, mat4.create())).toBe(false);
     expect(Array.from(palette)).toEqual(Array(32).fill(87));
     expect(Array.from(out)).toEqual(Array(16).fill(97));
     f.skin.setJoint(f.source, 9, matrix(30));
     const restored = f.skin.capture();
     try {
-      expect(restored.palette(11, palette, mat4.create(), mat4.create())).toBe(true);
+      expect(restored.palette(11, palette)).toBe(true);
       expect(palette[12]).toBe(11);
       expect(palette[28]).toBe(33);
-      expect(restored.capsules(11, out, mat4.create(), mat4.create())).toBe(true);
+      expect(restored.capsules(11, out, mat4.create())).toBe(true);
       expect(restored.historyCompatible(missing, 11)).toBe(false);
     } finally {
       restored.release();
@@ -221,18 +220,57 @@ it('writes an actual palette into a supplied window and keeps both adjacent task
     frame = f.skin.capture();
   const storage = new Float32Array(64).fill(123);
   const output = storage.subarray(16, 48),
-    a = mat4.create(),
-    b = mat4.create();
+    a = mat4.create();
   try {
-    expect(frame.palette(11, output, a, b)).toBe(true);
+    expect(frame.palette(11, output)).toBe(true);
     expect(Array.from(output)).toEqual([...matrix(11), ...matrix(23)]);
     expect(Array.from(storage.subarray(0, 16))).toEqual(Array(16).fill(123));
     expect(Array.from(storage.subarray(48))).toEqual(Array(16).fill(123));
-    expect(() => frame.palette(11, new Float32Array(31), a, b)).toThrow();
-    expect(() => frame.capsules(11, new Float32Array(1), a, b)).not.toThrow(); // No capsules.
-    expect(() => frame.palette(11, output, mat4.view(storage, 1), b)).toThrow();
-    expect(() => frame.palette(11, output, a, a)).toThrow();
+    expect(() => frame.palette(11, new Float32Array(31))).toThrow();
+    expect(() => frame.capsules(11, new Float32Array(1), a)).not.toThrow(); // No capsules.
   } finally {
+    frame.release();
+    f.dispose();
+  }
+});
+
+it('composes palette and capsule matrices directly from the retained inputs', () => {
+  const set = capsules();
+  const f = fixture(set);
+  const first = matrix(10);
+  first[0] = -2;
+  first[4] = 1.5;
+  const second = matrix(20);
+  second[8] = -0.5;
+  f.skin.setJoint(f.source, 7, first);
+  f.skin.setJoint(f.source, 9, second);
+  const frame = f.skin.capture();
+  const copy = vi.spyOn(f.arena, 'readFloatWords');
+  const products = vi.spyOn(f.arena, 'readMatrixProducts');
+  const scratch = mat4.create();
+  const palette = new Float32Array(32);
+  const posed = new Float32Array(16);
+  const expected = mat4.multiply(mat4.create(), first, matrix(1));
+  try {
+    expect(frame.matrix(11, 0, scratch)).toBe(true);
+    expect(scratch).toEqual(expected);
+    products.mockClear();
+    expect(frame.palette(11, palette)).toBe(true);
+    expect(products).toHaveBeenCalledExactlyOnceWith(
+      palette,
+      0,
+      expect.any(Number),
+      expect.any(Number),
+      2,
+    );
+    expect(palette.subarray(0, 16)).toEqual(expected);
+    expect(palette.subarray(16)).toEqual(mat4.multiply(mat4.create(), second, matrix(3)));
+    expect(frame.capsules(11, posed, scratch)).toBe(true);
+    expect(posed).toEqual(poseShadowCapsules(set, [matrix(1), matrix(3)], [first, second]));
+    expect(copy).not.toHaveBeenCalled();
+  } finally {
+    products.mockRestore();
+    copy.mockRestore();
     frame.release();
     f.dispose();
   }
@@ -242,12 +280,11 @@ it('rejects undersized and aliased capsule outputs before writing them', () => {
   const f = fixture(capsules()),
     frame = f.skin.capture();
   const out = new Float32Array(16).fill(123),
-    a = mat4.create(),
-    b = mat4.create();
+    a = mat4.create();
   try {
-    expect(() => frame.capsules(11, out.subarray(0, 15), a, b)).toThrow();
-    expect(() => frame.capsules(11, out, mat4.view(out, 0), b)).toThrow();
-    expect(() => frame.capsules(11, out, a, a)).toThrow();
+    expect(() => frame.capsules(11, out.subarray(0, 15), a)).toThrow();
+    expect(() => frame.capsules(11, out, mat4.view(out, 0))).toThrow();
+    expect(() => frame.capsules(11, out, a.subarray(0, 15) as typeof a)).toThrow();
     expect(Array.from(out)).toEqual(Array(16).fill(123));
   } finally {
     frame.release();
@@ -299,7 +336,7 @@ it.each([1e20, 1e-20])('preserves existing finite capsule math at axis scale %s'
   const frame = f.skin.capture();
   try {
     const out = new Float32Array(16);
-    expect(frame.capsules(11, out, mat4.create(), mat4.create())).toBe(true);
+    expect(frame.capsules(11, out, mat4.create())).toBe(true);
     const expected = poseShadowCapsules(set, [matrix(1), matrix(3)], [first, second]);
     expect(Array.from(out)).toEqual(Array.from(expected));
     expect(out[3]).toBeCloseTo(1, 5);
@@ -320,18 +357,9 @@ it('never reports a ready demand for numerical overflow; actual demand omits onl
   const frame = f.skin.capture();
   try {
     expect(frame.available(11)).toBe(true); // Presence is distinct from representable arithmetic.
-    expect(() => frame.palette(11, new Float32Array(32), mat4.create(), mat4.create())).toThrow();
-    expect(frame.capsules(11, new Float32Array(16), mat4.create(), mat4.create())).toBe(false);
-    expect(
-      frame.palettes(
-        11,
-        undefined,
-        new Float32Array(32),
-        new Float32Array(32),
-        mat4.create(),
-        mat4.create(),
-      ),
-    ).toBe(0);
+    expect(() => frame.palette(11, new Float32Array(32))).toThrow();
+    expect(frame.capsules(11, new Float32Array(16), mat4.create())).toBe(false);
+    expect(frame.palettes(11, undefined, new Float32Array(32), new Float32Array(32))).toBe(0);
   } finally {
     frame.release();
     f.dispose();
@@ -354,7 +382,7 @@ it('keeps a static Binding through incompatible Skeleton versions and restores o
       try {
         expect(restored.available(11)).toBe(true);
         const out = new Float32Array(32);
-        expect(restored.palette(11, out, mat4.create(), mat4.create())).toBe(true);
+        expect(restored.palette(11, out)).toBe(true);
         expect(out[12]).toBe(11);
         expect(out[28]).toBe(23);
         expect(restored.historyCompatible(mismatch, 11)).toBe(false);

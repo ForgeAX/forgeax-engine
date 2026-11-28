@@ -50,7 +50,9 @@ async function raster(useFactory = false, deformation: 'rigid' | 'skin' = 'rigid
         uvSetCount: 3,
       }
     : baseArtifact;
-  const programs = new Map(pipelineState.gpuDrivenPbrPrograms);
+  const fixtures = pipelineState.gpuDrivenPbrPrograms;
+  if (!(fixtures instanceof Map)) throw new Error('missing eager program fixture');
+  const programs = new Map(fixtures);
   const colorKey = standardPbrProgramKey(baseArtifact.material, true);
   if (colorKey === undefined) throw new Error('missing Standard program key');
   programs.set(colorKey, { module: colorShader, artifact: baseArtifact });

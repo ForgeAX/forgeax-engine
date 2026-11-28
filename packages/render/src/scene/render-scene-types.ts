@@ -1,14 +1,19 @@
 import type { RenderSceneResyncReason } from '../inspection-types';
+import type { InstanceOrdinalOrder } from '../instance-generations';
 import type { InstanceBoundsCacheInspection } from '../instances-derived-bounds';
 import type { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot, RenderableTemporalSnapshot } from '../render-system-extract';
+import type { FrameList } from './frame-list';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
 
 export type { RenderSceneResyncReason } from '../inspection-types';
 
-/** The three temporal fields a synchronous GPU row writer consumes. */
+/** Temporal fields and the qualified instance order borrowed by a synchronous upload. */
 export type GpuSceneMotion = {
   -readonly [K in 'motionValid' | 'reactive' | 'previousInstances']: RenderableTemporalSnapshot[K];
+} & {
+  instanceOrder?: InstanceOrdinalOrder | undefined;
+  instanceOrderGenerations?: Uint32Array | undefined;
 };
 
 export interface RenderSceneIdentity {
@@ -60,8 +65,9 @@ export interface RenderSceneApplyResult {
   readonly recreated: number;
   readonly ignoredLateUpdates: number;
   readonly createdSlots: readonly RenderSceneSlot[];
-  readonly updatedSlots: readonly RenderSceneSlot[];
-  /** One final row per full content update, including any instance edits to that slot. */
+  /** Issued rows in commit order. Pure pose writes read their captured Scene pages. */
+  readonly updatedSlots: FrameList<RenderSceneSlot>;
+  /** Full draw updates for authored content or changed winding, including any instance edits. */
   readonly contentUpdatedSlots: readonly RenderSceneSlot[];
   /** Instance edits for slots outside the content lane. Root transforms may change too. */
   readonly instanceUpdatedSlots: readonly RenderSceneSlot[];
@@ -69,8 +75,9 @@ export interface RenderSceneApplyResult {
   readonly removedSlots: readonly RenderSceneSlot[];
   readonly recreatedSlots: readonly RenderSceneSlot[];
   /**
-   * Pre-apply record of every updated or recreated row, keyed by its post-apply
-   * record. Consumers read prior facts from the delta, never from a captured frame.
+   * Prior authored rows for content replacement and recreation, keyed by the
+   * issued row. Pose, winding and instance-only changes leave authored facts
+   * intact. Readers of prior poses use their captured Scene frame.
    */
   readonly previous: ReadonlyMap<RenderSceneSlot, RenderSceneSlot>;
   readonly resynced: number;

@@ -1,24 +1,26 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
+import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { analyticUniformCloudRef, bandCloudRef, bandWideInstanceRef, cloudGuid, referenceCloudRef } from '@forgeax-assets/volumetric-clouds/references';
+import generatedCloudPack from '../nubis/generated-clouds.pack.ts';
 import { standardUeCloudRef, standardUeGuid } from '@forgeax-assets/ue-volumetric-clouds/references';
 
 const root = new URL('../', import.meta.url);
 
-test('mounts both shared cloud libraries without embedding their authoring payloads', () => {
+test('mounts imported UE assets and supplies Generated Clouds once using the shared package identity', () => {
   const project = JSON.parse(readFileSync(new URL('../forge.json', root), 'utf8'));
   const manifest = JSON.parse(readFileSync(new URL('../package.json', root), 'utf8'));
   for (const name of ['@forgeax-assets/volumetric-clouds', '@forgeax-assets/ue-volumetric-clouds']) {
-    assert.ok(project.assetLibraries.includes(name));
     assert.match(manifest.dependencies[name], /^file:\.\.\/\.\.\/forgeax-engine-assets\/demo-assets\/volumetric-clouds/);
   }
   assert.equal(existsSync(new URL('clouds/', root)), false);
-  const files = readdirSync(root, { recursive: true }).map(String);
-  assert.deepEqual(files.filter(file => /\.(raw|wgsl)$/.test(file)), []);
+  assert.ok(project.assetLibraries.includes('@forgeax-assets/ue-volumetric-clouds'));
+  assert.ok(!project.assetLibraries.includes('@forgeax-assets/volumetric-clouds'));
+  assert.equal(AssetGuid.format(AssetGuid.derive(generatedCloudPack.packageId, 'material/reference-layout')), referenceCloudRef.$asset);
 });
 
-test('keeps every demo material reference on the shared packages original GUIDs', () => {
+test('keeps the original demo references on the shared packages original GUIDs', () => {
   assert.deepEqual(referenceCloudRef, { $asset: cloudGuid('material/reference-layout') });
   assert.deepEqual(analyticUniformCloudRef, { $asset: cloudGuid('material/analytic-uniform') });
   assert.deepEqual(bandCloudRef, { $asset: cloudGuid('material/cloud-band') });

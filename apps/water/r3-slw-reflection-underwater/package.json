@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@forgeax/apps-shared": "workspace:*",
-    "@forgeax/engine": "workspace:*"
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-water": "workspace:*"
   },
   "devDependencies": {
     "@forgeax/engine-devkit": "workspace:*",

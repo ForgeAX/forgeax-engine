@@ -3,7 +3,7 @@ import { maxOf, pushAll, replaceAll } from '../arrays';
 import { CREASE_BITS, mergeFlags } from '../crease';
 import type { ModelingError } from '../errors';
 import { decodeSnapshot, encodeSnapshot } from '../fxem';
-import type { Tuple3 } from '../geom';
+import { type Tuple3, triangleAspect } from '../geom';
 import { EDGE_SEAM, EDGE_SHARP, EditMesh, edgeEnds, edgeKey, NONE } from '../mesh';
 import { jobTriangles } from './boolean-ts';
 import { ClearanceGrid } from './clearance';
@@ -340,6 +340,8 @@ interface Setup {
   readonly sourceHalves: Int32Array;
   readonly segments: { readonly corners: Int32Array; readonly bits: number[] };
   readonly scale: number;
+  /** Shape-aware coarsening and flips run only on a whole mesh with no label, seam, material or direction constraint. */
+  readonly shapeAware: boolean;
 }
 
 function cornerValuesDiffer(mesh: EditMesh, h1: number, h2: number): boolean {
@@ -459,6 +461,12 @@ function setup(mesh: EditMesh, params: RemeshJobParams): Result<Setup, ModelingE
     sourceHalves: Int32Array.from(sourceHalves),
     segments: { corners: Int32Array.from(segCorners), bits: segBits },
     scale,
+    shapeAware:
+      params.faces === 'all' &&
+      params.constraints.sharp !== 'free' &&
+      ![...work.flags.values()].some(
+        (bits) => (bits & (F_BOUNDARY | F_SEAM | F_UV | F_MATERIAL | F_LABEL)) !== 0,
+      ),
   });
 }
 
@@ -648,18 +656,22 @@ class Quadric {
 
 interface HeapEntry {
   readonly error: number;
+  /** Queue priority; the error alone when absent. */
+  readonly cost?: number;
   readonly key: number;
   readonly stamp: number;
 }
 
-/** Binary min-heap by error, then edge key. */
+/** Binary min-heap by cost (error), then edge key. */
 class Heap {
   private readonly items: HeapEntry[] = [];
   get size(): number {
     return this.items.length;
   }
   private less(x: HeapEntry, y: HeapEntry): boolean {
-    return x.error < y.error || (x.error === y.error && x.key < y.key);
+    const cx = x.cost ?? x.error;
+    const cy = y.cost ?? y.error;
+    return cx < cy || (cx === cy && x.key < y.key);
   }
   push(entry: HeapEntry): void {
     const items = this.items;
@@ -949,7 +961,13 @@ function simplify(
     if (best === undefined) return;
     stamp++;
     stamps.set(key, stamp);
-    heap.push({ error: best.error, key, stamp });
+    const [a0, b0] = edgeEnds(key);
+    heap.push({
+      error: best.error,
+      cost: s.shapeAware ? best.error + SHAPE_WEIGHT * w.length(a0, b0) : best.error,
+      key,
+      stamp,
+    });
   };
   for (const key of w.edgesAround(w.alive.map((_, v) => v))) {
     const [a, b] = edgeEnds(key);
@@ -998,16 +1016,16 @@ function simplify(
           Tuple3,
           Tuple3,
         ];
-      const old = Math.max(
-        ...star.map((t) =>
-          aspectOf(...(w.corners(t).map((v) => w.p(v)) as [Tuple3, Tuple3, Tuple3])),
+      const old = maxOf(
+        star.map((t) =>
+          triangleAspect(...(w.corners(t).map((v) => w.p(v)) as [Tuple3, Tuple3, Tuple3])),
         ),
       );
-      const next = Math.max(
-        ...star
+      const next = maxOf(
+        star
           .map((t) => w.corners(t))
           .filter((c) => !(c.includes(p.keep) && c.includes(p.remove)))
-          .map((c) => aspectOf(...tri(c))),
+          .map((c) => triangleAspect(...tri(c))),
       );
       if (next > params.maxAspect && next > old) {
         blocked++;
@@ -1043,6 +1061,10 @@ function simplify(
     w.collapse(p.keep, p.remove, position);
     for (const t of w.vt[p.keep] as number[]) grid?.insert(t);
     quadrics[p.keep] = merged;
+    const flipped =
+      grid === undefined && s.shapeAware
+        ? relaxAspect(w, s.featureMask, [p.keep], VOLUME_TOLERANCE * s.scale * s.scale * s.scale)
+        : [];
     if (n === 6) {
       const m: Tuple3 = [best.x[3] as number, best.x[4] as number, best.x[5] as number];
       const l = norm(m);
@@ -1053,9 +1075,23 @@ function simplify(
     }
     collapses++;
     lastError = entry.error;
-    for (const key of w.edgesAround([p.keep])) {
+    for (const key of w.edgesAround([p.keep, ...flipped])) {
       const [x, y] = edgeEnds(key);
       schedule(x, y);
+    }
+  }
+  if (grid === undefined && s.shapeAware) {
+    for (let round = 0; round < FINAL_RELAX_ROUNDS; round++) {
+      if (
+        relaxAspect(
+          w,
+          s.featureMask,
+          w.alive.map((_, v) => v),
+          VOLUME_TOLERANCE * s.scale * s.scale * s.scale,
+          FINAL_RELAX_FLOOR,
+        ).length === 0
+      )
+        break;
     }
   }
   return ok({ collapses, blocked, clearanceBlocked, lastError, stoppedByMaxError });
@@ -1226,7 +1262,7 @@ function directionMetric(
   const inputAnisotropy = [...vertexAnisotropy];
   const anisotropyOf = (v: number) => vertexAnisotropy[v] ?? anisotropy;
   const active = field !== undefined && (anisotropy > 1 || vertexAnisotropy.some((a) => a > 1));
-  const largest = Math.max(anisotropy, ...vertexAnisotropy.filter((a) => a !== undefined));
+  const largest = Math.max(anisotropy, maxOf(vertexAnisotropy.filter((a) => a !== undefined)));
   // A field direction per work vertex: the input's at input vertices, looked up for new ones.
   const dir: (Tuple3 | undefined)[] = [];
   if (active) {
@@ -1280,6 +1316,82 @@ interface IsotropicStats {
   /** With a direction: the field's constrained vertices and roughness (mean degrees across edges). */
   readonly field?: { readonly constrained: number; readonly roughness: number };
 }
+
+/**
+ * Simplify queue priority adds this fraction of the edge length to the quadric error, so
+ * collapses that cost nothing (flat regions) take the shortest edge first and coarsen evenly
+ * instead of in key order, which leaves long slivers.
+ */
+const SHAPE_WEIGHT = 0.5;
+
+/** Aspect above which a flip that shortens the pair's worst triangle overrides the valence rule. */
+const NEEDLE_ASPECT = 3;
+
+/** Whether flipping edge a-b (opposite corners c, d) cuts the pair's worst aspect from a needle. */
+function repairsNeedle(a: Tuple3, b: Tuple3, c: Tuple3, d: Tuple3, floor = NEEDLE_ASPECT): boolean {
+  const old = Math.max(triangleAspect(a, b, c), triangleAspect(b, a, d));
+  if (!(old > floor)) return false;
+  return Math.max(triangleAspect(c, a, d), triangleAspect(d, b, c)) < old;
+}
+
+/**
+ * Flips the non-feature edges touching `around` whose flip strictly lowers the worse aspect of
+ * the pair, across near-coplanar triangles only, so a collapse does not leave slivers behind.
+ * Returns the flipped edges' end vertices.
+ */
+const onRim = (w: Work, v: number) => w.isBoundaryVertex(v) || (w.vfeat[v] as number) !== 0;
+
+function relaxAspect(
+  w: Work,
+  featureMask: number,
+  around: readonly number[],
+  volumeTolerance: number,
+  floor = NEEDLE_ASPECT,
+): number[] {
+  const touched: number[] = [];
+  for (const key of w.edgesAround(around)) {
+    const [a, b] = edgeEnds(key);
+    if (!w.alive[a] || !w.alive[b] || (w.flag(a, b) & featureMask) !== 0) continue;
+    const pair = orientedPair(w, a, b);
+    if (pair === undefined) continue;
+    const [t1, t2] = pair;
+    const c = w.rotated(t1, a, b)[2];
+    const d = w.rotated(t2, a, b)[2];
+    if (c === d || w.edgeTris(c, d).length > 0 || w.valence(a) <= 3 || w.valence(b) <= 3) continue;
+    if (onRim(w, c) && onRim(w, d)) continue;
+    const [pa, pb, pc, pd] = [w.p(a), w.p(b), w.p(c), w.p(d)];
+    if (!repairsNeedle(pa, pb, pc, pd, floor)) continue;
+    const n1 = w.normal(t1);
+    const n2 = w.normal(t2);
+    if (dot(n1, n2) < FLIP_CREASE_DOT * norm(n1) * norm(n2)) continue;
+    const cross = (x: Tuple3, y: Tuple3, z: Tuple3): Tuple3 => {
+      const u: Tuple3 = [y[0] - x[0], y[1] - x[1], y[2] - x[2]];
+      const v: Tuple3 = [z[0] - x[0], z[1] - x[1], z[2] - x[2]];
+      return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    };
+    const m1 = cross(pc, pa, pd);
+    const m2 = cross(pd, pb, pc);
+    if (dot(m1, n1) <= 0 || dot(m2, n1) <= 0) continue;
+    // A flip moves the enclosed volume by the tetrahedron abcd: only coplanar quads qualify.
+    if (
+      Math.abs(dot(cross(pa, pb, pc), [pd[0] - pa[0], pd[1] - pa[1], pd[2] - pa[2]])) / 6 >
+      volumeTolerance
+    )
+      continue;
+    w.flip(a, b);
+    touched.push(a, b, c, d);
+  }
+  return touched;
+}
+
+/** Whole-mesh aspect-relaxing flip passes after the last collapse, and the aspect they start from. */
+const FINAL_RELAX_ROUNDS = 8;
+/** Largest volume change (fraction of scale cubed) that one aspect-relaxing flip may cause. */
+const VOLUME_TOLERANCE = 1e-12;
+const FINAL_RELAX_FLOOR = 1.5;
+
+/** Passes of splitting inside one iteration; each halves the edges it splits. */
+const MAX_SPLIT_ROUNDS = 12;
 
 /** How fast the size field may grow per meter (neighbouring sizes then differ by about 2 at most). */
 const SIZE_GRADATION = 1;
@@ -1424,45 +1536,52 @@ function isotropic(
     const mark = (vs: Iterable<number>) => {
       for (const v of vs) touched.add(v);
     };
-    // Split long edges, longest first.
-    const long = w
-      .edgesAround(dirty)
-      .map((key) => ({ key, length: length(...edgeOf(key)) }))
-      .filter((e) => e.length > hi(...edgeOf(e.key)))
-      .sort((x, y) => y.length - x.length || x.key - y.key);
-    for (const { key } of long) {
-      const [a, b] = edgeOf(key);
-      if (!w.alive[a] || !w.alive[b] || w.edgeTris(a, b).length === 0) continue;
-      if (length(a, b) <= hi(a, b) || (w.flag(a, b) & s.pinMask) !== 0) continue;
-      const bits = w.flag(a, b) & s.featureMask;
-      const around = w.edgeTris(a, b);
-      if (grid !== undefined) {
-        const at = projectAs(bits, midpoint(a, b));
-        const after = around.flatMap((t) => {
-          const [p, q, c] = w.rotated(t, a, b);
-          return [
-            [p, -1, c],
-            [-1, q, c],
-          ];
-        });
-        if (!clear(around, after, (v) => (v === -1 ? at : w.p(v)))) {
-          prevented++;
-          continue;
+    // Split long edges, longest first, until the halves are short enough too.
+    let pending: Iterable<number> = dirty;
+    for (let round = 0; round < (s.shapeAware && !metric.active ? MAX_SPLIT_ROUNDS : 1); round++) {
+      const roundTouched = new Set<number>();
+      const long = w
+        .edgesAround(pending)
+        .map((key) => ({ key, length: length(...edgeOf(key)) }))
+        .filter((e) => e.length > hi(...edgeOf(e.key)))
+        .sort((x, y) => y.length - x.length || x.key - y.key);
+      for (const { key } of long) {
+        const [a, b] = edgeOf(key);
+        if (!w.alive[a] || !w.alive[b] || w.edgeTris(a, b).length === 0) continue;
+        if (length(a, b) <= hi(a, b) || (w.flag(a, b) & s.pinMask) !== 0) continue;
+        const bits = w.flag(a, b) & s.featureMask;
+        const around = w.edgeTris(a, b);
+        if (grid !== undefined) {
+          const at = projectAs(bits, midpoint(a, b));
+          const after = around.flatMap((t) => {
+            const [p, q, c] = w.rotated(t, a, b);
+            return [
+              [p, -1, c],
+              [-1, q, c],
+            ];
+          });
+          if (!clear(around, after, (v) => (v === -1 ? at : w.p(v)))) {
+            prevented++;
+            continue;
+          }
         }
+        const m = w.split(a, b, midpoint(a, b));
+        if (bits !== 0) {
+          w.vclass[m] = 1;
+          w.vfeat[m] = bits;
+        }
+        w.set(m, project(m, w.p(m)));
+        if (field !== undefined) size[m] = sizeAt(w.p(m));
+        track(m);
+        refresh(around, w.vt[m] as number[]);
+        splits++;
+        mark([a, b, m, ...w.neighbours(m)]);
+        for (const v of [a, b, m]) roundTouched.add(v);
       }
-      const m = w.split(a, b, midpoint(a, b));
-      if (bits !== 0) {
-        w.vclass[m] = 1;
-        w.vfeat[m] = bits;
-      }
-      w.set(m, project(m, w.p(m)));
-      if (field !== undefined) size[m] = sizeAt(w.p(m));
-      track(m);
-      refresh(around, w.vt[m] as number[]);
-      splits++;
-      mark([a, b, m, ...w.neighbours(m)]);
+      if (!work.spend(long.length * 8 + 1)) return err(work.failure as ModelingError);
+      if (roundTouched.size === 0) break;
+      pending = roundTouched;
     }
-    if (!work.spend(long.length * 8 + 1)) return err(work.failure as ModelingError);
     // Collapse short edges, shortest first.
     const active = new Set([...dirty, ...touched]);
     const short = w
@@ -1524,7 +1643,11 @@ function isotropic(
       const after = sq(va - 1 - ia) + sq(vb - 1 - ib) + sq(vc + 1 - ic) + sq(vd + 1 - id);
       // With a field, the metric decides (valence toward 6 would fight the alignment where
       // flow lines converge); without one, valence toward 6.
-      const better = metric.active ? metric.flips(a, b, c, d) : after < before;
+      const needle =
+        metric.active || !s.shapeAware
+          ? false
+          : !(onRim(w, c) && onRim(w, d)) && repairsNeedle(w.p(a), w.p(b), w.p(c), w.p(d));
+      const better = metric.active ? metric.flips(a, b, c, d) : after < before || needle;
       if (!better || va <= 3 || vb <= 3) continue;
       const n1 = w.normal(t1);
       const n2 = w.normal(t2);
@@ -1748,20 +1871,6 @@ interface TilingStats {
 /** A cap: a triangle with an angle above 150 degrees (cosine below -0.866). */
 const CAP_COS = -0.866;
 
-/** Aspect of a triangle: longest edge squared over twice its area (1.155 equilateral). */
-function aspectOf(a: Tuple3, b: Tuple3, c: Tuple3): number {
-  const e = [
-    sq(b[0] - c[0]) + sq(b[1] - c[1]) + sq(b[2] - c[2]),
-    sq(c[0] - a[0]) + sq(c[1] - a[1]) + sq(c[2] - a[2]),
-    sq(a[0] - b[0]) + sq(a[1] - b[1]) + sq(a[2] - b[2]),
-  ];
-  const u: Tuple3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-  const v: Tuple3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-  const area =
-    norm([u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]) / 2;
-  return area > 0 ? maxOf(e) / (2 * area) : Number.POSITIVE_INFINITY;
-}
-
 /** Cosine of the corner at `p` of triangle p, q, r. */
 function cornerCos(p: Tuple3, q: Tuple3, r: Tuple3): number {
   const u: Tuple3 = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
@@ -1919,7 +2028,7 @@ function tiling(
     for (let t = 0; t < w.src.length; t++) {
       if ((w.tri[t * 3] as number) < 0) continue;
       const [a, b, c] = w.corners(t).map((v) => w.p(v)) as [Tuple3, Tuple3, Tuple3];
-      const aspect = aspectOf(a, b, c);
+      const aspect = triangleAspect(a, b, c);
       if (aspect > maxAspect) needles.push({ t, aspect });
     }
     needles.sort((x, y) => y.aspect - x.aspect || x.t - y.t);

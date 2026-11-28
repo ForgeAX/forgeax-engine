@@ -185,6 +185,10 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
   font-weight: var(--fx-ref-font-weight-600);
 }
 
+[data-forgeax-codex-browser] .fx-view-brand {
+  display: none;
+}
+
 .fx-view-header__status-slot {
   display: inline-flex;
   flex-shrink: 0;
@@ -267,18 +271,17 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
 
 .fx-view-shell-bottom {
   position: relative;
-  z-index: 1;
+  /* Keep the bottom drawer above the Play iframe mounted in the document body. */
+  z-index: var(--fx-layer-sticky);
   display: flex;
   flex: 0 0 var(--fx-ref-space-32);
   min-width: 0;
   min-height: 0;
   border-top: var(--fx-border-width) solid var(--fx-color-border-subtle);
-  background: var(--fx-color-surface-canvas);
+  background: var(--fx-color-surface-inset);
 }
 
 .fx-view-dockview-host.fx-view-shell-bottom__host {
-  position: absolute;
-  inset: 0;
   overflow: visible;
   pointer-events: none;
   --fx-edge-drawer-z: 1000;
@@ -290,6 +293,8 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
 }
 
 .fx-view-shell-bottom__host .dv-groupview-edge > .dv-tabs-and-actions-container,
+.fx-view-shell-bottom__host .dv-groupview-edge .dv-scrollable,
+.fx-view-shell-bottom__host .dv-groupview-edge .dv-scrollbar,
 .fx-view-shell-bottom__host .dv-groupview-edge .dv-tab,
 .fx-view-shell-bottom__host .dv-groupview-edge .dv-tab * {
   pointer-events: auto !important;
@@ -298,6 +303,22 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
 .fx-view-shell-bottom__host .dv-groupview-edge > .dv-tabs-and-actions-container {
   height: calc(var(--fx-component-navigation-row-height) - var(--fx-ref-space-6));
   min-height: calc(var(--fx-component-navigation-row-height) - var(--fx-ref-space-6));
+  border-bottom: 0;
+}
+
+.fx-view-version {
+  flex: 0 1 auto;
+  align-self: center;
+  min-width: 0;
+  max-width: 50%;
+  box-sizing: border-box;
+  padding-inline: var(--fx-ref-space-8) var(--fx-ref-space-16);
+  color: var(--fx-color-text-secondary);
+  font-size: var(--fx-type-caption-font-size);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fx-view-shell-bottom__drop-target {
@@ -723,6 +744,15 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
   margin-bottom: var(--fx-ref-space-6);
 }
 
+.fx-view-dockview-host .dv-groupview-edge .dv-tab .dv-default-tab-action.fx-dock-tab-close {
+  visibility: hidden;
+}
+
+.fx-view-dockview-host .dv-groupview-edge .dv-tab:hover .fx-dock-tab-close,
+.fx-view-dockview-host .dv-groupview-edge.fx-edge-drawer-open .dv-tab.dv-active-tab .fx-dock-tab-close {
+  visibility: visible;
+}
+
 .fx-view-dockview-host .dv-default-tab-action.fx-edge-pin {
   opacity: 0;
   pointer-events: none;
@@ -791,6 +821,26 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
   bottom: calc(var(--fx-edge-drawer-bottom) - 3px);
   box-shadow: 0 -4px 12px color-mix(in srgb, var(--fx-color-scrim) 30%, transparent),
     0 -1px 3px color-mix(in srgb, var(--fx-color-scrim) 22%, transparent);
+}
+
+.fx-view-shell-bottom > .fx-edge-drawer-portal-host {
+  position: absolute;
+  inset-block-start: calc(-1 * var(--fx-border-width));
+}
+
+.fx-view-shell-bottom > .fx-edge-drawer-portal-host > .dv-content-container.dv-groupview-header-bottom {
+  position: absolute;
+  inset-inline: var(--fx-edge-drawer-inset);
+  bottom: calc(100% - 3px);
+  width: auto;
+}
+
+.fx-view-shell-bottom > .fx-edge-drawer-portal-host > .fx-edge-drawer-grip {
+  position: absolute;
+  inset-inline: var(--fx-ref-space-6);
+  bottom: calc(100% + var(--fx-edge-drawer-height, 300px) - 3px);
+  height: var(--fx-ref-space-6);
+  cursor: ns-resize;
 }
 
 .fx-ue-live-host .fx-ue-lifted,
@@ -1352,16 +1402,3 @@ html[data-theme="dark"] #forgeax-view-root[data-forgeax-codex-browser] {
 .fx-workspace-preparation[data-active] .fx-workspace-preparation__spinner { animation: fx-preparation-spin 1.2s linear infinite; }
 @keyframes fx-preparation-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .fx-workspace-preparation[data-active] .fx-workspace-preparation__spinner { animation: none; } }
-
-.fx-view-version {
-  flex: 0 0 auto;
-  padding: var(--fx-ref-space-2) var(--fx-ref-space-10);
-  border-top: var(--fx-border-width) solid var(--fx-color-border-subtle);
-  color: var(--fx-color-text-secondary);
-  background: var(--fx-color-surface-canvas);
-  font-size: var(--fx-type-caption-font-size);
-  text-align: right;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}

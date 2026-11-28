@@ -44,7 +44,7 @@ fn cardLinkVisible(a:vec3f,na:vec3f,b:vec3f,nb:vec3f)->u32 {
  let delta=endpoint-origin;let distance=length(delta);
  if(!(distance>0.0)||!cardRadiosityFinite(distance)){return 0u;}
  let ray=Ray(origin,0.0,delta/distance,distance,vec4u(1u,0u,0u,0u));
- let hit=traceWorld(ray,frame.query.x,bitcast<f32>(frame.query.y));
+ let hit=traceWorldVisibility(ray,frame.query.x,bitcast<f32>(frame.query.y));
  if(hit.state.x==${GlobalSdfQueryStatus.miss}u){return 1u;}
  if(hit.state.x==${GlobalSdfQueryStatus.hit}u||hit.state.x==${GlobalSdfQueryStatus.negativeStart}u){return 2u;}
  return 0u;

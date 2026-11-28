@@ -114,7 +114,14 @@ describe('lowpoly', () => {
       exactError: 'model-partial',
       clusters: 1,
     });
-    expect(info.lost).toMatchObject({ materials: { paint: edgeFaces } });
+    const paintIndex = m.editMesh.materialNames.indexOf('paint');
+    const paintKept = m.editMesh
+      .faces()
+      .filter((f) => m.editMesh.fMaterial[f] === paintIndex).length;
+    const paintLost = Math.max(0, edgeFaces - paintKept);
+    expect((info.lost as { materials: Record<string, number> }).materials.paint ?? 0).toBe(
+      paintLost,
+    );
     expect(info.lost).not.toHaveProperty('materials.steel');
     const kept = m.editMesh.faces().filter((f) => m.editMesh.fMaterial[f] === steel);
     expect(kept.length).toBeGreaterThan(0);
@@ -176,7 +183,6 @@ describe('lowpoly', () => {
     const hub = mesh.tagIndex('hub', false);
     const plate = mesh.tagIndex('plate0p', false);
     let hubFaces = 0;
-    let plateFaces = 0;
     let plateCorners = 0;
     for (const f of mesh.faces()) {
       if (mesh.hasTag(f, hub)) {
@@ -185,7 +191,6 @@ describe('lowpoly', () => {
       }
       if (mesh.hasTag(f, plate)) {
         mesh.fMaterial[f] = steel;
-        plateFaces++;
         for (const h of mesh.faceHalves(f)) {
           mesh.setCorner('uv0', h, [0.5, 0.5]);
           plateCorners++;
@@ -197,11 +202,13 @@ describe('lowpoly', () => {
     expect(info).toMatchObject({ union: 'voxel', fallback: false });
     expect(info.lost).toEqual({
       labels: { rail: hubFaces },
-      materials: { steel: plateFaces },
+      materials: {},
       corners: { uv0: plateCorners },
+      roles: {},
+      seams: 0,
       bySource: {
         hub: { labels: hubFaces, materials: 0, corners: 0 },
-        plate0p: { labels: 0, materials: plateFaces, corners: plateCorners },
+        plate0p: { labels: 0, materials: 0, corners: plateCorners },
       },
     });
   });
@@ -213,6 +220,8 @@ describe('lowpoly', () => {
       labels: {},
       materials: {},
       corners: {},
+      roles: {},
+      seams: 0,
       bySource: {},
     });
     const exact = model();

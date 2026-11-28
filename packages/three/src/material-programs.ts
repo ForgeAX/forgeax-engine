@@ -47,60 +47,47 @@ function installProgram(assets: AssetRegistry, record: CookedMaterialRecord) {
   };
 }
 
-async function preparePhysicalTemplates(assets: AssetRegistry, bytes: Uint8Array) {
+function physicalSelector(assets: AssetRegistry, bytes: Uint8Array) {
   const { sources: sourceText, recipes } = JSON.parse(new TextDecoder().decode(bytes)) as {
     sources: string;
     recipes: Record<string, unknown>;
   };
-  const source = new TextEncoder().encode(sourceText);
-  const keys = ['', 'baseColorTexture'] as const;
-  const publications = keys.map((key) =>
-    validateMaterialTemplatePublication(recipes[key]).unwrap(),
-  );
-  const digest = publications[0]?.sourceArtifact.digest;
-  if (digest === undefined) throw new Error('Missing Physical source template');
-  if (publications.some((publication) => publication.sourceArtifact.digest !== digest))
+  const plain = validateMaterialTemplatePublication(recipes['']).unwrap();
+  const mapped = validateMaterialTemplatePublication(recipes.baseColorTexture).unwrap();
+  const digest = plain.sourceArtifact.digest;
+  if (mapped.sourceArtifact.digest !== digest)
     throw new Error('Physical templates must reference the same verified source');
-  const sources = readMaterialTemplateSources(source, digest).unwrap();
-  const prepare = () =>
-    import('@forgeax/engine-shader-compiler/program').then(({ prepareShaderProgramCompiler }) =>
-      prepareShaderProgramCompiler(),
+  const sources = readMaterialTemplateSources(
+    new TextEncoder().encode(sourceText),
+    digest,
+  ).unwrap();
+  return (key: '' | 'baseColorTexture'): ReturnType<typeof installProgram> => {
+    const publication = key === '' ? plain : mapped;
+    const material = publication.resolved;
+    const compiled = assets.shaderRegistry
+      .prepareMaterialTemplateFromInitializedCompiler({ guid: publication.guid, material, sources })
+      .unwrap();
+    const projection = projectMaterialTemplate(
+      { publication, sources },
+      0,
+      compiled,
+      assets.shaderRegistry,
+      assets.materialArtifactRegistry,
     );
-  const entries = await Promise.all(
-    publications.map(async (publication, index) => {
-      const key = keys[index];
-      if (key === undefined) throw new Error('Unrecognized Physical template');
-      const material = publication.resolved;
-      const compiled = await assets.shaderRegistry.prepareMaterialTemplate(
-        { guid: publication.guid, material, sources },
-        prepare,
-      );
-      const projection = projectMaterialTemplate(
-        { publication, sources },
-        0,
-        compiled.unwrap(),
-        assets.shaderRegistry,
-        assets.materialArtifactRegistry,
-      );
-      const program: MaterialAsset = {
-        ...material,
-        values: Object.fromEntries(
-          Object.entries(material.values ?? {}).filter(
-            ([, value]) => value === null || typeof value !== 'object' || !('texture' in value),
-          ),
+    const program: MaterialAsset = {
+      ...material,
+      values: Object.fromEntries(
+        Object.entries(material.values ?? {}).filter(
+          ([, value]) => value === null || typeof value !== 'object' || !('texture' in value),
         ),
-      };
-      return [
-        key,
-        {
-          program,
-          projection,
-          names: new Set(program.parameters?.map(({ name }) => name)),
-        },
-      ] as const;
-    }),
-  );
-  return new Map<string, ReturnType<typeof installProgram>>(entries);
+      ),
+    };
+    return {
+      program,
+      projection,
+      names: new Set(program.parameters?.map(({ name }) => name)),
+    };
+  };
 }
 
 function readPrograms(assets: AssetRegistry, decoded: Uint8Array) {
@@ -108,11 +95,17 @@ function readPrograms(assets: AssetRegistry, decoded: Uint8Array) {
 }
 
 async function packagedPrograms(assets: AssetRegistry) {
-  const [{ materialPrograms }, { physicalTemplates }, decode] = await Promise.all([
+  const [{ materialPrograms }, { physicalTemplates }, decode, compiler] = await Promise.all([
     import('./generated/materials.mjs'),
     import('./generated/physical.mjs'),
     prepareRetainedZstdDecoder(),
+    assets.shaderRegistry.initializeMaterialTemplateCompiler(() =>
+      import('@forgeax/engine-shader-compiler/program').then(({ prepareShaderProgramCompiler }) =>
+        prepareShaderProgramCompiler(),
+      ),
+    ),
   ]);
+  compiler.unwrap();
   const unpack = (publication: string) => {
     const result = decode(publicationBytes(publication));
     if (!result.ok) throw result.error;
@@ -125,7 +118,8 @@ async function packagedPrograms(assets: AssetRegistry) {
   };
   let selections: WeakMap<readonly string[], Selection> | undefined;
   let skin: ReturnType<typeof readPrograms> | undefined;
-  const physical = await preparePhysicalTemplates(assets, unpack(physicalTemplates));
+  let selectPhysical: ReturnType<typeof physicalSelector> | undefined;
+  const physical = new Map<'' | 'baseColorTexture', ReturnType<typeof installProgram>>();
   return {
     additional(sources: readonly string[]) {
       const cached = selections?.get(sources);
@@ -154,13 +148,21 @@ async function packagedPrograms(assets: AssetRegistry) {
       return () => programs;
     },
     skin: () => (skin ??= read(materialPrograms)),
-    physical: (key: string) => physical.get(key),
+    physical(key: string) {
+      if (key !== '' && key !== 'baseColorTexture') return undefined;
+      const admitted = physical.get(key);
+      if (admitted !== undefined) return admitted;
+      selectPhysical ??= physicalSelector(assets, unpack(physicalTemplates));
+      const selected = selectPhysical(key);
+      physical.set(key, selected);
+      return selected;
+    },
   };
 }
 
 const packaged = new WeakMap<AssetRegistry, ReturnType<typeof packagedPrograms>>();
 
-/** Admit the two built-in Physical shapes before synchronous scene projection. */
+/** Prepare compiler and publication readers before synchronous scene projection. */
 export async function prepareMaterialPrograms(
   assets: AssetRegistry,
   additional: readonly string[] = [],

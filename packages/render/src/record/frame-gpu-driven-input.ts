@@ -48,6 +48,7 @@ export interface FrameGpuDrivenSources {
   readonly gpuDriven: GpuDrivenRecordInput;
   readonly profilePhase: RecordProfileRunner | undefined;
   readonly captureShadows?: boolean;
+  readonly onSourceSceneIndexDemand?: (() => void) | undefined;
   /** `leanLightingFrame` of this view, staged with the frame's environment and cloud layer. */
   readonly leanLighting?: boolean;
 }

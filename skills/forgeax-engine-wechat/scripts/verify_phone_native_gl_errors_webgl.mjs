@@ -38,7 +38,7 @@ const server = createServer((request, response) => {
   else { response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><canvas width="4" height="4"></canvas>'); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-const browser = await chromium.launch({ channel: process.env.FORGEAX_CHROME_CHANNEL || 'chrome-beta', headless: true,
+const browser = await chromium.launch({ channel: process.env.FORGEAX_CHROME_CHANNEL || 'chrome', headless: true,
   args: ['--use-angle=swiftshader', '--ignore-gpu-blocklist'], chromiumSandbox: true });
 const output = { kind: 'native-gl-first-exception-collector-verification',
   wasmSha256: createHash('sha256').update(wasm).digest('hex'),

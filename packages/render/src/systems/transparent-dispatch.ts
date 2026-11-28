@@ -5,6 +5,7 @@ import type { CameraSnapshot } from '../render-contract';
 import type { DispatchEntry, DispatchList, MaterialSnapshot } from '../render-system-extract';
 import { CapturedSceneTransform, type ScenePoseStorage } from '../scene/captured-transform';
 import { culledMaterialPassRanges, orderMaterialDraws } from '../scene/material-dispatch';
+import { drawPoseStorage } from '../scene/mesh-draw';
 import { SortedPhase, type SortedPhaseWork } from './sorted-phase';
 import {
   TRANSPARENT_SORT_MODE_DISTANCE,
@@ -324,8 +325,7 @@ export class TransparentSortCache {
       const row = entityKey >= 0 && entityKey < 4294967296 ? entityKey : -1 - entry.renderableIndex;
       ordinal = row === previousRow ? ordinal + 1 : 0;
       previousRow = row;
-      const pose =
-        source === undefined ? undefined : CapturedSceneTransform.storage(source.transform);
+      const pose = source === undefined ? undefined : drawPoseStorage(source);
       const pivot = readsPivot ? source?.material : undefined;
       slotPoses[k] = pose;
       slotPivots[k] = pivot;
@@ -511,7 +511,7 @@ export class TransparentSortCache {
         const source = renderables.at(
           drawAt(dispatch, this.slotPositions[k] as number).renderableIndex,
         );
-        pose = source === undefined ? undefined : CapturedSceneTransform.storage(source.transform);
+        pose = source === undefined ? undefined : drawPoseStorage(source);
         pivot = readsPivot ? source?.material : undefined;
       }
       values[k] = transparentSortValue(pose, pivot, mode, yzAlpha, camera);

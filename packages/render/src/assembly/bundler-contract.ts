@@ -1,3 +1,4 @@
+import type { RhiDevice } from '@forgeax/engine-rhi';
 import type { ShaderRegistry, ShaderRegistryOptions } from '@forgeax/engine-shader';
 import type { ImportTransport } from '@forgeax/engine-types';
 
@@ -14,4 +15,6 @@ export interface BundlerOptions {
 /** CPU publication already admitted by this exact renderer realm. */
 export interface RendererHostBundlerOptions extends BundlerOptions {
   readonly admittedShaderCatalog?: ShaderRegistry;
+  /** Observe the selected device before its renderer builds GPU resources. */
+  readonly onDeviceAdmitted?: (device: Pick<RhiDevice, 'caps' | 'limits'>) => void;
 }

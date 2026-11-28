@@ -33,6 +33,7 @@ export {
   WATER_VISUAL_CONTACTS_RESOURCE,
   type WaterBuoyancyState,
 } from './runtime-resources.js';
+export * from './surface-source.js';
 export * from './system.js';
 export * from './validate.js';
 export {

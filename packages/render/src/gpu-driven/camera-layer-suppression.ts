@@ -1,6 +1,7 @@
 import { validateChannelMask } from '../components/lighting-channels';
 import type { CameraSnapshot } from '../render-contract';
 import { cameraAdmitsLayers } from '../render-layers';
+import { slotContent } from '../scene/mesh-draw';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import { SceneSlotFrame } from '../scene/scene-slots';
 
@@ -30,7 +31,7 @@ export function mainLayerSuppression(
   if (!found) {
     let layers: Uint32Array | undefined;
     for (const row of slots) {
-      if (cameraAdmitsLayers(camera, row.snapshot)) continue;
+      if (cameraAdmitsLayers(camera, slotContent(row))) continue;
       layers ??= new Uint32Array(Math.max(1, Math.ceil(scene.scene.rowCapacity / 32)));
       const word = row.slot >>> 5;
       layers[word] = (layers[word] ?? 0) | (1 << (row.slot & 31));
@@ -48,7 +49,8 @@ export function mainLayerSuppression(
   if (!combined) {
     combined = new Uint32Array(Math.max(base.length, found.layers.length));
     combined.set(base);
-    for (const [i, word] of found.layers.entries()) combined[i] = (combined[i] ?? 0) | word;
+    for (let i = 0; i < found.layers.length; i++)
+      combined[i] = (combined[i] ?? 0) | (found.layers[i] as number);
     found.combined.set(base, combined);
   }
   return combined;

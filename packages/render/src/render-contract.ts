@@ -427,6 +427,7 @@ interface RenderPipelineRuntime {
     colorFormats: readonly GPUTextureFormat[],
     entry?: PostProcessShaderEntry,
     fragmentEntryPoint?: string,
+    colorState?: import('@forgeax/engine-types').MaterialRenderState,
   ) => RhiRenderPipeline | null;
 }
 
@@ -787,6 +788,12 @@ export interface Renderer {
    * fallback after that draw.
    */
   setOutputColorSpace(colorSpace: OutputColorSpace): RenderResult<void, RenderError>;
+  /** Switch viewport debug output mode when the optional debug-view extension is installed. */
+  setViewportOutput?: (
+    mode: import('./viewport-output-contract').ViewportOutputMode,
+  ) => RenderResult<import('./viewport-output-contract').ViewportOutputInspection, RenderError>;
+  /** Detached snapshot of the active viewport output mode and availability. */
+  getViewportOutput?: () => import('./viewport-output-contract').ViewportOutputInspection;
   state(): RendererState;
   /** Current physical device generation without materializing a diagnostic snapshot.
    * Concrete Engine renderers implement this; older injected renderers may omit it.
@@ -1279,6 +1286,8 @@ export interface RenderInspection {
   };
   /** The latest debug overlay outcome; absent when no overlay source was ever installed. */
   readonly debugOverlay?: DebugOverlayInspection;
+  /** Detached viewport debug output inspection; present when requested or when the debug-view extension is installed. */
+  readonly viewportOutput?: import('./viewport-output-contract').ViewportOutputInspection;
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryInspection;
   /** Complete optional Renderer preparation, including native work and CPU source analysis. */
   readonly backgroundPipelineLibraryState?: 'running' | 'done' | 'failed';
@@ -1541,6 +1550,8 @@ export type DrawOptions = {
   /** Published-input diagnostic source World, captured by its transport owner. */
   readonly geometryObservationSourceWorldIdentity?: string;
   readonly geometryLane?: 'automatic' | 'direct';
+  /** Publication adapter for an admitted view's missing source program family. */
+  readonly onSourceSceneIndexDemand?: () => void;
 };
 
 /** Information attached to a device-loss notification. */
@@ -1798,6 +1809,10 @@ export interface RendererOptions {
   readonly backgroundPipelineLibraryConcurrency?: number;
   /** Prepare the first visible viewport's Hit Proxy pipelines after its color submission. Default off. */
   readonly viewportHitWarmup?: boolean;
+  /** Optional tree-shakeable viewport debug-visualization extension from `@forgeax/engine-render/debug-view`. */
+  readonly viewportOutput?:
+    | import('./viewport-output-contract').ViewportOutputExtension
+    | undefined;
   /** Retained dynamic mesh bytes: positive safe integer up to 512 MiB; default 64 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
   /** Optional static shadow depth ceiling (default 64 MiB). Admission counts all views on the device, including retiring textures. A view may hold up to half this ceiling per generation. Zero draws combined shadows. */
@@ -1845,6 +1860,12 @@ export interface RendererOptions {
    * back; `'webgl2'` assembles wgpu/WebGL2 directly. An injected `rhi` wins.
    */
   readonly renderBackend?: 'auto' | 'webgpu' | 'webgl2' | undefined;
+  /**
+   * Switchable RenderKernel acceleration mode (`@forgeax/engine-render-kernel`):
+   * `'auto'` (default) uses pure-compute Rust WASM when available with TS fallback;
+   * `'ts'` forces pure TypeScript kernel; `'wasm'` selects Rust WASM kernel.
+   */
+  readonly renderKernel?: 'auto' | 'ts' | 'wasm' | undefined;
   /** Explicit profiler capability shared by App and Render. */
   readonly profiler?: Profiler | undefined;
   /** Explicitly request timestamp-query for receipt-bound GPU profiling. */

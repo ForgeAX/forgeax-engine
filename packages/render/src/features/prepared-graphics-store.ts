@@ -1,6 +1,11 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
+import {
+  isSceneDataTarget,
+  type SceneDataTarget,
+  sceneDataTargetOwner,
+} from '../temporal/scene-data';
 import type {
   PreparedGraphicsValidationProjection,
   PreparedKind,
@@ -150,7 +155,19 @@ function numericViewValues(value: ArrayBufferView): readonly number[] {
   return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
 }
 
+function ownedSceneDataTarget(value: unknown): value is SceneDataTarget {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    sceneDataTargetOwner(value as SceneDataTarget) !== undefined &&
+    isSceneDataTarget(value)
+  );
+}
+
 function immutableValue(value: unknown): unknown {
+  // Semantic tokens are already immutable and carry receiver authority in the
+  // SceneData owner. Copying their enumerable fields would erase that authority.
+  if (ownedSceneDataTarget(value)) return value;
   if (Array.isArray(value)) return Object.freeze(value.map(immutableValue));
   if (ArrayBuffer.isView(value)) {
     return Object.freeze(numericViewValues(value));
@@ -277,7 +294,9 @@ function normalizeDescriptor(
   }
   return {
     descriptor,
-    signature: JSON.stringify(descriptor),
+    signature: JSON.stringify(descriptor, (_key, value: unknown) =>
+      ownedSceneDataTarget(value) ? { ...value, owner: sceneDataTargetOwner(value) } : value,
+    ),
     uploadBytes: bytes,
   };
 }
@@ -332,6 +351,12 @@ function isFrozenNativeData(value: object): boolean {
 const provenNativeValues = new WeakMap<object, object>();
 
 function sameNativeValue(previous: unknown, value: unknown): boolean {
+  if (ownedSceneDataTarget(value))
+    return (
+      ownedSceneDataTarget(previous) &&
+      previous.schema === value.schema &&
+      sameNativeValue(sceneDataTargetOwner(previous), sceneDataTargetOwner(value))
+    );
   // Functions/toJSON and other non-JSON leaves keep their normalization path.
   if (value === null || typeof value !== 'object')
     return typeof value !== 'function' && typeof value !== 'symbol' && previous === value;

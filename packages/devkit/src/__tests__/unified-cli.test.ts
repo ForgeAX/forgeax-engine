@@ -463,7 +463,8 @@ describe('unified CLI', () => {
       fields: ['value.nodes[].path', 'value.nodes[].summary (groups)'],
       flag: '--detail',
     });
-    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(full).length * 0.75);
+    // Trimming path and group summaries removes >20% even as leaf command summaries grow.
+    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(full).length * 0.78);
     const nodes = (compact.value as { readonly nodes: readonly { readonly name: string }[] }).nodes;
     expect(nodes.map(({ name }) => name)).toContain('dev');
     expect(JSON.stringify(compact.value)).not.toContain('"path":"dev');

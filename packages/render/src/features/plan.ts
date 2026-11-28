@@ -54,7 +54,7 @@ export type RenderFeatureFullscreenRead =
   | string
   | {
       readonly key: string;
-      readonly sampleType?: 'depth' | 'float-3d-repeat' | 'unfilterable-float';
+      readonly sampleType?: 'depth' | 'float-3d-repeat' | 'unfilterable-float' | 'uint';
       /** Use binding 0 for the sole depth input. */
       readonly primary?: true;
     };
@@ -81,7 +81,9 @@ export interface RenderFeatureFullscreenProgramDeclaration {
   readonly usesView?: boolean;
   /** Read-only storage buffers appended after the regular color/depth reads. */
   readonly storageBindings?: readonly number[];
-  /** Current uniform bytes for an automatic chain pass. Must match params.byteSize. */
+  /** @internal Scene raster parameters are supplied by the submitted view. */
+  readonly paramsSource?: 'current-view';
+  /** Current uniform bytes for this fullscreen program. Must match params.byteSize. */
   readonly frameParams?: Uint8Array;
   readonly params?: {
     readonly byteSize: number;
@@ -96,6 +98,8 @@ export type RenderFeatureBindingValue =
   | string
   | ArrayBufferView
   | SceneDataTarget
+  | RenderFeatureTextureReference
+  | import('@forgeax/engine-types').ShaderEntryPointReads
   | readonly RenderFeatureBindingValue[]
   | { readonly [name: string]: RenderFeatureBindingValue };
 
@@ -347,6 +351,12 @@ export type RenderFeaturePassDeclaration = (
       readonly colorAttachments: readonly {
         readonly target: string;
         readonly loadOp: 'load' | 'clear';
+        readonly clearValue?: {
+          readonly r: number;
+          readonly g: number;
+          readonly b: number;
+          readonly a: number;
+        };
         readonly storeOp: 'store' | 'discard';
       }[];
       readonly depthStencilAttachment?: {
@@ -959,8 +969,16 @@ function cloneSignaturePrimitive(
 
 function fullscreenProgramTopology(resource: RenderFeatureFullscreenProgramDeclaration) {
   if (!Object.hasOwn(resource, 'frameParams')) return resource;
-  const { frameParams: _frameParams, ...topology } = resource;
-  return topology;
+  const { frameParams: _frameParams, params, ...topology } = resource;
+  // A frame-owned block always uploads its current bytes when encoded.
+  return {
+    ...topology,
+    ...(params === undefined
+      ? {}
+      : {
+          params: resource.paramsSource === 'current-view' ? { byteSize: params.byteSize } : params,
+        }),
+  };
 }
 
 function signatureResourceValue(resource: RenderFeatureResourceDeclaration): unknown {
@@ -1245,6 +1263,21 @@ function resourceFramePayloadKey(kind: unknown): string | undefined {
   }
 }
 
+function equalFullscreenFrameParamLayout(
+  value: unknown,
+  snapshot: RenderFeaturePlanSignatureNode,
+): boolean {
+  return (
+    snapshot.kind === 'object' &&
+    snapshot.keys.length === 1 &&
+    snapshot.keys[0] === 'byteSize' &&
+    equalSignatureNode(
+      (value as RenderFeatureFullscreenProgramDeclaration['params'])?.byteSize,
+      snapshot.values[0] as RenderFeaturePlanSignatureNode,
+    )
+  );
+}
+
 function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatureNode): boolean {
   if (
     isOwnedRenderFeatureProgramData(resource) &&
@@ -1284,6 +1317,13 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
     } else {
       const child = source[key];
       const kind = source.kind;
+      const next = snapshotValues[snapshotIndex] as RenderFeaturePlanSignatureNode;
+      if (
+        kind === 'fullscreen-program' &&
+        key === 'params' &&
+        source.paramsSource === 'current-view'
+      )
+        return equalFullscreenFrameParamLayout(child, next);
       const comparableChild =
         kind === 'buffer' && key === 'initialization' && child !== undefined
           ? bufferInitializationTopology(child as RenderFeatureGpuBufferInitialization)
@@ -1583,7 +1623,13 @@ function visitRenderFeaturePassAccess(
         sampled?.includes(depth.target) ? 'depth-stencil-read' : 'depth-stencil-write',
       );
     if (sampled !== undefined)
-      for (const target of sampled) if (typeof target === 'string') visit(target, 'sampled-read');
+      for (const target of sampled)
+        if (
+          typeof target === 'string' ||
+          isSceneDataTarget(target) ||
+          isRenderFeatureTextureReference(target)
+        )
+          visit(target, 'sampled-read');
   }
   if (pass.draws.length > 0) {
     resources ??= renderFeaturePlanDeclarations(plan);
@@ -1691,7 +1737,9 @@ export function validateRenderFeaturePlan(
   if (
     (plan.submission !== undefined && plan.submission !== 'atomic') ||
     (plan.placement !== undefined &&
-      !['scene', 'after-depth', 'after-tonemap', 'post'].includes(plan.placement))
+      !['environment', 'scene', 'after-depth', 'before-medium', 'after-tonemap', 'post'].includes(
+        plan.placement,
+      ))
   )
     return err(stageFailure(identity));
   if (plan.resources.length === 0 && plan.passes.length === 0) return ok(undefined);
@@ -1751,11 +1799,12 @@ function validFullscreenProgramResource(
   resource: RenderFeatureFullscreenProgramDeclaration,
 ): boolean {
   if (resource.chain !== undefined && resource.chain !== true) return false;
+  const currentView = resource.paramsSource === 'current-view';
+  if (resource.paramsSource !== undefined && !currentView) return false;
+  if (resource.frameParams === undefined) return !currentView;
   return (
-    resource.frameParams === undefined ||
-    (resource.chain === true &&
-      resource.frameParams instanceof Uint8Array &&
-      resource.frameParams.byteLength === resource.params?.byteSize)
+    resource.frameParams instanceof Uint8Array &&
+    resource.frameParams.byteLength === resource.params?.byteSize
   );
 }
 

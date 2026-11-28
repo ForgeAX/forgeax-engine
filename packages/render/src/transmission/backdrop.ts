@@ -31,19 +31,12 @@ export const TRANSMISSION_BACKDROP_PHASES = [
 
 export type TransmissionBackdropPhase = (typeof TRANSMISSION_BACKDROP_PHASES)[number];
 
-type TransmissionTopologyInput = RenderPipelineTopology & {
-  readonly transmissionDemand?: TransmissionDemand | undefined;
-};
+const NO_TRANSMISSION: TransmissionDemand = { activeCount: 0, needsRoughMips: false };
 
 export function transmissionDemandForTopology(
   topology: RenderPipelineTopology,
 ): TransmissionDemand {
-  return (
-    (topology as TransmissionTopologyInput).transmissionDemand ?? {
-      activeCount: 0,
-      needsRoughMips: false,
-    }
-  );
+  return topology.transmissionDemand ?? NO_TRANSMISSION;
 }
 
 export interface TransmissionBackdropTopologyInput {
@@ -62,31 +55,22 @@ export interface TransmissionBackdropTopology {
 }
 
 /**
- * Which Standard transmission and backdrop consumers are active for an opaque
- * scene of this sampling; sorted transmission excludes weighted blending and
+ * Which Standard transmission and backdrop consumers are active for the
+ * scene; sorted transmission excludes weighted blending and
  * the single-layer medium.
  */
-export function standardTransmissionRoute(
-  topology: RenderPipelineTopology,
-  sourceSampleCount: RenderPipelineTarget['sampleCount'],
-) {
+export function standardTransmissionRoute(topology: RenderPipelineTopology) {
   const demand = transmissionDemandForTopology(topology);
   const backdropDemand = {
     activeCount: demand.activeCount + (topology.singleLayerMedium === true ? 1 : 0),
     needsRoughMips: demand.needsRoughMips,
   };
-  const transmissionActive = resolveTransmissionBackdropTopology({
-    demand,
-    sourceSampleCount,
-  }).active;
+  const transmissionActive = demand.activeCount !== 0;
   return {
     demand,
     backdropDemand,
     transmissionActive,
-    backdropActive: resolveTransmissionBackdropTopology({
-      demand: backdropDemand,
-      sourceSampleCount,
-    }).active,
+    backdropActive: backdropDemand.activeCount !== 0,
     sorted:
       transmissionActive &&
       topology.transparency?.weightedBlended !== true &&
@@ -646,16 +630,4 @@ export function addTransmissionBackdropPasses(
   }
 
   return ok({ topology, backdrop: backdrop.value, mipViews });
-}
-
-/** Adds the final ordering marker after typed transmission and transparent draws. */
-export function addTransmissionBackdropTemporalPass(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  source: RenderPipelineTarget,
-): Result<void, RenderGraphError> {
-  return graph.addRasterPass('temporal', {
-    accesses: [{ resource: source.view, usage: 'color-attachment' }],
-    colorAttachments: [{ view: source.view, loadOp: 'load', storeOp: 'store' }],
-    encodeDirect: () => undefined,
-  });
 }

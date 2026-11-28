@@ -2,6 +2,7 @@ import {
   type MaterialShaderManifestEntry,
   materialShaderPreparedSourceRows,
   materialShaderSourceMatches,
+  materialShaderTemplateOffersPointShadows,
 } from '@forgeax/engine-shader';
 import type { SubmittedFrameInspection } from './record/frame-snapshot';
 import type { PointShadowSnapshot } from './render-system-extract';
@@ -81,6 +82,7 @@ export function materialShadersSamplePointShadows(
 ): boolean {
   for (const entry of entries) {
     if (entry.identifier === 'forgeax::engine-forward-directional-shadow') continue;
+    if (materialShaderTemplateOffersPointShadows(entry)) return true;
     const rows = materialShaderPreparedSourceRows(entry);
     let cached = laneByEntry.get(entry);
     if (cached === undefined || cached.count !== rows.length) {

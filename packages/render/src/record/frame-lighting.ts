@@ -25,7 +25,6 @@ import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
 import { standardBloomAdmitted } from '../bloom-admission';
 import { hasCapsuleShadowDemand } from '../capsule-shadow/inspection';
 import { planarReflectionViewEntries } from '../capture/planar-material';
-import { spotBinningSphere } from '../cluster-binner';
 import { getOrCreateDirectDfgLut } from '../device/direct-dfg-lut';
 import { ablateLocalLights } from '../diagnostics/render-ablation';
 import {
@@ -68,7 +67,11 @@ import {
   DEFERRED_CHANNEL_MAPPING_MASK,
   prepareDeferredLightingChannels,
 } from '../pipeline/standard-lighting/deferred-channels';
-import type { StandardLocalLightInput } from '../pipeline/standard-lighting/light-frame';
+import {
+  createStandardLocalLights,
+  sameLocalLightSources,
+  standardLocalLightEmitsNothing,
+} from '../pipeline/standard-lighting/local-lights';
 import {
   type PreparedStandardLighting,
   prepareStandardLighting,
@@ -193,7 +196,6 @@ function publishedFeatureShaderEntry(
 /** Retained View bind-group chain key; filled and consumed synchronously. */
 const viewChainKeys: object[] = [];
 /** Neutral binner origin for infinite-range directional members. */
-const ORIGIN = vec3.create(0, 0, 0);
 
 /** Only the closed stock pipeline/grid qualifies; borrowed declarations stay live. */
 function stockClusterMembership(
@@ -899,45 +901,7 @@ function prepareFrameShadowSnapshots(
   }
 }
 
-/**
- * An `invRangeSquared` whose range window is zero at every receiver: the
- * punctual evaluators floor `d^2` at 1e-4, so `x = 1e-4 * 1e5 = 10` and the
- * window `clamp(1 - x * x, 0, 1)` is exactly 0 with f32 margin. `range = 0`
- * extracts as 1e8 (`computeInvRangeSquared`), well past it.
- */
-const PUNCTUAL_NO_REACH_INV_RANGE_SQUARED = 1e5;
-
-/**
- * Whether a local light contributes exactly zero radiance this frame, so it can
- * stay out of Cluster membership. The extract pre-multiplies `color` by
- * intensity, and every surface / volume evaluator is linear in that product;
- * a punctual light whose range is zero (`range = 0` extracts as 1e8) has a
- * zero range window everywhere. NaN inputs are kept so degenerate lights keep
- * their existing behaviour. The light keeps its slot, so light counts, slot
- * indices and the published shader variant never change when it toggles.
- */
-export function standardLocalLightEmitsNothing(
-  kind: StandardLocalLightInput['kind'],
-  source: { readonly color: ArrayLike<number>; readonly invRangeSquared?: number },
-): boolean {
-  const color = source.color;
-  if (color[0] === 0 && color[1] === 0 && color[2] === 0) return true;
-  return (
-    (kind === 'point' || kind === 'spot') &&
-    source.invRangeSquared !== undefined &&
-    source.invRangeSquared >= PUNCTUAL_NO_REACH_INV_RANGE_SQUARED
-  );
-}
-
-/** A dark light keeps its slot but bins nowhere (`bin` culls `range <= 0`). */
-function binningRange(
-  kind: StandardLocalLightInput['kind'],
-  source: { readonly color: ArrayLike<number>; readonly invRangeSquared?: number },
-  range: number,
-): number {
-  return standardLocalLightEmitsNothing(kind, source) ? 0 : range;
-}
-
+const EMPTY_LOCAL_LIGHT_WORK = projectLightSlotWork(Object.freeze([]));
 const NO_DARK_VIEWS: ReadonlySet<number> = new Set();
 
 /** Shadow views of dark lights; the previous sets are kept while unchanged. */
@@ -977,80 +941,6 @@ function sameMembers(a: ReadonlySet<number>, b: ReadonlySet<number> | undefined)
   return true;
 }
 
-export function createStandardLocalLights(
-  lights: Pick<ViewLights, 'point' | 'spot' | 'rect' | 'additionalDirectional'>,
-): StandardLocalLightInput[] {
-  const local: StandardLocalLightInput[] = [];
-  for (const source of lights.point)
-    local.push({
-      kind: 'point',
-      shadowed: source.shadowAtlasLayer !== undefined && source.shadowAtlasLayer >= 0,
-      position: source.position,
-      range: binningRange(
-        'point',
-        source,
-        Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
-          ? Math.sqrt(1 / source.invRangeSquared)
-          : Number.POSITIVE_INFINITY,
-      ),
-      source,
-    });
-  for (const source of lights.spot) {
-    const range =
-      Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
-        ? Math.sqrt(1 / source.invRangeSquared)
-        : Number.POSITIVE_INFINITY;
-    // Bin the spot's lit sector, not its whole range sphere.
-    const center = vec3.create(0, 0, 0);
-    const radius = spotBinningSphere(
-      source.position,
-      source.direction,
-      source.cosOuter,
-      range,
-      center,
-    );
-    local.push({
-      kind: 'spot',
-      shadowed:
-        source.castShadow && source.shadowAtlasTile >= 0 && source.lightViewProj !== undefined,
-      position: center,
-      range: binningRange('spot', source, radius),
-      cone: {
-        apex: source.position,
-        direction: source.direction,
-        cosOuter: source.cosOuter,
-        range,
-      },
-      source,
-    });
-  }
-  for (const source of lights.rect)
-    local.push({
-      kind: 'rect-area',
-      shadowed: false,
-      position: source.position,
-      rectNormal: vec3.cross(vec3.create(), source.axisX, source.axisY),
-      range: binningRange(
-        'rect-area',
-        source,
-        Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
-          ? Math.sqrt(1 / source.invRangeSquared)
-          : Number.POSITIVE_INFINITY,
-      ),
-      source,
-    });
-  if (lights.additionalDirectional)
-    for (const source of lights.additionalDirectional)
-      local.push({
-        kind: 'directional',
-        shadowed: false,
-        position: ORIGIN,
-        range: binningRange('directional', source, Number.POSITIVE_INFINITY),
-        source,
-      });
-  return local;
-}
-
 function standardScreenTransportDemand(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -1086,24 +976,34 @@ function admitStandardLocalLights(
   camera: CameraSnapshot | undefined,
   slotCapacity: number | undefined,
 ): {
-  readonly local: ReturnType<typeof createStandardLocalLights>;
+  readonly work: ReturnType<typeof projectLightSlotWork>;
   readonly droppedLocalLights: number;
 } {
-  if (camera === undefined) return { local: [], droppedLocalLights: 0 };
+  if (camera === undefined) return { work: EMPTY_LOCAL_LIGHT_WORK, droppedLocalLights: 0 };
   const admitted = clusterLocalLights(internals, lights, slotCapacity);
   warnStandardLocalLightCap(
     frameState,
     admitted,
     clusterLocalLightLimit(internals, lights, slotCapacity),
   );
-  if (admitted.dropped === 0)
-    return { local: ablateLocalLights(createStandardLocalLights(lights)), droppedLocalLights: 0 };
+  const published = lights.localLightPublication;
+  if (
+    admitted.dropped === 0 &&
+    published !== undefined &&
+    sameLocalLightSources(published.sources, lights)
+  ) {
+    const local = ablateLocalLights(published.work.local);
+    return {
+      work: local === published.work.local ? published.work : projectLightSlotWork(local),
+      droppedLocalLights: 0,
+    };
+  }
   const kept =
-    lights.additionalDirectional === undefined
-      ? admitted.kept
-      : { ...admitted.kept, additionalDirectional: lights.additionalDirectional };
+    admitted.dropped === 0
+      ? lights
+      : { ...admitted.kept, additionalDirectional: lights.additionalDirectional ?? [] };
   return {
-    local: ablateLocalLights(createStandardLocalLights(kept)),
+    work: projectLightSlotWork(ablateLocalLights(createStandardLocalLights(kept))),
     droppedLocalLights: admitted.dropped,
   };
 }
@@ -1129,13 +1029,14 @@ function prepareStandardLightingTopology(
   const clusterGrid = frameState.installedPipelineConfig?.clusterGrid ?? DEFAULT_CLUSTER_GRID;
   const reflectedAbi = pipelineState?.standardClusterAbi ?? internals.standardClusterAbi;
   const lightCount = internals.standardProfile?.lightCount ?? DEFAULT_STANDARD_PROFILE.lightCount;
-  const { local, droppedLocalLights } = admitStandardLocalLights(
+  const { work, droppedLocalLights } = admitStandardLocalLights(
     internals,
     frameState,
     lights,
     camera,
     reflectedAbi?.directLightSlot.capacity,
   );
+  const local = work.local;
   const needsScreenTransport = standardScreenTransportDemand(
     internals,
     frameState,
@@ -1188,7 +1089,7 @@ function prepareStandardLightingTopology(
     reflectedAbi?.directLightSlot.capacity,
     frameState.hdrpClusterBinScratch,
     stockClusterMembership(frameState, clusterGrid),
-    projectLightSlotWork(local),
+    work,
   );
   if (!prepared.ok) return prepared;
   if (camera !== undefined)

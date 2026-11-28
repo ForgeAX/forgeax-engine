@@ -44,7 +44,8 @@ describe('RenderTarget receipt-bound readback', () => {
     if (!ticket.ok) throw ticket.error;
     const encoder = device.createCommandEncoder().unwrap();
     const copy = vi.spyOn(encoder, 'copyTextureToBuffer');
-    host.encodePendingReadbacks(encoder, [{ target: created.value, layer: 0 }]);
+    host.stageRenderTargetWrite({ target: created.value, physical, layer: 0 });
+    host.encodePendingReadbacks(encoder);
     expect(copy).toHaveBeenCalledTimes(1);
     expect(copy.mock.calls[0]?.[0]).toMatchObject({ texture: physical.texture, origin: { z: 5 } });
     host.dispose();

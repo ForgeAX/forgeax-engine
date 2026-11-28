@@ -1,11 +1,12 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { maxOf, minOf, pushAll } from '../arrays';
-import { cos, sin } from '../dmath';
+import { atan2, cos, sin } from '../dmath';
 import { type ModelingError, modelingError } from '../errors';
 import { UnionFind } from '../finish';
 import { decodeSnapshot } from '../fxem';
 import { cross, dot, length, normalize, sub, type Tuple3, triangulateLoop } from '../geom';
 import { type CornerChannelName, EDGE_SEAM, type EditMesh, NONE } from '../mesh';
+import { type MirrorAxis, type MirrorPairs, mirrorPairs } from '../mirror-pairing';
 import type {
   BackendOutput,
   ComputeJobRequest,
@@ -17,6 +18,7 @@ import type {
 } from './job';
 import { WorkMeter } from './job';
 import { leastSquaresCholesky, solveSparse, TripletList } from './sparse';
+import { MAX_PART_RATIO, partOfFaces, partTagIds, validParts } from './uv-parts';
 import { acceptRefinement, overlapPairs, type RefineVerdict, slim, slimEnergy } from './uv-slim';
 
 type Uv = [number, number];
@@ -663,7 +665,7 @@ function sampleTriangle(q: readonly Tuple3[], p: readonly (readonly number[])[])
 const DISTORTION_CLIP = 100;
 
 /** Sander stretch and relative-area distortion of one island, normalized for its scale. */
-function metricsOf(
+export function metricsOf(
   samples: readonly TriangleSample[],
 ): Omit<UvIslandMetrics, 'faces' | 'iterations' | 'residual'> {
   let area3d = 0;
@@ -822,6 +824,105 @@ export function orientation(points: readonly Uv[]): Uv {
   return bestWide ? best : [-best[1], best[0]];
 }
 
+/** Area of the bounding rectangle of the points after turning direction `d` onto +u. */
+function turnedArea(points: readonly Uv[], d: Uv): number {
+  let [x0, x1, y0, y1] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const p of points) {
+    const x = p[0] * d[0] + p[1] * d[1];
+    const y = d[0] * p[1] - d[1] * p[0];
+    x0 = Math.min(x0, x);
+    x1 = Math.max(x1, x);
+    y0 = Math.min(y0, y);
+    y1 = Math.max(y1, y);
+  }
+  return (x1 - x0) * (y1 - y0);
+}
+
+/** Longest-edge share of the boundary that must agree on one axis direction for `straightOrientation`. */
+const STRAIGHT_SHARE = 0.4;
+/** Largest growth of the bounding rectangle `straightOrientation` accepts over the minimal one. */
+const STRAIGHT_GROWTH = 1.1;
+
+/**
+ * Orientation that puts the island's dominant boundary direction on the u or v axis: the
+ * length-weighted circular mean of the boundary edge angles modulo a quarter turn (the angle
+ * times four, so parallel and perpendicular edges vote together). It replaces the minimal
+ * rectangle only when enough of the boundary agrees and the rectangle grows by less than
+ * STRAIGHT_GROWTH, so straight patches sit axis-aligned instead of on a hull diagonal.
+ */
+function straightOrientation(mesh: EditMesh, island: Island, uv: readonly Uv[]): Uv {
+  const fallback = orientation(uv);
+  let [sx, sy, total] = [0, 0, 0];
+  for (const h of island.boundary) {
+    const a = uv[island.element.get(h) as number] as Uv;
+    const b = uv[island.element.get(mesh.hNext[h] as number) as number] as Uv;
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (!(len > 0)) continue;
+    const [x, y] = [dx / len, dy / len];
+    const x2 = x * x - y * y;
+    const y2 = 2 * x * y;
+    sx += len * (x2 * x2 - y2 * y2);
+    sy += len * (2 * x2 * y2);
+    total += len;
+  }
+  const strength = Math.sqrt(sx * sx + sy * sy);
+  if (!(total > 0) || strength < STRAIGHT_SHARE * total) return fallback;
+  const phi = atan2(sy, sx) / 4;
+  const d: Uv = [cos(phi), sin(phi)];
+  if (turnedArea(uv, d) > STRAIGHT_GROWTH * turnedArea(uv, fallback)) return fallback;
+  return d;
+}
+
+/**
+ * Mean UV direction of world +Y over the island (the 3D tangent of +Y in each triangle's plane,
+ * mapped through that triangle's UV, weighted by area x tangent length), with its strength: the
+ * length of the weighted sum over the area, 0 for a floor and 1 for a wall. Undefined strength 0.
+ */
+function worldUp(mesh: EditMesh, island: Island, uv: readonly Uv[]): { dir: Uv; strength: number } {
+  let [sx, sy, total] = [0, 0, 0];
+  const tris = island.triangles;
+  for (let t = 0; t < tris.length; t += 3) {
+    const ids = [0, 1, 2].map((j) => tris[t + j] as number);
+    const [p0, p1, p2] = ids.map((k) => point(mesh, island, k)) as [Tuple3, Tuple3, Tuple3];
+    const [q0, q1, q2] = ids.map((k) => uv[k] as Uv) as [Uv, Uv, Uv];
+    const e1 = sub(p1, p0);
+    const e2 = sub(p2, p0);
+    const n = cross(e1, e2);
+    const doubled = length(n);
+    if (!(doubled > 0)) continue;
+    const area = doubled / 2;
+    total += area;
+    // Tangent of +Y in the plane: Y - (Y . n) n, written a e1 + b e2 by Cramer's rule.
+    const nn = normalize(n);
+    const ty: Tuple3 = [-nn[1] * nn[0], 1 - nn[1] * nn[1], -nn[1] * nn[2]];
+    const g11 = dot(e1, e1);
+    const g12 = dot(e1, e2);
+    const g22 = dot(e2, e2);
+    const det = g11 * g22 - g12 * g12;
+    if (!(det > 0)) continue;
+    const r1 = dot(ty, e1);
+    const r2 = dot(ty, e2);
+    const a = (r1 * g22 - r2 * g12) / det;
+    const b = (r2 * g11 - r1 * g12) / det;
+    const vx = a * (q1[0] - q0[0]) + b * (q2[0] - q0[0]);
+    const vy = a * (q1[1] - q0[1]) + b * (q2[1] - q0[1]);
+    const len = Math.sqrt(vx * vx + vy * vy);
+    if (!(len > 0)) continue;
+    const weight = area * length(ty);
+    sx += (weight * vx) / len;
+    sy += (weight * vy) / len;
+  }
+  const norm = Math.sqrt(sx * sx + sy * sy);
+  return total > 0 && norm > 0
+    ? { dir: [sx / norm, sy / norm], strength: norm / total }
+    : { dir: [0, 1], strength: 0 };
+}
+
+/** Mean strength below which an island has no up (a floor or a ceiling) and keeps its straight orientation. */
+const UP_STRENGTH = 0.2;
+
 function rotateInto(points: Uv[], d: Uv): void {
   for (const p of points) {
     const x = p[0] * d[0] + p[1] * d[1];
@@ -862,7 +963,7 @@ export function samplesOf(
 }
 
 /** Islands of a complete UV channel: faces joined where both corner values match bit for bit. */
-function channelIslands(
+export function channelIslands(
   mesh: EditMesh,
   channel: CornerChannelName,
   work: WorkMeter,
@@ -898,6 +999,10 @@ function channelIslands(
 export interface UvMeasurement {
   /** Island per face id (NONE for dead ids), in island order of the lowest face. */
   readonly faceIsland: Int32Array;
+  /** L-infinity stretch of each face (worst triangle, island-normalized as in `islands`; Infinity for a flipped or collapsed triangle), 0 for dead ids. */
+  readonly faceStretch: Float32Array;
+  /** Texel density of each face (sqrt(areaUv / area3d), area-weighted over its triangles) relative to the whole channel's mean: 1 is average, 0 for a flipped or collapsed face and dead ids. */
+  readonly faceDensity: Float32Array;
   readonly islands: readonly Omit<UvIslandMetrics, 'iterations' | 'residual'>[];
   readonly stretchL2: number;
   readonly stretchLinf: number;
@@ -937,16 +1042,81 @@ export function measureUv(
     area3d += r.area3d;
     if (Number.isFinite(r.stretchL2)) l2 += r.stretchL2 * r.stretchL2 * r.area3d;
   }
+  const { faceStretch, faceDensity } = faceMeasures(mesh, found.value.islands, islands, reports);
   return ok({
     faceIsland: found.value.faceIsland,
+    faceStretch,
+    faceDensity,
     islands: reports,
     stretchL2: area3d > 0 ? Math.sqrt(l2 / area3d) : 0,
-    stretchLinf: Math.max(0, ...reports.map((r) => r.stretchLinf)),
-    areaDistortion: Math.max(1, ...reports.map((r) => r.areaDistortion)),
+    stretchLinf: Math.max(0, maxOf(reports.map((r) => r.stretchLinf))),
+    areaDistortion: Math.max(1, maxOf(reports.map((r) => r.areaDistortion))),
     texelDensityDispersion: densityDispersion(islands.flat()),
     flipped: reports.reduce((n, r) => n + r.flipped, 0),
     zeroArea: reports.reduce((n, r) => n + r.zeroArea, 0),
   });
+}
+
+/** Per-face stretch and relative texel density from the island samples `measureUv` already holds. */
+function faceMeasures(
+  mesh: EditMesh,
+  islands: readonly Island[],
+  samples: readonly (readonly TriangleSample[])[],
+  reports: readonly { readonly areaUv: number; readonly area3d: number }[],
+): { faceStretch: Float32Array; faceDensity: Float32Array } {
+  const faceStretch = new Float32Array(mesh.faceHighWater);
+  const faceDensity = new Float32Array(mesh.faceHighWater);
+  let weight = 0;
+  let sum = 0;
+  for (const s of samples.flat()) {
+    if (!(s.area3d > 0) || !(s.areaUv > 0)) continue;
+    weight += s.area3d;
+    sum += Math.sqrt(s.areaUv / s.area3d) * s.area3d;
+  }
+  const mean = weight > 0 ? sum / weight : 0;
+  islands.forEach((island, i) => {
+    const list = samples[i] as readonly TriangleSample[];
+    const r = reports[i] as { areaUv: number; area3d: number };
+    const norm = r.area3d > 0 ? Math.sqrt(r.areaUv / r.area3d) : 0;
+    let t = 0;
+    for (const f of island.faces) {
+      let stretch = 0;
+      let area3d = 0;
+      let areaUv = 0;
+      let broken = false;
+      for (let k = mesh.faceHalves(f).length - 2; k > 0; k--, t++) {
+        const s = list[t] as TriangleSample;
+        if (!(s.areaUv > 0)) broken = true;
+        else stretch = Math.max(stretch, s.linf * norm);
+        area3d += s.area3d;
+        areaUv += Math.max(0, s.areaUv);
+      }
+      faceStretch[f] = broken ? Number.POSITIVE_INFINITY : stretch;
+      faceDensity[f] =
+        broken || !(area3d > 0) || !(mean > 0) ? 0 : Math.sqrt(areaUv / area3d) / mean;
+    }
+  });
+  return { faceStretch, faceDensity };
+}
+
+/** Triangle pairs of the same UV island that overlap in `channel`, per island of `measureUv` (exact predicates). */
+export function uvSelfOverlaps(
+  mesh: EditMesh,
+  channel: CornerChannelName = 'uv0',
+): Result<readonly number[], ModelingError> {
+  const found = channelIslands(mesh, channel, new WorkMeter(Infinity));
+  if (!found.ok) return found;
+  return ok(
+    found.value.islands.map((island) => {
+      const flat = new Float64Array(island.vertexOf.length * 2);
+      for (const [h, k] of island.element) {
+        const v = mesh.corner(channel, h) as Float32Array;
+        flat[2 * k] = v[0] as number;
+        flat[2 * k + 1] = v[1] as number;
+      }
+      return overlapPairs(island.triangles, flat);
+    }),
+  );
 }
 
 /**
@@ -1376,6 +1546,7 @@ export function runUnwrapJob(
 
 interface Rect {
   readonly island: number;
+  readonly rank?: number;
   readonly width: number;
   readonly height: number;
 }
@@ -1625,12 +1796,13 @@ function fitMask(
   grid: Occupancy,
   mask: Mask,
   work: WorkMeter,
+  from = 0,
 ): [number, number] | undefined | false {
   const n = grid.size;
   const need = mask.rows.map((runs) => runs.reduce((sum, [a, b]) => sum + b - a, 0));
   const r0 = mask.rows.findIndex((runs) => runs.length > 0);
   const a0 = r0 < 0 ? 0 : ((mask.rows[r0] as [number, number][])[0] as [number, number])[0];
-  for (let y = 0; y + mask.height <= n; y++) {
+  for (let y = from; y + mask.height <= n; y++) {
     if (!work.spend(1)) return false;
     let room = true;
     for (let r = 0; r < mask.height && room; r++) {
@@ -1663,8 +1835,26 @@ function fitMask(
 
 const SCALE_STEPS = 24;
 const RASTER_STEPS = 8;
+/** Share of the work budget left after the proportional layout that the tight refinement may use. */
+const TIGHT_SHARE = 0.6;
+/** Most tiles one pack call fills. */
+const MAX_TILES = 64;
+/** Extra scale bisection steps when the search range spans several tiles. */
+const TILE_EXTRA_STEPS = 4;
 /** Largest raster grid side in cells: larger atlases rasterize in cells of several texels. */
 const RASTER_CELLS = 512;
+
+/** Cell side in texels and cells per atlas side of the raster grid. */
+function rasterGrid(resolution: number): { cell: number; n: number } {
+  const cell = Math.max(1, Math.ceil(resolution / RASTER_CELLS));
+  return { cell, n: Math.floor(resolution / cell) };
+}
+
+/** Texels per UV unit of one island: priority ranks may give islands different scales. */
+type Scale = (x: PackIsland) => number;
+
+/** A rectangle of raster cells [x0, y0, x1, y1). */
+type Box = readonly [number, number, number, number];
 
 /** One island of the job across every input mesh, oriented and normalized, minimum at 0. */
 interface PackIsland {
@@ -1673,7 +1863,68 @@ interface PackIsland {
   readonly faceIsland: number;
   readonly uv: Uv[];
   readonly size: Uv;
+  /** Regular layout: index of the first listed tag of most of its faces (the list length when none). */
+  group: number;
+  /** Priority rank: 0 is placed first and keeps its scale longest. */
+  rank: number;
+  /** Tile of the island when `tiles` is `group` or `zone` (`fit` assigns it while placing). */
+  tile?: number;
   leader?: number;
+  /** Mirror follower: the leader element each own element takes its UV from. */
+  via?: number[];
+}
+
+/**
+ * The leader island and element map of a mirror follower: every face of `island` is flagged, reflects a
+ * face of one island of unflagged faces, and those faces are exactly that island, with the same corner
+ * structure. The follower takes the leader's UV at each paired corner, so no geometry of its own is compared.
+ */
+function mirrorVia(
+  mesh: EditMesh,
+  pairs: MirrorPairs,
+  island: Island,
+  byFace: ReadonlyMap<number, number>,
+  all: readonly PackIsland[],
+): { leader: number; map: number[] } | undefined {
+  let leader: number | undefined;
+  const partners = new Set<number>();
+  for (const f of island.faces) {
+    const pair = pairs.partner.get(f);
+    if (pair === undefined) return undefined;
+    const at = byFace.get(pair.face);
+    if (at === undefined || (leader !== undefined && at !== leader)) return undefined;
+    leader = at;
+    partners.add(pair.face);
+  }
+  if (leader === undefined) return undefined;
+  const source = all[leader] as PackIsland;
+  if (
+    partners.size !== island.faces.length ||
+    source.island.faces.length !== partners.size ||
+    source.island.vertexOf.length !== island.vertexOf.length
+  ) {
+    return undefined;
+  }
+  const map: number[] = new Array(island.vertexOf.length).fill(-1);
+  const taken = new Set<number>();
+  for (const f of island.faces) {
+    const pair = pairs.partner.get(f) as { face: number; axis: MirrorAxis };
+    const twins = mesh.faceHalves(pair.face);
+    for (const h of mesh.faceHalves(f)) {
+      const image = pairs.image(pair.axis, mesh.hVert[h] as number);
+      const twin = twins.find((t) => mesh.hVert[t] === image);
+      if (twin === undefined) return undefined;
+      const k = island.element.get(h) as number;
+      const l = source.island.element.get(twin);
+      if (l === undefined) return undefined;
+      if (map[k] === -1) {
+        if (taken.has(l)) return undefined;
+        map[k] = l;
+        taken.add(l);
+      } else if (map[k] !== l) return undefined;
+    }
+  }
+  return map.every((l) => l >= 0) ? { leader, map } : undefined;
 }
 
 /** Same triangles and the same shape (within 1e-4 of the extent) up to a quarter turn: the follower can take the leader's UVs. */
@@ -1730,25 +1981,170 @@ const QUARTER: readonly Uv[] = [
 ];
 
 /**
+ * Regular layout: islands of one group (one part) share a rectangular atlas region. Groups
+ * in descending area order split the atlas by guillotine cuts along the longer side, each
+ * cut proportional to the cell area of its side; a region is then raster packed alone.
+ */
+function regularPack(
+  leaders: readonly PackIsland[],
+  scale: Scale,
+  resolution: number,
+  padding: number,
+  angles: readonly number[],
+  work: WorkMeter,
+  fill: 'proportional' | 'tight' = 'proportional',
+): UvPlacement[] | undefined | ModelingError {
+  const { cell, n } = rasterGrid(resolution);
+  const grow = Math.ceil(padding / (2 * cell));
+  const cells = leaders.map((leader) => {
+    const k = scale(leader);
+    const pts = leader.uv.map(([x, y]) => [(x * k) / cell, (y * k) / cell] as Uv);
+    const t = leader.island.triangles;
+    const tris: Uv[][] = [];
+    for (let k = 0; k < t.length; k += 3) {
+      tris.push([
+        pts[t[k] as number] as Uv,
+        pts[t[k + 1] as number] as Uv,
+        pts[t[k + 2] as number] as Uv,
+      ]);
+    }
+    return rasterMask(tris, grow).cells;
+  });
+  const maskCache = new Map<PackIsland, Mask[]>();
+  const area = (list: readonly number[]) => list.reduce((sum, i) => sum + (cells[i] as number), 0);
+  const byGroup = new Map<number, number[]>();
+  for (const [i, x] of leaders.entries())
+    byGroup.set(x.group, [...(byGroup.get(x.group) ?? []), i]);
+  const groups = [...byGroup.entries()]
+    .map(([group, list]) => ({
+      group,
+      list,
+      area: area(list),
+      rank: minOf(list.map((i) => (leaders[i] as PackIsland).rank)),
+    }))
+    .sort((a, b) => a.rank - b.rank || b.area - a.area || a.group - b.group);
+  const layout = (
+    bias: number,
+    tall: boolean,
+    tight = false,
+  ): UvPlacement[] | undefined | ModelingError => {
+    const out: UvPlacement[] = new Array(leaders.length);
+    const place = (list: typeof groups, box: Box): boolean | ModelingError => {
+      if (list.length === 1) {
+        const members = (list[0] as (typeof groups)[number]).list;
+        const placed = rasterPack(
+          members.map((i) => leaders[i] as PackIsland),
+          scale,
+          resolution,
+          padding,
+          angles,
+          work,
+          box,
+          maskCache,
+        );
+        if (placed instanceof Error) return placed;
+        if (placed === undefined) return false;
+        for (const [k, i] of members.entries()) out[i] = placed[k] as UvPlacement;
+        return true;
+      }
+      const total = list.reduce((sum, g) => sum + g.area, 0);
+      let cut = 1;
+      let head = (list[0] as (typeof groups)[number]).area;
+      while (
+        cut < list.length - 1 &&
+        head + (list[cut] as (typeof groups)[number]).area <= total / 2
+      ) {
+        head += (list[cut] as (typeof groups)[number]).area;
+        cut++;
+      }
+      const [x0, y0, x1, y1] = box;
+      const wide = x1 - x0 >= y1 - y0 !== tall;
+      const lo = wide ? x0 : y0;
+      const size = wide ? x1 - x0 : y1 - y0;
+      const boxes = (at: number): [Box, Box] => [
+        wide ? [x0, y0, at, y1] : [x0, y0, x1, at],
+        wide ? [at, y0, x1, y1] : [x0, at, x1, y1],
+      ];
+      const head_ = list.slice(0, cut);
+      const tail_ = list.slice(cut);
+      if (tight) {
+        // Smallest first region that holds the first side, then the rest must hold the second.
+        let a = lo + 1;
+        let b = lo + size - 1;
+        let found = -1;
+        while (a <= b) {
+          const m = (a + b) >> 1;
+          const probe = place(head_, boxes(m)[0]);
+          if (probe instanceof Error) return probe;
+          if (probe) {
+            found = m;
+            b = m - 1;
+          } else a = m + 1;
+        }
+        if (found < 0) return false;
+        const [f, g] = boxes(found);
+        const redo = place(head_, f);
+        if (redo !== true) return redo;
+        return place(tail_, g);
+      }
+      const mid = lo + Math.max(1, Math.min(size - 1, Math.round((size * head * bias) / total)));
+      const [first, second] = boxes(mid);
+      const a = place(head_, first);
+      if (a !== true) return a;
+      return place(tail_, second);
+    };
+    const done = place(groups, [0, 0, n, n]);
+    if (done instanceof Error) return done;
+    return done ? out : undefined;
+  };
+  for (const [bias, tall] of REGION_VARIANTS) {
+    const placed = layout(bias, tall);
+    if (placed !== undefined) return placed;
+  }
+  if (fill === 'tight') {
+    for (const tall of [false, true]) {
+      const placed = layout(1, tall, true);
+      if (placed !== undefined) return placed;
+    }
+  }
+  return undefined;
+}
+
+/** Region split variants tried in turn: the share given to the larger side and whether the first cut is tall. */
+const REGION_VARIANTS: readonly (readonly [number, boolean])[] = [
+  [1, false],
+  [1.12, false],
+  [0.9, false],
+  [1, true],
+  [1.12, true],
+  [0.9, true],
+];
+
+/**
  * Raster placement of the leaders at `scale` texels per UV unit: each island (in every
  * allowed turn) becomes a conservative cell mask dilated by half the padding; islands
  * go largest first to the lowest, then leftmost, free position of any turn.
  */
 function rasterPack(
   leaders: readonly PackIsland[],
-  scale: number,
+  scale: Scale,
   resolution: number,
   padding: number,
   angles: readonly number[],
   work: WorkMeter,
+  region?: Box,
+  maskCache?: Map<PackIsland, Mask[]>,
 ): UvPlacement[] | undefined | ModelingError {
-  const cell = Math.max(1, Math.ceil(resolution / RASTER_CELLS));
-  const n = Math.floor(resolution / cell);
+  const { cell, n } = rasterGrid(resolution);
+  const [rx0, ry0, rx1, ry1] = region ?? [0, 0, n, n];
   const grow = Math.ceil(padding / (2 * cell));
-  const masks = leaders.map((leader) =>
-    angles.map((angle) => {
+  const masks = leaders.map((leader) => {
+    const cached = maskCache?.get(leader);
+    if (cached !== undefined) return cached;
+    const built = angles.map((angle) => {
+      const k = scale(leader);
       const pts = turnedPoints(leader.uv, angle).map(
-        ([x, y]) => [(x * scale) / cell, (y * scale) / cell] as Uv,
+        ([x, y]) => [(x * k) / cell, (y * k) / cell] as Uv,
       );
       const tris: Uv[][] = [];
       const t = leader.island.triangles;
@@ -1760,8 +2156,10 @@ function rasterPack(
         ]);
       }
       return rasterMask(tris, grow);
-    }),
-  );
+    });
+    maskCache?.set(leader, built);
+    return built;
+  });
   if (!work.spend(masks.reduce((sum, m) => sum + (m[0] as Mask).cells, 0))) {
     return work.failure as ModelingError;
   }
@@ -1770,7 +2168,10 @@ function rasterPack(
   // Two greedy strategies; the first that fits wins. Largest area first to the lowest top
   // edge nests islands into each other's holes; tallest first to the lowest origin keeps
   // skyline-like rows, which the first can waste around big round islands.
-  const byArea = [...indices].sort((a, b) => first(b).cells - first(a).cells || a - b);
+  const rankOf = (i: number) => (leaders[i] as PackIsland).rank;
+  const byArea = [...indices].sort(
+    (a, b) => rankOf(a) - rankOf(b) || first(b).cells - first(a).cells || a - b,
+  );
   const largest = first(byArea[0] as number).cells;
   // Greedy strategies, the first that fits wins:
   // - largest first to the lowest top edge (islands nest into each other's holes);
@@ -1783,7 +2184,11 @@ function rasterPack(
     {
       seed: 'none',
       order: [...indices].sort(
-        (a, b) => first(b).height - first(a).height || first(b).width - first(a).width || a - b,
+        (a, b) =>
+          rankOf(a) - rankOf(b) ||
+          first(b).height - first(a).height ||
+          first(b).width - first(a).width ||
+          a - b,
       ),
       byTop: false,
     },
@@ -1791,6 +2196,15 @@ function rasterPack(
   ];
   for (const { seed, order, byTop } of strategies) {
     const grid = new Occupancy(n);
+    if (region !== undefined) {
+      for (let y = 0; y < n; y++) {
+        if (y < ry0 || y >= ry1) grid.fill(y, 0, n);
+        else {
+          grid.fill(y, 0, rx0);
+          grid.fill(y, rx1, n);
+        }
+      }
+    }
     const out: UvPlacement[] = new Array(leaders.length);
     const put = (i: number, x: number, y: number, k: number) => {
       const mask = (masks[i] as Mask[])[k] as Mask;
@@ -1814,15 +2228,16 @@ function rasterPack(
         big
           .map((i, island) => ({ island, width: first(i).width, height: first(i).height }))
           .sort((a, b) => b.height - a.height || b.width - a.width || a.island - b.island),
-        n,
+        rx1 - rx0,
         false,
         work,
       );
       if (rows instanceof Error) return rows;
       if (rows === undefined) continue;
+      if (rows.some((at) => at.y + at.height > ry1 - ry0)) continue;
       for (const [k, i] of big.entries()) {
         const at = rows[k] as UvPlacement;
-        put(i, at.x, at.y, 0);
+        put(i, rx0 + at.x, ry0 + at.y, 0);
         seeded.add(i);
       }
     }
@@ -1831,7 +2246,7 @@ function rasterPack(
       if (seeded.has(i)) continue;
       let best: { x: number; y: number; k: number; key: number } | undefined;
       for (const [k, mask] of (masks[i] as Mask[]).entries()) {
-        const at = fitMask(grid, mask, work);
+        const at = fitMask(grid, mask, work, ry0);
         if (at === false) return work.failure as ModelingError;
         if (at === undefined) continue;
         const key = (byTop ? at[1] + mask.height : at[1]) * (n + 1) + at[0];
@@ -1848,6 +2263,31 @@ function rasterPack(
   return undefined;
 }
 
+/** Largest relative stretch a texel snap may add along one axis before the island is only translated. */
+const SNAP_STRETCH = 0.06;
+
+/**
+ * Put an island's bounding rectangle on whole texels: each side rounds to the nearest texel, so
+ * axis-aligned edges land on pixel boundaries and neighbours move by at most one texel together.
+ * An island whose extent would change by more than SNAP_STRETCH on an axis is only translated.
+ */
+function snapToTexels(points: Uv[]): void {
+  const [x0, y0, x1, y1] = boundsOf(points);
+  const axis = (lo: number, hi: number): [number, number] => {
+    const size = hi - lo;
+    const rounded = Math.round(hi) - Math.round(lo);
+    if (rounded >= 1 && Math.abs(rounded / size - 1) <= SNAP_STRETCH)
+      return [Math.round(lo), rounded / size];
+    return [Math.round(lo), 1];
+  };
+  const [ox, sx] = axis(x0, x1);
+  const [oy, sy] = axis(y0, y1);
+  for (const p of points) {
+    p[0] = ox + (p[0] - x0) * sx;
+    p[1] = oy + (p[1] - y0) * sy;
+  }
+}
+
 function checkPackParams(params: UvPackJobParams, inputs: number): ModelingError | undefined {
   const { resolution, padding } = params;
   if (!(Number.isInteger(resolution) && resolution >= 16 && resolution <= 16384)) {
@@ -1862,9 +2302,98 @@ function checkPackParams(params: UvPackJobParams, inputs: number): ModelingError
       { padding },
     );
   }
+  if (
+    params.orient !== undefined &&
+    params.orient !== 'minimal' &&
+    params.orient !== 'straight' &&
+    params.orient !== 'worldUp'
+  ) {
+    return modelingError('model-invalid-argument', "orient is 'minimal', 'straight' or 'worldUp'", {
+      orient: params.orient,
+    });
+  }
   const method = params.method ?? 'skyline';
   if (method !== 'skyline' && method !== 'raster') {
     return modelingError('model-invalid-argument', "method is 'skyline' or 'raster'", { method });
+  }
+  if (params.groups !== undefined && (method !== 'raster' || params.groups.length === 0)) {
+    return modelingError('model-invalid-argument', "groups need method 'raster' and a tag list", {
+      method,
+      groups: params.groups.length,
+    });
+  }
+  if (params.priority !== undefined) {
+    if (
+      method !== 'raster' ||
+      !params.priority.every(
+        ([tag, value]) => typeof tag === 'string' && tag.length > 0 && Number.isFinite(value),
+      )
+    ) {
+      return modelingError(
+        'model-invalid-argument',
+        "priority maps non-empty face tags to finite numbers and needs method 'raster'",
+        { method },
+      );
+    }
+  }
+  const tiles = params.tiles;
+  if (tiles !== undefined) {
+    const down = tiles.down ?? 1;
+    const zones = tiles.zones;
+    const inGrid = (cell: readonly number[]) =>
+      Number.isInteger(cell[0]) &&
+      Number.isInteger(cell[1]) &&
+      (cell[0] as number) >= 0 &&
+      (cell[0] as number) < tiles.across &&
+      (cell[1] as number) >= 0 &&
+      (tiles.down === undefined || (cell[1] as number) < down);
+    if (
+      method !== 'raster' ||
+      !(Number.isInteger(tiles.across) && tiles.across >= 1) ||
+      !(Number.isInteger(down) && down >= 1) ||
+      tiles.across * down > MAX_TILES ||
+      (tiles.by !== 'group' && tiles.by !== 'zone' && tiles.by !== 'fit') ||
+      (tiles.by !== 'fit' && params.groups === undefined) ||
+      (tiles.by === 'zone') !== (zones !== undefined) ||
+      (zones !== undefined && !zones.every(([tag, cell]) => tag.length > 0 && inGrid(cell)))
+    ) {
+      return modelingError(
+        'model-invalid-argument',
+        `tiles is { across >= 1, down >= 1, by: 'group' | 'zone' | 'fit' } with at most ${MAX_TILES} tiles, method 'raster', groups for group and zone, and zones (cells inside the grid) only for zone`,
+        { tiles },
+      );
+    }
+  }
+  if (
+    params.fill !== undefined &&
+    (params.groups === undefined || (params.fill !== 'proportional' && params.fill !== 'tight'))
+  ) {
+    return modelingError(
+      'model-invalid-argument',
+      "fill is 'proportional' or 'tight' and needs groups",
+      { fill: params.fill },
+    );
+  }
+  if (
+    params.stack !== undefined &&
+    typeof params.stack !== 'boolean' &&
+    params.stack !== 'mirrored'
+  ) {
+    return modelingError('model-invalid-argument', "stack is a boolean or 'mirrored'", {
+      stack: params.stack,
+    });
+  }
+  if (
+    params.mirrorTolerance !== undefined &&
+    !(Number.isFinite(params.mirrorTolerance) && params.mirrorTolerance >= 0)
+  ) {
+    return modelingError(
+      'model-invalid-argument',
+      'mirrorTolerance is a finite number of at least 0',
+      {
+        mirrorTolerance: params.mirrorTolerance,
+      },
+    );
   }
   if (params.rotateStep !== undefined && params.rotateStep !== 90 && params.rotateStep !== 45) {
     return modelingError('model-invalid-argument', 'rotate step is 90 or 45 degrees', {
@@ -1872,22 +2401,31 @@ function checkPackParams(params: UvPackJobParams, inputs: number): ModelingError
     });
   }
   const density = params.density;
-  if (
-    density !== undefined &&
-    !(
-      Number.isFinite(density.target) &&
-      density.target > 0 &&
-      Number.isFinite(density.tolerance) &&
-      density.tolerance >= 0 &&
-      density.tolerance < 1 &&
-      params.normalize
-    )
-  ) {
-    return modelingError(
-      'model-invalid-argument',
-      'density is { target > 0 texels per meter, tolerance in [0, 1) } on normalized islands',
-      { density, normalize: params.normalize },
-    );
+  if (density !== undefined) {
+    const parts = density.parts;
+    if (
+      !(
+        (density.target === undefined || (Number.isFinite(density.target) && density.target > 0)) &&
+        Number.isFinite(density.tolerance) &&
+        density.tolerance >= 0 &&
+        density.tolerance < 1 &&
+        (density.target !== undefined || density.tolerance === 0)
+      )
+    ) {
+      return modelingError(
+        'model-invalid-argument',
+        'density is { target > 0 texels per meter, tolerance in [0, 1) } (tolerance needs a target)',
+        { density },
+      );
+    }
+    if (parts !== undefined && !(params.normalize && validParts(parts))) {
+      return modelingError(
+        'model-invalid-argument',
+        `density parts are tag names with multipliers above 0 that, with the base 1, span at most ${MAX_PART_RATIO}x, on normalized islands`,
+        { parts, normalize: params.normalize },
+        `give each tag a finite multiplier > 0 (1 = the base density) with largest / smallest (1 included) at most ${MAX_PART_RATIO}; keep normalize on`,
+      );
+    }
   }
   if (inputs < 1) {
     return modelingError('model-invalid-argument', 'uv.pack takes at least one FXEM input', {
@@ -1895,6 +2433,85 @@ function checkPackParams(params: UvPackJobParams, inputs: number): ModelingError
     });
   }
   return undefined;
+}
+
+/** Distinct priority values, highest first, with the default 0 of unlisted islands included. */
+function priorityLevels(priority: UvPackJobParams['priority']): number[] {
+  if (priority === undefined) return [0];
+  return [...new Set([0, ...priority.map(([, value]) => value)])].sort((a, b) => b - a);
+}
+
+/** Tile grid of a `tiles` request, with the tile of every island fixed by its part for `group` and `zone`. */
+interface TilePlan {
+  readonly across: number;
+  readonly down: number;
+  readonly by: 'group' | 'zone' | 'fit';
+}
+
+function planTiles(
+  params: UvPackJobParams,
+  all: readonly PackIsland[],
+): TilePlan | ModelingError | undefined {
+  const tiles = params.tiles;
+  if (tiles === undefined) return undefined;
+  const { across, by } = tiles;
+  if (by === 'fit') return { across, down: tiles.down ?? 1, by };
+  const tags = params.groups as readonly string[];
+  const zones = new Map(tiles.zones);
+  for (const x of all) {
+    if (by === 'group') x.tile = x.group;
+    else {
+      const cell = zones.get(tags[x.group] ?? '');
+      if (cell === undefined) {
+        return modelingError(
+          'model-precondition',
+          'every packed island belongs to a part listed in tiles.zones',
+          { reason: 'tile-zone-unknown', tag: tags[x.group] ?? null, input: x.input },
+          'list the part tag in tiles.zones, or tag the faces of the island',
+        );
+      }
+      x.tile = cell[1] * across + cell[0];
+    }
+  }
+  for (const x of all) {
+    if (x.leader !== undefined && (all[x.leader] as PackIsland).tile !== x.tile) {
+      return modelingError(
+        'model-precondition',
+        'stacked islands lie in the same tile',
+        { reason: 'tile-stack-conflict', input: x.input, tile: x.tile ?? null },
+        'stack within one part: packs with tiles keep stacked islands in their leader tile; drop stack or give both parts one zone',
+      );
+    }
+  }
+  const needed = maxOf(all.map((x) => (x.tile as number) + 1));
+  const down = tiles.down ?? Math.ceil(needed / across);
+  if (needed > across * down) {
+    return modelingError(
+      'model-precondition',
+      `the ${across} x ${down} tile grid holds every part`,
+      { reason: 'tile-grid-small', across, down, needed },
+      'raise tiles.across or tiles.down',
+    );
+  }
+  return { across, down, by };
+}
+
+/** Index in `tags` of the tag most faces of the island carry (the list length when none). */
+function groupOf(mesh: EditMesh, island: Island, tags: readonly string[] | undefined): number {
+  if (tags === undefined) return 0;
+  const ids = tags.map((t) => mesh.tagIndex(t, false));
+  let best = tags.length;
+  let most = 0;
+  for (const [k, id] of ids.entries()) {
+    if (id < 0) continue;
+    let count = 0;
+    for (const f of island.faces) if (mesh.hasTag(f, id)) count++;
+    if (count > most) {
+      most = count;
+      best = k;
+    }
+  }
+  return best;
 }
 
 /**
@@ -1907,14 +2524,51 @@ export function runPackJob(
   request: ComputeJobRequest<'uv.pack'>,
   work: WorkMeter,
 ): Result<BackendOutput<'uv.pack'>, ModelingError> {
-  const params = request.params;
-  const bad = checkPackParams(params, request.inputs.length);
+  const bad = checkPackParams(request.params, request.inputs.length);
   if (bad !== undefined) return err(bad);
+  const base = packCore(request, work, false);
+  if (request.params.fill !== 'tight' || !base.ok) return base;
+  // Tight region search is optional refinement: it draws a share of what is left, keeps the better layout
+  // and an exhausted share only means the proportional layout stays.
+  const part = work.slice((work.budget - work.units) * TIGHT_SHARE);
+  const tight = packCore(request, part, true);
+  if (!work.absorb(part)) return err(work.failure as ModelingError);
+  if (!tight.ok) return base;
+  const density = (out: BackendOutput<'uv.pack'>) => out.metrics.texelsPerMeter ?? 0;
+  return density(tight.value) > density(base.value) ? tight : base;
+}
+
+function packCore(
+  request: ComputeJobRequest<'uv.pack'>,
+  work: WorkMeter,
+  tight: boolean,
+): Result<BackendOutput<'uv.pack'>, ModelingError> {
+  const params = request.params;
   const { resolution, padding, rotate, normalize } = params;
   const method = params.method ?? 'skyline';
   const meshes: EditMesh[] = [];
   const faceIslands: Int32Array[] = [];
   const all: PackIsland[] = [];
+  const raw: {
+    input: number;
+    mesh: EditMesh;
+    island: Island;
+    index: number;
+    uv: Uv[];
+    multiplier: number;
+  }[] = [];
+  const parts = params.density?.parts;
+  const levels = priorityLevels(params.priority);
+  const rankOf = (mesh: EditMesh, island: Island) => {
+    if (params.priority === undefined) return 0;
+    const at = groupOf(
+      mesh,
+      island,
+      params.priority.map(([tag]) => tag),
+    );
+    const value = at < params.priority.length ? (params.priority[at]?.[1] as number) : 0;
+    return levels.indexOf(value);
+  };
   for (const [input, bytes] of request.inputs.entries()) {
     const decoded = decodeSnapshot(bytes);
     if (!decoded.ok) return decoded;
@@ -1923,41 +2577,118 @@ export function runPackJob(
     const found = channelIslands(mesh, 'uv0', work);
     if (!found.ok) return found;
     faceIslands.push(found.value.faceIsland);
+    const partIds = parts === undefined ? [] : partTagIds(mesh, parts);
     for (const [index, island] of found.value.islands.entries()) {
       const uv: Uv[] = island.vertexOf.map(() => [0, 0]);
       for (const [h, k] of island.element) {
         const v = mesh.corner('uv0', h) as Float32Array;
         uv[k] = [v[0] as number, v[1] as number];
       }
+      const multiplier =
+        parts === undefined
+          ? 1
+          : ((parts[partOfFaces(mesh, island.faces, partIds).part]?.[1] as number | undefined) ??
+            1);
+      raw.push({ input, mesh, island, index, uv, multiplier });
+    }
+  }
+  // Without normalization a density target is the layout's mean: one factor makes it 1 texel per meter per unit.
+  let mean = 1;
+  if (!normalize && params.density !== undefined) {
+    let a3 = 0;
+    let au = 0;
+    for (const r of raw) {
+      const facts = metricsOf(samplesOf(r.mesh, r.island, r.uv));
+      a3 += facts.area3d;
+      au += facts.areaUv;
+    }
+    if (a3 > 0 && au > 0) mean = Math.sqrt(a3 / au);
+  }
+  for (const { input, mesh, island, index, uv, multiplier } of raw) {
+    {
       if (normalize) {
         const facts = metricsOf(samplesOf(mesh, island, uv));
         if (facts.areaUv > 0 && facts.area3d > 0) {
-          const k = Math.sqrt(facts.area3d / facts.areaUv);
+          const k = Math.sqrt(facts.area3d / facts.areaUv) * multiplier;
           for (const p of uv) {
             p[0] *= k;
             p[1] *= k;
           }
         }
+      } else if (mean !== 1) {
+        for (const p of uv) {
+          p[0] *= mean;
+          p[1] *= mean;
+        }
       }
-      if (rotate) rotateInto(uv, orientation(uv));
+      if (rotate) {
+        const up = params.orient === 'worldUp' ? worldUp(mesh, island, uv) : undefined;
+        if (up !== undefined && up.strength >= UP_STRENGTH) {
+          rotateInto(uv, up.dir);
+          rotateInto(uv, [0, -1]);
+        } else {
+          rotateInto(
+            uv,
+            params.orient === 'minimal' ? orientation(uv) : straightOrientation(mesh, island, uv),
+          );
+          const [bx0, by0, bx1, by1] = boundsOf(uv);
+          if (by1 - by0 > bx1 - bx0) rotateInto(uv, [0, 1]);
+        }
+      }
       const [x0, y0] = boundsOf(uv);
       for (const p of uv) {
         p[0] -= x0;
         p[1] -= y0;
       }
       const [, , x1, y1] = boundsOf(uv);
-      all.push({ input, island, faceIsland: index, uv, size: [x1, y1] });
+      all.push({
+        input,
+        island,
+        faceIsland: index,
+        uv,
+        size: [x1, y1],
+        group: groupOf(mesh, island, params.groups),
+        rank: rankOf(mesh, island),
+      });
     }
   }
-  if (params.stack === true) {
+  let mirrorUnpaired = 0;
+  if (params.stack === 'mirrored') {
+    const tolerance = params.mirrorTolerance ?? 1e-5;
+    for (const [input, mesh] of meshes.entries()) {
+      const pairs = mirrorPairs(mesh, mesh.faces(), tolerance);
+      mirrorUnpaired += pairs.unpaired.length;
+      const byFace = new Map<number, number>();
+      for (const [i, x] of all.entries()) {
+        if (x.input !== input) continue;
+        for (const f of x.island.faces) byFace.set(f, i);
+      }
+      for (const [i, x] of all.entries()) {
+        if (x.input !== input || x.leader !== undefined) continue;
+        const via = mirrorVia(mesh, pairs, x.island, byFace, all);
+        if (via === undefined || via.leader === i) continue;
+        x.leader = via.leader;
+        x.via = via.map;
+      }
+    }
+  }
+  if (params.stack === true || params.stack === 'mirrored') {
     const buckets = new Map<string, number[]>();
     for (const [i, x] of all.entries()) {
+      if (x.via !== undefined) continue;
       const key = `${x.island.vertexOf.length}:${x.island.triangles.length}`;
       const list = buckets.get(key) ?? [];
       const leader = list.find((j) => congruent(all[j] as PackIsland, x));
       if (leader !== undefined) x.leader = leader;
       else list.push(i);
       buckets.set(key, list);
+    }
+    // A mirror source may itself have stacked onto a congruent island: share the root's texels.
+    for (const x of all) {
+      if (x.via === undefined) continue;
+      while ((all[x.leader as number] as PackIsland).leader !== undefined) {
+        x.leader = (all[x.leader as number] as PackIsland).leader as number;
+      }
     }
   }
   const leaders = all.filter((x) => x.leader === undefined);
@@ -1969,6 +2700,11 @@ export function runPackJob(
       }),
     );
   }
+  const tilePlan = method === 'raster' ? planTiles(params, all) : undefined;
+  if (tilePlan instanceof Error) return err(tilePlan);
+  const tileCells = tilePlan === undefined ? 1 : tilePlan.across * tilePlan.down;
+  // worldUp fixes each island's up on +v, so placement may only translate it.
+  const turns = rotate && params.orient !== 'worldUp';
   const skylineAt = (scale: number) =>
     skyline(
       leaders
@@ -1979,22 +2715,126 @@ export function runPackJob(
         }))
         .sort((a, b) => b.height - a.height || b.width - a.width || a.island - b.island),
       resolution,
-      rotate,
+      turns,
       work,
     );
-  const angles = !rotate
+  const angles = !turns
     ? [0]
     : params.rotateStep === 45
       ? [0, 45, 90, 135, 180, 225, 270, 315]
       : [0, 90, 180, 270];
+  const packSet = (
+    set: readonly PackIsland[],
+    scaleOf: Scale,
+  ): UvPlacement[] | undefined | ModelingError => {
+    if (params.groups === undefined)
+      return rasterPack(set, scaleOf, resolution, padding, angles, work);
+    return regularPack(
+      set,
+      scaleOf,
+      resolution,
+      padding,
+      angles,
+      work,
+      tight ? 'tight' : 'proportional',
+    );
+  };
+  let failedTile: number | undefined;
+  const tileAt = (t: number, placed: readonly UvPlacement[]): UvPlacement[] => {
+    const plan = tilePlan as TilePlan;
+    const dx = (t % plan.across) * resolution;
+    const dy = Math.floor(t / plan.across) * resolution;
+    return placed.map((p) => ({ ...p, x: p.x + dx, y: p.y + dy, tile: t }));
+  };
+  const attemptWith = (scaleOf: Scale): UvPlacement[] | undefined | ModelingError => {
+    if (tilePlan === undefined) return packSet(leaders, scaleOf);
+    const out: UvPlacement[] = new Array(leaders.length);
+    failedTile = undefined;
+    if (tilePlan.by !== 'fit') {
+      const byTile = new Map<number, number[]>();
+      for (const [i, x] of leaders.entries()) {
+        byTile.set(x.tile as number, [...(byTile.get(x.tile as number) ?? []), i]);
+      }
+      for (const [t, members] of [...byTile.entries()].sort((a, b) => a[0] - b[0])) {
+        const placed = packSet(
+          members.map((i) => leaders[i] as PackIsland),
+          scaleOf,
+        );
+        if (placed instanceof Error) return placed;
+        if (placed === undefined) {
+          failedTile = t;
+          return undefined;
+        }
+        for (const [k, p] of tileAt(t, placed).entries()) out[members[k] as number] = p;
+      }
+      return out;
+    }
+    // fit: the longest prefix (priority, then size) that fits a tile goes there; the rest spills on.
+    let rest = leaders
+      .map((_, i) => i)
+      .sort((a, b) => {
+        const [xa, xb] = [leaders[a] as PackIsland, leaders[b] as PackIsland];
+        const texels = (x: PackIsland) => x.size[0] * scaleOf(x) * (x.size[1] * scaleOf(x));
+        return xa.rank - xb.rank || texels(xb) - texels(xa) || a - b;
+      });
+    const tiles = tileCells;
+    const attemptSet = (members: readonly number[]) =>
+      packSet(
+        members.map((i) => leaders[i] as PackIsland),
+        scaleOf,
+      );
+    for (let t = 0; rest.length > 0; t++) {
+      if (t >= tiles) {
+        failedTile = t;
+        return undefined;
+      }
+      let take = rest.length;
+      let placed = attemptSet(rest);
+      if (placed instanceof Error) return placed;
+      if (placed === undefined) {
+        let lo = 0;
+        let hi = rest.length - 1;
+        placed = undefined;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          const tried = attemptSet(rest.slice(0, mid));
+          if (tried instanceof Error) return tried;
+          if (tried === undefined) hi = mid - 1;
+          else {
+            lo = mid;
+            placed = tried;
+          }
+        }
+        if (placed === undefined) {
+          const single = attemptSet(rest.slice(0, 1));
+          if (single instanceof Error) return single;
+          if (single === undefined) {
+            failedTile = t;
+            return undefined;
+          }
+          placed = single;
+          lo = 1;
+        }
+        take = lo;
+      }
+      for (const [k, p] of tileAt(t, placed).entries()) out[rest[k] as number] = p;
+      rest = rest.slice(take);
+    }
+    return out;
+  };
+  // With a density target the top priority level keeps the target density while the others may fall to the tolerance floor.
+  const pinned =
+    params.priority !== undefined && levels.length > 1 ? params.density?.target : undefined;
+  const scaleFor =
+    (at: number): Scale =>
+    (x) =>
+      pinned !== undefined && x.rank === 0 ? pinned : at;
   const attempt = (scale: number) =>
-    method === 'raster'
-      ? rasterPack(leaders, scale, resolution, padding, angles, work)
-      : skylineAt(scale);
+    method === 'raster' ? attemptWith(scaleFor(scale)) : skylineAt(scale);
   let scale: number;
   let placements: UvPlacement[];
   const density = params.density;
-  if (density !== undefined) {
+  if (density?.target !== undefined) {
     const high = density.target;
     const low = high * (1 - density.tolerance);
     let fitted = attempt(high);
@@ -2004,6 +2844,25 @@ export function runPackJob(
       const floor = attempt(low);
       if (floor instanceof Error) return err(floor);
       if (floor === undefined) {
+        const floorTile = failedTile;
+        // The failure path only: the largest base density that does fit, so the caller can pick a resolution.
+        const fits = (at: number) => {
+          const tried = method === 'raster' ? attemptWith(() => at) : skylineAt(at);
+          return tried !== undefined && !(tried instanceof Error);
+        };
+        let fit = low / 2;
+        for (let i = 0; !fits(fit) && i < 30; i++) fit /= 2;
+        let achievable = 0;
+        if (fits(fit)) {
+          let a = fit;
+          let b = fit * 2;
+          for (let step = 0; step < RASTER_STEPS; step++) {
+            const mid = (a + b) / 2;
+            if (fits(mid)) a = mid;
+            else b = mid;
+          }
+          achievable = a;
+        }
         return err(
           modelingError(
             'model-precondition',
@@ -2014,8 +2873,10 @@ export function runPackJob(
               padding,
               target: density.target,
               tolerance: density.tolerance,
+              achievable,
+              ...(floorTile === undefined ? {} : { tile: floorTile }),
             },
-            'raise the resolution, lower the target or the padding, or split the atlas',
+            `raise the resolution, lower the target (about ${achievable.toPrecision(3)} texels per meter fits) or the padding, or split the atlas`,
           ),
         );
       }
@@ -2075,7 +2936,8 @@ export function runPackJob(
       for (const x of leaders)
         area += Math.abs(metricsOf(samplesOf(meshes[x.input] as EditMesh, x.island, x.uv)).areaUv);
       let a = scale;
-      let b = Math.max(scale, resolution / Math.sqrt(area));
+      let b = Math.max(scale, (resolution * Math.sqrt(tileCells)) / Math.sqrt(area));
+      const steps = RASTER_STEPS + (tilePlan === undefined ? 0 : TILE_EXTRA_STEPS);
       const base = attempt(a);
       if (base instanceof Error) return err(base);
       if (base !== undefined) placements = base;
@@ -2094,6 +2956,7 @@ export function runPackJob(
                 islands: all.length,
                 resolution,
                 padding,
+                ...(failedTile === undefined ? {} : { tile: failedTile }),
               },
             ),
           );
@@ -2101,7 +2964,7 @@ export function runPackJob(
         placements = lower;
         scale = a;
       }
-      for (let step = 0; step < RASTER_STEPS && b > a * (1 + 1e-4); step++) {
+      for (let step = 0; step < steps && b > a * (1 + 1e-4); step++) {
         const mid = (a + b) / 2;
         const tried = attempt(mid);
         if (tried instanceof Error) return err(tried);
@@ -2118,30 +2981,29 @@ export function runPackJob(
   const finalUv = new Map<PackIsland, Uv[]>();
   for (const [i, x] of leaders.entries()) {
     const at = placements[i] as UvPlacement;
+    let texels: Uv[];
     if (method === 'raster') {
-      const pts = turnedPoints(x.uv, at.angle ?? 0);
-      finalUv.set(
-        x,
-        pts.map(
-          ([a, b]) => [(at.x + a * scale) / resolution, (at.y + b * scale) / resolution] as Uv,
-        ),
+      const k = scaleFor(scale)(x);
+      texels = turnedPoints(x.uv, at.angle ?? 0).map(
+        ([a, b]) => [at.x + a * k, at.y + b * k] as Uv,
       );
-      continue;
+    } else {
+      const height = x.size[1];
+      texels = x.uv.map(([a, b]) => {
+        const [px, py] = at.turned ? [height - b, a] : [a, b];
+        return [at.x + half + px * scale, at.y + half + py * scale] as Uv;
+      });
     }
-    const height = x.size[1];
+    if (params.snap === true) snapToTexels(texels);
     finalUv.set(
       x,
-      x.uv.map(([a, b]) => {
-        const [px, py] = at.turned ? [height - b, a] : [a, b];
-        return [
-          (at.x + half + px * scale) / resolution,
-          (at.y + half + py * scale) / resolution,
-        ] as Uv;
-      }),
+      texels.map(([a, b]) => [a / resolution, b / resolution] as Uv),
     );
   }
   for (const x of all) {
-    if (x.leader !== undefined) finalUv.set(x, finalUv.get(all[x.leader] as PackIsland) as Uv[]);
+    if (x.leader === undefined) continue;
+    const shared = finalUv.get(all[x.leader] as PackIsland) as Uv[];
+    finalUv.set(x, x.via === undefined ? shared : x.via.map((k) => shared[k] as Uv));
   }
   const outputs: Uint8Array[] = [];
   const samples: TriangleSample[] = [];
@@ -2173,13 +3035,27 @@ export function runPackJob(
       : {
           ...(placements[leaderIndex.get(all[x.leader] as PackIsland) as number] as UvPlacement),
           leader: x.leader,
+          ...(x.via === undefined ? {} : { mirrored: true }),
         },
   );
   // Raster islands nest into each other's bounding rectangles, so only their union is used.
-  const used =
-    method === 'raster'
-      ? rectUnionArea(placements, resolution)
-      : placements.reduce((sum, p) => sum + p.width * p.height, 0);
+  const perTile: number[] = [];
+  let used = 0;
+  if (method !== 'raster') used = placements.reduce((sum, p) => sum + p.width * p.height, 0);
+  else if (tilePlan === undefined) used = rectUnionArea(placements, resolution);
+  else {
+    for (let t = 0; t < tileCells; t++) {
+      const dx = (t % tilePlan.across) * resolution;
+      const dy = Math.floor(t / tilePlan.across) * resolution;
+      const mine = placements.filter((p) => p.tile === t);
+      const area = rectUnionArea(
+        mine.map((p) => ({ ...p, x: p.x - dx, y: p.y - dy })),
+        resolution,
+      );
+      used += area;
+      if (mine.length > 0) perTile.push(area / (resolution * resolution));
+    }
+  }
   return ok({
     status: 'ok',
     outputs,
@@ -2191,6 +3067,13 @@ export function runPackJob(
     metrics: {
       islands: all.length,
       stacked: all.length - leaders.length,
+      mirrored: all.filter((x) => x.via !== undefined).length,
+      mirrorUnpaired,
+      texelsSaved: all.reduce((sum, x) => {
+        if (x.leader === undefined) return sum;
+        const lead = all[x.leader] as PackIsland;
+        return sum + lead.size[0] * lead.size[1] * scale * scale;
+      }, 0),
       inputs: meshes.length,
       raster: method === 'raster' ? 1 : 0,
       resolution,
@@ -2198,7 +3081,14 @@ export function runPackJob(
       texelsPerUnit: scale,
       texelsPerMeter: area3d > 0 ? resolution * Math.sqrt(coverage / area3d) : 0,
       coverage,
-      rectUtilization: used / (resolution * resolution),
+      rectUtilization: used / (resolution * resolution * (perTile.length > 0 ? perTile.length : 1)),
+      ...(tilePlan === undefined
+        ? {}
+        : {
+            tiles: perTile.length,
+            tileUtilizationMin: minOf(perTile),
+            tileUtilizationMax: maxOf(perTile),
+          }),
       turned: placements.filter((p) => p.turned).length,
       texelDensityDispersion: densityDispersion(samples),
     },

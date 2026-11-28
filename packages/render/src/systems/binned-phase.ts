@@ -8,25 +8,18 @@ export interface BinnedPhaseWork {
   bins: number;
 }
 
-/** One queued item: `rank` orders it within its bin, `member` breaks equal ranks. */
+/** A queued item owns its bin and its position within that bin. */
 export interface BinnedItem {
   readonly rank: number;
   readonly member: number;
-}
-
-/** Where one item of a member is queued: its bin key and the bin's (major, minor) order. */
-export interface BinPlacement<T extends BinnedItem> {
-  readonly key: number;
-  readonly major: number;
-  readonly minor: number;
-  readonly item: T;
+  readonly bin: number;
+  readonly binMajor: number;
 }
 
 /** A retained bin: items ordered by (rank, member). */
 export interface Bin<T extends BinnedItem> {
   readonly key: number;
   readonly major: number;
-  readonly minor: number;
   readonly items: readonly T[];
   /** Ordinal in the current bin order; valid after {@link BinnedPhase.orderedBins}. */
   readonly ordinal: number;
@@ -35,7 +28,6 @@ export interface Bin<T extends BinnedItem> {
 interface MutableBin<T extends BinnedItem> {
   readonly key: number;
   readonly major: number;
-  readonly minor: number;
   readonly items: T[];
   ordinal: number;
 }
@@ -46,7 +38,7 @@ function compareItems(a: BinnedItem, b: BinnedItem): number {
 
 /**
  * A view-private retained binned phase (Bevy's `BinnedRenderPhase`): items
- * live in bins keyed by a numeric bin key and ordered by (major, minor), and
+ * live in bins keyed by a numeric bin key and ordered by (major, key), and
  * each member (an entity's draw) remembers its placements, so a member is
  * dequeued from its old bins before it is enqueued again — a bin-key change
  * is one dequeue and one enqueue. Consumers feed only entered, left and
@@ -54,11 +46,8 @@ function compareItems(a: BinnedItem, b: BinnedItem): number {
  */
 export class BinnedPhase<T extends BinnedItem> {
   private readonly bins = new Map<number, MutableBin<T>>();
-  /** Cached placements per member (Bevy's `cached_entity_bin_keys`). */
-  private readonly placements = new Map<
-    number,
-    readonly { readonly bin: MutableBin<T>; readonly item: T }[]
-  >();
+  /** The same placed items their member published, indexed for removal. */
+  private readonly placements = new Map<number, readonly T[]>();
   private ordered: MutableBin<T>[] = [];
   private orderValid = true;
   /** Advances on every membership change. */
@@ -75,40 +64,24 @@ export class BinnedPhase<T extends BinnedItem> {
     return this.placements.has(member);
   }
 
-  /** Replace a member's placements; the previous ones are dequeued first. */
-  queue(member: number, placements: readonly BinPlacement<T>[]): void {
+  /** Replace a member's placements with its fixed item list. */
+  queue(member: number, items: readonly T[]): void {
     this.dequeue(member);
-    if (placements.length === 0) return;
-    const placed: { readonly bin: MutableBin<T>; readonly item: T }[] = [];
-    for (const placement of placements) {
-      let bin = this.bins.get(placement.key);
-      if (bin === undefined) {
-        bin = {
-          key: placement.key,
-          major: placement.major,
-          minor: placement.minor,
-          items: [],
-          ordinal: -1,
-        };
-        this.bins.set(placement.key, bin);
-        this.orderValid = false;
-        this.binRevision += 1;
-        this.work.bins += 1;
-      }
-      bin.items.splice(lowerBound(bin.items, placement.item), 0, placement.item);
-      placed.push({ bin, item: placement.item });
+    if (items.length === 0) return;
+    for (const item of items) {
+      const bin = this.binFor(item);
+      bin.items.splice(lowerBound(bin.items, item), 0, item);
       this.work.enqueued += 1;
     }
-    this.placements.set(member, placed);
+    this.placements.set(member, items);
     this.revision += 1;
   }
 
   /**
-   * Replace the placements of many members at once: affected bins are
-   * filtered and re-sorted once, so a bulk change costs O(n log n) instead of
-   * one splice per item. Equivalent to calling {@link queue} for each entry.
+   * Replace placements for distinct members in bulk. Each affected bin is
+   * compacted and re-sorted once, with no secondary item list.
    */
-  queueMany(entries: readonly (readonly [number, readonly BinPlacement<T>[]])[]): void {
+  queueMany(entries: readonly (readonly [number, readonly T[]])[]): void {
     if (entries.length === 0) return;
     const leaving = new Set<number>();
     const touched = new Set<MutableBin<T>>();
@@ -117,49 +90,27 @@ export class BinnedPhase<T extends BinnedItem> {
       if (placed === undefined) continue;
       leaving.add(member);
       this.placements.delete(member);
-      for (const { bin } of placed) touched.add(bin);
+      for (const item of placed) touched.add(this.bins.get(item.bin) as MutableBin<T>);
       this.work.dequeued += placed.length;
     }
-    for (const bin of touched) {
-      const kept = bin.items.filter((item) => !leaving.has(item.member));
-      bin.items.length = 0;
-      for (const item of kept) bin.items.push(item);
+    for (const { items } of touched) {
+      let kept = 0;
+      for (const item of items) if (!leaving.has(item.member)) items[kept++] = item;
+      items.length = kept;
     }
-    for (const [member, placements] of entries) {
-      if (placements.length === 0) continue;
-      const placed: { readonly bin: MutableBin<T>; readonly item: T }[] = [];
-      for (const placement of placements) {
-        let bin = this.bins.get(placement.key);
-        if (bin === undefined) {
-          bin = {
-            key: placement.key,
-            major: placement.major,
-            minor: placement.minor,
-            items: [],
-            ordinal: -1,
-          };
-          this.bins.set(placement.key, bin);
-          this.orderValid = false;
-          this.binRevision += 1;
-          this.work.bins += 1;
-        }
-        bin.items.push(placement.item);
+    for (const [member, items] of entries) {
+      if (items.length === 0) continue;
+      for (const item of items) {
+        const bin = this.binFor(item);
+        bin.items.push(item);
         touched.add(bin);
-        placed.push({ bin, item: placement.item });
         this.work.enqueued += 1;
       }
-      this.placements.set(member, placed);
+      this.placements.set(member, items);
     }
     for (const bin of touched) {
-      if (bin.items.length > 0) {
-        bin.items.sort(compareItems);
-        continue;
-      }
-      if (this.bins.get(bin.key) !== bin) continue;
-      this.bins.delete(bin.key);
-      this.orderValid = false;
-      this.binRevision += 1;
-      this.work.bins += 1;
+      if (bin.items.length > 0) bin.items.sort(compareItems);
+      else this.retireBin(bin);
     }
     this.revision += 1;
   }
@@ -169,33 +120,59 @@ export class BinnedPhase<T extends BinnedItem> {
     const placed = this.placements.get(member);
     if (placed === undefined) return false;
     this.placements.delete(member);
-    for (const { bin, item } of placed) {
+    for (const item of placed) {
+      const bin = this.bins.get(item.bin) as MutableBin<T>;
       const items = bin.items;
-      const at = lowerBound(items, item);
+      let at = lowerBound(items, item);
+      // Several sections of one member may share the same Pass and rank.
+      while (items[at] !== item) {
+        const tied = items[at];
+        if (tied === undefined || compareItems(tied, item) !== 0) break;
+        at++;
+      }
       if (items[at] !== item) throw new Error('BinnedPhase lost a placement');
       items.splice(at, 1);
       this.work.dequeued += 1;
-      if (items.length === 0 && this.bins.get(bin.key) === bin) {
-        this.bins.delete(bin.key);
-        this.orderValid = false;
-        this.binRevision += 1;
-        this.work.bins += 1;
-      }
+      if (items.length === 0) this.retireBin(bin);
     }
     this.revision += 1;
     return true;
   }
 
-  /** Current ordinal of a live bin in (major, minor) order. */
+  private binFor(item: T): MutableBin<T> {
+    let bin = this.bins.get(item.bin);
+    if (bin === undefined) {
+      bin = {
+        key: item.bin,
+        major: item.binMajor,
+        items: [],
+        ordinal: -1,
+      };
+      this.bins.set(bin.key, bin);
+      this.orderValid = false;
+      this.binRevision += 1;
+      this.work.bins += 1;
+    }
+    return bin;
+  }
+
+  private retireBin(bin: MutableBin<T>): void {
+    this.bins.delete(bin.key);
+    this.orderValid = false;
+    this.binRevision += 1;
+    this.work.bins += 1;
+  }
+
+  /** Current ordinal of a live bin in (major, key) order. */
   ordinalOf(key: number): number {
     this.orderedBins();
     return this.bins.get(key)?.ordinal ?? -1;
   }
 
-  /** Bins in (major, minor) order; ordinals are assigned here. */
+  /** Bins in (major, key) order; ordinals are assigned here. */
   orderedBins(): readonly Bin<T>[] {
     if (!this.orderValid) {
-      this.ordered = [...this.bins.values()].sort((a, b) => a.major - b.major || a.minor - b.minor);
+      this.ordered = [...this.bins.values()].sort((a, b) => a.major - b.major || a.key - b.key);
       for (let index = 0; index < this.ordered.length; index++)
         (this.ordered[index] as MutableBin<T>).ordinal = index;
       this.orderValid = true;

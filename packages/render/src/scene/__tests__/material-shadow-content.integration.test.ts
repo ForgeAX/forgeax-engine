@@ -426,7 +426,6 @@ it.each([
 it('checks actual shadow material content before accepting an unchanged World proof', () => {
   const world = new World(),
     lease = createRenderReadLease(world);
-  const internals = { assets: { catalogEpoch: 1 } } as unknown as RenderSystemInternals;
   const state = {
     compiledFrameGraph: { topologyKey: 'stable' },
     installedPipelineHandle: 1,
@@ -461,7 +460,6 @@ it('checks actual shadow material content before accepting an unchanged World pr
   });
   const decide = () =>
     prepareDirectionalShadowCache(
-      internals,
       state,
       worldRenderResources(world),
       lease,

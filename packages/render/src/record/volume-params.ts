@@ -1,19 +1,22 @@
-import { vec3 } from '@forgeax/engine-math';
 import { type Buffer, RhiError } from '@forgeax/engine-rhi';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { SpotLightProjectorFrameContext, VolumetricFogFrameContext } from '../render-contract';
 import type { ExtractedVolumetricFog } from '../render-system-extract';
 import { volumetricFogSamplingLane } from '../volume/component';
-import { VOLUMETRIC_FOG_PARAMS_BYTES } from '../volume/resources';
+import { VOLUMETRIC_FOG_MEMBER_WORDS, VOLUMETRIC_FOG_PARAMS_BYTES } from '../volume/resources';
 import type { ViewLights } from '../world/render-lights';
 import { recordContext } from '../world/view-record-context';
 import { clusterLocalLights } from './cluster-local-lights';
-import type { RenderFrameState, VolumetricFogParamsState } from './frame-snapshot';
+import type {
+  RenderFrameState,
+  VolumetricFogParamsSlot,
+  VolumetricFogParamsState,
+} from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 
 export function emptyVolumetricFogParams(): VolumetricFogParamsState {
-  return { buffers: [null, null], pending: null, accepted: null };
+  return { slots: [null, null], pending: null, accepted: null };
 }
 
 /** Accept the pending slot; called only after its queue submission succeeded. */
@@ -29,36 +32,60 @@ function nextVolumetricFogParamsSlot(state: VolumetricFogParamsState): 0 | 1 {
   return accepted?.slot === 0 ? 1 : 0;
 }
 
+function writableVolumeParams(
+  internals: RenderSystemInternals,
+  state: VolumetricFogParamsState,
+): VolumetricFogParamsSlot | undefined {
+  const slot = nextVolumetricFogParamsSlot(state);
+  const existing = state.slots[slot];
+  if (existing !== null) return existing;
+  const created = internals.device.createBuffer({
+    label: `volumetric-fog-params-${slot}`,
+    size: VOLUMETRIC_FOG_PARAMS_BYTES,
+    usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+    mappedAtCreation: false,
+  });
+  if (!created.ok) {
+    internals.errorRegistry.fire(created.error);
+    return undefined;
+  }
+  const next = {
+    slot,
+    buffer: created.value,
+    params: new Float32Array(VOLUMETRIC_FOG_PARAMS_BYTES / 4),
+  };
+  state.slots[slot] = next;
+  return next;
+}
+
+function uploadVolumeParams(
+  internals: RenderSystemInternals,
+  state: VolumetricFogParamsState,
+  slot: VolumetricFogParamsSlot,
+): Buffer | undefined {
+  const written = internals.device.queue.writeBuffer(slot.buffer, 0, slot.params);
+  if (!written.ok) {
+    internals.errorRegistry.fire(written.error);
+    return undefined;
+  }
+  state.pending = slot;
+  return slot.buffer;
+}
+
 export function stageVolumetricFogParams(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   params: Float32Array,
 ): Buffer | undefined {
   const state = frameState.volumetricFogParams;
-  const slot = nextVolumetricFogParamsSlot(state);
-  let buffer = state.buffers[slot];
-  if (buffer === null) {
-    const created = internals.device.createBuffer({
-      label: `volumetric-fog-params-${slot}`,
-      size: VOLUMETRIC_FOG_PARAMS_BYTES,
-      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-      mappedAtCreation: false,
-    });
-    if (!created.ok) {
-      internals.errorRegistry.fire(created.error);
-      return undefined;
-    }
-    buffer = created.value;
-    state.buffers[slot] = buffer;
-  }
-  const written = internals.device.queue.writeBuffer(buffer, 0, params);
-  if (!written.ok) {
-    internals.errorRegistry.fire(written.error);
-    return undefined;
-  }
-  state.pending = { slot, params: new Float32Array(params) };
-  return buffer;
+  const slot = writableVolumeParams(internals, state);
+  if (slot === undefined) return undefined;
+  slot.params.set(params);
+  return uploadVolumeParams(internals, state, slot);
 }
+
+const DEFAULT_VOLUME_LIGHT_DIRECTION = [0, -1, 0] as const;
+const DEFAULT_VOLUME_LIGHT_COLOR = [0, 0, 0] as const;
 
 /**
  * Resolve the authored density POD into the renderer-owned GPU resources used
@@ -70,19 +97,16 @@ export function stageVolumetricFogParams(
  */
 function prepareVolumetricFogMember(
   internals: RenderSystemInternals,
-  frameState: RenderFrameState,
   world: RenderResourceScope,
   sourceScope: RenderResourceScope,
-  fog: ExtractedVolumetricFog | undefined,
+  fog: ExtractedVolumetricFog,
   lights: ViewLights,
-  volumeCapability: boolean,
-  projector: SpotLightProjectorFrameContext | undefined,
-):
-  | (Omit<VolumetricFogFrameContext, 'paramsBuffer'> & { readonly params: Float32Array })
-  | undefined {
+  cluster: ReturnType<typeof clusterLocalLights>['kept'],
+  params: Float32Array,
+  offset: number,
+): ReturnType<typeof residentVolumeDensity> {
   if (
-    !volumeCapability ||
-    fog?.status !== 'available' ||
+    fog.status !== 'available' ||
     fog.fog === undefined ||
     (fog.fog.sampling !== 'uniform' &&
       (fog.densityHandle === undefined || fog.densityAsset === undefined)) ||
@@ -96,13 +120,26 @@ function prepareVolumetricFogMember(
   }
   const density = residentVolumeDensity(internals, sourceScope ?? world, fog);
   if (density === undefined) return undefined;
-  const params = new Float32Array(36);
-  params.set(fog.fog.bounds.min, 0);
-  params.set(fog.fog.bounds.max, 4);
-  params[7] = volumetricFogSamplingLane(fog.fog.sampling);
-  params.set(fog.fog.extinction, 8);
-  params.set(fog.fog.albedo, 12);
-  params.set(fog.fog.emission, 16);
+  params.set(fog.fog.bounds.min, offset);
+  params.set(fog.fog.bounds.max, offset + 4);
+  params[offset + 7] = volumetricFogSamplingLane(fog.fog.sampling);
+  params.set(fog.fog.extinction, offset + 8);
+  params.set(fog.fog.albedo, offset + 12);
+  params.set(fog.fog.emission, offset + 16);
+  writeVolumeLightParams(params, offset, fog, lights, cluster);
+  params[offset + 28] = fog.fog.maxDistance;
+  params[offset + 29] = fog.fog.anisotropy;
+  params[offset + 32] = fog.worldTimeSeconds ?? 0;
+  return density;
+}
+
+function writeVolumeLightParams(
+  params: Float32Array,
+  offset: number,
+  fog: ExtractedVolumetricFog,
+  lights: ViewLights,
+  cluster: ReturnType<typeof clusterLocalLights>['kept'],
+): void {
   const selectedPoint =
     fog.pointLightEntity === undefined
       ? undefined
@@ -114,15 +151,13 @@ function prepareVolumetricFogMember(
         : undefined
       : lights.spot.find((light) => light.entity === fog.spotLightEntity);
   const lightDirection =
-    selectedSpot?.direction ?? lights.directional?.direction ?? vec3.create(0, -1, 0);
-  const lightColor = selectedSpot?.color ?? lights.directional?.color ?? vec3.create(0, 0, 0);
-  if (lightDirection === undefined || lightColor === undefined) return undefined;
-  params.set(lightDirection, 20);
+    selectedSpot?.direction ?? lights.directional?.direction ?? DEFAULT_VOLUME_LIGHT_DIRECTION;
+  const lightColor = selectedSpot?.color ?? lights.directional?.color ?? DEFAULT_VOLUME_LIGHT_COLOR;
+  params.set(lightDirection, offset + 20);
   // Reserved padding: render frame identity must not move volume samples.
-  params[23] = 0;
+  params[offset + 23] = 0;
   // Slots address the Cluster's admitted lights; a light dropped over the
   // limit has no slot and the volume treats it as unselected.
-  const cluster = clusterLocalLights(internals, lights).kept;
   const selectedPointIndex =
     selectedPoint === undefined
       ? -1
@@ -135,12 +170,10 @@ function prepareVolumetricFogMember(
   // first, so volume stores the global slot rather than a per-kind array index.
   const selectedSpotClusterIndex =
     selectedSpotIndex < 0 ? -1 : cluster.point.length + selectedSpotIndex;
-  params.set(lightColor, 24);
-  params[19] = selectedPointIndex;
-  params[27] = selectedSpotClusterIndex;
-  params[28] = fog.fog.maxDistance;
-  params[29] = fog.fog.anisotropy;
-  params[30] =
+  params.set(lightColor, offset + 24);
+  params[offset + 19] = selectedPointIndex;
+  params[offset + 27] = selectedSpotClusterIndex;
+  params[offset + 30] =
     selectedPoint !== undefined && selectedSpot !== undefined
       ? 3
       : selectedPoint !== undefined
@@ -148,26 +181,6 @@ function prepareVolumetricFogMember(
         : selectedSpot !== undefined
           ? 2
           : 0;
-  // The temporal shader reads this lane after the record stage resolves the
-  // accepted graph/slot. It is overwritten on the next queue-visible frame;
-  // the first candidate deliberately starts with history disabled.
-  params[31] = frameState.temporalFrameTransaction.accepted()?.resetReason === 'none' ? 1 : 0;
-  // RenderResourceScope elapsed time is the sole authored-medium clock.
-  params[32] = fog.worldTimeSeconds ?? 0;
-  return {
-    ...density,
-    params,
-    historyReadSlot: null,
-    historyWriteSlot: 0,
-    historyValid: false,
-    ...(projector === undefined
-      ? {}
-      : {
-          projectorTexture: projector.texture,
-          projectorView: projector.view,
-          projectorSampler: projector.sampler,
-        }),
-  };
 }
 
 /** The bound density volume: the authored TextureAsset, or the unit volume for `uniform`. */
@@ -216,6 +229,14 @@ function residentVolumeDensity(
   };
 }
 
+function extendVolumeBounds(params: Float32Array, offset: number): void {
+  for (let axis = 0; axis < 3; axis++) {
+    params[axis] = Math.min(params[axis] ?? 0, params[offset + axis] ?? 0);
+    params[axis + 4] = Math.max(params[axis + 4] ?? 0, params[offset + axis + 4] ?? 0);
+  }
+  params[28] = Math.max(params[28] ?? 0, params[offset + 28] ?? 0);
+}
+
 export function prepareVolumetricFogFrame(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -226,39 +247,65 @@ export function prepareVolumetricFogFrame(
   volumeCapability: boolean,
   projector: SpotLightProjectorFrameContext | undefined,
 ): VolumetricFogFrameContext | undefined {
-  if (fog === undefined) return undefined;
-  const sources = [fog, ...(fog.additional ?? [])];
-  const members = [];
-  for (const source of sources) {
-    const member = prepareVolumetricFogMember(
-      internals,
-      frameState,
-      world,
-      sourceScope,
-      { ...source },
-      lights,
-      volumeCapability,
-      projector,
-    );
-    if (member === undefined) return undefined;
-    members.push(member);
-  }
-  const first = members[0];
+  if (!volumeCapability || fog?.status !== 'available') return undefined;
+  const state = frameState.volumetricFogParams;
+  const slot = writableVolumeParams(internals, state);
+  if (slot === undefined) return undefined;
+  const cluster = clusterLocalLights(internals, lights).kept;
+  const { params } = slot;
+  params.fill(0);
+  const first = prepareVolumetricFogMember(
+    internals,
+    world,
+    sourceScope,
+    fog,
+    lights,
+    cluster,
+    params,
+    VOLUMETRIC_FOG_MEMBER_WORDS,
+  );
   if (first === undefined) return undefined;
-  const params = new Float32Array(VOLUMETRIC_FOG_PARAMS_BYTES / 4);
-  params.set(first.params);
-  params[3] = members.length;
-  for (const [index, member] of members.entries()) {
-    params.set(member.params, (index + 1) * first.params.length);
-    for (let axis = 0; axis < 3; axis++) {
-      params[axis] = Math.min(params[axis] ?? 0, member.params[axis] ?? 0);
-      params[axis + 4] = Math.max(params[axis + 4] ?? 0, member.params[axis + 4] ?? 0);
+  params.copyWithin(0, VOLUMETRIC_FOG_MEMBER_WORDS, 2 * VOLUMETRIC_FOG_MEMBER_WORDS);
+  const additional = fog.additional;
+  let members: NonNullable<ReturnType<typeof residentVolumeDensity>>[] | undefined;
+  const count = 1 + (additional?.length ?? 0);
+  params[3] = count;
+  if (additional !== undefined) {
+    for (let i = 0; i < additional.length; i++) {
+      const source = additional[i];
+      if (source === undefined) return undefined;
+      const offset = (i + 2) * VOLUMETRIC_FOG_MEMBER_WORDS;
+      const member = prepareVolumetricFogMember(
+        internals,
+        world,
+        sourceScope,
+        source,
+        lights,
+        cluster,
+        params,
+        offset,
+      );
+      if (member === undefined) return undefined;
+      members ??= [];
+      members.push(member);
+      extendVolumeBounds(params, offset);
     }
-    params[28] = Math.max(params[28] ?? 0, member.params[28] ?? 0);
   }
-  const paramsBuffer = stageVolumetricFogParams(internals, frameState, params);
+  const paramsBuffer = uploadVolumeParams(internals, state, slot);
   if (paramsBuffer === undefined) return undefined;
-  const { params: ignored, ...context } = first;
-  void ignored;
-  return { ...context, paramsBuffer, additional: members.slice(1) };
+  return {
+    ...first,
+    paramsBuffer,
+    historyReadSlot: null,
+    historyWriteSlot: 0,
+    historyValid: false,
+    ...(members === undefined ? {} : { additional: members }),
+    ...(projector === undefined
+      ? {}
+      : {
+          projectorTexture: projector.texture,
+          projectorView: projector.view,
+          projectorSampler: projector.sampler,
+        }),
+  };
 }

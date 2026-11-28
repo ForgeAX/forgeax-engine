@@ -36,6 +36,39 @@ fn cloud_bilateral_upsample(samples: array<CloudReconstructionSample, 4>, sceneD
   return selected;
 }
 
+// -2: occluded, -1: bilinear far, otherwise 2 * sample index + (1 for near).
+fn cloud_ue_upsample_choice(depthsKm: array<vec4f, 4>, sceneKm: f32,
+    disableDisocclusionKm: f32) -> i32 {
+  var allBehind = true;
+  var allInFront = true;
+  var allDistant = true;
+  var minimum = min(depthsKm[0].z, depthsKm[0].w);
+  var maximum = max(depthsKm[0].z, depthsKm[0].w);
+  var closest = abs(sceneKm - depthsKm[0].w);
+  var selected = 0;
+  for (var i = 0u; i < 4u; i += 1u) {
+    let depthKm = depthsKm[i];
+    allBehind = allBehind && depthKm.x > sceneKm + 0.001;
+    allInFront = allInFront && depthKm.x <= depthKm.z;
+    allDistant = allDistant && all(depthKm.yzw >= vec3f(disableDisocclusionKm));
+    minimum = min(minimum, min(depthKm.z, depthKm.w));
+    maximum = max(maximum, max(depthKm.z, depthKm.w));
+    let farDelta = abs(sceneKm - depthKm.w);
+    if farDelta < closest {
+      closest = farDelta;
+      selected = i32(2u * i);
+    }
+    let nearDelta = abs(sceneKm - depthKm.z);
+    if nearDelta < closest {
+      closest = nearDelta;
+      selected = i32(2u * i + 1u);
+    }
+  }
+  if allBehind { return -2; }
+  if allInFront && (maximum - minimum < 1.0 || allDistant) { return -1; }
+  return selected;
+}
+
 // Both depth lanes contain their own atmosphere and height fog already.
 fn cloud_compose_transport(background: vec3f, cloud: vec4f) -> vec3f {
   return cloud.a * background + cloud.rgb;

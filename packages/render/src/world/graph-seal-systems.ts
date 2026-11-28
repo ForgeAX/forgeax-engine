@@ -1,32 +1,31 @@
-import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { RendererOperationError } from '../errors/render';
 import {
+  compilePreparedViewGraph,
   encodePreparedFrameCaptures,
   encodePreparedViewGraph,
-  type FrameCaptureEncodeOutcome,
   type PreparedFrameGraph,
-  type QueuedFrameTemporalOutcome,
+  prepareOrderedDisplayRecording,
   sealCompiledViewGraph,
   type ViewFrameEncodeOutcome,
   type ViewGraphSealOutcome,
 } from '../record/frame';
-import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
+import { EMPTY_CAPTURE_GRAPH_OUTCOME } from '../record/frame-capture';
 import { markPipelinePreparationPending } from '../render-system-presentation';
 import {
   RenderCaptureGraphCompileOrder,
   RenderCaptureGraphEncodeOrder,
+  RenderEncoderOpenOrder,
   RenderFeatureGraphCompileOrder,
   RenderFeatureGraphEncodeOrder,
-  RenderGraphCompileOrder,
-  RenderGraphCompileReleaseOrder,
   RenderGraphSealOrder,
   RenderGraphSealReleaseOrder,
   RenderViewGraphEncodeOrder,
 } from '../system-order';
 import {
   captureGraphOutcome,
-  prepareCaptureGraphs,
+  stageCaptureGraphCompile,
   ViewCaptureGraphs,
 } from './capture-graph-systems';
 import { ViewCaptureWork, viewCaptureWorkOf } from './capture-systems';
@@ -40,12 +39,11 @@ import {
   sharedFeatureSceneInputsPending,
 } from './feature-graph-systems';
 import { FrameViewList } from './frame-view-list';
-import { stageViewGraphCompile, takeViewGraphCompile, ViewGraphCandidate } from './graph-systems';
 import { renderFrameEncoder } from './record-systems';
-import { RenderCleanup, RenderRecord, renderSubmission, renderWorldFor } from './render-world';
-import { subsurfaceCaptureClass } from './subsurface-admission-systems';
-import { readViewField, readViewState, requireViewField } from './view-field';
+import { RenderCleanup, RenderRecord, renderSubmission } from './render-world';
+import { readViewState } from './view-field';
 import { viewComposition } from './view-output-systems';
+import { ViewRecordAttempt, type ViewRecordAttemptState } from './view-record-attempt';
 import { recordContext } from './view-record-context';
 
 export const RENDER_GRAPH_SEAL_SYSTEM = 'render-graph-seal';
@@ -54,20 +52,8 @@ export const RENDER_FEATURE_GRAPH_ENCODE_SYSTEM = 'render-feature-graph-encode';
 export const RENDER_VIEW_GRAPH_ENCODE_SYSTEM = 'render-view-graph-encode';
 export const RENDER_GRAPH_SEAL_RELEASE_SYSTEM = 'render-graph-seal-release';
 
-export interface ViewGraphSealState {
-  frame: number;
-  prepared: PreparedFrameGraph | undefined;
-  outcome: ViewGraphSealOutcome | undefined;
-  temporal?: QueuedFrameTemporalOutcome | undefined;
-  captures?: FrameCaptureEncodeOutcome | undefined;
-  encoding?: ViewFrameEncodeOutcome | undefined;
-}
-
-/** One view's actual graph preparation and sealed resource product; never an executable continuation. */
-export const ViewGraphSeal = defineComponent('ViewGraphSeal', { state: 'unique<ViewGraphSeal>' });
-
-function stateOf(world: World, entity: EntityHandle): ViewGraphSealState | undefined {
-  const state = readViewState<ViewGraphSealState>(world, entity, ViewGraphSeal);
+function stateOf(world: World, entity: EntityHandle): ViewRecordAttemptState | undefined {
+  const state = readViewState<ViewRecordAttemptState>(world, entity, ViewRecordAttempt);
   if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state : undefined;
 }
@@ -95,60 +81,17 @@ export function viewGraphSealOutcome(world: World, entity: EntityHandle): ViewGr
   return stateOf(world, entity)?.outcome ?? graphSealFailure('No current graph seal product');
 }
 
-/** Wait only at the real Record boundary; the system owns all resource sealing work. */
 /** Stage graph and capture facts before the Record compiler systems run. */
-export function stagePreparedViewGraph(prepared: PreparedFrameGraph): void {
-  const {
-    internals,
-    frameState,
-    pipelineState,
-    cubeCapture,
-    cubeCaptureWork,
-    graphShadowMapSize,
-    terrainReceivers,
-  } = prepared;
-  prepareCaptureGraphs({
-    internals,
-    cameraEntityKey: prepared.camera.entityKey,
-    frameState,
-    pipelineState,
-    capture: cubeCapture,
-    work: cubeCaptureWork,
-    shadowMapSize: graphShadowMapSize,
-    terrainReceivers,
-  });
-  const world = renderWorldFor(internals);
-  const entity = internals.viewEntity;
-  if (entity === undefined) throw new Error('A production recording requires its view entity');
-  if (!prepared.captureOnly)
-    stageViewGraphCompile(world, entity, {
-      camera: prepared.camera,
-      clearOnly: prepared.cameras.length === 0,
-      subsurfaceClass: subsurfaceCaptureClass(cubeCapture, prepared.captureOnly),
-      rendererRecording: prepared.rendererRecording,
-      currentGpuCamera:
-        prepared.gpuDriven !== undefined && prepared.gpuDriven.geometryLane !== 'direct',
-      capsuleShadows: prepared.capsuleShadows,
-      shadowDepthLayers: ensureShadowDepthLayers(frameState, internals.device),
-    });
-  const frame = renderSubmission(world).frame;
-  let state: ViewGraphSealState;
-  if (world.hasComponent(entity, ViewGraphSeal)) {
-    state = world
-      .resolveUniqueRef<ViewGraphSealState>(requireViewField(world, entity, ViewGraphSeal, 'state'))
-      .unwrap();
-    state.frame = frame;
-    state.prepared = prepared;
-    state.outcome = undefined;
-  } else {
-    state = { frame, prepared, outcome: undefined };
-    world
-      .addComponent(entity, {
-        component: ViewGraphSeal,
-        data: { state: world.allocUniqueRef('ViewGraphSeal', state) },
-      })
-      .unwrap();
-  }
+export function stagePreparedViewGraph(
+  state: ViewRecordAttemptState,
+  prepared: PreparedFrameGraph,
+): void {
+  const { captureGraph } = prepared;
+  if (captureGraph !== undefined && !stageCaptureGraphCompile(captureGraph))
+    throw new Error('A production view must stage capture work before RenderRecord');
+  state.prepared = prepared;
+  state.outcome = undefined;
+  state.awaitingPlan = prepared.featurePlan.candidate !== undefined;
   state.temporal = undefined;
   state.captures = undefined;
   state.encoding = undefined;
@@ -168,7 +111,7 @@ export function viewGraphEncodingOutcome(
 }
 
 /** Every display waits for pending capture work before any surface is acquired. */
-function deferPendingViews(states: readonly ViewGraphSealState[], frame: number): void {
+function deferPendingViews(states: readonly ViewRecordAttemptState[], frame: number): void {
   const pending = states.find(
     (state) => state.frame === frame && state.prepared?.frameState.pipelinePreparationPending,
   );
@@ -183,10 +126,38 @@ function deferPendingViews(states: readonly ViewGraphSealState[], frame: number)
   }
 }
 
+function prepareRecordingGraph(
+  prepared: PreparedFrameGraph,
+  state: ViewRecordAttemptState,
+): ViewGraphSealOutcome {
+  const captures =
+    prepared.captureGraph === undefined ? undefined : captureGraphOutcome(prepared.internals);
+  if (captures?.ok === false || prepared.captureOnly)
+    return sealCompiledViewGraph(
+      prepared,
+      undefined,
+      captures ?? EMPTY_CAPTURE_GRAPH_OUTCOME,
+      state.temporal,
+    );
+
+  const compiled = compilePreparedViewGraph(prepared);
+  // A successful compile outcome carries the Feature candidate into adoption.
+  // Early failures leave the consumed plan with this recording's cleanup.
+  if (compiled.kind !== 'failed') state.awaitingPlan = false;
+  if (compiled.kind === 'ordered-display')
+    return prepareOrderedDisplayRecording(prepared, compiled, state.temporal, captures?.value);
+  return sealCompiledViewGraph(
+    prepared,
+    compiled,
+    captures ?? EMPTY_CAPTURE_GRAPH_OUTCOME,
+    state.temporal,
+  );
+}
+
 export function registerGraphSealSystems(world: World): void {
   // Capture and display encode the same submission in presentation order.
-  const work = new FrameViewList<ViewGraphSealState>();
-  let ordered: readonly ViewGraphSealState[] = [];
+  const work = new FrameViewList<ViewRecordAttemptState>();
+  let ordered: readonly ViewRecordAttemptState[] = [];
   let orderedFrame: number | undefined;
   const releaseOrder = () => {
     orderedFrame = undefined;
@@ -199,41 +170,30 @@ export function registerGraphSealSystems(world: World): void {
         sets: [RenderGraphSealOrder],
         commands: 'none',
         name: RENDER_GRAPH_SEAL_SYSTEM,
-        after: [RenderGraphCompileOrder, RenderCaptureGraphCompileOrder],
-        queries: [
-          { write: [ViewGraphSeal, ViewGraphCandidate], optional: [ViewCaptureGraphs] },
-          { write: [ViewGraphSeal], without: [ViewGraphCandidate], optional: [ViewCaptureGraphs] },
+        after: [
+          RenderEncoderOpenOrder,
+          RenderCaptureGraphCompileOrder,
+          RenderFeatureGraphCompileOrder,
         ],
-        fn: (world, groups) => {
+        queries: [{ write: [ViewRecordAttempt], optional: [ViewCaptureGraphs] }],
+        fn: (world, [rows]) => {
+          releaseOrder();
           if (renderFrameEncoder(world).kind !== 'open') return;
           const frame = renderSubmission(world).frame;
-          for (const rows of groups) {
-            for (const row of rows) {
-              const entity = row.entity;
-
-              const state = world
-                .resolveUniqueRef<ViewGraphSealState>(
-                  requireViewField(world, entity, ViewGraphSeal, 'state'),
-                )
-                .unwrap();
-              if (
-                state.frame !== frame ||
-                state.prepared === undefined ||
-                state.outcome !== undefined
-              )
-                continue;
-              try {
-                state.outcome = sealCompiledViewGraph(
-                  state.prepared,
-                  takeViewGraphCompile(world, entity),
-                  captureGraphOutcome(state.prepared.internals),
-                  state.temporal,
-                );
-              } catch (cause) {
-                state.outcome = graphSealFailure(cause);
-              }
+          rows.forEach(({ entity }) => {
+            const state = readViewState<ViewRecordAttemptState>(world, entity, ViewRecordAttempt);
+            if (state?.frame !== frame || state.prepared === undefined) return;
+            work.add(entity, state);
+            if (state.outcome !== undefined) return;
+            try {
+              state.outcome = prepareRecordingGraph(state.prepared, state);
+              if (state.outcome.kind === 'pending') state.encoding = state.outcome;
+            } catch (cause) {
+              state.outcome = graphSealFailure(cause);
             }
-          }
+          });
+          ordered = work.inOrder(viewComposition(world).recorded);
+          orderedFrame = frame;
         },
       }),
     )
@@ -246,24 +206,10 @@ export function registerGraphSealSystems(world: World): void {
         commands: 'none',
         name: RENDER_CAPTURE_GRAPH_ENCODE_SYSTEM,
         after: [RenderGraphSealOrder],
-        queries: [{ write: [ViewGraphSeal] }],
-        fn: (world, [rows]) => {
-          releaseOrder();
-          if (renderFrameEncoder(world).kind !== 'open') return;
+        queries: [],
+        fn: (world) => {
           const frame = renderSubmission(world).frame;
-          rows.forEach((row) => {
-            const entity = row.entity;
-            work.add(
-              entity,
-              world
-                .resolveUniqueRef<ViewGraphSealState>(
-                  requireViewField(world, entity, ViewGraphSeal, 'state'),
-                )
-                .unwrap(),
-            );
-          });
-          ordered = work.inOrder(viewComposition(world).recorded);
-          orderedFrame = frame;
+          if (orderedFrame !== frame || renderFrameEncoder(world).kind !== 'open') return;
           // One physical frame cannot publish a mixture of prepared and pending
           // views. Keep every view at its preparation barrier before any capture
           // or scene work is encoded into the shared command encoder.
@@ -294,23 +240,18 @@ export function registerGraphSealSystems(world: World): void {
         commands: 'none',
         name: RENDER_FEATURE_GRAPH_ENCODE_SYSTEM,
         after: [RenderCaptureGraphEncodeOrder, RenderFeatureGraphCompileOrder],
-        queries: [{ read: [ViewCaptureWork], optional: [ViewGraphSeal] }],
+        queries: [{ read: [ViewCaptureWork], optional: [ViewRecordAttempt] }],
         fn: (world, [rows]) => {
           const encoder = renderFrameEncoder(world);
           if (encoder.kind !== 'open' || sharedFeatureGraphOutcome(world) === undefined) return;
-          const frame = renderSubmission(world).frame;
 
           for (const row of rows) {
             const entity = row.entity;
 
             const route = viewCaptureWorkOf(world, entity);
             if (route?.kind !== 'prepared' || route.value.sceneInputs.length === 0) continue;
-            const seal = readViewField(world, entity, ViewGraphSeal, 'state');
-            const state =
-              seal === undefined
-                ? undefined
-                : world.resolveUniqueRef<ViewGraphSealState>(seal).unwrap();
-            if (state?.frame !== frame || state.captures?.kind !== 'ready') {
+            const state = stateOf(world, entity);
+            if (state?.captures?.kind !== 'ready') {
               // A routed input can stop before graph seal (assets or PSOs pending).
               // Its absent encode product must never acknowledge unwritten shared inputs.
               deferSharedFeatureGraph(world);
@@ -391,23 +332,24 @@ export function registerGraphSealSystems(world: World): void {
         sets: [RenderGraphSealReleaseOrder],
         commands: 'none',
         name: RENDER_GRAPH_SEAL_RELEASE_SYSTEM,
-        before: [RenderGraphCompileReleaseOrder],
-        queries: [{ write: [ViewGraphSeal] }],
+        queries: [{ write: [ViewRecordAttempt] }],
         fn: (world, [rows]) => {
           releaseOrder();
           rows.forEach((row) => {
-            const entity = row.entity;
-
-            const state = world
-              .resolveUniqueRef<ViewGraphSealState>(
-                requireViewField(world, entity, ViewGraphSeal, 'state'),
-              )
-              .unwrap();
+            const state = readViewState<ViewRecordAttemptState>(
+              world,
+              row.entity,
+              ViewRecordAttempt,
+            );
+            if (state === undefined) return;
+            const plan = state.awaitingPlan ? state.prepared?.featurePlan?.candidate : undefined;
+            state.awaitingPlan = false;
             state.temporal = undefined;
             state.captures = undefined;
             state.encoding = undefined;
             state.prepared = undefined;
             state.outcome = undefined;
+            plan?.onAbandoned?.();
           });
         },
       }),

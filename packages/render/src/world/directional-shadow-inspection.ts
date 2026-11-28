@@ -6,6 +6,7 @@ import {
   projectDirectionalShadowInspectionSource,
 } from '../assembly/directional-shadow-inspection';
 import type { DirectionalShadowInspection } from '../inspection-types';
+import type { InstalledFrameGraph } from '../record/frame-snapshot';
 import {
   directionalShadowCandidateError,
   directionalShadowSubmitted,
@@ -19,17 +20,24 @@ import type { ViewSettlementOwner } from './view-settlement';
 
 const DEPTH = 'directional-shadow-depth';
 
-/** Cheap owner facts only: graph inspection and detached projection happen on public inspection. */
-export interface SettledDirectionalShadow
-  extends Omit<DirectionalShadowInspectionSource, 'writerPasses'> {
+/** Cheap owner facts only; the resulting inspection can outlive its view recording. */
+export interface SettledDirectionalShadow extends DirectionalShadowInspectionSource {
   readonly renderAttempt: number;
   readonly observationFrameId: number | undefined;
   readonly submitted: boolean;
   readonly sceneSubmitted: boolean;
   readonly accepted: boolean;
-  readonly graph: ViewSettlementOwner['frameState']['compiledFrameGraph'];
   readonly layers: ShadowDepthLayers | undefined;
   readonly allocation: Texture | undefined;
+}
+
+export function directionalShadowWriterPasses(
+  binding: InstalledFrameGraph | null,
+  cascadeCount: number,
+): number {
+  return binding?.directionalShadowViewCount === 'current'
+    ? Math.max(1, cascadeCount)
+    : (binding?.directionalShadowWriterPasses ?? 0);
 }
 
 function submittedDirectionalShadow(
@@ -100,6 +108,7 @@ export function settleDirectionalShadow(
     submittedPreparationOnly(staged),
   );
   const layers = frameState.shadowDepthLayers;
+  const cascadeCount = lights?.cascades?.cascadeCount ?? 0;
   shadow.candidate = candidate;
   shadow.error = error;
   shadow.settled = {
@@ -112,7 +121,7 @@ export function settleDirectionalShadow(
         : directionalShadowProfileFromQuality(
             frameState.directionalShadowCache.directionalShadowQuality,
           ),
-    cascadeCount: lights?.cascades?.cascadeCount ?? 0,
+    cascadeCount,
     mapSize: recordContext(internals).getPipelineState()?.perPassResources.shadowMapSize ?? 0,
     shadowMapBytes: shadowSubmitted && ready ? (layers?.byteSize(DEPTH) ?? 0) : 0,
     shadowAngularRadius: lights?.directionalCsmConfig?.shadowAngularRadius,
@@ -126,7 +135,7 @@ export function settleDirectionalShadow(
     submitted: attempt.submitted,
     sceneSubmitted: attempt.sceneSubmitted,
     accepted,
-    graph: frameState.compiledFrameGraph,
+    writerPasses: directionalShadowWriterPasses(frameState.compiledFrameGraph, cascadeCount),
     layers,
     allocation: layers?.allocation(DEPTH),
   };
@@ -188,12 +197,6 @@ export function inspectSettledDirectionalShadow(
     shadowReady: current && settled.shadowReady,
     shadowMapBytes: current && settled.shadowReady ? settled.shadowMapBytes : 0,
     error: current ? settled.error : (lights?.directionalShadowError ?? settled.error),
-    writerPasses:
-      settled.graph?.directionalShadowViewCount === 'current'
-        ? Math.max(1, settled.cascadeCount)
-        : (settled.graph?.graph
-            .inspect()
-            .passes.filter((pass) => pass.name.startsWith('shadowCascade')).length ?? 0),
   });
   return Object.freeze({
     ...projection,

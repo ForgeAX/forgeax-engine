@@ -356,7 +356,7 @@ function ForgeaxDockTab({
       ) : null}
       {!suppressClose ? (
         <div
-          className="dv-default-tab-action"
+          className="dv-default-tab-action fx-dock-tab-close"
           role="button"
           aria-label={t('view.close')}
           onPointerDown={(event) => event.stopPropagation()}
@@ -757,6 +757,7 @@ function DockPageWorkbench({
 function ShellBottomDock({
   claims,
   allClaims,
+  engineVersion,
   slotRegistry,
   titleForClaim,
   registerDockview,
@@ -771,6 +772,7 @@ function ShellBottomDock({
 }: {
   claims: SlotClaim[];
   allClaims: readonly SlotClaim[];
+  engineVersion: string | undefined;
   slotRegistry: SlotRegistry;
   titleForClaim: (claim: SlotClaim) => string;
   registerDockview: (api: DockviewApi, owner: DockviewOwner, host?: HTMLElement) => () => void;
@@ -785,6 +787,7 @@ function ShellBottomDock({
 }) {
   const { t } = useTranslation();
   const apiRef = useRef<DockviewApi | null>(null);
+  const rowRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const edgeDrawerRef = useRef<EdgeDrawerController | null>(null);
   const ueDragDisposeRef = useRef<(() => void) | null>(null);
@@ -798,8 +801,11 @@ function ShellBottomDock({
     edgeDrawerRef.current?.dispose();
     ueDragDisposeRef.current?.();
     ueDragDisposeRef.current = null;
-    edgeDrawerRef.current = hostRef.current
-      ? installEdgeDrawer(event.api, hostRef.current, { edges: ['bottom'] })
+    edgeDrawerRef.current = hostRef.current && rowRef.current
+      ? installEdgeDrawer(event.api, hostRef.current, {
+          edges: ['bottom'],
+          bottomDrawerHost: rowRef.current,
+        })
       : null;
     if (hostRef.current) {
       ueDragDisposeRef.current = installUeDockDrag(event.api, hostRef.current, {
@@ -906,7 +912,7 @@ function ShellBottomDock({
   }, [allClaims, t]);
 
   return (
-    <div className="fx-view-shell-bottom" data-drop-active={dropTargetActive}>
+    <div ref={rowRef} className="fx-view-shell-bottom" data-drop-active={dropTargetActive}>
       <div ref={hostRef} className="fx-view-dockview-host fx-view-shell-bottom__host">
         <DockviewReact
           className="fx-view-dockview"
@@ -916,10 +922,16 @@ function ShellBottomDock({
           onReady={onReady}
           onWillDrop={event => edgeDrawerRef.current?.onWillDrop(event) ?? true}
           getTabContextMenuItems={getTabContextMenuItems}
+          disableTabsOverflowList
           disableFloatingGroups={false}
           hideBorders
         />
       </div>
+      {engineVersion && (
+        <footer className="fx-view-version" aria-label={`Engine ${engineVersion}`} title={`Engine ${engineVersion}`}>
+          Engine {engineVersion}
+        </footer>
+      )}
       <div
         className="fx-view-shell-bottom__drop-target"
         aria-hidden="true"
@@ -1533,6 +1545,7 @@ export function ViewerShell({
       <ShellBottomDock
         claims={shellClaims}
         allClaims={claims}
+        engineVersion={engineVersion}
         slotRegistry={slotRegistry}
         titleForClaim={titleForClaim}
         registerDockview={registerDockview}
@@ -1545,7 +1558,6 @@ export function ViewerShell({
         resolveDropDock={resolveDropDock}
         onCrossDockDrop={onCrossDockDrop}
       />
-      {engineVersion && <footer className="fx-view-version" aria-label={`Engine ${engineVersion}`}>Engine {engineVersion}</footer>}
     </div>
   );
 }

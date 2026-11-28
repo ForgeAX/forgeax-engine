@@ -1,16 +1,17 @@
 import { err, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
+import { getModelingKernelWasm } from '@forgeax/modeling-kernel';
 import { type ArrayOptions, arrayCopies } from './array';
 import { maxOf, replaceAll } from './arrays';
-import { type BevelOptions, bevel } from './bevel';
+import { type BevelOptions, bevel, resolveWidths } from './bevel';
 import { resolveBlends } from './blend';
 import { type BooleanOptions, booleanOp } from './boolean';
+import type * as exact from './brep';
 import {
   authorSite,
   type CaptureOptions,
   MAX_CHECKPOINTS,
   MAX_STEP_BYTES,
   registerCapturedSession,
-  type SourceSite,
 } from './capture';
 import { dissolve, fillHoles, orient, split, triangulate } from './cleanup';
 import type {
@@ -57,47 +58,176 @@ import {
   implicitSmooth,
   type SolveContext,
 } from './deform-solve';
+import { type ApplyDraftOptions, applyDraft } from './draft';
+import { type Contour, type Drawing, type ResolvedDrawing, resolveDrawing } from './drawing';
+import { ModelingError, modelingError } from './errors';
 import {
-  type Contour,
-  type Drawing,
-  type ResolvedDrawing,
-  resolveCurveSpec,
-  resolveDrawing,
-} from './drawing';
-import { checkDrawings } from './drawing-check';
-import { checkEdgeFlow } from './edge-flow';
-import { type ModelingError, type ModelingSite, modelingError } from './errors';
-import { type ExportOptions, type ExportReport, exportMesh, MIRROR_SUFFIX } from './finish';
-import { checkSnapshotOperand, decodeSnapshot, encodeSnapshot, notePoisonedSnapshot } from './fxem';
+  type ExportOptions,
+  type ExportReport,
+  type ExportSidecar,
+  exportMesh,
+  MIRROR_SUFFIX,
+  type NormalMode,
+} from './finish';
+import { encodeSnapshot, notePoisonedSnapshot } from './fxem';
 import { type Axis, axisIndex, type Tuple3 } from './geom';
+import { type HoleCutOptions, hole } from './hole';
 import {
   debugValidate,
   type Generations,
   generationsOf,
-  type InvariantViolation,
   invariantChecksEnabled,
 } from './invariants';
 import { type KnifeOptions, knife } from './knife';
 import { type LayerOptions, layer } from './layer';
-import {
-  buildLayout,
-  checkLayout,
-  type LayoutFit,
-  layoutPatches,
-  type PatchLayoutSpec,
-  type ResolvedLayout,
-  resolveLayout,
-} from './layout';
+import { buildLayout, layoutPatches, type PatchLayoutSpec, resolveLayout } from './layout';
 import { lift } from './lift';
 import { type LowpolyOptions, lowpolyFaces } from './lowpoly';
-import { EDGE_SEAM, EditMesh } from './mesh';
+import {
+  type CornerChannelName,
+  EDGE_SEAM,
+  EDGE_SHARP,
+  EditMesh,
+  FACE_FLOAT,
+  PART_ROLES,
+  type PartRole,
+  partRole,
+  setPartRole,
+} from './mesh';
 import {
   type MeshQualityLimits,
   type MeshQualityReport,
   meshQuality,
   resolveFlowGuides,
 } from './mesh-quality';
-import { checkCurve, type NurbsSurface, surfaceDomain, surfacePoint } from './nurbs';
+import { type EditMeshStore, type KernelPolicy, TsEditMeshStore } from './mesh-store';
+import {
+  createEditMeshStore,
+  kernelErrorToModelingError,
+  type RustEditMeshStore,
+  syncRustToTs,
+  syncTsToRust,
+} from './mesh-store-rust';
+import {
+  type Checkpoint,
+  checkedStage,
+  contourItem,
+  decodeOperand,
+  type ExactStage,
+  type ExtrudeContourOptions,
+  type FinishOptions,
+  InvariantError,
+  internalError,
+  type JournalEntry,
+  type ModelDiagnostics,
+  type ModelInspection,
+  type ModelOptions,
+  noExactStage,
+  type OpReport,
+  type OpStatus,
+  PRODUCING_OPS,
+  type SmoothOperation,
+  type StepSnapshot,
+  shapeSize,
+  type ThreeViewOptions,
+} from './model-helpers';
+import {
+  type RustPeerMesh,
+  resolveRustMipPadding,
+  rustAppend,
+  rustArray,
+  rustBevel,
+  rustBoolean,
+  rustBox,
+  rustCylinder,
+  rustExtrude,
+  rustFillHoles,
+  rustInset,
+  rustMarkEdges,
+  rustOffset,
+  rustPanelLine,
+  rustPlane,
+  rustRevolve,
+  rustSphere,
+  rustSubdivide,
+  rustSweep,
+  rustTaper,
+  rustTorus,
+} from './model-rust';
+import {
+  rustApplyDraft,
+  rustArap,
+  rustBend,
+  rustBridge,
+  rustCleanupPlanar,
+  rustCleanupQuads,
+  rustCleanupSlivers,
+  rustCleanupTiling,
+  rustCone,
+  rustCurveDeform,
+  rustDisconnect,
+  rustDissolve,
+  rustDuplicate,
+  rustExtrudePolygon,
+  rustHole,
+  rustImplicitSmooth,
+  rustLattice,
+  rustLift,
+  rustLoft,
+  rustLoopCut,
+  rustLowpoly,
+  rustMarkCrease,
+  rustMarkFloat,
+  rustMarkRole,
+  rustOrient,
+  rustPipeNetwork,
+  rustPlaneCut,
+  rustPolygon,
+  rustRemesh,
+  rustResolveTJunctions,
+  rustShell,
+  rustShrinkwrap,
+  rustSimplify,
+  rustSmooth,
+  rustSpherize,
+  rustSplit,
+  rustTriangulate,
+  rustTwist,
+  rustVoxelRemesh,
+  rustWeld,
+  triangulateEditMeshFaces,
+  triangulateRustStoreFaces,
+} from './model-rust-ext';
+import { createModelUvOps } from './model-uv-ops';
+import {
+  type DeclaredLayout,
+  finishSurfaceQualityValidation,
+  type ValidationInputs,
+  validateDrawings,
+  validateEdgeFlow,
+  validateLayouts,
+  validateShellClearance,
+  validateShutLines,
+} from './model-validation';
+
+export {
+  type Checkpoint,
+  type ExactStage,
+  type ExtrudeContourOptions,
+  type FinishOptions,
+  InvariantError,
+  type JournalEntry,
+  type ModelDiagnostics,
+  type ModelInspection,
+  type ModelOptions,
+  type OpReport,
+  type OpStatus,
+  type SmoothOperation,
+  type StepSnapshot,
+  type ThreeViewOptions,
+} from './model-helpers';
+
+import { checkCurve, type NurbsSurface } from './nurbs';
 import {
   type Attribution,
   deleteFaces,
@@ -108,8 +238,6 @@ import {
   mirror,
   type OpDiagnostic,
   offset,
-  type ProjectOptions,
-  projectUv,
   type RegionMode,
   type RepairReport,
   type RepairSink,
@@ -118,6 +246,7 @@ import {
   weld,
 } from './ops';
 import { type PanelLineOptions, panelLine } from './panel';
+import { assignBakeGroups, type BakeGroupsOptions } from './part-groups';
 import { type PathExtrudeOptions, pathExtrude } from './path-extrude';
 import { type PipeNetworkOptions, pipeNetwork } from './pipe-network';
 import { cleanupPlanar, cleanupQuads, type QuadOptions } from './planar';
@@ -151,25 +280,24 @@ import {
   type TilingOptions,
 } from './remesh';
 import { cleanupSlivers, resolveTJunctions, weldEdgeSequence } from './repair';
-import type { Issue } from './report';
+import {
+  measureSeamVisibility,
+  type SeamVisibilityOptions,
+  type SeamVisibilityReport,
+} from './seam-visibility';
 import {
   type EdgeSelector,
   type FaceSelector,
   recordSelectors,
   Selector,
   type SelectorLog,
-  type SelectorUse,
   sel,
   type VertSelector,
 } from './selectors';
+import { appendSheet, type SheetMetalSpec } from './sheet';
 import { type ShellFlange, type ShellOptions, shell } from './shell';
 import { type ShrinkwrapOptions, shrinkwrap } from './shrinkwrap';
-import {
-  measureShutLines,
-  type ShutLineOptions,
-  type ShutLineReport,
-  shutLineChecks,
-} from './shut-lines';
+import { measureShutLines, type ShutLineOptions, type ShutLineReport } from './shut-lines';
 import {
   checkTransform,
   type SoftOptions,
@@ -183,39 +311,23 @@ import { type LimitOptions, type LimitSurface, subdivisionLimit } from './subd-l
 import { type SubdivideOptions, subdivide } from './subdivide';
 import { appendSurface, type SurfaceOptions, type SurfacePatch } from './surface';
 import {
-  checkSurfaceQuality,
   type FeatureLine,
   inflectionRanges,
   type NamedSurface,
-  type SurfaceQualityCode,
   type SurfaceSeam,
 } from './surface-quality';
 import { type LoftOptions, loft, type SweepOptions, sweep } from './sweep';
-import type { TrimRegion } from './trim';
+import type { UvContext } from './uv';
+import { type Carrier, carrierOverwriteNote, moveDomainToCarrier } from './uv-channel';
 import {
-  type AutoUvOptions,
-  autoUv,
-  type PackOptions,
-  packUv,
-  type SeamSource,
-  type SwatchUvOptions,
-  seamSelection,
-  swatchUv,
-  type TrimUvOptions,
-  trimUv,
-  type UnwrapOptions,
-  type UvContext,
-  unwrapUv,
-} from './uv';
-import {
-  CoverageLedger,
-  mergeCoverage,
+  poisonedReport,
+  STRICT_QUALITY_CODES,
   type ValidateOptions,
-  type ValidationCode,
   type ValidationReport,
   validateMesh,
 } from './validate';
 import { fromView, ORTHO_VIEWS } from './views';
+import { auditVisibility, type VisibilityAudit, type VisibilityOptions } from './visibility-audit';
 import {
   gridToMesh,
   type ProcessContext,
@@ -232,248 +344,10 @@ import {
 /** A shell flange; `at` limits it to the open boundary edges of those faces (default all). */
 type SelectedFlange = ShellFlange & { readonly at?: FaceSelector };
 
-export type OpStatus = 'ok' | 'skipped' | 'failed';
-
-/** What one operation call did; returned to the author and recorded in the journal. */
-export interface OpReport {
-  readonly op: string;
-  readonly opIndex: number;
-  readonly label?: string;
-  readonly status: OpStatus;
-  /** Faces produced or moved per role (for example { top: 1, side: 4 }). */
-  readonly roles: Readonly<RoleCounts>;
-  readonly faces: number;
-  readonly vertices: number;
-  readonly error?: ModelingError;
-  /** Non-fatal facts (clamps, fallbacks, repairs) the operation reports. */
-  readonly diagnostics?: readonly OpDiagnostic[];
-  /** What a repair operation changed and its largest departures from the input. */
-  readonly repair?: RepairReport;
-}
-
-export interface JournalEntry extends OpReport {
-  readonly args: unknown;
-  readonly topologyStamp: readonly [number, number];
-  readonly durationMs: number;
-  /** Author call site; recorded only in captured sessions. */
-  readonly source?: SourceSite;
-  /** Selector arguments the operation resolved, in call order; absent when it resolved none. */
-  readonly selectors?: readonly SelectorUse[];
-  /** True when more than the bounded number of selector uses were resolved. */
-  readonly selectorsTruncated?: true;
-}
-
-export interface ModelOptions {
-  /** Model-wide geometric tolerance in meters (default 1e-5). */
-  readonly tolerance?: number;
-  /**
-   * Cooperative cancellation, checked before every operation: once aborted, the
-   * next operation fails with `model-cancelled` and poisons the session.
-   */
-  readonly signal?: { readonly aborted: boolean };
-  /**
-   * Element budget: an operation that leaves more faces fails with `model-work-budget`;
-   * `work` bounds each compute job (TS baseline work units, default DEFAULT_WORK_BUDGET).
-   */
-  readonly budget?: { readonly faces?: number; readonly work?: number };
-  /** Compute-job backend policy (design 4.1, default 'auto'); operations can override it. */
-  readonly compute?: ComputePolicy;
-  /** Native compute backend injected by the Host (design X6); absent, `native` is unavailable. */
-  readonly native?: ComputeBackend;
-}
-
 interface Placement {
   readonly label?: string;
   readonly tag?: string;
   readonly material?: string;
-}
-
-export interface FinishOptions extends ExportOptions {
-  /** Output source key becomes `mesh/<key>`. */
-  readonly key: string;
-}
-
-export interface Checkpoint {
-  readonly name: string;
-  /** Number of journal entries before the checkpoint. */
-  readonly opIndex: number;
-  /** FXEM snapshot of the mesh at the checkpoint. */
-  readonly snapshot: Uint8Array;
-  readonly faces: number;
-  readonly vertices: number;
-  /** Author call site of `m.checkpoint()`, when it can be determined. */
-  readonly source?: SourceSite;
-}
-
-/** FXEM snapshot of a session right after one operation (captured step replay). */
-export interface StepSnapshot {
-  readonly opIndex: number;
-  readonly snapshot: Uint8Array;
-}
-
-export interface ThreeViewOptions {
-  /** Overshoot of each view prism beyond the other views' extent, meters (default 2% of the largest extent). */
-  readonly margin?: number;
-  /**
-   * Views share extremes by construction (nose, roof, floor lines), which makes their
-   * prisms coplanar or tangent there. The first contour stays exact; contour i grows
-   * outward by i x clearance meters (default 0.0005), so the result follows every
-   * contour within 2 x clearance: an extent drawn only by later views grows by up to
-   * 2 x clearance (contour order decides which), and a later view's slots narrower than
-   * 2 x i x clearance close (the grown outline crosses itself). Draw thin features in the
-   * first contour, or lower clearance.
-   */
-  readonly clearance?: number;
-  readonly label?: string;
-  readonly material?: string;
-}
-
-export interface ExtrudeContourOptions {
-  /** View depths `[near, far]` (meters along the view's `toward` axis) the prism spans. */
-  readonly depth: readonly [number, number];
-  /** Offset the outline outward by this many meters before extruding (default 0). */
-  readonly grow?: number;
-}
-
-/**
- * Build-only diagnostic companion of a captured session. `validation` (exact
- * self-intersection over every face pair) and `snapshot` are computed on first
- * read, so callers that only inspect never pay for them.
- */
-export interface ModelDiagnostics {
-  readonly inspection: ModelInspection;
-  readonly validation: ValidationReport;
-  /** FXEM snapshot of the final mesh. */
-  readonly snapshot: Uint8Array;
-  readonly checkpoints: readonly Checkpoint[];
-  /** State after each successful operation, when the capture asked for steps (`captureModels(body, { steps: true })`). */
-  readonly steps: readonly StepSnapshot[];
-  /** True when step snapshots stopped at the capture byte budget. */
-  readonly stepsTruncated: boolean;
-  /** Design drawings attached with `m.drawing()`. */
-  readonly drawings: readonly ResolvedDrawing[];
-  /** Contours extruded by the session, in call order. */
-  readonly contours: readonly Contour[];
-  /**
-   * NURBS patches tessellated by `surface()`, in call order, named by their patch `name`
-   * (default `surface`; repeats get `.1`, `.2` ...). Views and checks evaluate them exactly.
-   */
-  readonly surfaces: readonly NamedSurface[];
-  /** Feature lines declared with `m.featureLine()`. */
-  readonly featureLines: readonly FeatureLine[];
-  /** Provenance of the last export: render vertex -> corner, triangle -> face (compacted ids). */
-  readonly provenance?: { readonly vertexCorner: Int32Array; readonly triangleFace: Int32Array };
-}
-
-export interface ModelInspection {
-  readonly faces: number;
-  readonly edges: number;
-  readonly vertices: number;
-  readonly tags: readonly string[];
-  readonly labels: readonly {
-    readonly label: string;
-    readonly roles: Readonly<Record<string, number>>;
-  }[];
-  readonly materials: readonly string[];
-  /** Source key of the last successful finish() (`mesh/<key>`); absent for helper sessions. */
-  readonly output?: string;
-  readonly poisoned?: ModelingError;
-  readonly journal: readonly JournalEntry[];
-}
-
-/** Where a surface-quality issue is worst: the failing measure's point, or a patch center. */
-function qualityPoint(
-  issue: Issue<SurfaceQualityCode>,
-  surfaces: readonly NamedSurface[],
-): readonly number[] | undefined {
-  const d = issue.detail as Record<string, unknown>;
-  const at = (value: unknown) => (value as { point?: readonly number[] } | undefined)?.point;
-  switch (issue.code) {
-    case 'surface-continuity':
-      return at(d.achieved === 'none' ? d.gap : d.achieved === 'G0' ? d.angle : d.curvature);
-    case 'surface-density': {
-      const surface = surfaces.find((s) => s.name === issue.detail.subject)?.surface;
-      if (surface === undefined) return undefined;
-      const [[u0, u1], [v0, v1]] = surfaceDomain(surface);
-      return surfacePoint(surface, (u0 + u1) / 2, (v0 + v1) / 2);
-    }
-    case 'curve-inflection':
-      return at((d.inflections as readonly unknown[] | undefined)?.[0]);
-    case 'curve-spike':
-      return at((d.spikes as readonly unknown[] | undefined)?.[0]);
-    case 'curve-curvature-rate':
-      return at(d.at);
-    case 'surface-fairness':
-    case 'highlight':
-      return d.point as readonly number[] | undefined;
-    case 'nothing-checked':
-      return undefined;
-  }
-}
-
-/** Operations whose effect assertion includes producing at least one face. */
-const PRODUCING_OPS = new Set([
-  'bevel',
-  'extrude',
-  'inset',
-  'offset',
-  'mirror',
-  'duplicate',
-  'bridge',
-  'fillHoles',
-  'shell',
-  'layer',
-  'strands',
-  'panelLine',
-  'sweep',
-  'loft',
-  'pipeNetwork',
-  'array',
-  'surface',
-  'voxel.toMesh',
-  'voxel.union',
-  'voxel.offset',
-  'voxel.fillHoles',
-]);
-
-/** `m.smooth(...)` (Taubin) with its solved variant `m.smooth.implicit(...)`. */
-export interface SmoothOperation {
-  (target: FaceSelector | VertSelector, options: SmoothOptions): OpReport;
-  /** Implicit fairing of the selection (default: the whole mesh). */
-  implicit(
-    target: FaceSelector | VertSelector | undefined,
-    options: ImplicitSmoothOptions,
-  ): OpReport;
-}
-
-/** Journal arguments of uv.trim / uv.swatch: the region by identity, not its whole record. */
-function trimArgs(options: {
-  readonly region: TrimRegion | readonly TrimRegion[];
-  readonly faces: FaceSelector;
-}): object {
-  const { faces: _faces, region, ...rest } = options;
-  const name = (r: TrimRegion | undefined) => `${r?.sheet}/${r?.id}`;
-  return {
-    ...rest,
-    region: Array.isArray(region)
-      ? (region as readonly TrimRegion[]).map(name)
-      : name(region as TrimRegion),
-  };
-}
-
-function describeSeams(seams: SeamSource | undefined): string | undefined {
-  return seams instanceof Selector ? seams.description : seams;
-}
-
-function now(): number {
-  return typeof performance === 'undefined' ? 0 : performance.now();
-}
-
-/** Decode an FXEM operand; a poisoned session's snapshot fails like the session itself. */
-function decodeOperand(bytes: Uint8Array): Result<EditMesh, ModelingError> {
-  const poisoned = checkSnapshotOperand(bytes);
-  if (!poisoned.ok) return poisoned;
-  return decodeSnapshot(bytes);
 }
 
 /**
@@ -488,7 +362,14 @@ export class Model {
   private readonly workBudget: number | undefined;
   private readonly compute: ComputePolicy;
   private readonly native: ComputeBackend | undefined;
+  private exactStage: ExactStage | undefined;
+  readonly backendPolicy: KernelPolicy;
+  readonly opBackends: Readonly<Record<string, 'rust' | 'ts'>>;
+  private readonly rollbackOnInternal: boolean | undefined;
   private mesh = new EditMesh();
+  private readonly meshStore: TsEditMeshStore = new TsEditMeshStore(this.mesh);
+  private rustStore: RustEditMeshStore | undefined;
+  private authority: 'ts' | 'rust' = 'ts';
   private failure: ModelingError | undefined;
   private readonly entries: JournalEntry[] = [];
   private readonly capture: CaptureOptions | undefined;
@@ -498,13 +379,30 @@ export class Model {
   private readonly drawings: ResolvedDrawing[] = [];
   private readonly contours: Contour[] = [];
   private readonly surfaces: NamedSurface[] = [];
+  /** Corner channel holding the patch domain `m.surface` writes (BK56); moves with `uv.lightmap`. */
+  private domainChannel: CornerChannelName = 'uv1';
+  /**
+   * The session holds patch-domain data it did not record itself: a join adopted a carrier from
+   * a patched operand. Together with its own surfaces it makes the session patch-holding, so the
+   * next join compares carriers instead of adopting again, whether the session is the host or
+   * the operand of that join. Rolled back with the session state.
+   */
+  private adoptedCarrier = false;
+  /**
+   * Names of the patches adopted from operand sessions (their recorded surfaces and, nested,
+   * their own adopted names); the uv guards read them with `surfaces`. A snapshot records no
+   * patch names, so a carrier adopted from a snapshot protects nothing. Rolled back like the flag.
+   */
+  private adoptedPatches: string[] = [];
   private readonly featureLines: FeatureLine[] = [];
+  private readonly shapes = new Map<string, exact.Shape>();
   /** Operation index that declared each surface and feature line, for located reports. */
   private readonly qualitySources = new Map<string, number>();
   /** Declared patch layouts, with their matched patches once `surface({ layout })` built them. */
   private readonly layouts: DeclaredLayout[] = [];
   private provenance: ModelDiagnostics['provenance'];
   private output: string | undefined;
+  private exportedNormals: NormalMode | undefined;
   private selectorLog: SelectorLog | undefined;
   private generations: Generations | undefined;
 
@@ -515,6 +413,14 @@ export class Model {
     this.workBudget = options.budget?.work;
     this.compute = options.compute ?? 'auto';
     this.native = options.native;
+    if (options.exact !== undefined || 'exact' in options) {
+      const checked = checkedStage(options.exact);
+      if (checked instanceof ModelingError) this.failure = checked;
+      else this.exactStage = checked;
+    }
+    this.backendPolicy = options.backend ?? 'auto';
+    this.opBackends = options.opBackends ?? {};
+    this.rollbackOnInternal = options.rollbackOnInternal;
     this.capture = registerCapturedSession(this);
   }
 
@@ -528,6 +434,7 @@ export class Model {
    */
   checkpoint(name: string): void {
     if (!this.captured || this.checkpoints.length >= MAX_CHECKPOINTS) return;
+    this.ensureTsAuthority();
     const source = authorSite();
     this.checkpoints.push({
       name,
@@ -565,6 +472,17 @@ export class Model {
     };
   }
 
+  /**
+   * What an analytic bake (BK63) reads from this session: the recorded patches with their
+   * tessellation criteria (a detail) and the corner channel holding the patch domain (a base).
+   */
+  analyticSource(): {
+    readonly surfaces: readonly NamedSurface[];
+    readonly domain: CornerChannelName;
+  } {
+    return { surfaces: [...this.surfaces], domain: this.domainChannel };
+  }
+
   /** The first failure, if any. */
   get poisoned(): ModelingError | undefined {
     return this.failure;
@@ -576,48 +494,196 @@ export class Model {
 
   /** Read-only access to the underlying editable mesh. */
   get editMesh(): EditMesh {
+    this.ensureTsAuthority();
     return this.mesh;
+  }
+
+  /** Zero-copy storage view over the session's active editable mesh. */
+  get store(): EditMeshStore {
+    return this.authority === 'rust' && this.rustStore !== undefined
+      ? this.rustStore
+      : this.meshStore;
+  }
+
+  /** Release any retained Rust/WASM EditMesh handles owned by this session. */
+  dispose(): void {
+    this.ensureTsAuthority();
+    if (this.rustStore !== undefined) {
+      this.rustStore.dispose();
+      this.rustStore = undefined;
+    }
+  }
+
+  private shouldUseRust(op: string): boolean {
+    const policy = this.opBackends[op] ?? this.backendPolicy;
+    if (policy === 'ts') return false;
+    if (policy === 'rust') return true;
+    return getModelingKernelWasm() !== undefined;
+  }
+
+  private ensureRustAuthority(): Result<RustEditMeshStore, ModelingError> {
+    if (this.authority === 'rust' && this.rustStore !== undefined) return ok(this.rustStore);
+    if (this.rustStore !== undefined) {
+      this.rustStore.dispose();
+      this.rustStore = undefined;
+    }
+    if (this.mesh.faceCount === 0 && this.mesh.vertexCount === 0) {
+      const created = createEditMeshStore('rust');
+      if (!created.ok) return created;
+      this.rustStore = created.value as RustEditMeshStore;
+      this.authority = 'rust';
+      return ok(this.rustStore);
+    }
+    const synced = syncTsToRust(this.mesh);
+    if (!synced.ok) return synced;
+    this.rustStore = synced.value;
+    this.authority = 'rust';
+    return ok(this.rustStore);
+  }
+
+  private ensureTsAuthority(): void {
+    if (this.authority === 'ts' || this.rustStore === undefined) return;
+    syncRustToTs(this.rustStore, this.mesh);
+    this.rustStore.dispose();
+    this.rustStore = undefined;
+    this.authority = 'ts';
+    this.generations = undefined;
+  }
+
+  private activeFaceCount(): number {
+    return this.authority === 'rust' && this.rustStore !== undefined
+      ? this.rustStore.faceCount
+      : this.mesh.faceCount;
+  }
+
+  private activeVertexCount(): number {
+    return this.authority === 'rust' && this.rustStore !== undefined
+      ? this.rustStore.vertexCount
+      : this.mesh.vertexCount;
+  }
+
+  private activeTopologyStamp(): number {
+    return this.authority === 'rust' && this.rustStore !== undefined
+      ? this.rustStore.topologyStamp
+      : this.mesh.topologyStamp;
+  }
+
+  private rustAttribution(store: RustEditMeshStore, placement: Placement): Attribution {
+    return {
+      label: placement.label === undefined ? 0 : store.internLabel(placement.label),
+      material: placement.material === undefined ? 0 : store.internMaterial(placement.material),
+      tag: placement.tag === undefined ? -1 : store.internTag(placement.tag, true),
+    };
+  }
+
+  private peerRustOperand(other: Model): RustPeerMesh {
+    return {
+      authority: other.authority,
+      rustStore: other.rustStore,
+      poisoned: other.poisoned,
+      mesh: other.mesh,
+    };
   }
 
   // ---- primitives ---------------------------------------------------------
 
   box(options: BoxOptions & Placement): OpReport {
+    if (this.shouldUseRust('box')) {
+      return this.runRust('box', options, options, (s, a) => rustBox(s, a, options));
+    }
     return this.run('box', options, options, (attribution) =>
       appendBox(this.mesh, options, attribution),
     );
   }
 
   plane(options: PlaneOptions & Placement): OpReport {
+    if (this.shouldUseRust('plane')) {
+      return this.runRust('plane', options, options, (s, a) => rustPlane(s, a, options));
+    }
     return this.run('plane', options, options, (attribution) =>
       appendPlane(this.mesh, options, attribution),
     );
   }
 
   polygon(options: PolygonOptions & Placement): OpReport {
+    if (
+      this.shouldUseRust('polygon') &&
+      options.points.length >= 3 &&
+      options.points.every((p) => Math.abs(p[2]) <= 1e-12)
+    ) {
+      return this.runRust('polygon', options, options, (s, a) => rustPolygon(s, a, options));
+    }
     return this.run('polygon', options, options, (attribution) =>
       appendPolygon(this.mesh, options, attribution),
     );
   }
 
   cylinder(options: CylinderOptions & Placement): OpReport {
+    if (
+      this.shouldUseRust('cylinder') &&
+      options.uv === undefined &&
+      options.tolerance === undefined &&
+      options.radialSegments !== undefined
+    ) {
+      const rustOpts = { ...options, radialSegments: options.radialSegments };
+      return this.runRust('cylinder', options, options, (s, a) => rustCylinder(s, a, rustOpts));
+    }
     return this.run('cylinder', options, options, (attribution) =>
       appendCylinder(this.mesh, options, attribution),
     );
   }
 
   cone(options: ConeOptions & Placement): OpReport {
+    if (
+      this.shouldUseRust('cone') &&
+      options.uv === undefined &&
+      options.tolerance === undefined &&
+      options.heightSegments === undefined &&
+      options.radialSegments !== undefined
+    ) {
+      const rustOpts = { ...options, radialSegments: options.radialSegments };
+      return this.runRust('cone', options, options, (s, a) => rustCone(s, a, rustOpts));
+    }
     return this.run('cone', options, options, (attribution) =>
       appendCone(this.mesh, options, attribution),
     );
   }
 
   sphere(options: SphereOptions & Placement): OpReport {
+    if (
+      this.shouldUseRust('sphere') &&
+      options.uv === undefined &&
+      options.tolerance === undefined &&
+      options.widthSegments !== undefined &&
+      options.heightSegments !== undefined
+    ) {
+      const rustOpts = {
+        ...options,
+        widthSegments: options.widthSegments,
+        heightSegments: options.heightSegments,
+      };
+      return this.runRust('sphere', options, options, (s, a) => rustSphere(s, a, rustOpts));
+    }
     return this.run('sphere', options, options, (attribution) =>
       appendSphere(this.mesh, options, attribution),
     );
   }
 
   torus(options: TorusOptions & Placement): OpReport {
+    if (
+      this.shouldUseRust('torus') &&
+      options.uv === undefined &&
+      options.tolerance === undefined &&
+      options.radialSegments !== undefined &&
+      options.tubularSegments !== undefined
+    ) {
+      const rustOpts = {
+        ...options,
+        radialSegments: options.radialSegments,
+        tubularSegments: options.tubularSegments,
+      };
+      return this.runRust('torus', options, options, (s, a) => rustTorus(s, a, rustOpts));
+    }
     return this.run('torus', options, options, (attribution) =>
       appendTorus(this.mesh, options, attribution),
     );
@@ -625,6 +691,9 @@ export class Model {
 
   /** Revolve a `[radius, y]` profile about +Y. */
   revolve(options: RevolveOptions & Placement): OpReport {
+    if (this.shouldUseRust('revolve')) {
+      return this.runRust('revolve', options, options, (s, a) => rustRevolve(s, a, options));
+    }
     return this.run('revolve', options, options, (attribution) =>
       appendRevolve(this.mesh, options, attribution),
     );
@@ -632,8 +701,30 @@ export class Model {
 
   /** Extrude an `[x, y]` outline along +Z without holes or bevel. */
   extrudePolygon(options: ExtrudePolygonOptions & Placement): OpReport {
+    if (
+      this.shouldUseRust('extrudePolygon') &&
+      options.holes === undefined &&
+      (options.steps === undefined || options.steps === 1) &&
+      options.uv === undefined
+    ) {
+      return this.runRust('extrudePolygon', options, options, (s, a) =>
+        rustExtrudePolygon(s, a, options),
+      );
+    }
     return this.run('extrudePolygon', options, options, (attribution) =>
       appendExtrudePolygon(this.mesh, options, attribution),
+    );
+  }
+
+  /**
+   * Fold a sheet-metal flat pattern (`outline`, `bends`, `thickness`, `kFactor`) into a
+   * solid: the pattern is the source, the body derived. Roles `sheet`, `bend` and
+   * `sheet-edge`; a pattern that cannot fold is `model-precondition` with
+   * `reason: 'not-sheet'`. `sheet.dxf` / `sheet.drawing` project the same pattern.
+   */
+  sheet(spec: SheetMetalSpec & Placement): OpReport {
+    return this.run('sheet', spec, spec, (attribution) =>
+      appendSheet(this.mesh, spec, attribution, this.tolerance),
     );
   }
 
@@ -646,6 +737,21 @@ export class Model {
    * sharp edges; uv0 runs along the section (u) and the path (v) in meters.
    */
   sweep(options: SweepOptions & Placement): OpReport {
+    const canUseRust =
+      this.shouldUseRust('sweep') &&
+      Array.isArray(options.path) &&
+      options.path.length >= 2 &&
+      Array.isArray(options.profile) &&
+      options.profile.length >= 3 &&
+      typeof options.profile[0]?.[0] === 'number' &&
+      (options.frame === undefined || options.frame === 'rmf') &&
+      options.twist === undefined &&
+      options.scale === undefined &&
+      options.closed !== true &&
+      (options.segments === undefined || options.segments === 1);
+    if (canUseRust) {
+      return this.runRust('sweep', options, options, (s, a) => rustSweep(s, a, options));
+    }
     return this.run('sweep', options, options, (attribution, diagnostics) =>
       sweep(this.mesh, options, attribution, this.tolerance, diagnostics),
     );
@@ -659,6 +765,15 @@ export class Model {
    * struts too short or too close are `model-precondition` (`detail.reason`).
    */
   pipeNetwork(options: PipeNetworkOptions): OpReport {
+    if (
+      this.shouldUseRust('pipeNetwork') &&
+      options.nodeRadius === undefined &&
+      options.edgeRadius === undefined &&
+      options.strutSegments === undefined &&
+      (options.levels === undefined || options.levels === 1)
+    ) {
+      return this.runRust('pipeNetwork', options, {}, (s, a) => rustPipeNetwork(s, a, options));
+    }
     return this.run('pipeNetwork', options, {}, (_attribution, diagnostics) =>
       pipeNetwork(
         this.mesh,
@@ -682,6 +797,14 @@ export class Model {
    * and `end`; `segments` > 1 interpolates rows on a Catmull-Rom curve.
    */
   loft(options: LoftOptions & Placement): OpReport {
+    if (
+      this.shouldUseRust('loft') &&
+      options.closed !== true &&
+      (options.segments === undefined || options.segments === 1) &&
+      options.match === 'index'
+    ) {
+      return this.runRust('loft', options, options, (s, a) => rustLoft(s, a, options));
+    }
     return this.run('loft', options, options, (attribution, diagnostics) =>
       loft(this.mesh, options, attribution, this.tolerance, diagnostics),
     );
@@ -820,6 +943,7 @@ export class Model {
       });
       const trimLoops: Point2[][][] = [];
       const seams: { owner: number; seam: SurfaceSeam }[] = [];
+      const before = this.domainChannel === 'uv1' ? undefined : new Set(this.mesh.faces());
       const appended = appendSurface(
         this.mesh,
         { ...options, patches, blends },
@@ -829,6 +953,13 @@ export class Model {
         diagnostics,
         { names, declared, trimLoops, seams },
       );
+      if (appended.ok && before !== undefined)
+        moveDomainToCarrier(
+          this.mesh,
+          this.mesh.faces().filter((f) => !before.has(f)),
+          this.domainChannel,
+          diagnostics,
+        );
       if (appended.ok)
         for (const [k, patch] of patches.entries()) {
           const owned = seams.filter((s) => s.owner === k).map((s) => s.seam);
@@ -837,6 +968,8 @@ export class Model {
             ...(patch.transition === undefined ? {} : { transition: patch.transition }),
             ...((trimLoops[k]?.length ?? 0) > 0 ? { trims: trimLoops[k] } : {}),
             ...(owned.length > 0 ? { seams: owned } : {}),
+            chord: options.chord ?? 0.001,
+            angle: options.angle ?? 12,
           });
         }
       return appended;
@@ -853,6 +986,97 @@ export class Model {
     this.surfaces.push({ name: id, surface, ...facts });
     this.qualitySources.set(id, this.entries.length);
     return id;
+  }
+
+  /**
+   * Exact (B-rep) build ops: each stores a named, frozen `Shape` in the session and leaves the
+   * mesh unchanged; `fromShape` is the only crossing into the mesh. The journal records the name
+   * and plain parameters, never Shape bytes, so a replay rebuilds the Shape.
+   */
+  readonly brep = {
+    box: (name: string, options: exact.BoxOptions) =>
+      this.buildShape('brep.box', name, options, (stage, o) => stage.box(o)),
+    cylinder: (name: string, options: exact.CylinderOptions) =>
+      this.buildShape('brep.cylinder', name, options, (stage, o) => stage.cylinder(o)),
+    cone: (name: string, options: exact.ConeOptions) =>
+      this.buildShape('brep.cone', name, options, (stage, o) => stage.cone(o)),
+    sphere: (name: string, options: exact.SphereOptions) =>
+      this.buildShape('brep.sphere', name, options, (stage, o) => stage.sphere(o)),
+    torus: (name: string, options: exact.TorusOptions) =>
+      this.buildShape('brep.torus', name, options, (stage, o) => stage.torus(o)),
+    extrude: (name: string, options: exact.ExtrudeOptions) =>
+      this.buildShape('brep.extrude', name, options, (stage, o) => stage.extrude(o)),
+    revolve: (name: string, options: exact.RevolveOptions) =>
+      this.buildShape('brep.revolve', name, options, (stage, o) => stage.revolve(o)),
+  } as const;
+
+  /** The named exact shape of this session, if any. */
+  shape(name: string): exact.Shape | undefined {
+    return this.shapes.get(name);
+  }
+
+  private buildShape<O extends object>(
+    op: string,
+    name: string,
+    options: O,
+    make: (stage: ExactStage, options: O) => Result<exact.Shape, ModelingError>,
+  ): OpReport {
+    return this.run(op, { ...options, name }, {}, () => {
+      const stage = this.exactStage;
+      if (stage === undefined) return noExactStage(op);
+      if (
+        typeof name !== 'string' ||
+        name.length === 0 ||
+        typeof options !== 'object' ||
+        options === null
+      )
+        return err(stage.brepError('brep-bad-argument', 'a shape name and an options object', {}));
+      if (this.shapes.has(name))
+        return err(stage.brepError('brep-bad-argument', 'shape names are unique', { name }));
+      const made = make(stage, options);
+      if (!made.ok) return made;
+      const size = shapeSize(made.value);
+      if (size.faces > stage.BREP_LIMITS.faces || size.edges > stage.BREP_LIMITS.edges)
+        return err(
+          modelingError(
+            'model-work-budget',
+            `a shape within ${stage.BREP_LIMITS.faces} faces and ${stage.BREP_LIMITS.edges} edges`,
+            { name, ...size },
+          ),
+        );
+      this.shapes.set(name, made.value);
+      return ok({});
+    });
+  }
+
+  /**
+   * Tessellate a named exact shape and append it to the mesh beside any authored geometry. Faces
+   * keep the shape's labels and roles, analytic creases are flagged sharp, and `uv0` is a metric
+   * packed chart per face (option `uv`). The one crossing from the exact stage into the editable mesh.
+   */
+  fromShape(name: string, options: exact.TessellateOptions = {}): OpReport {
+    let read: exact.TessellateOptions | undefined;
+    try {
+      read = { ...options };
+    } catch {
+      read = undefined;
+    }
+    return this.run('fromShape', { name, ...read }, {}, (attribution) => {
+      const stage = this.exactStage;
+      if (stage === undefined) return noExactStage('fromShape');
+      if (read === undefined)
+        return err(
+          stage.brepError('brep-bad-argument', 'options are readable (a property access threw)', {
+            name,
+          }),
+        );
+      const shape = typeof name === 'string' ? this.shapes.get(name) : undefined;
+      if (shape === undefined)
+        return err(stage.brepError('brep-bad-argument', 'the name of a built shape', { name }));
+      const meshed = stage.tessellate(shape, read);
+      if (!meshed.ok) return meshed;
+      return append(this.mesh, meshed.value, {}, attribution);
+    });
   }
 
   /**
@@ -1043,8 +1267,59 @@ export class Model {
         pathExtrude(this.mesh, ids, options, attribution.label, this.tolerance, diagnostics),
       );
     }
+    if (this.shouldUseRust('extrude') && faces.isPureAst()) {
+      return this.runRust('extrude', { selector: faces.description, ...options }, options, (s, a) =>
+        rustExtrude(s, a, faces, options),
+      );
+    }
     return this.runOn('extrude', faces, options, (ids, attribution, diagnostics) =>
       extrude(this.mesh, ids, options, attribution.label, this.tolerance, diagnostics),
+    );
+  }
+
+  /**
+   * Cut round holes into a planar face: simple, counterbore, countersink or tapped (bore =
+   * the thread's tap drill, `threads.lookup`). `centers` are `[u, v]` in the face frame: with
+   * the face normal's dominant axis a, `u` is the next world axis after a (cyclic X, Y, Z) and
+   * `v = normal x u`, so a +Z face reads centers as world (x, y), measured from the world
+   * origin projected onto the face plane. One call is one boolean for all centers; faces take
+   * `label` (default `hole`) with roles `hole-wall`, `hole-floor`, `counterbore`, `countersink`.
+   * `'through'` cuts every component along the axis, not only the selected face's solid.
+   */
+  hole(faces: FaceSelector, options: HoleCutOptions): OpReport {
+    const placed = { ...options, label: options.label ?? 'hole' };
+    if (
+      this.shouldUseRust('hole') &&
+      faces.isPureAst() &&
+      placed.kind === 'simple' &&
+      typeof placed.depth === 'number' &&
+      placed.tolerance === undefined
+    ) {
+      return this.runRust('hole', { selector: faces.description, ...placed }, placed, (s, a) =>
+        rustHole(
+          s,
+          a,
+          faces,
+          {
+            diameter: placed.diameter,
+            depth: placed.depth as number,
+            centers: placed.centers,
+            ...(placed.segments === undefined ? {} : { segments: placed.segments }),
+            ...(placed.material === undefined ? {} : { material: placed.material }),
+          },
+          this.tolerance,
+        ),
+      );
+    }
+    return this.runOn('hole', faces, placed, (ids, attribution, diagnostics) =>
+      hole(
+        this.mesh,
+        ids,
+        placed,
+        attribution,
+        { tolerance: this.tolerance, ...this.computeOptions() },
+        diagnostics,
+      ),
     );
   }
 
@@ -1052,6 +1327,11 @@ export class Model {
     faces: FaceSelector,
     options: { readonly thickness: number; readonly region: RegionMode; readonly label?: string },
   ): OpReport {
+    if (this.shouldUseRust('inset') && faces.isPureAst()) {
+      return this.runRust('inset', { selector: faces.description, ...options }, options, (s, a) =>
+        rustInset(s, a, faces, options),
+      );
+    }
     return this.runOn('inset', faces, options, (ids, attribution) =>
       inset(this.mesh, ids, options, attribution.label),
     );
@@ -1062,6 +1342,11 @@ export class Model {
     faces: FaceSelector,
     options: { readonly distance: number; readonly region: RegionMode; readonly label?: string },
   ): OpReport {
+    if (this.shouldUseRust('offset') && faces.isPureAst()) {
+      return this.runRust('offset', { selector: faces.description, ...options }, options, (s, a) =>
+        rustOffset(s, a, faces, options),
+      );
+    }
     return this.runOn('offset', faces, options, (ids, attribution, diagnostics) =>
       offset(this.mesh, ids, options, attribution.label, this.tolerance, diagnostics),
     );
@@ -1088,6 +1373,18 @@ export class Model {
     },
   ): OpReport {
     const { open, flange, ...rest } = options;
+    if (
+      this.shouldUseRust('shell') &&
+      faces.isPureAst() &&
+      open === undefined &&
+      flange === undefined &&
+      options.taper === undefined &&
+      options.clamp !== true
+    ) {
+      return this.runRust('shell', { selector: faces.description, ...rest }, options, (s, a) =>
+        rustShell(s, a, faces, options.thickness, options.direction),
+      );
+    }
     const list = (
       flange === undefined ? [] : Array.isArray(flange) ? flange : [flange]
     ) as readonly SelectedFlange[];
@@ -1155,6 +1452,14 @@ export class Model {
 
   /** Copy faces as a separate island; the copies get role `copy`. */
   duplicate(faces: FaceSelector, options: { readonly label?: string } = {}): OpReport {
+    if (this.shouldUseRust('duplicate') && faces.isPureAst()) {
+      return this.runRust(
+        'duplicate',
+        { selector: faces.description, ...options },
+        options,
+        (s, a) => rustDuplicate(s, faces, a),
+      );
+    }
     return this.runOn('duplicate', faces, options, (ids, attribution) =>
       duplicate(this.mesh, ids, attribution.label),
     );
@@ -1162,13 +1467,19 @@ export class Model {
 
   /** Detach faces from the rest of the mesh in place (shared vertices are duplicated). */
   disconnect(faces: FaceSelector): OpReport {
+    if (this.shouldUseRust('disconnect') && faces.isPureAst()) {
+      return this.runRust('disconnect', { selector: faces.description }, {}, (s) =>
+        rustDisconnect(s, faces),
+      );
+    }
     return this.runOn('disconnect', faces, {}, (ids) => disconnect(this.mesh, ids));
   }
 
   /**
    * Copy another session or an FXEM snapshot into this one. The operand is read
    * only; tags, labels and material slots merge by name. With `label`, the copied
-   * faces get role `part` instead of their own origins.
+   * faces get role `part` instead of their own origins. An operand whose patch domain
+   * sits on a different carrier channel than this session's is refused (`carrier-mismatch`).
    */
   append(
     part: Model | Uint8Array,
@@ -1178,10 +1489,19 @@ export class Model {
       readonly tag?: string;
     } = {},
   ): OpReport {
+    if (this.shouldUseRust('append') && part instanceof Model) {
+      return this.runRust('append', options, options, (s, a) =>
+        rustAppend(s, a, part === this, this.peerRustOperand(part), options.translate),
+      );
+    }
     return this.run('append', options, options, (attribution) => {
       const source = this.operand(part);
       if (!source.ok) return source;
-      return append(this.mesh, source.value, options, attribution);
+      const joined = this.joinCarrier(part, source.value);
+      if (!joined.ok) return joined;
+      const appended = append(this.mesh, source.value, options, attribution);
+      if (appended.ok) joined.value();
+      return appended;
     });
   }
 
@@ -1199,6 +1519,11 @@ export class Model {
       readonly material?: string;
     } = {},
   ): OpReport {
+    if (this.shouldUseRust('bridge') && edges.isPureAst()) {
+      return this.runRust('bridge', { selector: edges.description, ...options }, options, (s, a) =>
+        rustBridge(s, edges, a, options),
+      );
+    }
     return this.runEdges('bridge', edges, options, (ids, attribution, diagnostics) =>
       bridge(
         this.mesh,
@@ -1219,6 +1544,11 @@ export class Model {
    * faces and boundaries.
    */
   loopCut(edges: EdgeSelector, options: { readonly cuts: number }): OpReport {
+    if (this.shouldUseRust('loopCut') && edges.isPureAst()) {
+      return this.runRust('loopCut', { selector: edges.description, ...options }, {}, (s) =>
+        rustLoopCut(s, edges, options.cuts),
+      );
+    }
     return this.runEdges('loopCut', edges, options, (ids) => loopCut(this.mesh, ids, options));
   }
 
@@ -1236,8 +1566,10 @@ export class Model {
   /**
    * Replace interior edges by bevel strips (role `bevel`) `width` from the edge in
    * each adjacent face, with `segments` faces across (1 = flat chamfer, more = round).
-   * Corners where three or more bevels meet get role `corner`. Widths that would
-   * invert a face are clamped and reported; boundary edges are `model-precondition`.
+   * Corners where three or more bevels meet get role `corner`. `width` may list
+   * `{ edges, width }` entries (first match wins; selected edges no entry matches stay
+   * unbevelled), so mixed widths meet in one corner. Widths that would invert a face are
+   * clamped and reported; boundary edges are `model-precondition`.
    * Pass `material` when the faces around a bevel use several slots.
    */
   bevel(
@@ -1248,17 +1580,34 @@ export class Model {
       readonly material?: string;
     },
   ): OpReport {
-    return this.runEdges('bevel', edges, options, (ids, attribution, diagnostics) =>
-      bevel(
+    const { width } = options;
+    if (typeof width === 'number' && this.shouldUseRust('bevel') && edges.isPureAst()) {
+      return this.runRust('bevel', { selector: edges.description, ...options }, options, (s, a) =>
+        rustBevel(s, a, edges, width, options),
+      );
+    }
+    const args =
+      typeof width === 'number'
+        ? options
+        : {
+            ...options,
+            width: width.map((entry) => ({ edges: entry.edges.description, width: entry.width })),
+          };
+    return this.runEdges('bevel', edges, args, (ids, attribution, diagnostics) => {
+      const resolved = typeof width === 'number' ? undefined : resolveWidths(this.mesh, ids, width);
+      if (resolved !== undefined && !resolved.ok) return resolved;
+      return bevel(
         this.mesh,
-        ids,
-        options,
+        resolved === undefined ? ids : resolved.value.edges,
+        { ...options, width: resolved === undefined ? (width as number) : resolved.value.widest },
         attribution,
         options.material === undefined ? undefined : attribution.material,
         this.tolerance,
         diagnostics,
-      ),
-    );
+        undefined,
+        resolved?.value.perEdge,
+      );
+    });
   }
 
   /**
@@ -1294,6 +1643,18 @@ export class Model {
       );
     }
     const { faces, point, normal } = path;
+    if (
+      this.shouldUseRust('panelLine') &&
+      faces.isPureAst() &&
+      (options.profile === undefined || options.profile === 'square')
+    ) {
+      return this.runRust(
+        'panelLine',
+        { selector: faces.description, point, normal, ...options },
+        options,
+        (s, a) => rustPanelLine(s, a, faces, point, normal, options, this.tolerance),
+      );
+    }
     return this.runOn(
       'panelLine',
       faces,
@@ -1313,6 +1674,11 @@ export class Model {
 
   /** Split the faces a plane crosses, keeping both sides. */
   bisect(options: CutPlane): OpReport {
+    if (this.shouldUseRust('bisect') && this.surfaces.length === 0) {
+      return this.runRust('bisect', options, {}, (s, a) =>
+        rustPlaneCut(s, a, options, false, this.tolerance),
+      );
+    }
     return this.run('bisect', options, {}, () => bisect(this.mesh, options, this.tolerance));
   }
 
@@ -1328,6 +1694,11 @@ export class Model {
       readonly material?: string;
     },
   ): OpReport {
+    if (this.shouldUseRust('planeCut') && this.surfaces.length === 0) {
+      return this.runRust('planeCut', options, options, (s, a) =>
+        rustPlaneCut(s, a, options, true, this.tolerance),
+      );
+    }
     return this.run('planeCut', options, options, (attribution, diagnostics) =>
       planeCut(
         this.mesh,
@@ -1342,6 +1713,11 @@ export class Model {
 
   /** Remove interior edges, merging the faces on both sides into one n-gon per group. */
   dissolve(edges: EdgeSelector): OpReport {
+    if (this.shouldUseRust('dissolve') && edges.isPureAst()) {
+      return this.runRust('dissolve', { selector: edges.description }, {}, (s) =>
+        rustDissolve(s, edges),
+      );
+    }
     return this.runEdges('dissolve', edges, {}, (ids, _attribution, diagnostics) =>
       dissolve(this.mesh, ids, this.tolerance, diagnostics),
     );
@@ -1349,6 +1725,9 @@ export class Model {
 
   /** Split the mesh open along interior edges whose cut reaches a boundary or closes a loop. */
   split(edges: EdgeSelector): OpReport {
+    if (this.shouldUseRust('split') && edges.isPureAst()) {
+      return this.runRust('split', { selector: edges.description }, {}, (s) => rustSplit(s, edges));
+    }
     return this.runEdges('split', edges, {}, (ids, _attribution, diagnostics) =>
       split(this.mesh, ids, diagnostics),
     );
@@ -1356,11 +1735,21 @@ export class Model {
 
   /** Flip inside-out closed components touched by the selection so they face outward. */
   orient(faces: FaceSelector): OpReport {
+    if (this.shouldUseRust('orient') && faces.isPureAst()) {
+      return this.runRust('orient', { selector: faces.description }, {}, (s) =>
+        rustOrient(s, faces),
+      );
+    }
     return this.runOn('orient', faces, {}, (ids) => orient(this.mesh, ids));
   }
 
   /** Triangulate n-gons exactly as export would; a self-overlapping face is `model-degenerate` in both. */
   triangulate(faces: FaceSelector): OpReport {
+    if (this.shouldUseRust('triangulate') && faces.isPureAst()) {
+      return this.runRust('triangulate', { selector: faces.description }, {}, (s) =>
+        rustTriangulate(s, faces),
+      );
+    }
     return this.runOn('triangulate', faces, {}, (ids) => triangulate(this.mesh, ids));
   }
 
@@ -1372,6 +1761,14 @@ export class Model {
     edges: EdgeSelector,
     options: { readonly material?: string; readonly label?: string; readonly tag?: string } = {},
   ): OpReport {
+    if (this.shouldUseRust('fillHoles') && edges.isPureAst()) {
+      return this.runRust(
+        'fillHoles',
+        { selector: edges.description, ...options },
+        options,
+        (s, a) => rustFillHoles(s, a, edges, options.material),
+      );
+    }
     return this.runEdges('fillHoles', edges, options, (ids, attribution, _diagnostics, repair) =>
       fillHoles(
         this.mesh,
@@ -1394,6 +1791,13 @@ export class Model {
     mesh: MeshAsset,
     options: { readonly label?: string; readonly tag?: string } = {},
   ): OpReport {
+    const singleTriSubmesh =
+      mesh.submeshes.length === 1 && mesh.submeshes[0]?.topology === 'triangle-list';
+    const hasPos = mesh.attributes.position instanceof Float32Array;
+    const hasIdx = mesh.indices instanceof Uint16Array || mesh.indices instanceof Uint32Array;
+    if (this.shouldUseRust('lift') && singleTriSubmesh && hasPos && hasIdx) {
+      return this.runRust('lift', options, options, (s, a) => rustLift(s, a, mesh));
+    }
     return this.run('lift', options, options, (attribution, diagnostics) =>
       lift(this.mesh, mesh, attribution, diagnostics),
     );
@@ -1415,7 +1819,9 @@ export class Model {
       return this.run('array', options, options, (attribution) => {
         const source = this.operand(target);
         if (!source.ok) return source;
-        return arrayCopies(
+        const joined = this.joinCarrier(target, source.value);
+        if (!joined.ok) return joined;
+        const copies = arrayCopies(
           this.mesh,
           { source: source.value },
           options,
@@ -1423,7 +1829,18 @@ export class Model {
           prefix,
           this.tolerance,
         );
+        if (copies.ok) joined.value();
+        return copies;
       });
+    }
+    if (
+      this.shouldUseRust('array') &&
+      target.isPureAst() &&
+      ('linear' in options || 'radial' in options)
+    ) {
+      return this.runRust('array', { selector: target.description, ...options }, options, (s, a) =>
+        rustArray(s, a, target, options, prefix),
+      );
     }
     return this.runOn('array', target, options, (ids, attribution) =>
       arrayCopies(this.mesh, { faces: ids }, options, attribution, prefix, this.tolerance),
@@ -1438,6 +1855,12 @@ export class Model {
    * take their side from the face, so they still point outward.
    */
   mirror(options: { readonly axis: Axis; readonly weldDistance?: number }): OpReport {
+    if (this.shouldUseRust('mirror') && this.surfaces.length === 0) {
+      return this.runRust('mirror', options, {}, (store) => {
+        const res = store.rustMesh.mirror(options.axis, options.weldDistance ?? this.tolerance);
+        return res.ok ? ok({ mirrored: res.value }) : err(kernelErrorToModelingError(res.error));
+      });
+    }
     return this.run('mirror', options, {}, () => {
       const mirrored = mirror(this.mesh, {
         axis: options.axis,
@@ -1483,6 +1906,14 @@ export class Model {
     if (options !== undefined) {
       return this.soft('translate', target, { kind: 'translate', offset }, options);
     }
+    if (this.shouldUseRust('translate') && target.domain === 'face' && target.isPureAst()) {
+      return this.runRust('translate', { selector: target.description, offset }, {}, (store) => {
+        const ids = store.resolveSelector(target);
+        if (!ids.ok) return ids;
+        const res = store.rustMesh.translate(ids.value, offset);
+        return res.ok ? ok({}) : err(kernelErrorToModelingError(res.error));
+      });
+    }
     return this.runVertices('translate', target, { offset }, (ids) =>
       transformVertices(this.mesh, ids, (p) => [
         p[0] + offset[0],
@@ -1510,6 +1941,16 @@ export class Model {
     if (options !== undefined) {
       return this.soft('scale', target, { kind: 'scale', factor, pivot }, options, positive);
     }
+    if (this.shouldUseRust('scale') && target.domain === 'face' && target.isPureAst()) {
+      return this.runRust('scale', { selector: target.description, factor, pivot }, {}, (store) => {
+        const invalid = positive();
+        if (invalid !== undefined) return err(invalid);
+        const ids = store.resolveSelector(target);
+        if (!ids.ok) return ids;
+        const res = store.rustMesh.scale(ids.value, factor, pivot);
+        return res.ok ? ok({}) : err(kernelErrorToModelingError(res.error));
+      });
+    }
     return this.runVertices('scale', target, { factor, pivot }, (ids) => {
       const invalid = positive();
       if (invalid !== undefined) return err(invalid);
@@ -1534,6 +1975,19 @@ export class Model {
   ): OpReport {
     const transform: WeightedTransform = { kind: 'rotate', axis, degrees, pivot };
     if (options !== undefined) return this.soft('rotate', target, transform, options);
+    if (this.shouldUseRust('rotate') && target.domain === 'face' && target.isPureAst()) {
+      return this.runRust(
+        'rotate',
+        { selector: target.description, axis, degrees, pivot },
+        {},
+        (store) => {
+          const ids = store.resolveSelector(target);
+          if (!ids.ok) return ids;
+          const res = store.rustMesh.rotate(ids.value, axis, degrees, pivot);
+          return res.ok ? ok({}) : err(kernelErrorToModelingError(res.error));
+        },
+      );
+    }
     return this.runVertices('rotate', target, { axis, degrees, pivot }, (ids) =>
       transformVertices(this.mesh, ids, (p) => weighted(transform, p, 1)),
     );
@@ -1557,6 +2011,17 @@ export class Model {
    * A spherized subdivided box is a pole-free quad-cage head.
    */
   spherize(target: FaceSelector | VertSelector, options: SpherizeOptions): OpReport {
+    if (
+      this.shouldUseRust('spherize') &&
+      target.isPureAst() &&
+      options.falloff === undefined &&
+      (options.radii === undefined ||
+        (options.radii[0] === options.radii[1] && options.radii[1] === options.radii[2]))
+    ) {
+      return this.runRust('spherize', { selector: target.description, ...options }, {}, (s) =>
+        rustSpherize(s, target, options),
+      );
+    }
     return this.runVertices('spherize', target, options, (ids, diagnostics) =>
       spherize(this.mesh, ids, options, this.tolerance, diagnostics),
     );
@@ -1645,15 +2110,34 @@ export class Model {
   }
 
   flip(faces: FaceSelector): OpReport {
+    if (this.shouldUseRust('flip') && faces.isPureAst()) {
+      return this.runRust('flip', { selector: faces.description }, {}, (store) => {
+        const ids = store.resolveSelector(faces);
+        if (!ids.ok) return ids;
+        const res = store.rustMesh.flipFaces(ids.value);
+        return res.ok ? ok({ flipped: res.value }) : err(kernelErrorToModelingError(res.error));
+      });
+    }
     return this.runOn('flip', faces, {}, (ids) => flipFaces(this.mesh, ids));
   }
 
   delete(faces: FaceSelector): OpReport {
+    if (this.shouldUseRust('delete') && faces.isPureAst()) {
+      return this.runRust('delete', { selector: faces.description }, {}, (store) => {
+        const ids = store.resolveSelector(faces);
+        if (!ids.ok) return ids;
+        const res = store.rustMesh.deleteFaces(ids.value);
+        return res.ok ? ok({ deleted: res.value }) : err(kernelErrorToModelingError(res.error));
+      });
+    }
     return this.runOn('delete', faces, {}, (ids) => deleteFaces(this.mesh, ids));
   }
 
   /** Merge vertices closer than `distance` (meters). */
   weld(options: { readonly distance: number }): OpReport {
+    if (this.shouldUseRust('weld') && this.surfaces.length === 0) {
+      return this.runRust('weld', options, {}, (s) => rustWeld(s, options.distance));
+    }
     return this.run('weld', options, {}, (_attribution, _diagnostics, repair) =>
       weld(this.mesh, options.distance, repair),
     );
@@ -1668,6 +2152,14 @@ export class Model {
    * faces stay put, so the neighbours only gain edge points.
    */
   subdivide(faces: FaceSelector | undefined, options: SubdivideOptions): OpReport {
+    if (this.shouldUseRust('subdivide') && (faces === undefined || faces.isPureAst())) {
+      return this.runRust(
+        'subdivide',
+        faces === undefined ? options : { selector: faces.description, ...options },
+        {},
+        (s) => rustSubdivide(s, faces, options, this.faceBudget),
+      );
+    }
     const body = (ids: readonly number[], diagnostics: OpDiagnostic[]) =>
       subdivide(
         this.mesh,
@@ -1695,6 +2187,11 @@ export class Model {
 
   /** Free-form deformation: move lattice control points; Bernstein weights move the vertices. */
   lattice(target: FaceSelector | VertSelector, options: LatticeOptions): OpReport {
+    if (this.shouldUseRust('lattice') && target.isPureAst() && options.bounds === undefined) {
+      return this.runRust('lattice', { selector: target.description, ...options }, {}, (s) =>
+        rustLattice(s, target, options),
+      );
+    }
     return this.runVertices('lattice', target, options, (ids, diagnostics) =>
       lattice(this.mesh, ids, options, this.tolerance, diagnostics),
     );
@@ -1709,6 +2206,11 @@ export class Model {
 
   /** Bend the `range` along `axis` into a circular arc of `angle` degrees curling `toward`. */
   bend(target: FaceSelector | VertSelector, options: BendOptions): OpReport {
+    if (this.shouldUseRust('bend') && target.isPureAst()) {
+      return this.runRust('bend', { selector: target.description, ...options }, {}, (s) =>
+        rustBend(s, target, options),
+      );
+    }
     return this.runVertices('bend', target, options, (ids, diagnostics) =>
       bend(this.mesh, ids, options, this.tolerance, diagnostics),
     );
@@ -1716,6 +2218,11 @@ export class Model {
 
   /** Twist about `axis`, ramping from 0 to `angle` degrees over `range`. */
   twist(target: FaceSelector | VertSelector, options: TwistOptions): OpReport {
+    if (this.shouldUseRust('twist') && target.isPureAst()) {
+      return this.runRust('twist', { selector: target.description, ...options }, {}, (s) =>
+        rustTwist(s, target, options),
+      );
+    }
     return this.runVertices('twist', target, options, (ids, diagnostics) =>
       twist(this.mesh, ids, options, this.tolerance, diagnostics),
     );
@@ -1723,13 +2230,50 @@ export class Model {
 
   /** Scale cross sections of `axis`, ramping from 1 to `factor` over `range`. */
   taper(target: FaceSelector | VertSelector, options: TaperOptions): OpReport {
+    if (this.shouldUseRust('taper') && target.domain === 'face' && target.isPureAst()) {
+      return this.runRust('taper', { selector: target.description, ...options }, {}, (s) =>
+        rustTaper(s, target, options),
+      );
+    }
     return this.runVertices('taper', target, options, (ids, diagnostics) =>
       taper(this.mesh, ids, options, this.tolerance, diagnostics),
     );
   }
 
+  /**
+   * Draft prism walls `faces` by `angle` degrees toward `direction`, pivoting each wall about
+   * its line on the plane of the `neutral` faces, which keep their exact positions.
+   */
+  applyDraft(faces: FaceSelector, options: ApplyDraftOptions): OpReport {
+    const { neutral, ...rest } = options;
+    if (this.shouldUseRust('applyDraft') && faces.isPureAst() && neutral.isPureAst()) {
+      return this.runRust(
+        'applyDraft',
+        { selector: faces.description, ...rest, neutral: neutral.description },
+        {},
+        (s) => rustApplyDraft(s, faces, options),
+      );
+    }
+    return this.runOn('applyDraft', faces, { ...rest, neutral: neutral.description }, (ids) => {
+      const base = neutral.resolve(this.mesh);
+      if (!base.ok) return base;
+      return applyDraft(this.mesh, ids, base.value, options, this.tolerance);
+    });
+  }
+
   /** Lay the mesh along a path: distance along `axis` becomes arc length. */
   curveDeform(target: FaceSelector | VertSelector, options: CurveDeformOptions): OpReport {
+    if (
+      this.shouldUseRust('curveDeform') &&
+      target.isPureAst() &&
+      Array.isArray(options.path) &&
+      (options.frame === undefined || options.frame === 'rmf') &&
+      options.stretch !== true
+    ) {
+      return this.runRust('curveDeform', { selector: target.description, ...options }, {}, (s) =>
+        rustCurveDeform(s, target, options, options.path as readonly Tuple3[]),
+      );
+    }
     return this.runVertices('curveDeform', target, options, (ids, diagnostics) =>
       curveDeform(this.mesh, ids, options, this.tolerance, diagnostics),
     );
@@ -1741,16 +2285,41 @@ export class Model {
    * solve.sparse jobs.
    */
   readonly smooth: SmoothOperation = Object.assign(
-    (target: FaceSelector | VertSelector, options: SmoothOptions): OpReport =>
-      this.runVertices('smooth', target, options, (ids, diagnostics) =>
+    (target: FaceSelector | VertSelector, options: SmoothOptions): OpReport => {
+      if (this.shouldUseRust('smooth') && target.isPureAst()) {
+        return this.runRust('smooth', { selector: target.description, ...options }, {}, (s) =>
+          rustSmooth(s, target, options),
+        );
+      }
+      return this.runVertices('smooth', target, options, (ids, diagnostics) =>
         smooth(this.mesh, ids, options, this.tolerance, diagnostics),
-      ),
+      );
+    },
     {
       implicit: (
         target: FaceSelector | VertSelector | undefined,
         options: ImplicitSmoothOptions,
       ): OpReport => {
         const args = { ...options, pin: describePins(options?.pin) };
+        const pinList =
+          options?.pin === undefined
+            ? []
+            : Array.isArray(options.pin)
+              ? options.pin
+              : [options.pin];
+        if (
+          this.shouldUseRust('smooth.implicit') &&
+          (target === undefined || target.isPureAst()) &&
+          options?.solver === undefined &&
+          pinList.every((p) => typeof p === 'string' || p.isPureAst())
+        ) {
+          return this.runRust(
+            'smooth.implicit',
+            target === undefined ? args : { selector: target.description, ...args },
+            {},
+            (s) => rustImplicitSmooth(s, target, options),
+          );
+        }
         const body = (ids: number[], diagnostics: OpDiagnostic[]) =>
           implicitSmooth(this.mesh, ids, options, this.solveContext(), diagnostics);
         if (target === undefined) {
@@ -1775,6 +2344,24 @@ export class Model {
       handles: describeHandles(options?.handles),
       pin: describePins(options?.pin),
     };
+    const pinList =
+      options?.pin === undefined ? [] : Array.isArray(options.pin) ? options.pin : [options.pin];
+    if (
+      this.shouldUseRust('arap') &&
+      target.isPureAst() &&
+      options?.solver === undefined &&
+      options.handles.every(
+        (h) =>
+          h.selector.isPureAst() &&
+          h.rotate === undefined &&
+          (h.translate !== undefined || h.to !== undefined),
+      ) &&
+      pinList.every((p) => typeof p !== 'string' && p.isPureAst())
+    ) {
+      return this.runRust('arap', { selector: target.description, ...args }, {}, (s) =>
+        rustArap(s, target, options),
+      );
+    }
     return this.runVertices('arap', target, args, (ids, diagnostics) =>
       arap(this.mesh, ids, options, this.solveContext(), diagnostics),
     );
@@ -1795,6 +2382,35 @@ export class Model {
   ): OpReport {
     const { onto, ...rest } = options ?? ({} as typeof options);
     const args = { onto: this.describeOperand(onto), ...rest };
+    const selfSelector = onto instanceof Selector && onto.isPureAst();
+    const validPeerModel =
+      onto instanceof Model &&
+      onto !== this &&
+      onto.poisoned === undefined &&
+      onto.surfaces.length === 0;
+    if (
+      this.shouldUseRust('shrinkwrap') &&
+      target.isPureAst() &&
+      rest.falloff === undefined &&
+      (rest.mode !== 'project' || Array.isArray(rest.direction)) &&
+      (selfSelector || validPeerModel)
+    ) {
+      return this.runRust('shrinkwrap', { selector: target.description, ...args }, {}, (s) => {
+        let surf: { readonly positions: Float64Array; readonly indices: Uint32Array };
+        if (onto instanceof Selector) {
+          const ontoIds = s.resolveSelector(onto as FaceSelector);
+          if (!ontoIds.ok) return ontoIds;
+          surf = triangulateRustStoreFaces(s, ontoIds.value);
+        } else {
+          const peer = onto as Model;
+          surf =
+            peer.authority === 'rust' && peer.rustStore !== undefined
+              ? triangulateRustStoreFaces(peer.rustStore)
+              : triangulateEditMeshFaces(peer.editMesh);
+        }
+        return rustShrinkwrap(s, target, surf, rest);
+      });
+    }
     return this.runVertices('shrinkwrap', target, args, (ids, diagnostics) => {
       const surface = this.surfaceOperand(onto);
       if (!surface.ok) return surface;
@@ -1880,6 +2496,19 @@ export class Model {
    * change are in the info diagnostic.
    */
   simplify(faces: FaceSelector | undefined, options: SimplifyOptions): OpReport {
+    if (
+      this.shouldUseRust('simplify') &&
+      (faces === undefined || faces.isPureAst()) &&
+      options.clearance === undefined &&
+      options.silhouette === undefined
+    ) {
+      return this.runRust(
+        'simplify',
+        faces === undefined ? options : { selector: faces.description, ...options },
+        {},
+        (s) => rustSimplify(s, faces, options),
+      );
+    }
     return this.processOn('simplify', faces, options, (ids, diagnostics) =>
       simplifyFaces(this.mesh, ids, options, this.processContext(), diagnostics),
     );
@@ -1895,6 +2524,22 @@ export class Model {
    * verdict (`pass`, `issues`) and the measured facts.
    */
   lowpoly(faces: FaceSelector | undefined, options: LowpolyOptions): OpReport {
+    const uvPad = options.uv?.padding === undefined ? 0 : resolveRustMipPadding(options.uv.padding);
+    if (
+      this.shouldUseRust('lowpoly') &&
+      (faces === undefined || faces.isPureAst()) &&
+      this.surfaces.length === 0 &&
+      options.silhouette === undefined &&
+      options.slivers === undefined &&
+      Number.isFinite(uvPad)
+    ) {
+      return this.runRust(
+        'lowpoly',
+        faces === undefined ? options : { selector: faces.description, ...options },
+        {},
+        (s) => rustLowpoly(s, faces, options, this.tolerance),
+      );
+    }
     return this.processOn('lowpoly', faces, options, (ids, diagnostics) =>
       lowpolyFaces(
         this.mesh,
@@ -1916,6 +2561,20 @@ export class Model {
    * with the same `preserve` constraints as simplify.
    */
   remesh(faces: FaceSelector | undefined, options: RemeshOptions): OpReport {
+    if (
+      this.shouldUseRust('remesh') &&
+      (faces === undefined || faces.isPureAst()) &&
+      options.clearance === undefined &&
+      options.adaptive === undefined &&
+      options.direction === undefined
+    ) {
+      return this.runRust(
+        'remesh',
+        faces === undefined ? options : { selector: faces.description, ...options },
+        {},
+        (s) => rustRemesh(s, faces, options),
+      );
+    }
     return this.processOn('remesh', faces, options, (ids, diagnostics) =>
       remeshFaces(this.mesh, ids, options, this.processContext(), diagnostics),
     );
@@ -1970,6 +2629,31 @@ export class Model {
     faces: FaceSelector | undefined,
     options: (VoxelUnionOptions | VoxelOffsetOptions | VoxelFillOptions) & Placement,
   ): OpReport {
+    if (
+      (operation === 'offset' || operation === 'fill') &&
+      this.shouldUseRust(op) &&
+      (faces === undefined || faces.isPureAst()) &&
+      this.surfaces.length === 0 &&
+      options.material === undefined
+    ) {
+      return this.runRust(
+        op,
+        faces === undefined ? options : { selector: faces.description, ...options },
+        options,
+        (s, a) =>
+          rustVoxelRemesh(
+            s,
+            faces,
+            operation === 'offset' ? 'offset' : 'fill',
+            options as {
+              readonly voxelSize: number;
+              readonly distance?: number;
+              readonly band?: number;
+            },
+            a,
+          ),
+      );
+    }
     const body = (ids: number[], attribution: Attribution, diagnostics: OpDiagnostic[]) =>
       voxelRebuild(
         this.mesh,
@@ -2015,6 +2699,14 @@ export class Model {
      * drop collinear vertices (design 8, the boolean's return to face regions).
      */
     planar: (faces?: FaceSelector): OpReport => {
+      if (this.shouldUseRust('cleanup.planar') && (faces === undefined || faces.isPureAst())) {
+        return this.runRust(
+          'cleanup.planar',
+          faces === undefined ? {} : { selector: faces.description },
+          {},
+          (s) => rustCleanupPlanar(s, faces, this.tolerance),
+        );
+      }
       if (faces === undefined) {
         return this.run('cleanup.planar', {}, {}, () =>
           cleanupPlanar(this.mesh, this.mesh.faces(), this.tolerance),
@@ -2034,6 +2726,14 @@ export class Model {
      * p99 and valence.
      */
     quads: (faces?: FaceSelector, options: QuadOptions = {}): OpReport => {
+      if (this.shouldUseRust('cleanup.quads') && (faces === undefined || faces.isPureAst())) {
+        return this.runRust(
+          'cleanup.quads',
+          faces === undefined ? options : { selector: faces.description, ...options },
+          {},
+          (s) => rustCleanupQuads(s, faces, options),
+        );
+      }
       if (faces === undefined) {
         return this.run('cleanup.quads', options, {}, (_attribution, diagnostics) =>
           cleanupQuads(this.mesh, this.mesh.faces(), options, diagnostics),
@@ -2055,6 +2755,15 @@ export class Model {
       faces: FaceSelector | undefined,
       options: { readonly width: number; readonly quiet?: boolean },
     ): OpReport => {
+      if (this.shouldUseRust('cleanup.slivers') && (faces === undefined || faces.isPureAst())) {
+        return this.runRust(
+          'cleanup.slivers',
+          faces === undefined ? options : { selector: faces.description, ...options },
+          {},
+          (s) =>
+            rustCleanupSlivers(s, faces, options.width, options.quiet ?? false, this.tolerance),
+        );
+      }
       const body = (ids: number[], diagnostics: OpDiagnostic[], repair: RepairSink) =>
         cleanupSlivers(this.mesh, ids, options, this.tolerance, diagnostics, repair);
       if (faces === undefined) {
@@ -2075,14 +2784,33 @@ export class Model {
      * of triangles above `maxAspect`, within `maxError` of the input and, with `clearance`,
      * off other surfaces (`TilingOptions`); a remesh job like simplify.
      */
-    tiling: (faces: FaceSelector | undefined, options: TilingOptions): OpReport =>
-      this.processOn('cleanup.tiling', faces, options, (ids, diagnostics) =>
+    tiling: (faces: FaceSelector | undefined, options: TilingOptions): OpReport => {
+      if (
+        this.shouldUseRust('cleanup.tiling') &&
+        (faces === undefined || faces.isPureAst()) &&
+        options.clearance === undefined &&
+        options.direction === undefined
+      ) {
+        return this.runRust(
+          'cleanup.tiling',
+          faces === undefined ? options : { selector: faces.description, ...options },
+          {},
+          (s) => rustCleanupTiling(s, faces, options),
+        );
+      }
+      return this.processOn('cleanup.tiling', faces, options, (ids, diagnostics) =>
         cleanupTiling(this.mesh, ids, options, this.processContext(), diagnostics),
-      ),
+      );
+    },
   };
 
   /** Insert boundary vertices that lie on other boundary edges (default distance: tolerance). */
   resolveTJunctions(options: { readonly distance?: number } = {}): OpReport {
+    if (this.shouldUseRust('resolveTJunctions')) {
+      return this.runRust('resolveTJunctions', options, {}, (s) =>
+        rustResolveTJunctions(s, options.distance ?? this.tolerance),
+      );
+    }
     return this.run('resolveTJunctions', options, {}, (_attribution, _diagnostics, repair) =>
       resolveTJunctions(this.mesh, options.distance ?? this.tolerance, repair),
     );
@@ -2105,6 +2833,16 @@ export class Model {
   // ---- intent and attributes ------------------------------------------------------
 
   tag(faces: FaceSelector, name: string): OpReport {
+    if (this.shouldUseRust('tag') && faces.isPureAst()) {
+      return this.runRust('tag', { selector: faces.description, name }, {}, (store) => {
+        const ids = store.resolveSelector(faces);
+        if (!ids.ok) return ids;
+        const res = store.rustMesh.tagFaces(ids.value, name);
+        if (!res.ok) return err(kernelErrorToModelingError(res.error));
+        store.internTag(name, true);
+        return ok({ tagged: ids.value.length });
+      });
+    }
     return this.runOn('tag', faces, { name }, (ids) => {
       const t = this.mesh.tagIndex(name, true);
       for (const f of ids) this.mesh.addTag(f, t);
@@ -2114,6 +2852,16 @@ export class Model {
 
   /** Assign a material slot by name; slot order follows first use. */
   assign(faces: FaceSelector, slot: string): OpReport {
+    if (this.shouldUseRust('assign') && faces.isPureAst()) {
+      return this.runRust('assign', { selector: faces.description, slot }, {}, (store) => {
+        const ids = store.resolveSelector(faces);
+        if (!ids.ok) return ids;
+        const res = store.rustMesh.setMaterial(ids.value, slot);
+        if (!res.ok) return err(kernelErrorToModelingError(res.error));
+        store.internMaterial(slot);
+        return ok({ assigned: ids.value.length });
+      });
+    }
     return this.runOn('assign', faces, { slot }, (ids) => {
       const m = this.mesh.nameIndex(this.mesh.materialNames, slot);
       for (const f of ids) this.mesh.fMaterial[f] = m;
@@ -2122,6 +2870,11 @@ export class Model {
   }
 
   markSharp(edges: EdgeSelector, sharp = true): OpReport {
+    if (this.shouldUseRust('markSharp') && edges.isPureAst()) {
+      return this.runRust('markSharp', { selector: edges.description, sharp }, {}, (s) =>
+        rustMarkEdges(s, edges, EDGE_SHARP, sharp),
+      );
+    }
     return this.runEdges('markSharp', edges, { sharp }, (ids, _attribution, diagnostics) =>
       markCrease(this.mesh, ids, sharp ? Infinity : 0, diagnostics),
     );
@@ -2135,6 +2888,14 @@ export class Model {
    */
   markCrease(edges: EdgeSelector, sharpness: number): OpReport {
     const recorded = sharpness === Infinity ? 'Infinity' : sharpness;
+    if (this.shouldUseRust('markCrease') && edges.isPureAst()) {
+      return this.runRust(
+        'markCrease',
+        { selector: edges.description, sharpness: recorded },
+        {},
+        (s) => rustMarkCrease(s, edges, sharpness),
+      );
+    }
     return this.runEdges(
       'markCrease',
       edges,
@@ -2143,91 +2904,110 @@ export class Model {
     );
   }
 
+  /**
+   * Mark what the faces' part is for (BK46): `detail` faces are what booleans' `details`
+   * option, `lowpoly({ roles: 'form' })` and the bake read; `tool` faces shape a form.
+   */
+  markRole(faces: FaceSelector, role: PartRole): OpReport {
+    if (this.shouldUseRust('markRole') && faces.isPureAst() && PART_ROLES.includes(role)) {
+      return this.runRust('markRole', { selector: faces.description, role }, {}, (s) =>
+        rustMarkRole(s, faces, role),
+      );
+    }
+    return this.runOn('markRole', faces, { role }, (ids) => {
+      if (!PART_ROLES.includes(role)) {
+        return err(
+          modelingError('model-invalid-argument', "role is 'form', 'detail' or 'tool'", { role }),
+        );
+      }
+      for (const f of ids) setPartRole(this.mesh, f, role);
+      return ok({ [role]: ids.length });
+    });
+  }
+
+  /**
+   * Tag faces with their bake group from the part tags (BK48): `parts` is the ordered
+   * part -> group map (first match wins; see `BakeGroupsOptions`), applied to the selected faces
+   * (default all). Run it on the low and on the high with the same map, then bake with
+   * `tags: { groupPrefix }`; `idMap(m.editMesh)` paints the result in UV space.
+   */
+  bakeGroups(options: BakeGroupsOptions, faces: FaceSelector = sel.all()): OpReport {
+    return this.runOn(
+      'bakeGroups',
+      faces,
+      { parts: options.parts.length },
+      (ids, _a, diagnostics) => assignBakeGroups(this.mesh, ids, options, diagnostics),
+    );
+  }
+
+  /**
+   * Set or clear the floating flag (`details: 'float'` sets it): floating detail shells ride
+   * later booleans untouched and are bake floaters. `markRole` never touches it, so
+   * `m.markFloat(sel.all(), false)` is how a floated shell becomes an ordinary part again.
+   */
+  markFloat(faces: FaceSelector, float = true): OpReport {
+    if (this.shouldUseRust('markFloat') && faces.isPureAst()) {
+      return this.runRust('markFloat', { selector: faces.description, float }, {}, (s) =>
+        rustMarkFloat(s, faces, float),
+      );
+    }
+    return this.runOn('markFloat', faces, { float }, (ids) => {
+      for (const f of ids) {
+        const flags = this.mesh.fFlags[f] as number;
+        this.mesh.fFlags[f] = float ? flags | FACE_FLOAT : flags & ~FACE_FLOAT;
+      }
+      return ok({ [float ? 'float' : 'unfloat']: ids.length });
+    });
+  }
+
   markSeam(edges: EdgeSelector, seam = true): OpReport {
+    if (this.shouldUseRust('markSeam') && edges.isPureAst()) {
+      return this.runRust('markSeam', { selector: edges.description, seam }, {}, (s) =>
+        rustMarkEdges(s, edges, EDGE_SEAM, seam),
+      );
+    }
     return this.runEdges('markSeam', edges, { seam }, (ids) =>
       markEdges(this.mesh, ids, EDGE_SEAM, seam),
     );
   }
 
-  readonly uv = {
-    project: (options: ProjectOptions & { readonly faces?: FaceSelector }): OpReport => {
-      const faces = options.faces;
-      if (faces === undefined) {
-        return this.run('uv.project', options, {}, (_attribution, diagnostics) =>
-          projectUv(this.mesh, this.mesh.faces(), options, this.tolerance, diagnostics),
-        );
-      }
-      return this.runOn('uv.project', faces, options, (ids, _attribution, diagnostics) =>
-        projectUv(this.mesh, ids, options, this.tolerance, diagnostics),
-      );
+  readonly uv = createModelUvOps({
+    getTolerance: () => this.tolerance,
+    getMesh: () => this.mesh,
+    hasSurfaces: () => this.surfaces.length > 0 || this.adoptedCarrier,
+    domainChannel: () => this.domainChannel,
+    setDomainChannel: (channel) => {
+      this.domainChannel = channel;
     },
-    /**
-     * Unwrap faces (default all) per seam-cut island with LSCM (pins substituted,
-     * solved by the solve.sparse compute job) or ExpMap; islands are normalized to
-     * their 3D area, oriented and laid out side by side. Metrics (Sander stretch,
-     * area distortion, texel density dispersion) are in the info diagnostic.
-     */
-    unwrap: (options: UnwrapOptions & { readonly faces?: FaceSelector } = {}): OpReport => {
-      const args =
-        options.seams === undefined ? options : { ...options, seams: describeSeams(options.seams) };
-      const body = (ids: number[], diagnostics: OpDiagnostic[]) => {
-        const seams = seamSelection(this.mesh, options.seams);
-        if (!seams.ok) return seams;
-        return unwrapUv(this.mesh, ids, options, seams.value, this.uvContext(), diagnostics);
-      };
-      const faces = options.faces;
-      if (faces === undefined) {
-        return this.run('uv.unwrap', args, {}, (_attribution, diagnostics) =>
-          body(this.mesh.faces(), diagnostics),
-        );
-      }
-      return this.runOn('uv.unwrap', faces, args, (ids, _attribution, diagnostics) =>
-        body(ids, diagnostics),
-      );
-    },
-    /** Pack the UV islands of faces (default all) into one square atlas (skyline, scale search). */
-    pack: (options: PackOptions & { readonly faces?: FaceSelector }): OpReport => {
-      const faces = options.faces;
-      if (faces === undefined) {
-        return this.run('uv.pack', options, {}, (_attribution, diagnostics) =>
-          packUv(this.mesh, this.mesh.faces(), options, this.uvContext(), diagnostics),
-        );
-      }
-      return this.runOn('uv.pack', faces, options, (ids, _attribution, diagnostics) =>
-        packUv(this.mesh, ids, options, this.uvContext(), diagnostics),
-      );
-    },
-    /**
-     * Automatic seams, unwrap and pack of faces (default all): uv.chart patches merged
-     * under distortion / normal limits, sharp edges as hard boundaries, per-chart
-     * unwrap and one atlas. Chart count and metrics are in the info diagnostic.
-     */
-    auto: (options: AutoUvOptions & { readonly faces?: FaceSelector }): OpReport => {
-      const faces = options.faces;
-      if (faces === undefined) {
-        return this.run('uv.auto', options, {}, (_attribution, diagnostics) =>
-          autoUv(this.mesh, this.mesh.faces(), options, this.uvContext(), diagnostics),
-        );
-      }
-      return this.runOn('uv.auto', faces, options, (ids, _attribution, diagnostics) =>
-        autoUv(this.mesh, ids, options, this.uvContext(), diagnostics),
-      );
-    },
-    /**
-     * Map faces (each connected instance on its own plane frame) into a trim-sheet
-     * region: metric, fit or tile per region axis. Instances and texel density
-     * against the region are in the info diagnostic.
-     */
-    trim: (options: TrimUvOptions & { readonly faces: FaceSelector }): OpReport =>
-      this.runOn('uv.trim', options.faces, trimArgs(options), (ids, _attribution, diagnostics) =>
-        trimUv(this.mesh, ids, options, diagnostics),
-      ),
-    /** Map every face on its own into a region's interior (U24 swatch UVs). */
-    swatch: (options: SwatchUvOptions & { readonly faces: FaceSelector }): OpReport =>
-      this.runOn('uv.swatch', options.faces, trimArgs(options), (ids, _attribution, diagnostics) =>
-        swatchUv(this.mesh, ids, options, diagnostics),
-      ),
-  };
+    carrier: () => this.carrier(),
+    uvContext: () => this.uvContext(),
+    noteCarrierWrite: (op, ids, channel, diagnostics) =>
+      this.noteCarrierWrite(op, ids, channel, diagnostics),
+    shouldUseRust: (op) => this.shouldUseRust(op),
+    runRust: (op, args, placement, body) => this.runRust(op, args, placement as Placement, body),
+    run: (op, args, placement, body) => this.run(op, args, placement as Placement, body),
+    runOn: (op, faces, args, body) => this.runOn(op, faces, args, body),
+  });
+
+  /** Warn when a UV operator's output channel holds the patch domain of the faces it rewrites. */
+  private noteCarrierWrite(
+    op: string,
+    ids: readonly number[],
+    channel: CornerChannelName | undefined,
+    diagnostics: OpDiagnostic[],
+  ): void {
+    carrierOverwriteNote(op, this.mesh, ids, channel, this.carrier(), diagnostics);
+  }
+
+  private carrier(): Carrier {
+    return {
+      channel: this.domainChannel,
+      surfaces:
+        this.adoptedPatches.length === 0
+          ? this.surfaces
+          : [...this.surfaces, ...this.adoptedPatches.map((name) => ({ name }))],
+    };
+  }
 
   private uvContext(): UvContext {
     return {
@@ -2244,6 +3024,11 @@ export class Model {
   /** Number of elements the selector matches now; 0 once the session is poisoned. */
   count(selector: FaceSelector | EdgeSelector | VertSelector): number {
     if (this.failure !== undefined) return 0;
+    if (this.authority === 'rust' && this.rustStore !== undefined && selector.isPureAst()) {
+      const res = this.rustStore.evaluateSelector(selector);
+      if (res.ok) return res.value.length;
+    }
+    this.ensureTsAuthority();
     return selector.evaluate(this.mesh).length;
   }
 
@@ -2260,6 +3045,7 @@ export class Model {
     options: { readonly flow?: readonly FlowGuide[] } = {},
   ): Result<MeshQualityReport, ModelingError> {
     if (this.failure !== undefined) return err(this.failure);
+    this.ensureTsAuthority();
     const ids = (faces ?? sel.all()).resolve(this.mesh);
     if (!ids.ok) return ids;
     const flow = resolveFlowGuides(this.mesh, options.flow);
@@ -2276,6 +3062,7 @@ export class Model {
     selector: FaceSelector | EdgeSelector | VertSelector,
   ): Result<{ readonly min: Tuple3; readonly max: Tuple3 }, ModelingError> {
     if (this.failure !== undefined) return err(this.failure);
+    this.ensureTsAuthority();
     const ids = selector.resolve(this.mesh);
     if (!ids.ok) return ids;
     const vertices = new Set<number>();
@@ -2299,6 +3086,36 @@ export class Model {
 
   /** Kernel invariants and asset-quality facts; `options` enables thickness and unique-UV checks. */
   validate(options: ValidateOptions = {}): ValidationReport {
+    if (this.failure !== undefined) {
+      const site = this.failure.detail?.site as { readonly opIndex?: number } | undefined;
+      return poisonedReport(this.mesh, {
+        code: this.failure.code,
+        ...(site?.opIndex === undefined ? {} : { opIndex: site.opIndex }),
+      });
+    }
+    const report = this.validateChecks(options);
+    if (options.strict === undefined || options.strict === false) return report;
+    const gated = new Set<string>(options.strict === true ? STRICT_QUALITY_CODES : options.strict);
+    const failing = report.issues.some((i) => i.severity === 'warn' && gated.has(i.code));
+    return failing ? { ...report, pass: false } : report;
+  }
+
+  private validationInputs(): ValidationInputs {
+    return {
+      mesh: this.mesh,
+      tolerance: this.tolerance,
+      entries: this.entries,
+      drawings: this.drawings,
+      surfaces: this.surfaces,
+      featureLines: this.featureLines,
+      qualitySources: this.qualitySources,
+      layouts: this.layouts,
+    };
+  }
+
+  private validateChecks(options: ValidateOptions): ValidationReport {
+    this.ensureTsAuthority();
+    const inputs = this.validationInputs();
     const report = this.validateShellClearance(
       this.validateDrawings(
         this.validateShutLines(
@@ -2311,57 +3128,53 @@ export class Model {
         options,
       ),
     );
-    if (options.surfaceQuality === undefined || options.surfaceQuality === false)
-      return this.withCoverage(report, (ledger) => ledger.off('surface-quality', 'not-requested'));
-    const quality = checkSurfaceQuality(
-      { surfaces: this.surfaces, curves: this.featureLines },
-      options.surfaceQuality === true ? {} : options.surfaceQuality,
-    );
-    const issues: Issue<ValidationCode>[] = quality.ok
-      ? quality.value.issues.map((issue) => {
-          const owner = (issue.detail.subject as string).split(':')[0] as string;
-          const opIndex = this.qualitySources.get(owner);
-          const point = qualityPoint(issue, this.surfaces);
-          return {
-            code: 'surface-quality',
-            severity: 'warn',
-            detail: {
-              check: issue.code,
-              ...(point === undefined ? {} : { point }),
-              ...(opIndex === undefined ? {} : { opIndex }),
-              ...issue.detail,
-            },
-          };
-        })
-      : [
-          {
-            code: 'surface-quality',
-            severity: 'error',
-            detail: { check: 'options', error: quality.error },
-          },
-        ];
-    return this.withCoverage(
-      { ...report, pass: report.pass && quality.ok, issues: [...report.issues, ...issues] },
-      (ledger) => {
-        const subjects = [...this.surfaces, ...this.featureLines].map((x) => x.name);
-        if (quality.ok) ledger.run('surface-quality', subjects.length === 0 ? ['mesh'] : subjects);
-        else {
-          ledger.enumerated['surface-quality'] = ['mesh'];
-          ledger.skip('surface-quality', 'mesh', 'missing-input');
-        }
-      },
-    );
+    return finishSurfaceQualityValidation(inputs, report, options);
   }
 
-  /** The report with one stage's subjects added to its coverage; the stage fills the ledger. */
-  private withCoverage(
-    report: ValidationReport,
-    fill: (ledger: CoverageLedger) => void,
-  ): ValidationReport {
-    const ledger = new CoverageLedger();
-    fill(ledger);
-    const coverage = mergeCoverage(report.coverage, ledger.coverage());
-    return { ...report, coverage, pass: report.pass && coverage.checked.length > 0 };
+  private validateShutLines(report: ValidationReport, options: ValidateOptions): ValidationReport {
+    return validateShutLines(this.validationInputs(), report, options);
+  }
+
+  private validateDrawings(report: ValidationReport, options: ValidateOptions): ValidationReport {
+    return validateDrawings(this.validationInputs(), report, options);
+  }
+
+  private validateShellClearance(report: ValidationReport): ValidationReport {
+    return validateShellClearance(this.validationInputs(), report);
+  }
+
+  private validateLayouts(report: ValidationReport, options: ValidateOptions): ValidationReport {
+    return validateLayouts(this.validationInputs(), report, options);
+  }
+
+  private validateEdgeFlow(report: ValidationReport, options: ValidateOptions): ValidationReport {
+    return validateEdgeFlow(this.validationInputs(), report, options);
+  }
+
+  /**
+   * Audit part roles by geometric visibility (BK64): from a sphere of viewpoints, how much of
+   * each part can be seen, and which `detail` / `tool` parts show or `form` parts are hidden.
+   * Does not change the session.
+   */
+  auditVisibility(
+    options: VisibilityOptions & { readonly faces?: FaceSelector } = {},
+  ): Result<VisibilityAudit, ModelingError> {
+    if (this.failure !== undefined) return err(this.failure);
+    this.ensureTsAuthority();
+    const ids =
+      options.faces === undefined ? ok(this.mesh.faces()) : options.faces.resolve(this.mesh);
+    if (!ids.ok) return ids;
+    return auditVisibility(this.mesh, ids.value, options);
+  }
+
+  /**
+   * Measure how well the UV seams of a channel are hidden from a sphere of viewpoints
+   * (see `measureSeamVisibility`). Does not change the session.
+   */
+  seamVisibility(options: SeamVisibilityOptions = {}): Result<SeamVisibilityReport, ModelingError> {
+    if (this.failure !== undefined) return err(this.failure);
+    this.ensureTsAuthority();
+    return measureSeamVisibility(this.mesh, options);
   }
 
   /**
@@ -2369,219 +3182,25 @@ export class Model {
    * flush, parallelism, symmetry; see `measureShutLines`). Does not change the session.
    */
   shutLines(options: ShutLineOptions): Result<ShutLineReport, ModelingError> {
+    if (this.failure !== undefined) return err(this.failure);
+    this.ensureTsAuthority();
     return measureShutLines(this.mesh, options, this.drawings);
   }
 
-  /**
-   * Append `shut-line` issues for a DTS table when requested: errors for failing and
-   * unmeasured rows, warnings for excepted rows and for exception limits whose check passes.
-   */
-  private validateShutLines(report: ValidationReport, options: ValidateOptions): ValidationReport {
-    if (options.shutLines === undefined)
-      return this.withCoverage(report, (ledger) => ledger.off('shut-line', 'not-requested'));
-    const measured = measureShutLines(this.mesh, options.shutLines, this.drawings);
-    const issues: Issue<ValidationCode>[] = measured.ok
-      ? measured.value.rows.flatMap((r): Issue<ValidationCode>[] => {
-          const out: Issue<ValidationCode>[] = [];
-          if (r.status === 'fail' || r.status === 'unmeasured')
-            out.push({ code: 'shut-line', severity: 'error', detail: { ...r } });
-          if (r.status === 'excepted')
-            out.push({ code: 'shut-line', severity: 'warn', detail: { check: 'excepted', ...r } });
-          const unused =
-            r.exception === undefined || r.status === 'unmeasured'
-              ? []
-              : shutLineChecks(r.exception.limits).filter(
-                  (c) => !r.excepted.includes(c) && !r.failures.includes(c),
-                );
-          if (unused.length > 0)
-            out.push({
-              code: 'shut-line',
-              severity: 'warn',
-              detail: { check: 'exception-unused', id: r.id, unused, exception: r.exception },
-            });
-          return out;
-        })
-      : [
-          {
-            code: 'shut-line',
-            severity: 'error',
-            detail: { check: 'options', error: measured.error },
-          },
-        ];
-    const rows = options.shutLines.table.map((r) => r.id);
-    return this.withCoverage(
-      {
-        ...report,
-        pass: report.pass && measured.ok && measured.value.pass,
-        issues: [...report.issues, ...issues],
-      },
-      (ledger) => {
-        ledger.enumerated['shut-line'] = rows;
-        if (!measured.ok) {
-          for (const id of rows) ledger.skip('shut-line', id, 'missing-input');
-          return;
-        }
-        const done = new Set<string>();
-        for (const r of measured.value.rows) {
-          if (r.status === 'unmeasured') ledger.skip('shut-line', r.id, 'missing-input');
-          else done.add(r.id);
-        }
-        ledger.evaluated['shut-line'] = done;
-      },
-    );
-  }
-
-  /** Append `drawing` issues (`detail.check`: the drawing check) when requested. */
-  private validateDrawings(report: ValidationReport, options: ValidateOptions): ValidationReport {
-    if (options.drawing === undefined || options.drawing === false)
-      return this.withCoverage(report, (ledger) => ledger.off('drawing', 'not-requested'));
-    const findings = checkDrawings(
-      this.mesh,
-      this.tolerance,
-      this.drawings,
-      this.featureLines,
-      options.drawing === true ? {} : options.drawing,
-    );
-    const issues: Issue<ValidationCode>[] = findings.map((f) => ({
-      code: 'drawing',
-      severity: 'warn',
-      detail: { ...f },
-    }));
-    return this.withCoverage({ ...report, issues: [...report.issues, ...issues] }, (ledger) =>
-      this.declared(
-        ledger,
-        'drawing',
-        this.drawings.map((d) => d.name),
-      ),
-    );
-  }
-
-  /** The declared subjects of a requested check, all evaluated; none declared is a missing input. */
-  private declared(ledger: CoverageLedger, code: ValidationCode, names: readonly string[]): void {
-    if (names.length > 0) ledger.run(code, names);
-    else {
-      ledger.enumerated[code] = ['mesh'];
-      ledger.skip(code, 'mesh', 'missing-input');
-    }
-  }
-
-  /**
-   * Append a `thin-wall` issue (`detail.check: 'shell-clearance'`) for every shell in the
-   * journal whose walls came within a third of the thickness of another part's, relieved or
-   * not: the shell's own thickness warning, so a gate can fail on it.
-   */
-  private validateShellClearance(report: ValidationReport): ValidationReport {
-    const issues: Issue<ValidationCode>[] = this.entries.flatMap((entry) =>
-      (entry.diagnostics ?? []).flatMap((d) =>
-        d.detail?.nearWalls === undefined
-          ? []
-          : [
-              {
-                code: 'thin-wall' as const,
-                severity: 'warn' as const,
-                detail: {
-                  check: 'shell-clearance',
-                  opIndex: entry.opIndex,
-                  thickness: d.detail.thickness,
-                  clearance: d.detail.clearance,
-                  relieved: d.detail.relieved,
-                  count: d.detail.nearCount,
-                  walls: d.detail.nearWalls,
-                  point: d.detail.point,
-                },
-              },
-            ],
-      ),
-    );
-    const shells = this.entries
-      .filter((entry) => entry.op === 'shell' && entry.status === 'ok')
-      .map((entry) => `op${entry.opIndex}`);
-    return this.withCoverage(
-      issues.length === 0 ? report : { ...report, issues: [...report.issues, ...issues] },
-      (ledger) => {
-        if (shells.length > 0) ledger.run('thin-wall', shells);
-      },
-    );
-  }
-
-  /** Append `patch-layout` issues (`detail.check`: the layout check) when requested. */
-  private validateLayouts(report: ValidationReport, options: ValidateOptions): ValidationReport {
-    if (options.layout === undefined || options.layout === false)
-      return this.withCoverage(report, (ledger) => ledger.off('patch-layout', 'not-requested'));
-    const layoutOptions = options.layout === true ? {} : options.layout;
-    const issues: Issue<ValidationCode>[] = this.layouts.flatMap((l) =>
-      checkLayout(l.resolved, this.featureLines, layoutOptions, {
-        ...(l.built === undefined ? {} : { built: l.built }),
-        ...(l.corners === undefined ? {} : { corners: l.corners }),
-        ...(l.fits === undefined ? {} : { fits: l.fits }),
-      }).map((issue) => ({
-        code: 'patch-layout' as const,
-        severity: 'warn' as const,
-        detail: {
-          check: issue.code,
-          layout: l.resolved.name,
-          opIndex: l.opIndex,
-          ...issue.detail,
-        },
-      })),
-    );
-    return this.withCoverage({ ...report, issues: [...report.issues, ...issues] }, (ledger) =>
-      this.declared(
-        ledger,
-        'patch-layout',
-        this.layouts.map((l) => l.resolved.name),
-      ),
-    );
-  }
-
-  /** Append `edge-flow` issues (`detail.check`: the edge-flow code) when requested. */
-  private validateEdgeFlow(report: ValidationReport, options: ValidateOptions): ValidationReport {
-    if (options.edgeFlow === undefined || options.edgeFlow === false)
-      return this.withCoverage(report, (ledger) => ledger.off('edge-flow', 'not-requested'));
-    const flow = checkEdgeFlow(
-      this.mesh,
-      this.featureLines,
-      options.edgeFlow === true ? {} : options.edgeFlow,
-    );
-    const issues: Issue<ValidationCode>[] = flow.ok
-      ? flow.value.issues.map((issue) => ({
-          code: 'edge-flow',
-          severity: issue.severity,
-          detail: {
-            check: issue.code,
-            ...issue.detail,
-            ...(issue.code === 'feature-loop'
-              ? { opIndex: this.qualitySources.get(issue.detail.line as string) }
-              : {}),
-          },
-        }))
-      : [{ code: 'edge-flow', severity: 'error', detail: { check: 'options', error: flow.error } }];
-    return this.withCoverage(
-      { ...report, pass: report.pass && flow.ok, issues: [...report.issues, ...issues] },
-      (ledger) => {
-        const lines = this.featureLines.map((l) => l.name);
-        const subjects = ['mesh', ...lines];
-        if (flow.ok) ledger.run('edge-flow', subjects);
-        else {
-          ledger.enumerated['edge-flow'] = subjects;
-          for (const subject of subjects) ledger.skip('edge-flow', subject, 'missing-input');
-        }
-      },
-    );
-  }
-
   inspect(): ModelInspection {
+    this.ensureTsAuthority();
     const labels = this.mesh.labelNames.slice(1).map((label) => ({
       label,
       roles: {} as Record<string, number>,
     }));
-    if (labels.length > 0) {
-      for (const f of this.mesh.faces()) {
-        const label = labels[(this.mesh.fLabel[f] as number) - 1];
-        if (label === undefined) continue;
-        const role = this.mesh.roleNames[this.mesh.fRole[f] as number] ?? '';
-        label.roles[role] = (label.roles[role] ?? 0) + 1;
-      }
+    const roles = { form: 0, detail: 0, tool: 0, float: 0 };
+    for (const f of this.mesh.faces()) {
+      roles[partRole(this.mesh, f)]++;
+      if (((this.mesh.fFlags[f] as number) & FACE_FLOAT) !== 0) roles.float++;
+      const label = labels[(this.mesh.fLabel[f] as number) - 1];
+      if (label === undefined) continue;
+      const role = this.mesh.roleNames[this.mesh.fRole[f] as number] ?? '';
+      label.roles[role] = (label.roles[role] ?? 0) + 1;
     }
     return {
       faces: this.mesh.faceCount,
@@ -2590,20 +3209,28 @@ export class Model {
       tags: [...this.mesh.tagNames],
       labels,
       materials: [...this.mesh.materialNames],
+      roles,
       ...(this.output === undefined ? {} : { output: this.output }),
+      ...(this.exportedNormals === undefined ? {} : { normals: this.exportedNormals }),
       ...(this.failure === undefined ? {} : { poisoned: this.failure }),
       journal: this.entries,
     };
   }
 
-  /** Canonical FXEM bytes of the current mesh. */
   /**
    * Canonical FXEM bytes of the current mesh. A poisoned session's bytes are its partial
    * state: used as an operand (append, array, booleans, shrinkwrap), they fail with the
    * session's first failure instead of adding partial geometry.
    */
   snapshot(): Uint8Array {
-    const bytes = encodeSnapshot(this.mesh);
+    let bytes: Uint8Array;
+    if (this.authority === 'rust' && this.rustStore !== undefined) {
+      const temp = new EditMesh();
+      syncRustToTs(this.rustStore, temp);
+      bytes = encodeSnapshot(temp);
+    } else {
+      bytes = encodeSnapshot(this.mesh);
+    }
     if (this.failure !== undefined) notePoisonedSnapshot(bytes, this.failure);
     return bytes;
   }
@@ -2637,6 +3264,7 @@ export class Model {
 
   /** Everything an operation can change, for rollback by `try()` and the operation boundary. */
   private captureState(): SessionState {
+    this.ensureTsAuthority();
     return {
       mesh: this.mesh.clone(),
       generations: this.generations,
@@ -2648,15 +3276,25 @@ export class Model {
       drawings: [...this.drawings],
       contours: [...this.contours],
       surfaces: [...this.surfaces],
+      domainChannel: this.domainChannel,
+      adoptedCarrier: this.adoptedCarrier,
+      adoptedPatches: [...this.adoptedPatches],
       featureLines: [...this.featureLines],
+      shapes: new Map(this.shapes),
       qualitySources: new Map(this.qualitySources),
       layouts: this.layouts.map((layout) => ({ layout, fields: { ...layout } })),
       provenance: this.provenance,
       output: this.output,
+      normals: this.exportedNormals,
     };
   }
 
   private restoreState(state: SessionState): void {
+    if (this.rustStore !== undefined) {
+      this.rustStore.dispose();
+      this.rustStore = undefined;
+    }
+    this.authority = 'ts';
     this.mesh.assign(state.mesh);
     this.generations = state.generations;
     this.failure = state.failure;
@@ -2667,7 +3305,12 @@ export class Model {
     replaceAll(this.drawings, state.drawings);
     replaceAll(this.contours, state.contours);
     replaceAll(this.surfaces, state.surfaces);
+    this.domainChannel = state.domainChannel;
+    this.adoptedCarrier = state.adoptedCarrier;
+    this.adoptedPatches = [...state.adoptedPatches];
     replaceAll(this.featureLines, state.featureLines);
+    this.shapes.clear();
+    for (const [key, value] of state.shapes) this.shapes.set(key, value);
     this.qualitySources.clear();
     for (const [key, value] of state.qualitySources) this.qualitySources.set(key, value);
     this.layouts.length = 0;
@@ -2680,6 +3323,12 @@ export class Model {
     }
     this.provenance = state.provenance;
     this.output = state.output;
+    this.exportedNormals = state.normals;
+  }
+
+  /** @internal Mesh and rig finish share one successful shading policy for inspection. */
+  _recordExportNormals(normals: NormalMode): void {
+    this.exportedNormals = { ...normals };
   }
 
   // ---- output -----------------------------------------------------------------------
@@ -2687,12 +3336,18 @@ export class Model {
   /** Export the compacted mesh with its report. */
   toMesh(
     options: ExportOptions = {},
-  ): Result<{ readonly mesh: MeshAsset; readonly report: ExportReport }, ModelingError> {
+  ): Result<
+    { readonly mesh: MeshAsset; readonly report: ExportReport; readonly sidecar: ExportSidecar },
+    ModelingError
+  > {
     if (this.failure !== undefined) return err(this.failure);
+    this.ensureTsAuthority();
     const { mesh: compacted, faceMap } = this.mesh.compact();
     const exported = exportMesh(
       compacted,
-      options.normals?.mode === 'surface' ? { ...options, surfaces: this.surfaces } : options,
+      options.normals?.mode === 'surface'
+        ? { ...options, surfaces: this.surfaces, domain: this.domainChannel }
+        : options,
     );
     if (!exported.ok) {
       // Report the session's face id, as operations do, not the compacted one.
@@ -2704,13 +3359,8 @@ export class Model {
         modelingError(cause.code, cause.expected, { ...cause.detail, face: session }, cause.hint),
       );
     }
-    if (this.captured) {
-      this.provenance = {
-        vertexCorner: exported.value.vertexCorner,
-        triangleFace: exported.value.triangleFace,
-      };
-    }
-    return ok({ mesh: exported.value.mesh, report: exported.value.report });
+    if (this.captured) this.provenance = exported.value.sidecar;
+    return ok(exported.value);
   }
 
   /** Pack build output: `{ 'mesh/<key>': MeshAsset }`. */
@@ -2735,6 +3385,7 @@ export class Model {
         ),
       );
     }
+    this._recordExportNormals(options.normals ?? { mode: 'weighted' });
     this.output = `mesh/${options.key}`;
     return ok({ [this.output]: exported.value.mesh });
   }
@@ -2759,6 +3410,61 @@ export class Model {
       return ok(part.editMesh);
     }
     return decodeOperand(part);
+  }
+
+  /**
+   * Whether joining `part` keeps one patch-domain carrier. Only an operand that holds
+   * patch-domain data on a different channel than this session's own patch data is refused.
+   * A session holds patch data when it records patches (its carrier is `domainChannel`) or
+   * adopted a carrier from a patched operand; as an operand it counts the same way, and keeps
+   * counting after all its patch faces were deleted (the record outlives the faces, so the
+   * refusal errs on the safe side). A snapshot records no patches, so its carrier is only a
+   * heuristic derived from its channels: uv2 present reads as a patch domain moved to uv2 (a
+   * user-made uv2 is indistinguishable and treated the same), else uv1. A session without
+   * patch data adopts the carrier of a patched operand once the join succeeds (the returned
+   * thunk, run only for a join that went through) and from then on holds patch data itself,
+   * so a later join is compared, not adopted. A uv1-only snapshot never marks a free host:
+   * uv1 is the default channel of every lightmapped or projected bare mesh. Joins of sessions
+   * that never moved a domain, and of bare meshes, are unaffected; a bare snapshot with uv1
+   * is still compared against a host that holds patch data on uv2.
+   */
+  private joinCarrier(part: Model | Uint8Array, mesh: EditMesh): Result<() => void, ModelingError> {
+    let theirs: CornerChannelName | undefined;
+    if (part instanceof Model)
+      theirs = part.surfaces.length > 0 || part.adoptedCarrier ? part.domainChannel : undefined;
+    else if (mesh.channels.has('uv2')) theirs = 'uv2';
+    else if (mesh.channels.has('uv1')) theirs = 'uv1';
+    if (theirs === undefined) return ok(() => {});
+    const adoptPatches = () => {
+      if (!(part instanceof Model)) return;
+      for (const name of [...part.surfaces.map((x) => x.name), ...part.adoptedPatches])
+        if (!this.adoptedPatches.includes(name)) this.adoptedPatches.push(name);
+    };
+    if (this.surfaces.length === 0 && !this.adoptedCarrier) {
+      if (part instanceof Uint8Array && theirs === 'uv1') return ok(() => {});
+      return ok(() => {
+        this.domainChannel = theirs;
+        this.adoptedCarrier = true;
+        adoptPatches();
+      });
+    }
+    if (theirs === this.domainChannel) return ok(adoptPatches);
+    const snapshot = part instanceof Uint8Array;
+    return err(
+      modelingError(
+        'model-precondition',
+        'a join keeps one patch-domain carrier: the operand holds its patch domain on the same channel as this session',
+        {
+          code: 'carrier-mismatch',
+          host: this.domainChannel,
+          operand: theirs,
+          ...(snapshot ? { derived: true } : {}),
+        },
+        snapshot
+          ? 'a snapshot records no carrier (derived from its uv channels): join the Model session itself, or move the patch domain of this session and the snapshot alike'
+          : 'run uv.lightmap with domain copyTo-uv2 on the session that has not moved its patch domain, or move neither',
+      ),
+    );
   }
 
   private describeOperand(operand: Model | Uint8Array | FaceSelector | undefined): unknown {
@@ -2819,8 +3525,20 @@ export class Model {
         : operand instanceof Model
           ? { operand: 'session' }
           : { operand: `fxem(${operand.length} bytes)` };
+    if (
+      operation !== 'split' &&
+      this.shouldUseRust(op) &&
+      operand instanceof Model &&
+      options.label === undefined &&
+      options.tag === undefined
+    ) {
+      return this.runRust(op, { ...described, ...options }, options, (s) =>
+        rustBoolean(s, operation, operand === this, this.peerRustOperand(operand), this.tolerance),
+      );
+    }
     return this.run(op, { ...described, ...options }, options, (attribution, diagnostics) => {
       let target: { readonly mesh: EditMesh } | { readonly faces: readonly number[] };
+      let adopt = () => {};
       if (operand instanceof Selector) {
         const ids = (operand as FaceSelector).resolve(this.mesh);
         if (!ids.ok) return ids;
@@ -2845,13 +3563,19 @@ export class Model {
             ),
           );
         }
+        const joined = this.joinCarrier(operand, operand.editMesh);
+        if (!joined.ok) return joined;
+        adopt = joined.value;
         target = { mesh: operand.editMesh };
       } else {
         const decoded = decodeOperand(operand);
         if (!decoded.ok) return decoded;
+        const joined = this.joinCarrier(operand, decoded.value);
+        if (!joined.ok) return joined;
+        adopt = joined.value;
         target = { mesh: decoded.value };
       }
-      return booleanOp(
+      const combined = booleanOp(
         this.mesh,
         operation,
         target,
@@ -2860,6 +3584,8 @@ export class Model {
         { tolerance: this.tolerance, ...this.computeOptions() },
         diagnostics,
       );
+      if (combined.ok) adopt();
+      return combined;
     });
   }
 
@@ -2961,6 +3687,88 @@ export class Model {
     );
   }
 
+  private runRust(
+    op: string,
+    args: unknown,
+    placement: Placement,
+    body: (
+      store: RustEditMeshStore,
+      attribution: Attribution,
+      diagnostics: OpDiagnostic[],
+    ) => Result<RoleCounts, ModelingError>,
+  ): OpReport {
+    const opIndex = this.entries.length;
+    const label = placement.label;
+    const before = this.activeTopologyStamp();
+    const started = now();
+    const base = { op, opIndex, ...(label === undefined ? {} : { label }) };
+    if (this.failure !== undefined) {
+      return this.record(base, args, 'skipped', {}, before, started);
+    }
+    if (this.signal?.aborted === true) {
+      const failure = modelingError('model-cancelled', 'the build is not cancelled', {
+        site: base,
+      });
+      this.failure = failure;
+      return this.record(base, args, 'failed', {}, before, started, failure);
+    }
+    const diagnostics: OpDiagnostic[] = [];
+    const captureRollback = this.rollbackOnInternal ?? (this.captured || invariantChecksEnabled());
+    const saved = captureRollback ? this.captureState() : undefined;
+    let outcome: Result<RoleCounts, ModelingError>;
+    try {
+      const storeRes = this.ensureRustAuthority();
+      if (!storeRes.ok) {
+        outcome = storeRes;
+      } else {
+        const store = storeRes.value;
+        outcome = body(store, this.rustAttribution(store, placement), diagnostics);
+      }
+    } catch (cause) {
+      if (cause instanceof InvariantError) throw cause;
+      outcome = err(internalError(base, cause));
+    }
+    if (!outcome.ok && outcome.error.code === 'model-internal' && saved !== undefined) {
+      this.restoreState(saved);
+    }
+    if (!outcome.ok) {
+      const cause = outcome.error;
+      const failure = modelingError(
+        cause.code,
+        cause.expected,
+        { ...cause.detail, site: base },
+        cause.hint,
+      );
+      this.failure = failure;
+      return this.record(base, args, 'failed', {}, before, started, failure, diagnostics);
+    }
+    const roles = outcome.value;
+    const currentFaces = this.activeFaceCount();
+    if (currentFaces > this.faceBudget) {
+      const failure = modelingError(
+        'model-work-budget',
+        `the mesh stays within ${this.faceBudget} faces`,
+        {
+          site: base,
+          faces: currentFaces,
+        },
+      );
+      this.failure = failure;
+      return this.record(base, args, 'failed', roles, before, started, failure, diagnostics);
+    }
+    if (PRODUCING_OPS.has(op)) {
+      const produced = Object.values(roles).reduce((sum, n) => sum + n, 0);
+      if (produced === 0) {
+        const failure = modelingError('model-op-no-effect', `${op} produces at least one face`, {
+          site: base,
+        });
+        this.failure = failure;
+        return this.record(base, args, 'failed', roles, before, started, failure, diagnostics);
+      }
+    }
+    return this.record(base, args, 'ok', roles, before, started, undefined, diagnostics);
+  }
+
   private run(
     op: string,
     args: unknown,
@@ -2971,6 +3779,7 @@ export class Model {
       repair: RepairSink,
     ) => Result<RoleCounts, ModelingError>,
   ): OpReport {
+    this.ensureTsAuthority();
     const opIndex = this.entries.length;
     const label = placement.label;
     const before = this.mesh.topologyStamp;
@@ -2990,7 +3799,8 @@ export class Model {
     let repair: RepairReport | undefined;
     const log: SelectorLog = { uses: [], truncated: false };
     this.selectorLog = log;
-    const saved = this.captureState();
+    const captureRollback = this.rollbackOnInternal ?? (this.captured || invariantChecksEnabled());
+    const saved = captureRollback ? this.captureState() : undefined;
     let outcome: Result<RoleCounts, ModelingError>;
     try {
       outcome = recordSelectors(log, () =>
@@ -3002,7 +3812,8 @@ export class Model {
       if (cause instanceof InvariantError) throw cause;
       outcome = err(internalError(base, cause));
     }
-    if (!outcome.ok && outcome.error.code === 'model-internal') this.restoreState(saved);
+    if (!outcome.ok && outcome.error.code === 'model-internal' && saved !== undefined)
+      this.restoreState(saved);
     if (!outcome.ok) {
       const cause = outcome.error;
       const failure = modelingError(
@@ -3041,6 +3852,14 @@ export class Model {
   }
 
   private assertInvariants(op: string): void {
+    if (this.authority === 'rust' && this.rustStore !== undefined) {
+      const probe = new EditMesh();
+      syncRustToTs(this.rustStore, probe);
+      const violations = debugValidate(probe);
+      if (violations.length > 0) throw new InvariantError(op, violations);
+      this.generations = undefined;
+      return;
+    }
     const violations = debugValidate(this.mesh, this.generations);
     if (violations.length > 0) throw new InvariantError(op, violations);
     this.generations = generationsOf(this.mesh);
@@ -3064,8 +3883,8 @@ export class Model {
       ...base,
       status,
       roles,
-      faces: this.mesh.faceCount,
-      vertices: this.mesh.vertexCount,
+      faces: this.activeFaceCount(),
+      vertices: this.activeVertexCount(),
       ...(error === undefined ? {} : { error }),
       ...(diagnostics.length === 0 ? {} : { diagnostics }),
       ...(repair === undefined ? {} : { repair }),
@@ -3089,14 +3908,9 @@ export class Model {
   }
 }
 
-/** A declared patch layout, with its matched patches once `surface({ layout })` built them. */
-interface DeclaredLayout {
-  resolved: ResolvedLayout;
-  opIndex: number;
-  built?: Map<string, NurbsSurface>;
-  /** Quads of the layout's setback corners, by corner name. */
-  corners?: Map<string, NurbsSurface[]>;
-  fits?: Map<string, LayoutFit>;
+/** Wall-clock milliseconds, guarding environments without `performance`. */
+function now(): number {
+  return typeof performance === 'undefined' ? 0 : performance.now();
 }
 
 interface SessionState {
@@ -3110,57 +3924,16 @@ interface SessionState {
   readonly drawings: ResolvedDrawing[];
   readonly contours: Contour[];
   readonly surfaces: NamedSurface[];
+  readonly domainChannel: CornerChannelName;
+  readonly adoptedCarrier: boolean;
+  readonly adoptedPatches: string[];
   readonly featureLines: FeatureLine[];
+  readonly shapes: Map<string, exact.Shape>;
   readonly qualitySources: Map<string, number>;
   readonly layouts: { readonly layout: DeclaredLayout; readonly fields: DeclaredLayout }[];
   readonly provenance: ModelDiagnostics['provenance'];
   readonly output: string | undefined;
-}
-
-/** A thrown value that is not an InvariantError becomes a structured kernel-defect failure. */
-function internalError(site: ModelingSite, cause: unknown): ModelingError {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  return modelingError('model-internal', 'the operation completes without a kernel exception', {
-    site,
-    cause: message.slice(0, 500),
-    ...(cause instanceof Error ? { name: cause.name } : {}),
-  });
-}
-
-/** Thrown only while `checkInvariants(true)`: an operation broke a kernel invariant. */
-export class InvariantError extends Error {
-  readonly violations: readonly InvariantViolation[];
-  constructor(op: string, violations: readonly InvariantViolation[]) {
-    super(
-      `[InvariantError] ${op} broke ${violations.map((v) => v.code).join(', ')}: ${JSON.stringify(violations)}`,
-    );
-    this.name = 'InvariantError';
-    this.violations = violations;
-  }
-}
-
-/** Start a modeling session. */
-/** A drawing's closed curve item in an ortho view, resolved as a contour. */
-function contourItem(d: Drawing, id: string): Result<Contour, ModelingError> {
-  const item = d?.items?.find((i) => i.id === id);
-  const view = d?.views?.find((v) => v.id === item?.view);
-  if (item?.kind !== 'curve' || item.closed !== true || view === undefined || !('ortho' in view)) {
-    return err(
-      modelingError(
-        'model-invalid-argument',
-        'a closed curve item of the drawing in an ortho view',
-        {
-          drawing: d?.name,
-          item: id,
-        },
-      ),
-    );
-  }
-  const curve = resolveCurveSpec(item.curve, {
-    closed: true,
-    ...(item.tolerance === undefined ? {} : { tolerance: item.tolerance }),
-  });
-  return curve.ok ? ok({ ...curve.value, id, view: view.ortho }) : curve;
+  readonly normals: NormalMode | undefined;
 }
 
 export function model(options: ModelOptions = {}): Model {

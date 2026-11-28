@@ -45,6 +45,31 @@ if (fixtureStyle) {
 for (const inputRoot of JSON.parse(process.env.FORGEAX_VIEW_INPUT_ROOTS ?? '[]')) await digest(inputRoot, hash);
 export const buildRevision = hash.digest('hex');
 const require = createRequire(resolve(viewRoot, 'package.json'));
+export const panelDependencyResolver = {
+ name: 'forgeax-view:panel-dependency-resolver',
+ apply: 'build',
+ resolveId(id, importer) {
+  if (!id.startsWith('.') && !id.startsWith('/') && importer && importer.startsWith(dirname(panelsEntry) + '/')) {
+   try { return require.resolve(id); } catch {}
+  }
+ },
+};
+export function createViewWorkspaceSourceResolver(inputRoots) {
+ const roots = inputRoots.map(root => resolve(root));
+ return {
+  name: 'forgeax-view:engine-source-workspace-imports',
+  apply: 'serve',
+  resolveId(id, importer) {
+   if (!id.startsWith('@forgeax/view-') || !importer) return;
+   const source = resolve(importer);
+   if (!roots.some(root => {
+    const path = relative(root, source);
+    return path !== '' && !path.startsWith('..') && !isAbsolute(path);
+   })) return;
+   try { return require.resolve(id); } catch {}
+  },
+ };
+}
 // Keep the panel dependency closure separate from the resident native Host graph.
 // Shared module grouping must not drag unrelated Host factories into served panels.
 let panelClosure;
@@ -70,9 +95,6 @@ export const revisionPlugin = {
  resolveId(id, importer) {
   if (engineRoot && id === '@forgeax/view-fixture/rhi-debug-ui') return resolve(engineRoot, 'tools/view-plugins/rhi-debug/ui.tsx');
   if (engineRoot && id === '@forgeax/view-fixture/profiler-ui') return resolve(engineRoot, 'tools/view-plugins/profiler/ui.tsx');
-  if (!id.startsWith('.') && !id.startsWith('/') && importer && importer.startsWith(dirname(panelsEntry) + '/')) {
-   try { return require.resolve(id); } catch {}
-  }
   const path = resolveBuildInput(id, importer); return path === 'view-build-revision' ? '\0view-build-revision' : path; },
  load(id) { if (id === '\0view-build-revision') return `export default ${JSON.stringify(buildRevision)}`; },
  generateBundle(_, bundle) {

@@ -4,6 +4,8 @@ import { CORNER_CHANNEL_DIMENSIONS, type CornerChannelName, EditMesh } from './m
 
 /** Snapshots of poisoned sessions, by byte identity, with the session's first failure. */
 const poisonedSnapshots = new WeakMap<Uint8Array, ModelingError>();
+/** Immutable compacted EditMesh cache for in-process snapshots (auto-collected with bytes). */
+const cachedSnapshots = new WeakMap<Uint8Array, EditMesh>();
 
 /** Record that `bytes` were taken from a poisoned session (its partial state). */
 export function notePoisonedSnapshot(bytes: Uint8Array, cause: ModelingError): void {
@@ -84,7 +86,20 @@ function align(n: number): number {
  * bytes regardless of edit history; holes, free lists and generations never persist.
  */
 export function encodeSnapshot(source: EditMesh): Uint8Array {
-  const mesh = source.compact().mesh;
+  return encodeSnapshotWithMaps(source).bytes;
+}
+
+/** Keep provenance remaps tied to the exact canonical bytes from one compaction. */
+export function encodeSnapshotWithMaps(source: EditMesh): {
+  bytes: Uint8Array;
+  vertexMap: Int32Array;
+  faceMap: Int32Array;
+} {
+  const { mesh, vertexMap, faceMap } = source.compact();
+  return { bytes: encodeCanonical(mesh), vertexMap, faceMap };
+}
+
+function encodeCanonical(mesh: EditMesh): Uint8Array {
   const v = mesh.vertexHighWater;
   const h = mesh.halfHighWater;
   const f = mesh.faceHighWater;
@@ -140,6 +155,7 @@ export function encodeSnapshot(source: EditMesh): Uint8Array {
     view.setUint32(entry + 16, payload.byteLength, true);
     bytes.set(new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength), start);
   }
+  cachedSnapshots.set(bytes, mesh);
   return bytes;
 }
 
@@ -205,6 +221,8 @@ function parseStrings(raw: Uint8Array): Strings | undefined {
  * sizes an allocation or a loop, so malformed input yields a structured error, never a throw.
  */
 export function decodeSnapshot(bytes: Uint8Array): Result<EditMesh, ModelingError> {
+  const cached = cachedSnapshots.get(bytes);
+  if (cached !== undefined) return ok(cached.clone());
   try {
     return decodeChecked(bytes);
   } catch (cause) {
@@ -305,6 +323,7 @@ function decodeChecked(bytes: Uint8Array): Result<EditMesh, ModelingError> {
   }
 
   const mesh = new EditMesh();
+  mesh.reserve(v, h, f, tagWords);
   for (const name of strings.tags) mesh.tagNames.push(name);
   mesh.labelNames.length = 0;
   for (const name of strings.labels) mesh.labelNames.push(name);
@@ -314,7 +333,6 @@ function decodeChecked(bytes: Uint8Array): Result<EditMesh, ModelingError> {
   for (const name of strings.materials) mesh.materialNames.push(name);
   for (let i = 0; i < v; i++)
     mesh.addVertex(pos[i * 3] as number, pos[i * 3 + 1] as number, pos[i * 3 + 2] as number);
-  mesh.reserveTagWords(tagWords);
   for (let face = 0; face < f; face++) {
     const loop: number[] = [];
     let half = fHalf[face] as number;
@@ -349,13 +367,20 @@ function decodeChecked(bytes: Uint8Array): Result<EditMesh, ModelingError> {
     if (sections.has(SECTION.channelValues + index) && (!values || !set))
       return invalid('channel length', { channel: name });
     if (!values || !set) continue;
+    let anySet = false;
     for (let i = 0; i < h; i++) {
       if ((set[i] as number) === 0) continue;
-      const corner = values.subarray(i * dim, (i + 1) * dim);
+      anySet = true;
+      const base = i * dim;
       for (let k = 0; k < dim; k++) {
-        if (!Number.isFinite(corner[k])) return invalid('finite corner values', { channel: name });
+        if (!Number.isFinite(values[base + k]))
+          return invalid('finite corner values', { channel: name });
       }
-      mesh.setCorner(name, i, corner);
+    }
+    if (anySet) {
+      const ch = mesh.channel(name);
+      ch.values.set(values);
+      ch.set.set(set);
     }
   }
   return ok(mesh);

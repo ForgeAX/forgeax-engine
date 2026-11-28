@@ -2,11 +2,9 @@ import { err, type Result } from '@forgeax/engine-types';
 import { atan2 } from '../dmath';
 import { type ModelingError, modelingError } from '../errors';
 import { type Model, model } from '../model';
-import type { Point2 } from '../primitives';
 import { sel } from '../selectors';
 import {
   checkAll,
-  circle,
   degrees,
   finishPart,
   inRange,
@@ -55,22 +53,14 @@ function leaf(
   width: number,
   length: number,
   thickness: number,
-  holes: number,
-  hole: number,
 ): void {
-  const outline: Point2[] = [
-    [from, -length / 2],
-    [from + width, -length / 2],
-    [from + width, length / 2],
-    [from, length / 2],
-  ];
-  const centers = Array.from(
-    { length: holes },
-    (_, i) => (length * (i + 0.5)) / holes - length / 2,
-  );
   m.extrudePolygon({
-    points: outline,
-    holes: centers.map((y) => circle(hole, 16, [from + width * 0.55, y])),
+    points: [
+      [from, -length / 2],
+      [from + width, -length / 2],
+      [from + width, length / 2],
+      [from, length / 2],
+    ],
     depth: thickness,
     label,
   });
@@ -79,7 +69,7 @@ function leaf(
 
 /**
  * Butt hinge about the +Y pin axis: two leaves with countersunk screw holes (the
- * countersinks keep the leaf label, role `bevel`)
+ * countersinks keep the leaf label, role `countersink`)
  * (`<name>-leaf-a` along +X, `<name>-leaf-b` turned to `openAngle`), alternating
  * hollow knuckles (`<name>-knuckle-a`, `<name>-knuckle-b`) and a headed pin
  * (`<name>-pin`, slot `chrome`); leaves and knuckles use slot `steel`. Parts clear
@@ -128,28 +118,32 @@ export function hinge(options: HingeOptions): Result<RecipePart, ModelingError> 
   const angleOk = inRange('openAngle', openAngle, [closest, 360 - closest]);
   if (!angleOk.ok) return angleOk;
   const m = model();
-  leaf(m, `${name}-leaf-a`, from, leafWidth, length, thickness, holes, hole);
-  leaf(m, `${name}-leaf-b`, from, leafWidth, length, thickness, holes, hole);
-  m.rotate(sel.createdBy(`${name}-leaf-b`), 'y', 180);
-  if (holes > 0) {
-    // 45 degree countersinks for flat-head screws, on the face both leaves show when the
-    // hinge lies flat (+Z): leaf B is turned over, so its countersinks go in its bottom.
-    for (const [label, face] of [
-      [`${name}-leaf-a`, 'top'],
-      [`${name}-leaf-b`, 'bottom'],
-    ] as const) {
-      m.bevel(
-        sel
-          .createdBy(label, 'hole')
-          .toEdges('touching')
-          .and(sel.createdBy(label, face).toEdges('touching')),
-        {
-          width: Math.min(0.4 * hole, 0.45 * thickness),
-          segments: 1,
-          label,
-        },
-      );
+  // A second boolean on a target holding an already-holed plate can fail to re-triangulate
+  // its keyhole faces, so each leaf is cut in its own session and appended.
+  const rim = hole + Math.min(0.4 * hole, 0.45 * thickness);
+  const rows = Array.from({ length: holes }, (_, i) => (length * (i + 0.5)) / holes - length / 2);
+  for (const [label, turned] of [
+    [`${name}-leaf-a`, false],
+    [`${name}-leaf-b`, true],
+  ] as const) {
+    const part = model();
+    leaf(part, label, from, leafWidth, length, thickness);
+    if (holes > 0) {
+      // 90 degree countersinks for flat-head screws on the face both leaves show when the
+      // hinge lies flat (+Z): leaf B is turned over afterwards, so its countersinks go in
+      // its bottom. Cutting before the turn keeps the target coordinates exact.
+      part.hole(sel.createdBy(label, turned ? 'bottom' : 'top'), {
+        kind: 'countersink',
+        diameter: 2 * hole,
+        countersink: { diameter: 2 * rim },
+        depth: 'through',
+        centers: rows.map((y) => [from + leafWidth * 0.55, turned ? -y : y] as const),
+        segments: 16,
+        label,
+      });
     }
+    if (turned) part.rotate(sel.createdBy(label), 'y', 180);
+    m.append(part);
   }
   for (let i = 0; i < knuckles; i++) {
     const y0 = -length / 2 + i * (pitch + gap);

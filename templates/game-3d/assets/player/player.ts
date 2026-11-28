@@ -19,7 +19,6 @@ import { CharacterController } from '@forgeax/engine/physics';
 import type { Plugin } from '@forgeax/engine/plugin';
 import { resetTransformInterpolation, Transform } from '@forgeax/engine/scene';
 import { cameraRelativeMove, facingYaw, INITIAL_CAMERA_PITCH } from '../shared/third-person.ts';
-import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { resolveGameEntity, type GameScene } from '../shared/scene-refs.ts';
 import {
   CONVOY_WHEELS, PLAYER_JOINT_NAMES, PLAYER_RIG, PLAYER_TRANSFORM_SECONDS, PLAYER_WALK_SECONDS,
@@ -208,15 +207,11 @@ async function* installCharacterAnimation(
   player: EntityHandle,
   clips: readonly string[],
 ): AsyncGenerator<() => void, void, void> {
-  const loadedClips = [];
-  for (const guid of clips) {
-    const parsed = AssetGuid.parse(guid);
-    if (!parsed.ok) throw parsed.error;
-    const loaded = await host.assets.load(parsed.value, 'animation-clip');
-    if (!loaded.ok) throw loaded.error;
-    loadedClips.push(loaded.value);
-    yield () => { host.assets.release(loaded.value).unwrap(); };
-  }
+  const loadedClips = (await host.assets.loadMany(clips, 'animation-clip')).unwrap();
+  yield () => {
+    const releases = loadedClips.map((clip) => host.assets.release(clip));
+    for (const release of releases) release.unwrap();
+  };
   const wheelNames = new Set(CONVOY_WHEELS.map(wheel => wheel.name));
   const maskFor = (wheels: boolean) => world.allocSharedRef('AnimationMask', defineAnimationMask(
     PLAYER_RIG.flatMap((joint, index) => wheelNames.has(joint.name) === wheels ? [{ targetId: deriveAnimationTargetId(playerTargetPath(index)), weight: 1 }] : []),

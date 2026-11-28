@@ -31,6 +31,7 @@
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
+    "@forgeax/modeling-kernel": "workspace:*",
     "earcut": "3.2.4"
   },
   "forgeax": {

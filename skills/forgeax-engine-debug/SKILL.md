@@ -286,6 +286,10 @@ receipt admission and benchmarked GPU runner routing.
 
 ## PR CI repair workflow
 
+For RenderKernel Dawn pixel parity failures in `loadRenderKernelWasm`, verify the
+Core artifact contains `packages/render-kernel/dist/forgeax_render_kernel_wasm_bg.wasm`.
+The [Dawn guide](../../scripts/ci/README.md#dawn-gates) describes its source build.
+
 Use the representative required lanes in the
 [CI operations guide](../../scripts/ci/README.md#representative-required-test-work).
 A narrowed native plan still needs qualified same-base evidence and current
@@ -348,6 +352,12 @@ If the isolated Node inputs process still reaches the original 30-second
 material hook deadline, use its single-material Worker to give the admitted
 compiler slots to program variants. Keep the real Cook, exact map and alpha-map
 publication, all 18 cases, and the original Browser deadlines.
+
+For a Coverage timeout in the evenodd SVG case, check the cold isolated Worker
+startup with Coverage Focus on `formats.integration.test.ts`. Preserve the
+five-second test deadline and the independent DOM, hole geometry and stroke
+assertions. If Coverage spends time before the first child starts, measure the
+planner separately and compare exact group assignments and replay windows.
 
 For Standard transmission Coverage failures, select the failing Water selection
 file and retain its complete output checks and 60-second batch deadlines. See
@@ -2285,7 +2295,7 @@ For a Linux nightly failure in `Build shared shader inputs`, inspect the Node he
 limit separately from the Dawn shard. The source producer needs the same explicit
 4 GiB V8 heap as its downstream Dawn command; the 2 GiB default can exhaust while
 assembling the full reflected shader publication.
-For Bevy Skybox's missing Chrome Beta after a passing Dawn smoke, repair the
+For Bevy Skybox's missing Chrome after a passing Dawn smoke, repair the
 fleet's browser preparation through the shared installation action. Its composite
 smoke retains the real WebGL2 journey; see [failure recovery](../../scripts/ci/README.md#failure-recovery).
 For guide-form input scroll-width mismatches, compare native client widths and
@@ -2469,6 +2479,11 @@ and transport budget. For Topology Browser failures, read
 `artifacts/ci-focus/topology/failure.json`: Catalog startup belongs to its named
 producer; frame or PNG failures use RHI Debug. Follow [failure recovery](../../scripts/ci/README.md#failure-recovery)
 and retain the original oracle and timeout.
+
+For a daily Dawn lane-four memory failure, compare the exclusive and bounded
+phases with a complete serial run. Both phases use the same discovered
+partition. Track the faulting file and cgroup OOM counters before changing
+admission. The full profile keeps its original serial execution.
 
 For an oversized Three feature Browser file, keep the shared feature callback
 and its initial/edited captures intact, then inspect all four partition entries
@@ -2864,10 +2879,13 @@ For large capture transfers, reuse the shared lossless `compactTape` fixture.
 Keep the seeds, events, pixel checks and real replay falsifiers; omit duplicate
 work/resource JSON only when it is reconstructible from the retained tape and
 has no downstream consumer.
-Smoke placement uses current complete gate times plus post-roster tails; remove
-retired work from estimates as well as execution. For an idle App build slot,
-inspect start order: the existing input inventory prioritizes larger closures
-without adding another cost table or increasing concurrency. Live-sync uses the
+Smoke placement assigns the authoritative roster and prepared Bevy examples in
+one plan with fixed tails. Include startup in complete gate costs and replay
+the total job against multiple measured runs before changing four-lane
+placement. Keep the original frame gates and validate all four workers. For an
+idle App build slot, inspect start order: the existing input inventory
+prioritizes larger closures without adding another cost table or increasing
+concurrency. Live-sync uses the
 shared disposable-project reducer; retain the real CLI/daemon/browser journey
 and report fixture size reduction separately from measured elapsed-time effects.
 Mesh keeps sixteen distinct routes and all real capture/replay/falsifier checks.
@@ -3431,12 +3449,21 @@ historical file cost for placement and retain failed child logs separately.
 Require local red/green placement replay and relevant final-candidate `ci:focus`
 checks before publication. Required Linux native owners execute in final-head PR CI.
 
+If Screen Probe Support stalls at first submit, recover the complete
+`pnpm ci:focus --kind dawn --select screen-probe-support` group with the
+CI carrier. On Linux, run `pnpm ci:graphics setup` and pass its bundle path
+through `FORGEAX_CI_GRAPHICS_ROOT`. Compare `before-finish`, `before-submit`,
+`submitted` and `world-readback` using a fresh shader cache. Keep all controls
+and their original deadlines.
+
 If World Card Bounds or World Bounds Index reaches its case deadline in
 ordinary Dawn, run `pnpm ci:focus --kind dawn --select world-card-bounds`
-for the complete GPU group. Diagnose cold Mesa execution from the finite-ray
-and strict index pipelines, the guard mutant and readbacks. Keep the
-dedicated serial group, the original case deadlines and four final-head
-Linux lanes.
+for the complete GPU group. Compare the `[world-bounds-index]` phase markers
+for strict traversal, retained move and the canonical-guard mutant. The
+strict traversal case owns the disabled candidate and the stale-index
+mutation. The separate guard mutant case still compares the real
+composition rejection with the mutated World query. Keep the dedicated
+serial group, the original case deadlines and four final-head Linux lanes.
 
 If a Standard nonreceiver stalls in its first native GPU completion, retain the
 actual failing tape and inspect its declared shadow reception before changing

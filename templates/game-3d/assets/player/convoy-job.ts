@@ -3,7 +3,7 @@ import { type AssetsJob, bakeMaps, bakeMapsWithGpu } from '@forgeax/engine/model
 import { withBuildGpuDevice } from '@forgeax/engine/devkit/plugin-build';
 import { ok } from '@forgeax/engine/types';
 import { convoyBakeSettings, prepareConvoyAssets } from './convoy-model.ts';
-import { finishConvoyTextures } from './convoy-finish.ts';
+import { convoyHardwareTexturesWithGpu, finishConvoyTexturesWithGpu } from './convoy-finish.ts';
 import { playerWalkClip } from './player-walk.ts';
 
 export const CONVOY_DELIVERY_MAPS = { normal: 'normal', ormh: 'ormh', baseColor: 'base-color', emissive: 'emissive', coat: 'coat' } as const;
@@ -21,13 +21,19 @@ export const CONVOY_JOB: AssetsJob<{ readonly resolution: number }> = {
     const { assets, bakeBase: base, bakeDetail: detail } = prepareConvoyAssets(resolution, packageId);
     const settings = { base, detail, ...convoyBakeSettings(resolution), resolution, mips: false,
       ...(cache === undefined ? {} : { cache }) };
-    const baked = await withBuildGpuDevice(device => device
-      ? bakeMapsWithGpu(settings, device)
-      : bakeMaps(settings));
+    const result = await withBuildGpuDevice(async device => {
+      const baked = device ? await bakeMapsWithGpu(settings, device) : bakeMaps(settings);
+      if (!baked.ok) return baked;
+      const [maps, hardware] = await Promise.all([
+        finishConvoyTexturesWithGpu(baked.value.textures, device),
+        convoyHardwareTexturesWithGpu(device),
+      ]);
+      return ok({ maps, hardware });
+    });
 
-    if (!baked.ok) return baked;
-    const maps = finishConvoyTextures(baked.value.textures);
-    return ok({ ...assets,
+    if (!result.ok) return result;
+    const { maps, hardware } = result.value;
+    return ok({ ...assets, ...hardware,
       ...Object.fromEntries(Object.entries(CONVOY_DELIVERY_MAPS).map(([map, suffix]) => [`texture/convoy-${suffix}`, maps[map]!])),
       'animation/player-walk': playerWalkClip(),
     });

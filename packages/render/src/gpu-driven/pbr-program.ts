@@ -8,11 +8,14 @@ import {
 } from '../pbr-pipeline';
 import { withInlineSsrVariant } from '../ssr/admission';
 
-/** One producer-selected WGSL module and its matching vertex/material receipt. */
+/** Producer-selected vertex/material receipt; adapters without a raster factory use the fixed module. */
 export interface GpuDrivenPbrProgram {
-  readonly module: ShaderModule;
+  readonly module?: ShaderModule;
   readonly artifact: MaterialShaderArtifact;
 }
+
+/** Resolves only the requested stock scene-index recipe for this device. */
+export type GpuDrivenPbrPrograms = Pick<ReadonlyMap<string, GpuDrivenPbrProgram>, 'get'>;
 
 export function standardPbrProgramKey(
   materialShaderId: string,
@@ -26,7 +29,7 @@ export function standardPbrProgramKey(
 }
 
 export function resolveStandardPbrProgram(
-  programs: ReadonlyMap<string, GpuDrivenPbrProgram> | undefined,
+  programs: GpuDrivenPbrPrograms | undefined,
   materialShaderId: string,
   vertexColorAvailable = false,
 ): GpuDrivenPbrProgram | undefined {

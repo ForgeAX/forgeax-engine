@@ -1,8 +1,11 @@
+import { World } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import { expect, it, vi } from 'vitest';
 import { GpuInputArena } from '../gpu-input-arena';
 import { MaterialResource } from '../material-resource';
+import { worldRenderResources } from '../publication/resource-scope';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
+import { CompositionSkinAdoption } from '../scene/composition-skin';
 import { RenderScene } from '../scene/render-scene';
 import type { RenderSceneOperation } from '../scene/render-scene-types';
 import { SkinInputs } from '../scene/skin-inputs';
@@ -46,6 +49,60 @@ function fixture() {
   return { arena, scene, skin, resolve, apply, update };
 }
 const binding: SkinBindingInput = { skeleton: 7, joints: [19] };
+
+it('adopts selected f32 joint rows without scalar conversion and owns their values before recycle', () => {
+  const { arena, scene, skin, apply, update } = fixture();
+  const adopt = new CompositionSkinAdoption({ inputArena: () => arena, abandon: vi.fn() });
+  const entry = { skin, projection: scene, source: worldRenderResources(new World()) };
+  const entities = new Uint32Array([900, 19]);
+  const transforms = new Float32Array(new ArrayBuffer(144), 16, 32);
+  transforms.fill(NaN, 0, 16);
+  const rows = [1];
+  const publish = () => adopt.published(entry, false, [], rows, entities, transforms);
+  apply([update(snapshot(1, binding))]);
+  const slot = scene.slotsSnapshot().lookup(1)?.slot;
+  if (slot === undefined) throw new Error('Missing accepted slot');
+  try {
+    transforms.set(matrix(3), 16);
+    const round = vi.spyOn(Math, 'fround');
+    try {
+      publish();
+      expect(round).not.toHaveBeenCalled();
+    } finally {
+      round.mockRestore();
+    }
+    transforms[28] = 9;
+    const before = skin.capture();
+    try {
+      const out = mat4.create();
+      expect(before.matrix(slot, 0, out)).toBe(true);
+      expect(out[12]).toBe(4);
+
+      transforms.set(matrix(3), 16);
+      transforms[17] = -0;
+      publish();
+      const after = skin.capture();
+      try {
+        expect(after.inputRevision).toBeGreaterThan(before.inputRevision);
+        publish();
+        const unchanged = skin.capture();
+        try {
+          expect(unchanged.inputRevision).toBe(after.inputRevision);
+        } finally {
+          unchanged.release();
+        }
+      } finally {
+        after.release();
+      }
+    } finally {
+      before.release();
+    }
+  } finally {
+    skin.dispose();
+    arena.dispose();
+  }
+});
+
 it('adopts only known static Scene edits and leaves transform-only work outside Skin membership', () => {
   const { arena, scene, skin, resolve, apply, update } = fixture();
   const joints = [19];
@@ -62,18 +119,22 @@ it('adopts only known static Scene edits and leaves transform-only work outside 
       bind = vi.spyOn(SkinInputs.prototype, 'bind');
     try {
       apply([{ kind: 'update', entityKey: 1, world: matrix(101) }]);
+      const reflected = matrix(101);
+      reflected[0] = -1;
+      const winding = apply([{ kind: 'update', entityKey: 1, world: reflected }]);
+      expect(winding.contentUpdatedSlots).toHaveLength(1);
+      expect(winding.previous.size).toBe(0);
       expect(bind).not.toHaveBeenCalled();
       skin.joint(19, matrix(8));
       expect(bind).not.toHaveBeenCalled();
       const current = skin.capture(),
-        out = mat4.create(),
-        inverse = mat4.create();
+        out = mat4.create();
       try {
         const slot = scene.slotsSnapshot().lookup(1)?.slot;
         if (slot === undefined) throw new Error('Missing actual slot');
-        expect(before.matrix(slot, 0, out, inverse)).toBe(true);
+        expect(before.matrix(slot, 0, out)).toBe(true);
         expect(out[12]).toBe(4);
-        expect(current.matrix(slot, 0, out, inverse)).toBe(true);
+        expect(current.matrix(slot, 0, out)).toBe(true);
         expect(out[12]).toBe(9);
         expect(current.historyCompatible(before, slot)).toBe(true);
       } finally {
@@ -100,8 +161,7 @@ it('invalidates a recreated Binding even for identical bytes and preserves held 
       const delta = apply([{ kind: 'remove', entityKey: 1 }, update(snapshot(1, binding))]);
       expect(delta.recreated).toBe(1);
       const current = skin.capture(),
-        out = mat4.create(),
-        inverse = mat4.create();
+        out = mat4.create();
       try {
         const slot = scene.slotsSnapshot().lookup(1)?.slot;
         if (slot === undefined) throw new Error('Missing slot');
@@ -109,7 +169,7 @@ it('invalidates a recreated Binding even for identical bytes and preserves held 
         expect(current.historyCompatible(old, slot)).toBe(false);
         const oldSlot = oldSlots.lookup(1)?.slot;
         if (oldSlot === undefined) throw new Error('Missing old slot');
-        expect(old.matrix(oldSlot, 0, out, inverse)).toBe(true);
+        expect(old.matrix(oldSlot, 0, out)).toBe(true);
         expect(out[12]).toBe(4);
       } finally {
         current.release();
@@ -147,16 +207,15 @@ it('adopts simultaneous removal, recreation and slot reuse before new Skin membe
       expect(actual.lookup(3)?.slot).toBe(priorSlots.lookup(3)?.slot);
       expect(actual.lookup(4)?.slot).toBe(0); // previously removed entity's address
       const current = skin.capture(),
-        out = mat4.create(),
-        inverse = mat4.create();
+        out = mat4.create();
       try {
         for (const entity of [2, 3, 4]) {
           const slot = actual.lookup(entity)?.slot;
           if (slot === undefined) throw new Error('Missing accepted slot');
-          expect(current.matrix(slot, 0, out, inverse)).toBe(true);
+          expect(current.matrix(slot, 0, out)).toBe(true);
           expect(out[12]).toBe(4);
         }
-        expect(held.matrix(priorSlots.lookup(3)?.slot ?? 999, 0, out, inverse)).toBe(true);
+        expect(held.matrix(priorSlots.lookup(3)?.slot ?? 999, 0, out)).toBe(true);
       } finally {
         current.release();
       }
@@ -179,12 +238,9 @@ it('keeps distinct joint bindings independent and retires exact removed membersh
     expect(skin.hasJoint(19)).toBe(false);
     expect(skin.hasJoint(29)).toBe(true);
     const frame = skin.capture(),
-      out = mat4.create(),
-      inverse = mat4.create();
+      out = mat4.create();
     try {
-      expect(frame.matrix(scene.slotsSnapshot().lookup(2)?.slot ?? 999, 0, out, inverse)).toBe(
-        true,
-      );
+      expect(frame.matrix(scene.slotsSnapshot().lookup(2)?.slot ?? 999, 0, out)).toBe(true);
       expect(out[12]).toBe(10);
     } finally {
       frame.release();
@@ -207,9 +263,7 @@ it('poisons the Scene Skin owner on a replayed delta without invalidating held i
       // The carried prior record was already released; a replay is unbalanced.
       expect(() => skin.apply(delta)).toThrow();
       expect(() => skin.capture()).toThrow();
-      expect(held.matrix(delta.removedSlots[0]?.slot ?? 999, 0, mat4.create(), mat4.create())).toBe(
-        true,
-      );
+      expect(held.matrix(delta.removedSlots[0]?.slot ?? 999, 0, mat4.create())).toBe(true);
     } finally {
       held.release();
     }
@@ -286,7 +340,7 @@ it('carries every prior record in the delta, so adoption needs no captured frame
     ]);
     expect(delta.updated).toBe(1);
     expect(delta.recreated).toBe(1);
-    const updated = delta.updatedSlots[0];
+    const updated = delta.updatedSlots.at(0);
     const recreated = delta.recreatedSlots[0];
     if (updated === undefined || recreated === undefined) throw new Error('missing delta rows');
     expect(delta.previous.get(updated)).toBe(before.lookup(2));

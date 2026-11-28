@@ -7,7 +7,7 @@ export type QualityPresetId = typeof QUALITY_PRESET_IDS[number];
 
 export const QUALITY_PARAMETER_KEYS = [
   'viewSampleCountScale', 'stopTransmittance', 'selfShadow', 'shadowMode', 'shadowSamples',
-  'shadowDistanceMeters', 'shadowResolution', 'shadowMapSamples', 'shadowExtentMeters',
+  'shadowDistanceMeters', 'shadowResolution', 'shadowMapSamples', 'shadowMapUe5Reference', 'shadowMapSpatialPasses', 'shadowExtentMeters',
   'shadowLightDistanceMeters', 'shadowFarDepthMeters',
   'multiScatteringOctaves', 'atmosphereTransmittanceMode', 'enableDistantSkyLightSampling',
   'groundShadowEnabled', 'atmosphereShadowEnabled', 'surfaceShadowStrength', 'atmosphereShadowStrength',
@@ -16,27 +16,27 @@ export const QUALITY_PARAMETER_KEYS = [
 type QualityParameters = Required<Pick<CloudEdit, typeof QUALITY_PARAMETER_KEYS[number]>>;
 
 function qualityPreset(label: string, parameters: CloudEdit) {
-  const clear = WEATHER_PRESETS.clear.forgeax.parameters;
+  const defaults = { ...WEATHER_PRESETS.clear.forgeax.parameters, skipEmpty: true, shadowSamples: 8 };
   return Object.freeze({
     label,
     parameters: Object.freeze(Object.fromEntries(QUALITY_PARAMETER_KEYS.map(key =>
-      [key, key === 'skipEmpty' ? true : parameters[key] ?? clear[key]])) as QualityParameters),
+      [key, parameters[key] ?? defaults[key]])) as QualityParameters),
   });
 }
 
 export const QUALITY_PRESETS = Object.freeze({
   'quality-low': qualityPreset('低', {
-    viewSampleCountScale: 0.5, stopTransmittance: 0.02,
+    viewSampleCountScale: 1, stopTransmittance: 0.02,
     shadowMode: 1, shadowResolution: 64, shadowMapSamples: 16,
     multiScatteringOctaves: 1, atmosphereShadowEnabled: false,
   }),
   'quality-medium': qualityPreset('中', {
     viewSampleCountScale: 1, stopTransmittance: 0.01,
-    shadowMode: 1, shadowResolution: 128, shadowMapSamples: 128,
+    shadowMode: 1, shadowResolution: 128, shadowMapSamples: 32,
   }),
   'quality-high': qualityPreset('高', {
-    viewSampleCountScale: 2, stopTransmittance: 0.005,
-    shadowMode: 0, shadowSamples: 12, shadowResolution: 256, shadowMapSamples: 64,
+    viewSampleCountScale: 1, stopTransmittance: 0.005,
+    shadowMode: 0, shadowResolution: 256, shadowMapSamples: 64, shadowMapSpatialPasses: 2,
     atmosphereTransmittanceMode: 1,
   }),
 });

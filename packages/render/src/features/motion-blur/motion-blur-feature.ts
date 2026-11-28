@@ -12,6 +12,7 @@ import type {
 } from '../plan';
 import { captureUnusedSurfaceData } from '../surface-data-usage';
 import type { RenderFeature, RenderFeatureExtractContext } from '../types';
+import { MOTION_BLUR_FEATURE_IDENTITY } from './motion-blur-execution';
 import {
   effectiveMotionBlurSampleCount,
   MOTION_BLUR_PARAMS_BYTE_SIZE,
@@ -21,7 +22,7 @@ import {
   validateMotionBlurParams,
 } from './motion-blur-params';
 
-export const MOTION_BLUR_FEATURE_IDENTITY = 'forgeax.motion-blur';
+export { MOTION_BLUR_FEATURE_IDENTITY } from './motion-blur-execution';
 
 export function addMotionBlurPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,

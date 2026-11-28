@@ -1,8 +1,12 @@
 // @forgeax/engine-runtime - RendererState record stage: frame-snapshot.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
+
 import type { RenderReadVersion } from '@forgeax/engine-ecs/projection';
 import { vec3 } from '@forgeax/engine-math';
-import type { ResolvedColorTargetDescriptor } from '@forgeax/engine-render-graph';
+import type {
+  BoundRenderGraphResources,
+  ResolvedColorTargetDescriptor,
+} from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
   BindGroupDescriptor,
@@ -11,6 +15,7 @@ import type {
   Buffer,
   RhiDevice,
   Texture,
+  TextureFormat,
   TextureView,
 } from '@forgeax/engine-rhi';
 import type { BarrelDistortionMapping } from '../barrel-distortion';
@@ -21,6 +26,7 @@ import type { EnvironmentGeneration } from '../environment/generation';
 import type { EnvironmentLifecycle } from '../environment/lifecycle';
 import type { DepthOfFieldGraphInspection } from '../features/depth-of-field/depth-of-field-inspection';
 import type { DepthOfFieldParams } from '../features/depth-of-field/depth-of-field-params';
+import type { StagedMotionBlurExecution } from '../features/motion-blur/motion-blur-execution';
 import type { GpuBuffer } from '../gpu-resource';
 import type { MotionBlurExecutionReceipt } from '../inspection-types';
 import type { InstanceBufferCacheKey } from '../instance-buffer-cache';
@@ -408,6 +414,7 @@ export function makeZeroCameraFallbackSnapshot(): CameraSnapshot {
 /** A written volume parameter slot and the CPU copy of its payload. */
 export interface VolumetricFogParamsSlot {
   readonly slot: 0 | 1;
+  readonly buffer: Buffer;
   readonly params: Float32Array;
 }
 
@@ -417,7 +424,7 @@ export interface VolumetricFogParamsSlot {
  * and `accepted` keeps the payload for degraded-frame restaging.
  */
 export interface VolumetricFogParamsState {
-  buffers: [Buffer | null, Buffer | null];
+  readonly slots: [VolumetricFogParamsSlot | null, VolumetricFogParamsSlot | null];
   pending: VolumetricFogParamsSlot | null;
   accepted: VolumetricFogParamsSlot | null;
 }
@@ -484,11 +491,29 @@ export interface FrameGraphTargets {
 export type GraphCaptureLayout = string | readonly ['pass-replay', string | undefined];
 
 export interface InstalledFrameGraph {
+  /** Physical operand and preparation authority, shared by Source and recording. */
+  readonly nativeResources: BoundRenderGraphResources;
+  /** The exact device lifetime which allocated this physical view binding. */
+  readonly deviceScope: import('../device/device-scope').DeviceScope | undefined;
+  /** The physical pass roster declares the lens stage. */
+  readonly hasBarrelDistortionPass: boolean;
+  readonly scenePasses: readonly import('./scene-pass-work').ScenePassRequest[];
+  /** A fixed Cluster binding or current Forward draw inputs. */
+  readonly standardLighting:
+    | import('../pipeline/standard-lighting/topology').StandardLightingDeclaration
+    | 'current';
   readonly retainedPolicy?: import('./frame-graph-key').RetainedFrameGraphPolicy;
   /** Physical ports of an ordered Standard or premultiplied display, retained by this view until replacement. */
   readonly displayPorts?: import('./display-ports').DisplayPorts;
+  /** Imported planar shadow owner used by the ordered physical binding. */
+  readonly displayShadowDepthLayers?: import('../shadow-depth-layers').ShadowDepthLayers;
   readonly captureLayout?: GraphCaptureLayout;
   readonly depthOfField?: DepthOfFieldGraphInspection;
+  readonly ambientOcclusion?: import('../pipeline/standard-lighting/inspection').AmbientOcclusionViewFacts;
+  readonly transmissionBackdrop?: Omit<
+    import('../transmission/backdrop').TransmissionBackdropResourceFacts,
+    'deviceGeneration' | 'format'
+  > & { readonly format: TextureFormat };
   readonly volumetricFogTextures?: import('../volume/resources').VolumetricFogResourceFacts;
   /** An admitted compatible receiver roster can be reused while its Source is inactive. */
   readonly forwardShadowCoverage?: true | undefined;
@@ -519,11 +544,20 @@ export interface InstalledFrameGraph {
   /** Stock pipeline directional views actually projected during this graph build.
    * Absent for custom/legacy graphs: their preparation retains the full capacity. */
   readonly directionalShadowViewCount?: number | 'current';
+  readonly directionalShadowWriterPasses?: number;
   readonly graph: CompiledRenderGraph<RenderPipelineFrame>;
   readonly topologyKey: import('./frame-graph-identity').FrameGraphIdentity;
   /** Last prepared-resource replacement imported by this graph; rollback follows the graph. */
   readonly preparedResourceKey?: string;
   readonly targets: FrameGraphTargets;
+}
+
+/** A resource can stay readable for retirement after it loses recording authority. */
+export function viewGraphDeviceIsCurrent(
+  binding: InstalledFrameGraph,
+  scope: InstalledFrameGraph['deviceScope'],
+): boolean {
+  return binding.deviceScope === scope && (scope === undefined || scope.isAlive());
 }
 
 /**
@@ -558,6 +592,8 @@ export interface RenderFrameState {
   candidatePipelinePreparations?: import('./candidate-pipeline-preparation').CandidatePipelinePreparationOwner;
   /** This view's retained direct-draw phases (bins and transparent order), by consumer. */
   drawPhases?: import('./direct-draw-phase').ViewDrawPhases;
+  /** CPU selection storage borrowed by one synchronous geometry pass at a time. */
+  geometryPassWorkspace?: import('./main-pass-geometry').GeometryPassWorkspace;
   frameNumber: number;
   materialUboCounters?: {
     -readonly [K in keyof import('../inspection-types').MaterialUniformCacheInspection]: import('../inspection-types').MaterialUniformCacheInspection[K];
@@ -584,7 +620,7 @@ export interface RenderFrameState {
   /** Last successful Motion Blur compute execution; failed submits retain the prior receipt. */
   motionBlurExecution?: MotionBlurExecutionReceipt;
   /** This frame's Motion Blur receipt, staged for RenderCommit; `receipt: undefined` clears the last one. */
-  stagedMotionBlurExecution?: { readonly receipt: MotionBlurExecutionReceipt | undefined };
+  stagedMotionBlurExecution?: StagedMotionBlurExecution;
   /** Final-submit Standard IBL binding-chain receipt for this frame. */
   iblBindings?: import('./ibl-binding-observation').IblBindingObservation;
   /** Physical AO region requested inside the no-storage Cluster texture. */
@@ -658,17 +694,13 @@ export interface RenderFrameState {
   shadowDepthLayers?: import('../shadow-depth-layers').ShadowDepthLayers | undefined;
   /** The sole compiled owner for compute, copy, feature, and raster work. */
   compiledFrameGraph: InstalledFrameGraph | null;
-  /** Monotonic generation of successfully promoted compiled graphs. */
-  compiledFrameGraphGeneration: number;
   /** One candidate owns all graph facts until the frame submits or rolls back. */
   compiledFrameGraphCandidate?:
     | {
-        readonly graph: CompiledRenderGraph<RenderPipelineFrame>;
+        readonly installed: InstalledFrameGraph;
         readonly previous: {
           readonly installed: InstalledFrameGraph | null;
           readonly graphGeneration: number;
-          readonly compiledGeneration: number;
-          readonly lightingSignature: string;
         };
       }
     | undefined;
@@ -677,9 +709,7 @@ export interface RenderFrameState {
    * pipelines were still preparing). The next frame with the same topology key
    * promotes it again instead of compiling an identical graph.
    */
-  unsubmittedCompiledFrameGraph?:
-    | { readonly installed: InstalledFrameGraph; readonly deviceGeneration: number | undefined }
-    | undefined;
+  unsubmittedCompiledFrameGraph?: InstalledFrameGraph | undefined;
   /** DoF graph/params detached at the same successful-submit boundary. */
   depthOfFieldAccepted?:
     | {
@@ -752,6 +782,9 @@ export interface RenderFrameState {
   /** The prepared GPU-driven frame of this attempt; the Render World scene-row systems commit or abort it. */
   gpuDrivenFrame?: StagedGpuDrivenFrame | undefined;
   /** The stage at which this frame's submission was rejected; cleared by the Render World cleanup. */
+  /** Declared Feature work admitted for this view's encoding and submission. */
+  viewFeatures?: import('../features/view-feature-work').AdmittedViewFeatures | undefined;
+  previousViewFeatures?: import('../features/view-feature-work').AdmittedViewFeatures | undefined;
   /** Current compile provenance; only the successful graph encoder stages its consumption. */
   featureGraphReceipt?: import('../features/graph-receipt').RenderFeatureGraphReceipt | undefined;
   /** Graph execution products owned by the Render World submission systems. */
@@ -791,12 +824,6 @@ export interface RenderFrameState {
     /** Cluster buffer identity keeps this group aligned with grown bundles. */
     readonly clusterGridBuffer: Buffer;
   } | null;
-  /**
-   * Signature of the Standard lighting declaration accepted by the compiled
-   * graph. Payload uploads and membership bindings must match this signature;
-   * a failed candidate never changes it.
-   */
-  standardLightingGraphSignature: string;
   /** Renderer.inspect() projections of the last submitted frame. */
   submittedInspection?: SubmittedFrameInspection | undefined;
   /** Capsule tile binning of the display view in the current frame. */
@@ -935,17 +962,21 @@ export interface RenderFrameState {
   installedPipelineConfig: RenderPipelineAsset['config'];
   /** Effective Standard profile for this private view; never renderer author state. */
   cameraStandardProfile?: StandardProfile | undefined;
+  /** Per-view viewport debug output resolution when an extension is active; undefined in lit mode. */
+  viewportOutputResolution?:
+    | import('../viewport-output-contract').ViewportOutputResolution
+    | undefined;
   /**
    * The view's Standard install authority. `configured` is the install-time
    * config each camera configuration derives from; `built` the
    * `installedPipelineHandle` whose Feature graph state the view contributed;
-   * `cameraSignature` the last admitted camera configuration (render path,
-   * SSAO) and `cameraFailure` its last reported failure, reported once.
+   * `cameraConfigured` marks initial admission and `cameraFailure` holds the
+   * last reported failure.
    */
   readonly standardInstall: {
     configured: RenderPipelineAsset['config'];
     built: number;
-    cameraSignature: string;
+    cameraConfigured: boolean;
     cameraFailure: string;
   };
   /**
@@ -1061,14 +1092,16 @@ export type DrawRows = import('../scene/frame-list').FrameList<ValidatedRenderab
  */
 export interface ValidatedRenderable {
   /** Per-camera hard LOD ranges in original instance order; residency remains source-owned. */
-  readonly cpuInstanceLods?: readonly import('./cpu-lod').CpuInstanceLodRun[];
+  readonly cpuInstanceLods?: readonly import('./cpu-lod').CpuInstanceLodRun[] | undefined;
   /** Physical source-transform slot, independent of this pass's row index. */
   readonly meshSlot: number;
   /** A fold head writes identity here; captures continue to use meshSlot. */
-  readonly foldedMeshSlot?: number;
+  readonly foldedMeshSlot?: number | undefined;
   /** Exact source submeshes selected by native batch execution; absent selects the whole mesh. */
-  readonly submeshIndices?: readonly number[];
+  readonly submeshIndices?: readonly number[] | undefined;
   readonly source: RenderableSnapshot;
+  /** Current matrix of a placed source during one synchronous recording callback. */
+  readonly recordingPose?: import('../scene/captured-transform').RecordingScenePose | undefined;
   /**
    * Scene row the draw was selected from. Consumers address the row's
    * retained facts (draw address, culling bounds, GPU-lane ownership) through
@@ -1076,7 +1109,7 @@ export interface ValidatedRenderable {
    */
   readonly sceneSlot?: RenderSceneSlot;
   /** RenderResourceScope that owns the renderable's asset handles and material snapshots. */
-  readonly world?: RenderResourceScope;
+  readonly world?: RenderResourceScope | undefined;
   readonly mesh: MeshGpuHandles;
   readonly renderableIndex: number;
   readonly renderState: MaterialRenderState | undefined;

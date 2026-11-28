@@ -92,8 +92,18 @@ function resolveMesh(
     if (level === (lods?.length ?? 0)) return gpu;
   }
   if (policy === 'resident-only') return undefined;
+  return prepareMesh(store, world, handle, lods) ?? gpu;
+}
+
+// Only a missing physical lane resolves source assets or captures the scope for LOD lookup.
+function prepareMesh(
+  store: RenderSystemInternals['gpuStore'],
+  world: RenderResourceScope,
+  handle: AssetHandle<'mesh'>,
+  lods: Binding['lods'],
+): Resident {
   const asset = world.resolveAsset<MeshAsset>(handle);
-  if (!asset.ok) return gpu;
+  if (!asset.ok) return undefined;
   const resident = store.ensureResident(
     handle,
     asset.value,
@@ -103,32 +113,35 @@ function resolveMesh(
       return lod?.kind === 'mesh' ? lod : undefined;
     }),
   );
-  return resident.ok ? resident.value : gpu;
+  return resident.ok ? resident.value : undefined;
 }
 
 /** The binding address belongs to the roster. Only the physical mesh columns vary by issuance. */
 class IssuedMeshes implements ReadonlyMap<Binding, MeshGpuHandles> {
-  constructor(
+  static readonly empty = new IssuedMeshes(new Map(), []);
+
+  private constructor(
     private readonly indices: ReadonlyMap<Binding, number>,
-    private readonly residents: readonly MeshGpuHandles[],
+    private readonly residents: readonly Resident[],
   ) {}
 
   static issue(
     roster: MeshRoster,
     residents: readonly Resident[],
     present: number,
-  ): ReadonlyMap<Binding, MeshGpuHandles> {
-    if (present === 0) return emptyTable;
-    if (present === residents.length)
-      return new IssuedMeshes(roster.indices, residents as readonly MeshGpuHandles[]);
-    // An old frame may retain only the bindings whose physical meshes it actually received.
-    const ready = new Map<Binding, MeshGpuHandles>();
-    for (const [binding, index] of roster.indices) {
-      const mesh = residents[index];
-      if (mesh !== undefined) ready.set(binding, mesh);
-    }
-    return ready;
+    previous: IssuedMeshes | undefined,
+  ): IssuedMeshes {
+    if (present === 0) return IssuedMeshes.empty;
+    if (previous !== undefined) return new IssuedMeshes(previous.indices, residents);
+    if (present === residents.length) return new IssuedMeshes(roster.indices, residents);
+    // A retained incomplete issue must not hold the missing bindings from the full roster.
+    const ready = new Map<Binding, number>();
+    roster.indices.forEach((index, binding) => {
+      if (residents[index] !== undefined) ready.set(binding, index);
+    });
+    return new IssuedMeshes(ready, residents);
   }
+
   get size(): number {
     return this.indices.size;
   }
@@ -166,11 +179,10 @@ interface ResidentFrame {
   layout: symbol | undefined;
   readonly roster: MeshRoster;
   readonly residents: readonly Resident[];
-  readonly table: ReadonlyMap<Binding, MeshGpuHandles>;
+  readonly table: IssuedMeshes;
 }
 
 const residentFrames = new WeakMap<RenderSystemInternals, ResidentFrame>();
-const emptyTable: ReadonlyMap<Binding, MeshGpuHandles> = new Map();
 
 /** Read each distinct physical mesh in the current scope, including on pose-only frames. */
 export function gpuDrivenMeshesForFrame(
@@ -181,7 +193,7 @@ export function gpuDrivenMeshesForFrame(
 ): ReadonlyMap<Binding, MeshGpuHandles> {
   if (!scene?.plan.batches.length) {
     residentFrames.delete(internals);
-    return emptyTable;
+    return IssuedMeshes.empty;
   }
   const batches = scene.plan.batches;
   const previous = residentFrames.get(internals);
@@ -193,6 +205,7 @@ export function gpuDrivenMeshesForFrame(
   const prior = previous?.roster === roster ? previous.residents : undefined;
   let updated: Resident[] | undefined = prior === undefined ? [] : undefined;
   let present = 0;
+  let membershipChanged = prior === undefined;
   for (let i = 0; i < roster.sources.length; i++) {
     const resident = resolveMesh(
       internals.gpuStore,
@@ -201,7 +214,11 @@ export function gpuDrivenMeshesForFrame(
       policy,
     );
     if (resident !== undefined) present++;
-    if (updated === undefined && resident !== prior?.[i]) updated = prior?.slice(0, i);
+    const before = prior?.[i];
+    if (resident !== before) {
+      if (updated === undefined) updated = prior?.slice(0, i);
+      membershipChanged ||= (resident === undefined) !== (before === undefined);
+    }
     updated?.push(resident);
   }
   if (updated === undefined && previous !== undefined) {
@@ -209,7 +226,12 @@ export function gpuDrivenMeshesForFrame(
     return previous.table;
   }
   const residents = updated ?? [];
-  const table = IssuedMeshes.issue(roster, residents, present);
+  const table = IssuedMeshes.issue(
+    roster,
+    residents,
+    present,
+    membershipChanged ? undefined : previous?.table,
+  );
   residentFrames.set(internals, { layout, roster, residents, table });
   return table;
 }

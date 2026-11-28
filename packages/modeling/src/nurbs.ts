@@ -2,8 +2,9 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { maxOf } from './arrays';
 import { type ModelingError, modelingError } from './errors';
 import type { Tuple3 } from './geom';
-import { fitSurface } from './nurbs-fit';
+import { fairSurface, fitSurface } from './nurbs-fit';
 import { matchSurfaces } from './nurbs-match';
+import { offsetSurface } from './nurbs-offset';
 import {
   surfaceCompatible,
   surfaceElevate,
@@ -12,6 +13,7 @@ import {
   surfaceRefine,
   surfaceSplit,
 } from './nurbs-surface';
+import { birailSurface, sweepSurface } from './nurbs-sweep';
 import { fillN } from './surface-fill';
 
 /**
@@ -1486,28 +1488,31 @@ function intersectCurves(a: NurbsCurve, b: NurbsCurve): { s: number; t: number; 
   return { s, t, distance: distance(curvePoint(a, s), curvePoint(b, t)) };
 }
 
+/** The closest point of a surface to a query point: parameters, the point and its distance. */
+export interface SurfaceFoot {
+  readonly u: number;
+  readonly v: number;
+  readonly point: Tuple3;
+  readonly distance: number;
+}
+
 /**
- * Closest surface point to `p` (point inversion, Section 6.1): a sampled start, then
+ * Point inversion against one surface for many query points (Section 6.1): the start grid and
+ * the seam tests are evaluated once, then each query takes the nearest grid sample and runs
  * Newton steps on the distance gradient, clamped to the domain.
+ * @internal
  */
-export function surfaceClosest(
-  s: NurbsSurface,
-  p: Tuple3,
-  samples = 24,
-): { readonly u: number; readonly v: number; readonly point: Tuple3; readonly distance: number } {
+export function surfaceLocator(s: NurbsSurface, samples = 24): (p: Tuple3) => SurfaceFoot {
   const [[u0, u1], [v0, v1]] = surfaceDomain(s);
-  let best = { u: u0, v: v0, d: Infinity };
+  const grid: Tuple3[] = [];
   for (let i = 0; i <= samples; i++) {
     for (let j = 0; j <= samples; j++) {
-      const u = u0 + ((u1 - u0) * i) / samples;
-      const v = v0 + ((v1 - v0) * j) / samples;
-      const d = distance(surfacePoint(s, u, v), p);
-      if (d < best.d) best = { u, v, d };
+      grid.push(surfacePoint(s, u0 + ((u1 - u0) * i) / samples, v0 + ((v1 - v0) * j) / samples));
     }
   }
   const dot = (x: Tuple3, y: readonly number[]) =>
     x[0] * (y[0] as number) + x[1] * (y[1] as number) + x[2] * (y[2] as number);
-  const newton = (u: number, v: number) => {
+  const newton = (p: Tuple3, u: number, v: number): SurfaceFoot => {
     for (let it = 0; it < 30; it++) {
       const d = surfaceDerivatives(s, u, v, 2);
       const S = (d[0] as Tuple3[])[0] as Tuple3;
@@ -1546,15 +1551,33 @@ export function surfaceClosest(
       distance(surfacePoint(s, u0 + (u1 - u0) * f, v0), surfacePoint(s, u0 + (u1 - u0) * f, v1)) <=
       1e-9 * (1 + distance(surfacePoint(s, u0, v0), [0, 0, 0])),
   );
-  const starts: [number, number][] = [[best.u, best.v]];
-  if (seamU && (best.u === u0 || best.u === u1)) starts.push([best.u === u0 ? u1 : u0, best.v]);
-  if (seamV && (best.v === v0 || best.v === v1)) starts.push([best.u, best.v === v0 ? v1 : v0]);
-  let result = { u: best.u, v: best.v, point: surfacePoint(s, best.u, best.v), distance: best.d };
-  for (const [u, v] of starts) {
-    const hit = newton(u, v);
-    if (hit.distance < result.distance) result = hit;
-  }
-  return result;
+  return (p) => {
+    let k = 0;
+    let d = Infinity;
+    for (let index = 0; index < grid.length; index++) {
+      const candidate = distance(grid[index] as Tuple3, p);
+      if (candidate < d) {
+        k = index;
+        d = candidate;
+      }
+    }
+    const u = u0 + ((u1 - u0) * Math.floor(k / (samples + 1))) / samples;
+    const v = v0 + ((v1 - v0) * (k % (samples + 1))) / samples;
+    const starts: [number, number][] = [[u, v]];
+    if (seamU && (u === u0 || u === u1)) starts.push([u === u0 ? u1 : u0, v]);
+    if (seamV && (v === v0 || v === v1)) starts.push([u, v === v0 ? v1 : v0]);
+    let result: SurfaceFoot = { u, v, point: grid[k] as Tuple3, distance: d };
+    for (const [startU, startV] of starts) {
+      const hit = newton(p, startU, startV);
+      if (hit.distance < result.distance) result = hit;
+    }
+    return result;
+  };
+}
+
+/** Closest surface point to `p` (point inversion, Section 6.1); see `surfaceLocator` for many points. */
+export function surfaceClosest(s: NurbsSurface, p: Tuple3, samples = 24): SurfaceFoot {
+  return surfaceLocator(s, samples)(p);
 }
 
 /** Differential geometry of a surface point (Do Carmo 3.3): unit normal along Su x Sv. */
@@ -1697,6 +1720,12 @@ export const nurbs = {
   loft: loftSurface,
   grid: interpolateGrid,
   network: networkSurface,
+  /** One rail and one or more sections; a rotation-minimizing frame carries the sections along the rail. */
+  sweep: sweepSurface,
+  /** Two rails; each section is placed and scaled to span them. */
+  birail: birailSurface,
+  /** Constant normal offset, fitted to a tolerance; rejects distances at or past the focal radius. */
+  offset: offsetSurface,
   fitSurface,
   match: matchSurfaces,
   transpose,
@@ -1709,5 +1738,6 @@ export const nurbs = {
     extend: surfaceExtend,
     compatible: surfaceCompatible,
     fillN,
+    fair: fairSurface,
   },
 };

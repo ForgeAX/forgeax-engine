@@ -37,3 +37,40 @@ cameras with the same frames, so contours and design drawings line up with the r
 | view `{ id, of, explode: { by, distance, directions?, order? } }`, `explodeDrawing(mesh, drawing)` | An exploded view of an ortho, section or toward view (not a detail view). `explodeDrawing` appends derived items to every explode view: per part `<view>/<part>/outline-<k>` silhouettes (white-filled, painted back to front, no hidden-line removal, said in the cell title) and `crease-<k>` features, a balloon per part and a `<view>/bom` table (`item, part, order, faces, offset`); rerunning it on its own output is `model-invalid-argument` (duplicate id). The 3D `explodeMesh` offsets and the sheet use the same options, so they agree to the byte |
 | `meshViewEdges(mesh, frame)` | Front-facing contour, sharp and boundary edges of a mesh in a view frame, chained into polylines; it drops back faces only and has no hidden-line removal, use `meshViewLines` (`chain` is shared with drawing checks) |
 | `meshViewLines(mesh, view, { id, creaseAngle?, sharp?, workLimit? })` | True hidden-line removal in an orthographic view (name or frame): contour, crease (angle >= `creaseAngle`, default 30 degrees, or sharp-flagged) and boundary edges are clipped exactly against every other triangle through a uniform grid and returned as `visible` / `hidden` `DrawnLine`s (ids `<id>/<kind>-<role>-<k>`, `basis: 'derived'`), hidden pieces on a visible line dropped. `Result`: `model-work-budget` past `workLimit` (default `HLR_WORK_LIMIT` grid cells plus edge-triangle tests) or the drawing point limit, `model-invalid-argument` for bad options |
+
+The flat pattern of a sheet-metal part (`sheet.drawing(spec)`, [operations](operations.md#sheet-metal))
+is an ordinary `Drawing`, so `drawingSvg` and `drawingDxf` export it with the same layers and
+sheet options as any other drawing; bend lines use the `guide` role.
+
+### Bitmap sheets
+
+| Surface | Contract |
+|:--|:--|
+| `drawingRaster(resolved, options?)`, `drawingPng(resolved, options?)` | Rasterises the sheet to `Result<RasterImage>` (`{ width, height, rgba }`, straight RGBA8) or to PNG bytes. Options extend `SheetOptions` exactly as `drawingSvg` does; `pixelsPerMm` or `width` picks the output size (not both), `background` is `#rrggbb`, `white` (default) or `black`, `supersample` is 1 to 4 (default 2, box-averaged), `font` (a parsed TrueType font) draws text from outlines, `minTextPx` (default 9) is the smallest legible text height in output pixels. `view` names one cell and fills the output width with it, so a detail view is drawn at its own magnification. The result carries `report.smallText` (`{ text, px }[]`) listing text inside the frame that is below `minTextPx`; text is never rescaled to fit. |
+| `RASTER_PIXEL_LIMIT` | 25,000,000 supersampled pixels per raster (`width x height x supersample^2`). Past it, `model-work-budget` with `{ needed, allowed, width, height, supersample }`; raise the output size only after splitting the sheet. |
+
+**The raster consumes exactly what `drawingSvg` emits.** `drawingRaster` calls `drawingSvg` with
+the same options and paints the resulting SVG string; it has no layout of its own. Every sheet
+rule above (view placement, scale, title block, hatching, tables, notes, grid, detail marks)
+therefore appears in the bitmap because it is in the SVG, and `drawingSvg` output stays byte
+identical whether or not the raster is used. The reader accepts only the element and attribute
+set that the writer produces. Anything else (for example `<ellipse>`, or a `transform` attribute)
+fails with `model-invalid-argument` whose `detail` names the `element` and, when relevant, the
+`attribute`; it is never skipped silently. A new SVG feature in `drawingSvg` therefore fails the
+raster until its dialect entry is added.
+
+**Text and circles.** Each text character takes its font outline when the font covers it, else its
+stroke glyph (ASCII letters, digits, punctuation and `Ø ° ± ×`). A character with neither is a
+`model-invalid-argument` error that names its `codePoint`, so no glyph is dropped silently. A solid
+full-turn arc is written as an exact `<circle>` (the raster strokes or fills it at any magnification,
+so a detail view shows no facets); dashed roles keep their polyline.
+
+Known limits of the bitmap:
+
+- Detail views keep the stroke weights that `drawingSvg` writes in sheet millimetres; they do not
+  thin to the detail scale as ISO 128 would. The bitmap inherits this from the SVG.
+- Text uses the supplied font's outlines; without `font` it falls back to an uppercase ASCII
+  stroke font, and characters outside that set are dropped. Glyphs missing from the supplied font
+  are not drawn.
+- The raster is for review and reports, not for dimensional measurement. The SVG and DXF remain
+  the sheets of record.

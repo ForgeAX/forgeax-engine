@@ -1,17 +1,22 @@
 import { definePack, definePackageId } from '@forgeax/engine/pack/source';
 import { ok } from '@forgeax/engine/types';
-import { mountPluginAsset, type Plugin } from '@forgeax/engine/plugin';
+import { joinPluginFiber, mountPluginAsset, type Plugin } from '@forgeax/engine/plugin';
 
 /** Native composition; Pack references determine the persistent definition closure. */
 export const game: Plugin.Object<{ readonly children: readonly string[] }> = {
   name: 'game-3d',
   inject: ['assets', 'pluginPrograms'],
   async apply(ctx, config) {
+    const definitions = config.children.map(async (guid) => {
+      await ctx.assets?.readPluginDefinition(guid).catch(() => undefined);
+      return guid;
+    });
     await ctx.effect(async function* () {
-      for (const guid of config.children) {
-        const result = await mountPluginAsset(ctx, guid);
+      // Read siblings together and let each mount check its current definition in order.
+      for (const definition of definitions) {
+        const result = await mountPluginAsset(ctx, await definition);
         if (!result.ok) throw result.error;
-        yield result.value.dispose;
+        yield joinPluginFiber(result.value);
       }
     });
   },

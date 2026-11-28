@@ -15,7 +15,9 @@ const root = resolve(rootArg);
 const evidenceDirectory = resolve(evidenceArg);
 await mkdir(evidenceDirectory, { recursive: true });
 const browser = await chromium.launch({
-  ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
+  ...(process.env.FORGEAX_BROWSER_EXECUTABLE
+    ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
+    : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
   headless: false, args: ['--enable-unsafe-webgpu'],
   chromiumSandbox: true,
 });

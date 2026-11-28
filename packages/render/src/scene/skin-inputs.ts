@@ -1,4 +1,4 @@
-import { type Mat4, mat4 } from '@forgeax/engine-math';
+import type { Mat4 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import {
   MAX_SHADOW_CAPSULES_PER_SKELETON,
@@ -13,6 +13,7 @@ const PAGE_WORDS = 256;
 const SKELETONS = 0;
 const BINDINGS = 1;
 const POSES = 2;
+const F32_EXPONENT = 0x7f800000;
 
 type Shift = 0 | 8 | 16 | 24 | 32 | 40 | 48 | 56;
 
@@ -27,6 +28,24 @@ function invalid(expected: string): RhiError {
 function u32(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff)
     throw invalid('complete u32 Skin identities and addresses');
+}
+
+function jointMatrixStart(length: number, offset?: number): number {
+  if (offset === undefined) {
+    if (length === 16) return 0;
+  } else if (Number.isSafeInteger(offset) && offset >= 0 && offset + 16 <= length) return offset;
+  throw invalid('one finite presentation matrix per joint');
+}
+
+function sameJointWords(
+  before: Int32Array,
+  base: number,
+  words: Int32Array,
+  start: number,
+): boolean {
+  for (let lane = 0; lane < 16; lane++)
+    if (before[base + lane] !== words[start + lane]) return false;
+  return true;
 }
 
 function disjoint(a: Float32Array, b: Float32Array): void {
@@ -64,14 +83,6 @@ export function skeletonDefinitionValid(
       return false;
   }
   return true;
-}
-
-function composedOverflow(cause: unknown): boolean {
-  return (
-    cause instanceof RhiError &&
-    cause.code === 'rhi-descriptor-invalid' &&
-    cause.expected === 'finite composed Skin matrices'
-  );
 }
 
 function validateMatrixOutputs(a: Mat4, b: Mat4): void {
@@ -253,7 +264,7 @@ function retirePage(inputs: GpuInputArena, state: State, page: Page | undefined)
  * as whole Binding poses, so a joint edit costs no row or tree path. */
 class JointStore {
   readonly cells = new Map<number, number>();
-  matrices = new Float32Array(64 * 16);
+  matrices = new Int32Array(64 * 16);
   readonly free: number[] = [];
   size = 0;
   newCell(entity: number): number {
@@ -261,7 +272,7 @@ class JointStore {
     if (cell === undefined) {
       cell = this.size++;
       if (cell * 16 === this.matrices.length) {
-        const matrices = new Float32Array(cell * 32);
+        const matrices = new Int32Array(cell * 32);
         matrices.set(this.matrices);
         this.matrices = matrices;
       }
@@ -491,11 +502,13 @@ export class SkinInputs {
    * holders) or path copy (a new root), so the root identity validates it. */
   private leaf: { root: Page; space: number; high: number; page: LeafPage } | undefined;
   private readonly scratch = new DataView(new ArrayBuffer(4));
+  /** Local/foreign inputs are checked and converted before the live row is changed. */
+  private readonly jointWords = new Int32Array(16);
+  private readonly jointFloats = new Float32Array(this.jointWords.buffer);
   private readonly stores = new Map<Slot, JointStore>();
   private readonly poses = new PoseBindings();
   private epoch = 1;
   private poseWords = new Uint32Array(1 + 64 * 16);
-  private poseFloats = new Float32Array(this.poseWords.buffer);
   private poseView = new DataView(this.poseWords.buffer);
   private readonly pageWords = new Uint32Array(PAGE_WORDS);
   private readonly pageView = new DataView(this.pageWords.buffer);
@@ -618,46 +631,66 @@ export class SkinInputs {
   }
 
   setJoint(source: SkinInputSlot, entity: number, world: Float32Array, offset?: number): void {
-    this.healthy();
-    const slot = this.slot(source, 'source');
-    u32(entity);
-    const first = offset ?? 0;
-    if (
-      offset === undefined
-        ? world.length !== 16
-        : !Number.isSafeInteger(first) || first < 0 || first + 16 > world.length
-    )
-      throw invalid('one finite presentation matrix per joint');
-    let store = this.stores.get(slot);
-    const known = store?.cells.get(entity);
-    const base = known === undefined ? -1 : known * 16;
-    let equal = known !== undefined;
+    const slot = this.jointSource(source, entity);
+    const first = jointMatrixStart(world.length, offset);
     for (let lane = 0; lane < 16; lane++) {
       const value = world[first + lane];
       if (value === undefined || !Number.isFinite(value))
         throw invalid('finite presentation joint matrices');
-      const captured = Math.fround(value);
-      if (!Number.isFinite(captured))
+      this.jointFloats[lane] = value;
+      if (((this.jointWords[lane] as number) & F32_EXPONENT) === F32_EXPONENT)
         throw invalid('representable finite presentation joint matrices');
-      // Bitwise f32 identity: a signed zero is a changed word.
-      if (equal && !Object.is(store?.matrices[base + lane], captured)) equal = false;
     }
-    if (equal) return;
+    this.admitJointWords(slot, entity, this.jointWords, 0);
+  }
+
+  /** Borrow an ordinary publication buffer synchronously; only the words in this row are read. */
+  setPublishedJoint(
+    source: SkinInputSlot,
+    entity: number,
+    words: Int32Array<ArrayBuffer>,
+    offset: number,
+  ): void {
+    const slot = this.jointSource(source, entity);
+    const first = jointMatrixStart(words.length, offset);
+    for (let lane = 0; lane < 16; lane++) {
+      const word = words[first + lane] as number;
+      if ((word & F32_EXPONENT) === F32_EXPONENT)
+        throw invalid('finite presentation joint matrices');
+    }
+    this.admitJointWords(slot, entity, words, first);
+  }
+
+  private jointSource(source: SkinInputSlot, entity: number): Slot {
+    this.healthy();
+    const slot = this.slot(source, 'source');
+    u32(entity);
+    return slot;
+  }
+
+  private admitJointWords(slot: Slot, entity: number, words: Int32Array, first: number): void {
+    let store = this.stores.get(slot);
+    const known = store?.cells.get(entity);
+    // Match the physical f32 words, including signed zero.
+    if (
+      store !== undefined &&
+      known !== undefined &&
+      sameJointWords(store.matrices, known * 16, words, first)
+    )
+      return;
     if (store === undefined) {
       store = new JointStore();
       this.stores.set(slot, store);
     }
     const cell = known ?? store.newCell(entity);
-    const matrices = store.matrices;
+    const start = cell * 16;
     for (let lane = 0; lane < 16; lane++)
-      matrices[cell * 16 + lane] = world[first + lane] as number;
+      store.matrices[start + lane] = words[first + lane] as number;
     this.poses.joint(slot, entity, cell, ++this.epoch);
   }
 
   removeJoint(source: SkinInputSlot, entity: number): void {
-    this.healthy();
-    const slot = this.slot(source, 'source');
-    u32(entity);
+    const slot = this.jointSource(source, entity);
     const store = this.stores.get(slot);
     const cell = store?.cells.get(entity);
     if (store === undefined || cell === undefined) return;
@@ -704,10 +737,9 @@ export class SkinInputs {
     const words = 1 + count * 16;
     if (this.poseWords.length < words) {
       this.poseWords = new Uint32Array(words);
-      this.poseFloats = new Float32Array(this.poseWords.buffer);
       this.poseView = new DataView(this.poseWords.buffer);
     }
-    const out = this.poseFloats,
+    const out = this.poseWords,
       matrices = store.matrices;
     this.poseWords[0] = count;
     for (let index = 0; index < count; index++) {
@@ -1185,11 +1217,11 @@ export class SkinInputFrame {
     if (skeleton?.kind !== 'skeleton' || inputs.readWord(skeleton.address) !== count) return false;
     return this.#pose(inputs, slot, count) !== undefined;
   }
-  matrix(slot: number, index: number, out: Mat4, inverse: Mat4): boolean {
+  matrix(slot: number, index: number, out: Mat4): boolean {
     const inputs = this.live();
     u32(slot);
     if (!Number.isInteger(index) || index < 0) throw invalid('a complete Skin joint position');
-    validateMatrixOutputs(out, inverse);
+    if (out.length !== 16) throw invalid('one caller-owned Skin joint matrix output');
     const binding = find(this.#page, BINDINGS, slot);
     if (binding?.kind !== 'binding') return false;
     const count = inputs.readWord(binding.address);
@@ -1202,11 +1234,9 @@ export class SkinInputFrame {
       return false;
     const pose = this.#pose(inputs, slot, count);
     if (pose === undefined) return false;
-    inputs.readFloatWords(pose.address + 1 + index * 16, out);
-    inputs.readFloatWords(skeleton.address + 1 + index * 16, inverse);
-    mat4.multiply(out, out, inverse);
-    for (let lane = 0; lane < 16; lane++)
-      if (!Number.isFinite(out[lane])) throw invalid('finite composed Skin matrices');
+    const relative = 1 + index * 16;
+    if (!inputs.readMatrixProducts(out, 0, pose.address + relative, skeleton.address + relative, 1))
+      throw invalid('finite composed Skin matrices');
     return true;
   }
   /** Actual CPU visibility/shadow demand from shared Mesh envelopes. A false
@@ -1483,25 +1513,33 @@ export class SkinInputFrame {
   }
 
   /** Actual CPU shadow demand only. False, including a composed-matrix overflow, invalidates the caller's whole task output. */
-  capsules(slot: number, out: Float32Array, matrix: Mat4, inverse: Mat4): boolean {
+  capsules(slot: number, out: Float32Array, matrix: Mat4): boolean {
     const inputs = this.live();
     const count = this.capsuleCount(slot);
     if (count === undefined || !this.available(slot)) return false;
     if (out.length < count * 8) throw invalid('enough caller-owned world-capsule output');
-    validateMatrixOutputs(matrix, inverse);
+    if (matrix.length !== 16) throw invalid('one caller-owned Skin capsule matrix');
     disjoint(out, matrix);
-    disjoint(out, inverse);
     const binding = find(this.#page, BINDINGS, slot) as Row;
     const skeleton = find(this.#page, SKELETONS, inputs.readWord(binding.address + 2)) as Row;
-    const capsuleBase = skeleton.address + 2 + inputs.readWord(binding.address) * 16;
+    const pose = find(this.#page, POSES, slot) as Row;
+    const joints = inputs.readWord(binding.address);
+    const capsuleBase = skeleton.address + 2 + joints * 16;
     for (let index = 0; index < count; index++) {
       const base = capsuleBase + index * 8;
-      try {
-        this.matrix(slot, inputs.readWord(base), matrix, inverse);
-      } catch (cause) {
-        if (!composedOverflow(cause)) throw cause;
+      const joint = inputs.readWord(base);
+      const relative = 1 + joint * 16;
+      if (
+        joint >= joints ||
+        !inputs.readMatrixProducts(
+          matrix,
+          0,
+          pose.address + relative,
+          skeleton.address + relative,
+          1,
+        )
+      )
         return false;
-      }
       for (let endpoint = 0; endpoint < 2; endpoint++) {
         // Read scalars from the arena without borrowing its replaceable backing store.
         const x = inputs.readFloatWord(base + 1 + endpoint * 3);
@@ -1529,47 +1567,32 @@ export class SkinInputFrame {
     return true;
   }
 
-  /** Compose into task-owned storage. False leaves output untouched; a numerical throw invalidates the whole output, including any written prefix. */
-  palette(slot: number, out: Float32Array, matrix: Mat4, inverse: Mat4): boolean {
+  /** Compose into task-owned storage. False leaves it untouched. Numerical overflow invalidates the entire output. */
+  palette(slot: number, out: Float32Array): boolean {
     const inputs = this.live();
     const count = this.jointCount(slot);
     if (count === undefined || !this.available(slot)) return false;
     if (out.length < count * 16) throw invalid('enough caller-owned Skin palette output');
-    validateMatrixOutputs(matrix, inverse);
-    disjoint(out, matrix);
-    disjoint(out, inverse);
-    this.compose(inputs, slot, count, out, matrix, inverse);
+    if (!this.compose(inputs, slot, count, out)) throw invalid('finite composed Skin matrices');
     return true;
   }
+
   /** Compose a palette whose complete pose the caller already proved available. */
   private compose(
     inputs: GpuInputArena,
     slot: number,
     count: number,
     out: Float32Array,
-    matrix: Mat4,
-    inverse: Mat4,
     offset = 0,
-  ): void {
-    // The complete-pose check precedes all output writes, including joints not used by this mesh.
+  ): boolean {
     const binding = find(this.#page, BINDINGS, slot) as Row;
     const skeleton = find(this.#page, SKELETONS, inputs.readWord(binding.address + 2)) as Row;
     const pose = find(this.#page, POSES, slot) as Row;
-    for (let index = 0; index < count; index++) {
-      inputs.readFloatWords(pose.address + 1 + index * 16, matrix);
-      inputs.readFloatWords(skeleton.address + 1 + index * 16, inverse);
-      mat4.multiply(matrix, matrix, inverse);
-      for (let lane = 0; lane < 16; lane++) {
-        const value = matrix[lane] as number;
-        if (!Number.isFinite(value)) throw invalid('finite composed Skin matrices');
-        out[offset + index * 16 + lane] = value;
-      }
-    }
+    return inputs.readMatrixProducts(out, offset, pose.address + 1, skeleton.address + 1, count);
   }
   /** Actual Direct/uniform demand. Flags match GPU task descriptors: 0 absent,
    * 1 current with seeded history, 3 current with compatible previous pose.
-   * Caller-owned outputs and scratch are reused; no per-draw views or palettes
-   * are retained. Any current numerical failure invalidates the whole task.
+   * Caller-owned outputs are reused; no per-draw views or palettes are retained. Any current numerical failure invalidates the whole task.
    */
   palettes(
     slot: number,
@@ -1577,8 +1600,6 @@ export class SkinInputFrame {
     currentOut: Float32Array,
     /** Omit to place history immediately after the current matrices in the same output. */
     previousOut: Float32Array | undefined,
-    matrix: Mat4,
-    inverse: Mat4,
     /** The previous frame's palette for this slot, already composed from its exact inputs. */
     previousPalette?: Float32Array,
   ): 0 | 1 | 3 {
@@ -1590,48 +1611,49 @@ export class SkinInputFrame {
     const offset = previousOut === undefined ? lanes : 0;
     if (currentOut.length < lanes || history.length < offset + lanes)
       throw invalid('enough caller-owned current and previous Skin palette output');
-    validateMatrixOutputs(matrix, inverse);
-
-    disjoint(currentOut, matrix);
-    disjoint(currentOut, inverse);
-    if (previousOut !== undefined) {
-      disjoint(currentOut, previousOut);
-      disjoint(previousOut, matrix);
-      disjoint(previousOut, inverse);
-    }
+    if (previousOut !== undefined) disjoint(currentOut, previousOut);
     // The current pose was proved available above; only the previous frame is checked again.
     const compatible = previous !== undefined && this.#historyCompatible(inputs, previous, slot);
     // Finite source matrices can still overflow when composed. Like GPU
     // resolution, an overflowing current pose omits only this draw and an
     // overflowing previous pose seeds all history; lifecycle/admission errors
     // remain terminal rather than being mistaken for an unavailable pose.
-    try {
-      this.compose(inputs, slot, count, currentOut, matrix, inverse);
-    } catch (cause) {
-      if (!composedOverflow(cause)) throw cause;
-      return 0;
-    }
-    if (compatible && previousPalette !== undefined && previousPalette.length >= count * 16) {
-      history.set(
-        previousPalette.length === count * 16
-          ? previousPalette
-          : previousPalette.subarray(0, count * 16),
-        offset,
-      );
-      return 3;
-    }
+    if (!this.compose(inputs, slot, count, currentOut)) return 0;
     if (compatible) {
-      try {
-        // A compatible previous frame is live and its pose is available with the same count.
-        previous.compose(previous.live(), slot, count, history, matrix, inverse, offset);
+      if (previousPalette !== undefined && previousPalette.length >= lanes) {
+        this.copyPreviousPalette(previousPalette, history, offset, lanes);
         return 3;
-      } catch (cause) {
-        if (!composedOverflow(cause)) throw cause;
       }
+      if (this.#page === previous.#page && this.inputRevision === previous.inputRevision) {
+        this.copyCurrentPalette(currentOut, history, offset, lanes);
+        return 3;
+      }
+      // A compatible previous frame is live and its pose is available with the same count.
+      if (previous.compose(previous.live(), slot, count, history, offset)) return 3;
     }
-    if (previousOut === undefined) currentOut.copyWithin(offset, 0, lanes);
-    else for (let lane = 0; lane < lanes; lane++) previousOut[lane] = currentOut[lane] as number;
+    this.copyCurrentPalette(currentOut, history, offset, lanes);
     return 1;
+  }
+
+  private copyCurrentPalette(
+    current: Float32Array,
+    history: Float32Array,
+    offset: number,
+    lanes: number,
+  ): void {
+    if (history === current) current.copyWithin(offset, 0, lanes);
+    else for (let lane = 0; lane < lanes; lane++) history[lane] = current[lane] as number;
+  }
+
+  private copyPreviousPalette(
+    source: Float32Array,
+    history: Float32Array,
+    offset: number,
+    lanes: number,
+  ): void {
+    if (source.length === lanes) history.set(source, offset);
+    else if (source.buffer === history.buffer) history.set(source.subarray(0, lanes), offset);
+    else for (let lane = 0; lane < lanes; lane++) history[offset + lane] = source[lane] as number;
   }
 
   /**

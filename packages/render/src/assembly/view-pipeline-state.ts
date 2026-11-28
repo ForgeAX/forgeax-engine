@@ -27,6 +27,22 @@ import {
 } from './webgpu-ready-contract';
 import { createReadyPerPassResources } from './webgpu-ready-per-pass';
 
+/** The view shares immutable skybox resources and writes its own rotation UBO. */
+function viewSkyboxResources(
+  getShared: PipelineState['perPassResources']['getSkyboxResources'],
+  allocate: (label: string, size: number) => Buffer,
+): PipelineState['perPassResources']['getSkyboxResources'] {
+  if (getShared === undefined) return undefined;
+  let owned: ReturnType<typeof getShared>;
+  return () => {
+    if (owned !== undefined) return owned;
+    const shared = getShared();
+    if (shared === undefined) return undefined;
+    owned = { ...shared, skyboxRotationBuffer: allocate('skybox-rotation', 16) };
+    return owned;
+  };
+}
+
 /** Static programs and asset residency are shared; every writable view binding is private. */
 export function createViewPipelineState(
   base: PipelineState,
@@ -97,6 +113,7 @@ export function createViewPipelineState(
   };
   const perPassResources = createReadyPerPassResources({
     ...base.perPassResources,
+    getSkyboxResources: viewSkyboxResources(base.perPassResources.getSkyboxResources, allocate),
     skyboxRotationBuffer:
       base.perPassResources.skyboxRotationBuffer === null ? null : allocate('skybox-rotation', 16),
     ensureBloomResources,

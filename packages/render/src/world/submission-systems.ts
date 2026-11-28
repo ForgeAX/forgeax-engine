@@ -4,7 +4,7 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import {
   markFramePending,
   projectFramePresentation,
-  projectResidualDisplayRows,
+  residualDisplayAdmission,
   skyCubemapPending,
   verifySubmittedShadows,
 } from '../render-system-presentation';
@@ -268,7 +268,7 @@ function publishRecordOutcome(
     );
   }
   const directionalShadowReady = directionalShadowSubmitted(frameState, internals, outcome.lights);
-  if (attempt.submitted && presentation.presentation === 'ready' && outcome.cameraCount > 0)
+  if (attempt.submitted && presentation.presentation === 'ready' && outcome.camera !== undefined)
     verifySubmittedPresentation(owner, attempt, outcome, directionalShadowReady);
   settleViewTransmission(world, entity, owner, attempt.sceneSubmitted);
 }
@@ -282,46 +282,49 @@ function verifySubmittedPresentation(
   const { frame, presentation, draws } = outcome;
   const sourceScope = attempt.sourceScope;
   const resourceScope = sourceScope as RenderResourceScope;
-  const handles = [frame.skylight?.equirectHandle, frame.skybox?.equirectHandle];
-  if (skyCubemapPending(handles, internals, resourceScope))
+  const vpBucket = frameState.viewportOutputResolution?.topologyBucket;
+  const lightingStageRequired = vpBucket !== 'surface-only' && vpBucket !== 'surface-with-ao';
+  if (
+    lightingStageRequired &&
+    (skyCubemapPending(frame.skylight?.equirectHandle, internals, resourceScope) ||
+      skyCubemapPending(frame.skybox?.equirectHandle, internals, resourceScope))
+  ) {
     markFramePending(presentation, { code: 'sky-cubemap' });
+    return;
+  }
   if (
     recordContext(internals).getPipelineState() === null ||
     (attempt.mode === 'capture' ? !attempt.sceneSubmitted : frameState.compiledFrameGraph === null)
-  )
+  ) {
     markFramePending(presentation, { code: 'compiled-graph-unavailable' });
+    return;
+  }
   const gpuOwned = frame.gpuOwned;
-  const displayRows =
-    gpuOwned === undefined
-      ? outcome.presentationRenderables
-      : projectResidualDisplayRows(
-          frame,
-          gpuOwned,
-          draws.gpuSelection,
-          attempt.mode === 'capture' ? undefined : frame.cameras[0],
-        );
-  const admits = outcome.captureAdmits;
-  const renderables = admits
-    ? displayRows.filter((row) =>
-        row.materials.length
-          ? row.materials.some((material) => admits(row, material))
-          : admits(row, row.material),
-      )
-    : displayRows;
-  if (presentation.presentation === 'ready') {
-    presentation.presentation = projectFramePresentation({
-      renderables,
-      admits,
+  const camera = attempt.mode === 'capture' ? undefined : outcome.camera;
+  presentation.presentation = projectFramePresentation(
+    {
+      renderables:
+        gpuOwned === undefined ? frame.renderables : gpuOwned.residual(draws.gpuSelection),
+      admits: outcome.captureAdmits,
+      ...(gpuOwned === undefined
+        ? {}
+        : {
+            rowAdmits: residualDisplayAdmission(frame, gpuOwned, camera),
+            coveredBindings: draws.gpuSelection.coveredBindings(),
+          }),
       draws: draws.presentedDraws,
-      ...(gpuOwned === undefined ? {} : { coveredBindings: draws.gpuSelection.coveredBindings() }),
       preparedSourceScope: sourceScope,
       internals,
       onPending: (reason) => {
         presentation.reason ??= reason;
       },
-    });
+    },
+    gpuOwned === undefined ? frame.dispatch : undefined,
+    camera,
+  );
+  if (lightingStageRequired) {
+    verifySubmittedShadows(presentation, outcome.lights, directionalShadowReady);
   }
-  verifySubmittedShadows(presentation, outcome.lights, directionalShadowReady);
 }
 
 /**

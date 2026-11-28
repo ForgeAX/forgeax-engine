@@ -71,6 +71,66 @@ it('rejects a stale material version after the new snapshot claims its descripto
   }
 });
 
+it('recycles private pin collection at established capacity without modifying published rosters', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const available = GpuScene.create(device, 32).unwrap();
+  if (available.status !== 'available') throw Error('Missing scene');
+  const gpu = available.scene;
+  const scene = new RenderScene();
+  const source = receiptRow().source;
+  const materials = Array.from(
+    { length: 24 },
+    (_, index) => new MaterialResource({ ...source.material.snapshot, roughness: index / 24 }),
+  );
+  try {
+    gpu
+      .sync(
+        scene.apply(
+          materials.map((material, entityKey) => ({
+            kind: 'update' as const,
+            entityKey,
+            snapshot: { ...source, material, materials: [material], entityKey },
+          })),
+        ),
+      )
+      .unwrap();
+    const first = materials[0] as MaterialResource;
+    const original = gpu.captureResources().unwrap();
+    const firstAddress = original.indexForResource(first);
+    expect(firstAddress).toBeDefined();
+    const pins = original.pins?.();
+    original.release();
+    if (pins === undefined) throw Error('Missing pins');
+    const collect = () => {
+      const frame = gpu.captureResources().unwrap();
+      try {
+        expect(frame.adoptPins?.(pins)).toBe(true);
+        expect(frame.indexForResource(first)).toBe(firstAddress);
+        for (const material of materials)
+          expect(frame.indexForResource(material)).toBe(gpu.materialIndexForResource(material));
+      } finally {
+        frame.release();
+      }
+    };
+    collect();
+    const established = gpu.inspect().pinWorkspaces?.materials;
+    expect(established?.idleCapacity).toBe(32);
+    for (let frame = 0; frame < 50; frame++) collect();
+    expect(gpu.inspect().pinWorkspaces?.materials).toEqual(established);
+
+    const other = materials[5] as MaterialResource;
+    other.adopt({ ...other.snapshot, roughness: 0.43 });
+    gpu.sync({ ...scene.apply([]), materialUpdates: [other] }).unwrap();
+    collect(); // The escaped roster names only the first material, even after all private writes.
+    gpu
+      .sync(scene.apply(materials.map((_, entityKey) => ({ kind: 'remove' as const, entityKey }))))
+      .unwrap();
+    expect(gpu.inspect().pinWorkspaces?.materials.idleCapacity).toBe(0);
+  } finally {
+    gpu.dispose();
+  }
+});
+
 it('balances repeated and reordered material bindings while a frame retains an old version', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const available = GpuScene.create(device, 32).unwrap();

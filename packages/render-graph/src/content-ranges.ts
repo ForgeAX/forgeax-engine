@@ -1,4 +1,20 @@
-import type { GraphTextureContentRange } from './types.js';
+import type { GraphAccessUsage, GraphTextureContentRange } from './types.js';
+
+export interface InheritedTextureRead {
+  readonly range: GraphTextureContentRange;
+  readonly passName: string;
+  readonly usage: GraphAccessUsage;
+}
+
+/** An inherited read needs bytes held by this exact physical allocation. */
+export function firstMissingTextureRead(
+  reads: readonly InheritedTextureRead[],
+  committed: readonly GraphTextureContentRange[] | undefined,
+): InheritedTextureRead | undefined {
+  if (committed === undefined) return reads[0];
+  for (const read of reads) if (!textureRangeCovered(read.range, committed)) return read;
+  return undefined;
+}
 
 export function containsTextureRange(
   outer: GraphTextureContentRange,

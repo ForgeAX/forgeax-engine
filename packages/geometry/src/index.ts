@@ -67,11 +67,15 @@ export { createExtrusionGeometry, type ExtrusionOptions } from './extrusion';
 export { isFiniteAabb, withMeshAabb } from './mesh-aabb.js';
 export {
   createMeshBuilder,
+  createStagingMeshBuilder,
   type MeshBuilder,
   type MeshBuilderOptions,
   type MeshBuilderSection,
   type MeshBuilderSectionsOptions,
   type MeshBuilderSubmesh,
+  type StagingMeshBuilder,
+  type StagingMeshBuilderOptions,
+  type StagingMeshBuildOptions,
 } from './mesh-builder';
 export {
   admitsMeshCardLayout,

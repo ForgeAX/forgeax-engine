@@ -1,6 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { maxOf, pushAll } from './arrays';
-import { mergeFlags } from './crease';
 import {
   type Frame,
   type FrameMode,
@@ -13,15 +12,17 @@ import { atan2, cos, sin } from './dmath';
 import { type ModelingError, modelingError } from './errors';
 import { add, cross, dot, length, newell, normalize, scale, sub, type Tuple3 } from './geom';
 import { triangleContact } from './intersect';
-import { EDGE_SEAM, EDGE_SHARP, type EditMesh, NONE } from './mesh';
+import { EDGE_SEAM, EDGE_SHARP, type EditMesh } from './mesh';
 import {
   type Attribution,
   addFaces,
+  flagEdge,
   type OpDiagnostic,
   type RoleCounts,
   requireFinite,
   requirePositive,
   requireSegments,
+  setFaceUv,
 } from './ops';
 import { type Point2, readOutline, requireOutwardShell, segmentsCross } from './primitives';
 
@@ -229,11 +230,6 @@ interface Tube {
   readonly capUv: (row: number, column: number) => readonly [number, number];
 }
 
-function flagEdge(mesh: EditMesh, a: number, b: number, flag: number): void {
-  const h = mesh.findHalf(a, b);
-  if (h !== NONE) mesh.eFlags[h >> 1] = mergeFlags(mesh.eFlags[h >> 1] as number, flag);
-}
-
 /** Build a quad tube with optional n-gon caps; roles `side`, `start` and `end`. */
 /**
  * The triangles a non-planar side quad is split into (along its shorter diagonal), or
@@ -335,11 +331,7 @@ function buildTube(
     corners.push(cap.columns.map((j) => [...tube.capUv(cap.row, j)] as [number, number]));
     for (let j = 0; j < n; j++) flagEdge(mesh, id(cap.row, j), id(cap.row, j + 1), EDGE_SHARP);
   }
-  for (const [k, f] of faces.entries()) {
-    const uv = corners[k] as [number, number][];
-    for (const [c, h] of mesh.faceHalves(f).entries())
-      mesh.setCorner('uv0', h, uv[c] as [number, number]);
-  }
+  setFaceUv(mesh, faces, corners);
   for (let i = 0; i < rows; i++) {
     for (let j = 0; j < n; j++) {
       if (i < spans) {

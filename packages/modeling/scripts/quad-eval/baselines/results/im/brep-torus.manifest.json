@@ -1,0 +1,33 @@
+{
+  "tool": "im",
+  "case": "brep-torus",
+  "available": true,
+  "toolCommit": "7b3160864a2e1025af498c84cfed91cbfb613698",
+  "inputSha256": "056c9a3e7e3fb5b38fddaa8039f37aa764e5836615557908ebaddc1783afc27f",
+  "inputFaces": 32768,
+  "targetFaces": 800,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-f", "200", "-c", "30", "-d", "-t", "1", "-o", "<out.obj>", "<in.obj>"],
+      "cwd": null,
+      "wallSeconds": 0.335533466,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 200,
+        "crease": 30,
+        "mode": "pure quad, -f target/4 (pure-quad 2x2 subdivision)"
+      }
+    }
+  ],
+  "wallSeconds": 0.335533466,
+  "outcome": "ok",
+  "outputSha256": "17706b886c44e96120ea8ec4f49c4ac2dacc02a22ab9293a9e95fbf8c7b1b2ec",
+  "rawOutputSha256": "b8df9c211db1ca5b5c5e8331c0859759944635ed61474d83da7dab68599a36ae",
+  "outputFaces": 848,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

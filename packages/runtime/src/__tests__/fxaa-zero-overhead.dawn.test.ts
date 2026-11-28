@@ -12,7 +12,16 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // device capture, and pixel readback.
 
 import { World } from '@forgeax/engine-ecs';
-import { ANTIALIAS_NONE, Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import {
+  AmbientOcclusion,
+  ANTIALIAS_FXAA,
+  ANTIALIAS_NONE,
+  BLOOM_ENABLED,
+  Camera,
+  DEFAULT_STANDARD_PROFILE,
+  MeshFilter,
+  MeshRenderer,
+} from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -44,13 +53,26 @@ const ENGINE_MANIFEST = await (async () => {
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 
 describe('feat-20260528-fxaa-post-processing M3 w14: AC-02 zero-overhead pixel test (dawn)', () => {
-  it('antialias=none renders non-empty frame with consistent pixel output across frames', async () => {
+  it.each([
+    'standard-output-v1',
+    'standard-output-v2',
+  ] as const)('%s keeps optional fullscreen programs out of frames that do not use them', async (outputContract) => {
     const dawnAvailable = typeof globalThis.navigator?.gpu?.requestAdapter === 'function';
     if (!dawnAvailable) {
       throw new Error('dawn-node navigator.gpu not injected; vitest.setup-webgpu.ts regressed');
     }
 
     let sharedDevice: GPUDevice | undefined;
+    const optionalModules = new Set([
+      'fxaa',
+      'skybox',
+      'bloom-horizontal',
+      'bloom-vertical',
+      'bloom-composite',
+      'hdrp-ssao',
+      'hdrp-gtao-compute',
+    ]);
+    const preparedOptionalModules: string[] = [];
     const originalRequestAdapter = globalThis.navigator.gpu.requestAdapter.bind(
       globalThis.navigator.gpu,
     );
@@ -60,7 +82,15 @@ describe('feat-20260528-fxaa-post-processing M3 w14: AC-02 zero-overhead pixel t
       const originalRequestDevice = rawAdapter.requestDevice.bind(rawAdapter);
       rawAdapter.requestDevice = async (desc) => {
         const dev = await originalRequestDevice(desc);
-        if (sharedDevice === undefined) sharedDevice = dev;
+        if (sharedDevice === undefined) {
+          sharedDevice = dev;
+          const create = dev.createShaderModule.bind(dev);
+          dev.createShaderModule = (descriptor) => {
+            if (descriptor.label !== undefined && optionalModules.has(descriptor.label))
+              preparedOptionalModules.push(descriptor.label);
+            return create(descriptor);
+          };
+        }
         return dev;
       };
       return rawAdapter;
@@ -105,7 +135,7 @@ describe('feat-20260528-fxaa-post-processing M3 w14: AC-02 zero-overhead pixel t
     try {
       host = await constructRuntimeRendererHost(
         mockCanvas,
-        {},
+        { standardProfile: { ...DEFAULT_STANDARD_PROFILE, outputContract } },
         {
           shaderManifestUrl: ENGINE_MANIFEST_URL,
         },
@@ -117,6 +147,7 @@ describe('feat-20260528-fxaa-post-processing M3 w14: AC-02 zero-overhead pixel t
     if (!host.ok) throw host.error;
     const { renderer } = host.value;
     expect(renderer.inspect().state).toBe('alive');
+    expect(preparedOptionalModules).toEqual([]);
 
     // Build a hello-cube scene with antialias='none' (default).
     const world = new World();
@@ -137,30 +168,35 @@ describe('feat-20260528-fxaa-post-processing M3 w14: AC-02 zero-overhead pixel t
       },
       { component: MeshRenderer, data: {} },
     );
-    world.spawn(
-      {
-        component: Transform,
-        data: {
-          pos: [0, 0, 3],
-          quat: [0, 0, 0, 1],
-          scale: [1, 1, 1],
+    const camera = world
+      .spawn(
+        {
+          component: Transform,
+          data: {
+            pos: [0, 0, 3],
+            quat: [0, 0, 0, 1],
+            scale: [1, 1, 1],
+          },
         },
-      },
-      {
-        component: Camera,
-        data: {
-          fov: Math.PI / 4,
-          aspect: 1,
-          near: 0.1,
-          far: 100,
-          antialias: ANTIALIAS_NONE,
+        {
+          component: Camera,
+          data: {
+            fov: Math.PI / 4,
+            aspect: 1,
+            near: 0.1,
+            far: 100,
+            antialias: ANTIALIAS_NONE,
+          },
         },
-      },
-    );
+      )
+      .unwrap();
+
+    world.addComponent(camera, { component: AmbientOcclusion, data: { enabled: false } }).unwrap();
 
     // Frame 1: render with antialias=none.
     const drawn1 = await drawPublished(renderer, world);
     expect(drawn1.ok).toBe(true);
+    expect(preparedOptionalModules).toEqual([]);
 
     const device = sharedDevice;
     expect(device).toBeDefined();
@@ -259,5 +295,25 @@ describe('feat-20260528-fxaa-post-processing M3 w14: AC-02 zero-overhead pixel t
     expect(centerR2).toBe(centerR1);
     expect(centerG2).toBe(centerG1);
     expect(centerB2).toBe(centerB1);
+
+    world.set(camera, Camera, { antialias: ANTIALIAS_FXAA, bloom: BLOOM_ENABLED }).unwrap();
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
+    expect(preparedOptionalModules.sort()).toEqual([
+      'bloom-composite',
+      'bloom-horizontal',
+      'bloom-vertical',
+      // V2's final output shader already owns FXAA.
+      ...(outputContract === 'standard-output-v1' ? ['fxaa'] : []),
+    ]);
+    expect(renderer.inspect({ fields: ['output'] }).output.graphPassNames).toContain(
+      outputContract === 'standard-output-v1' ? 'fxaa' : 'standard-final',
+    );
+    world.set(camera, AmbientOcclusion, { enabled: true }).unwrap();
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
+    expect((await drawPublished(renderer, world)).ok).toBe(true);
+    expect(preparedOptionalModules.filter((label) => label === 'hdrp-ssao')).toHaveLength(1);
+    expect(preparedOptionalModules).not.toContain('hdrp-gtao-compute');
+    await renderer.dispose();
   });
 });

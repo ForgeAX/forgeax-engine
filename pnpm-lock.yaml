@@ -5378,9 +5378,6 @@ importers:
       '@forgeax/engine-devkit':
         specifier: workspace:*
         version: link:../../packages/devkit
-      '@forgeax/engine-dsh':
-        specifier: workspace:*
-        version: link:../../packages/dsh
       '@forgeax/engine-fbx':
         specifier: workspace:*
         version: link:../../packages/fbx
@@ -6512,46 +6509,6 @@ importers:
         specifier: 8.3.5
         version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
 
-  apps/hello/dsh-federation:
-    dependencies:
-      '@forgeax/engine-app':
-        specifier: workspace:*
-        version: link:../../../packages/app
-      '@forgeax/engine-assets-runtime':
-        specifier: workspace:*
-        version: link:../../../packages/assets-runtime
-      '@forgeax/engine-dsh':
-        specifier: workspace:*
-        version: link:../../../packages/dsh
-      '@forgeax/engine-ecs':
-        specifier: workspace:*
-        version: link:../../../packages/ecs
-      '@forgeax/engine-geometry':
-        specifier: workspace:*
-        version: link:../../../packages/geometry
-      '@forgeax/engine-render':
-        specifier: workspace:*
-        version: link:../../../packages/render
-      '@forgeax/engine-rhi-webgpu':
-        specifier: workspace:*
-        version: link:../../../packages/rhi-webgpu
-      '@forgeax/engine-runtime':
-        specifier: workspace:*
-        version: link:../../../packages/runtime
-      '@forgeax/engine-scene':
-        specifier: workspace:*
-        version: link:../../../packages/scene
-    devDependencies:
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
   apps/hello/entity-visibility:
     dependencies:
       '@forgeax/engine-app':
@@ -7119,52 +7076,6 @@ importers:
       '@webgpu/types':
         specifier: ^0.1.74
         version: 0.1.74
-      vite:
-        specifier: 8.3.5
-        version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
-
-  apps/hello/intelligence-worker:
-    dependencies:
-      '@forgeax/engine-app':
-        specifier: workspace:*
-        version: link:../../../packages/app
-      '@forgeax/engine-assets-runtime':
-        specifier: workspace:*
-        version: link:../../../packages/assets-runtime
-      '@forgeax/engine-ecs':
-        specifier: workspace:*
-        version: link:../../../packages/ecs
-      '@forgeax/engine-geometry':
-        specifier: workspace:*
-        version: link:../../../packages/geometry
-      '@forgeax/engine-intelligence':
-        specifier: workspace:*
-        version: link:../../../packages/intelligence
-      '@forgeax/engine-render':
-        specifier: workspace:*
-        version: link:../../../packages/render
-      '@forgeax/engine-runtime':
-        specifier: workspace:*
-        version: link:../../../packages/runtime
-      '@forgeax/engine-scene':
-        specifier: workspace:*
-        version: link:../../../packages/scene
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../../../packages/types
-    devDependencies:
-      '@forgeax/engine-shader-compiler':
-        specifier: workspace:*
-        version: link:../../../packages/shader-compiler
-      '@forgeax/engine-vite-plugin-shader':
-        specifier: workspace:*
-        version: link:../../../packages/vite-plugin-shader
-      '@webgpu/types':
-        specifier: ^0.1.74
-        version: 0.1.74
-      playwright:
-        specifier: 1.56.1
-        version: 1.56.1
       vite:
         specifier: 8.3.5
         version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
@@ -12495,6 +12406,9 @@ importers:
       typescript:
         specifier: 6.0.3
         version: 6.0.3
+      upstream-webgpu:
+        specifier: npm:webgpu@0.6.2
+        version: webgpu@0.6.2(supports-color@7.2.0)
 
   apps/water/r3-slw-reflection-underwater:
     dependencies:
@@ -12504,6 +12418,9 @@ importers:
       '@forgeax/engine':
         specifier: workspace:*
         version: link:../../../packages/engine
+      '@forgeax/engine-water':
+        specifier: workspace:*
+        version: link:../../../packages/water
     devDependencies:
       '@forgeax/engine-devkit':
         specifier: workspace:*
@@ -13245,6 +13162,9 @@ importers:
       '@forgeax/engine-render-graph':
         specifier: workspace:*
         version: link:../render-graph
+      '@forgeax/engine-render-kernel':
+        specifier: workspace:*
+        version: link:../render-kernel
       '@forgeax/engine-rhi-debug':
         specifier: workspace:*
         version: link:../rhi-debug
@@ -13358,34 +13278,6 @@ importers:
         specifier: ^8.18.1
         version: 8.18.2
 
-  packages/dsh:
-    dependencies:
-      '@forgeax/engine-ecs':
-        specifier: workspace:*
-        version: link:../ecs
-      '@forgeax/engine-intelligence':
-        specifier: workspace:*
-        version: link:../intelligence
-      '@forgeax/engine-plugin':
-        specifier: workspace:*
-        version: link:../plugin
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../types
-    devDependencies:
-      '@types/node':
-        specifier: ^20.14.0
-        version: 20.19.43
-      '@types/react':
-        specifier: ^19.2.17
-        version: 19.3.0
-      playwright:
-        specifier: ^1.56.1
-        version: 1.63.0
-      react:
-        specifier: ^19.2.8
-        version: 19.3.1
-
   packages/ecs:
     dependencies:
       '@forgeax/engine-math':
@@ -13437,9 +13329,6 @@ importers:
       '@forgeax/engine-devkit':
         specifier: workspace:*
         version: link:../devkit
-      '@forgeax/engine-dsh':
-        specifier: workspace:*
-        version: link:../dsh
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
@@ -13470,15 +13359,6 @@ importers:
       '@forgeax/engine-input':
         specifier: workspace:*
         version: link:../input
-      '@forgeax/engine-intelligence':
-        specifier: workspace:*
-        version: link:../intelligence
-      '@forgeax/engine-intelligence-dsh':
-        specifier: workspace:*
-        version: link:../intelligence-dsh
-      '@forgeax/engine-intelligence-fake':
-        specifier: workspace:*
-        version: link:../intelligence-fake
       '@forgeax/engine-interaction':
         specifier: workspace:*
         version: link:../interaction
@@ -13503,9 +13383,6 @@ importers:
       '@forgeax/engine-net-websocket':
         specifier: workspace:*
         version: link:../net-websocket
-      '@forgeax/engine-npc':
-        specifier: workspace:*
-        version: link:../npc
       '@forgeax/engine-pack':
         specifier: workspace:*
         version: link:../pack
@@ -13554,6 +13431,9 @@ importers:
       '@forgeax/engine-render-graph':
         specifier: workspace:*
         version: link:../render-graph
+      '@forgeax/engine-render-kernel':
+        specifier: workspace:*
+        version: link:../render-kernel
       '@forgeax/engine-rhi':
         specifier: workspace:*
         version: link:../rhi
@@ -13715,6 +13595,9 @@ importers:
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
+      '@forgeax/modeling-kernel':
+        specifier: workspace:*
+        version: link:../modeling-kernel
       earcut:
         specifier: 3.2.4
         version: 3.2.4
@@ -13926,47 +13809,6 @@ importers:
         specifier: workspace:*
         version: link:../plugin
 
-  packages/intelligence:
-    dependencies:
-      '@forgeax/engine-plugin':
-        specifier: workspace:*
-        version: link:../plugin
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../types
-
-  packages/intelligence-dsh:
-    dependencies:
-      '@deepseek-ai/dsh-sdk-client':
-        specifier: 0.1.0-rc.6
-        version: 0.1.0-rc.6(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-sdk-protocol@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-session@0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55))(@deepseek-ai/dsh-subagent@0.1.0-rc.8(2c79e0526a336eba4a985b25e0e3d271)))(@deepseek-ai/dsh-session@0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55))
-      '@forgeax/engine-intelligence':
-        specifier: workspace:*
-        version: link:../intelligence
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../types
-    devDependencies:
-      '@forgeax/engine-intelligence-fake':
-        specifier: workspace:*
-        version: link:../intelligence-fake
-      '@types/node':
-        specifier: ^20.14.0
-        version: 20.19.43
-
-  packages/intelligence-fake:
-    dependencies:
-      '@forgeax/engine-intelligence':
-        specifier: workspace:*
-        version: link:../intelligence
-      '@forgeax/engine-types':
-        specifier: workspace:*
-        version: link:../types
-    devDependencies:
-      '@forgeax/engine-plugin':
-        specifier: workspace:*
-        version: link:../plugin
-
   packages/interaction:
     dependencies:
       '@forgeax/engine-assets-runtime':
@@ -14063,6 +13905,9 @@ importers:
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
+      '@forgeax/modeling-kernel':
+        specifier: workspace:*
+        version: link:../modeling-kernel
     devDependencies:
       '@forgeax/engine-assets-runtime':
         specifier: workspace:*
@@ -14094,6 +13939,50 @@ importers:
       '@webgpu/types':
         specifier: ^0.1.74
         version: 0.1.74
+
+  packages/modeling-kernel:
+    dependencies:
+      '@forgeax/modeling-kernel-wasm':
+        specifier: workspace:*
+        version: link:../modeling-kernel-wasm
+    devDependencies:
+      tsup:
+        specifier: ^9.0.0
+        version: 9.0.0(jiti@1.21.7)(postcss@8.5.32)(tsx@4.20.6)(typescript@6.0.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^6.0.0
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.43)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1))
+
+  packages/modeling-kernel-three:
+    dependencies:
+      '@forgeax/modeling-kernel':
+        specifier: workspace:*
+        version: link:../modeling-kernel
+      three:
+        specifier: '>=0.160.0'
+        version: 0.187.0
+    devDependencies:
+      tsup:
+        specifier: ^9.0.0
+        version: 9.0.0(jiti@1.21.7)(postcss@8.5.32)(tsx@4.20.6)(typescript@6.0.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^6.0.0
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.43)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1))
+
+  packages/modeling-kernel-wasm:
+    devDependencies:
+      tsup:
+        specifier: ^9.0.0
+        version: 9.0.0(jiti@1.21.7)(postcss@8.5.32)(tsx@4.20.6)(typescript@6.0.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^6.0.0
+        version: 6.0.3
 
   packages/naga:
     dependencies:
@@ -14168,15 +14057,6 @@ importers:
       '@types/ws':
         specifier: ^8.5.10
         version: 8.18.2
-
-  packages/npc:
-    dependencies:
-      '@forgeax/engine-ecs':
-        specifier: workspace:*
-        version: link:../ecs
-      '@forgeax/engine-plugin':
-        specifier: workspace:*
-        version: link:../plugin
 
   packages/pack:
     dependencies:
@@ -14602,6 +14482,9 @@ importers:
       '@forgeax/engine-render-graph':
         specifier: workspace:*
         version: link:../render-graph
+      '@forgeax/engine-render-kernel':
+        specifier: workspace:*
+        version: link:../render-kernel
       '@forgeax/engine-rhi':
         specifier: workspace:*
         version: link:../rhi
@@ -14670,6 +14553,31 @@ importers:
       '@forgeax/engine-rhi-null':
         specifier: workspace:*
         version: link:../rhi-null
+
+  packages/render-kernel:
+    dependencies:
+      '@forgeax/engine-rhi':
+        specifier: workspace:*
+        version: link:../rhi
+      '@forgeax/engine-types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@forgeax/engine-dawn-node':
+        specifier: workspace:*
+        version: link:../dawn-node
+      '@forgeax/engine-rhi-debug':
+        specifier: workspace:*
+        version: link:../rhi-debug
+      '@forgeax/engine-rhi-null':
+        specifier: workspace:*
+        version: link:../rhi-null
+      '@forgeax/engine-rhi-webgpu':
+        specifier: workspace:*
+        version: link:../rhi-webgpu
+      '@webgpu/types':
+        specifier: ^0.1.74
+        version: 0.1.74
 
   packages/rhi:
     dependencies:
@@ -15361,6 +15269,9 @@ importers:
 
   packages/water:
     dependencies:
+      '@forgeax/engine-assets-runtime':
+        specifier: workspace:*
+        version: link:../assets-runtime
       '@forgeax/engine-ecs':
         specifier: workspace:*
         version: link:../ecs
@@ -15376,6 +15287,9 @@ importers:
       '@forgeax/engine-physics':
         specifier: workspace:*
         version: link:../physics
+      '@forgeax/engine-render':
+        specifier: workspace:*
+        version: link:../render
       '@forgeax/engine-types':
         specifier: workspace:*
         version: link:../types
@@ -16442,172 +16356,6 @@ packages:
 
   '@deepseek-ai/cosmokit@1.8.6':
     resolution: {integrity: sha512-ZSD/fN52L498LBIOYwjIOlaLv5veY6ZEwI2yzvZUKQtctn0QAPqu8tKdJ+OF5+Tv6NBq1U+wJWH+QI6OGy5EvQ==}
-
-  '@deepseek-ai/cosmokit@1.9.0':
-    resolution: {integrity: sha512-5O1S53mZiJyZYcvxxD0Qv1EY7qFPSxbGyD8CbVK6gw7W9FvcXZj2YIX1ZkOqyQQ3Xt2rFkZDHJv0+V3Zmmp8CA==}
-
-  '@deepseek-ai/dsh-agent@0.1.0-rc.8':
-    resolution: {integrity: sha512-fOl46ZvzoYHalrlyfOJAHNhzyKeVDTUnZZKNSJEr9GY/98WJTjcV21agVEofTXldkJ7a/ws2HpJkVNJVFMtslg==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-llm': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-scope': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-session': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-system-prompt': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-typert-protocol': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-attachment@0.1.0-rc.8':
-    resolution: {integrity: sha512-cCrg4WWiav7pGtbdU8dJTpAG28cPnkWVB2YPOrlBCgBbhQziGcG9Dv67Ti6L3PI4OQKC55gYBFinQghFO/7FGg==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-brand': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-brand@0.1.0-rc.8':
-    resolution: {integrity: sha512-402aUAfHxIZJrArBV4gDf0I/A/69A/By26FX6HTIOyFmCnB4wUBKh8jnglz1CorKWdZy8AKldAhh8HQhQEbGOQ==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-code-runtime@0.1.0-rc.8':
-    resolution: {integrity: sha512-6ZKyEE7dHH1UkKe5b0lg18Byww/7ocZyrNMVjAoUWEWp5i96Brf9Eavu9q3zepBMDMZJErCfV0pyt7KDhBJSig==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-invariants@0.1.0-rc.8':
-    resolution: {integrity: sha512-u0lYqyxOYwfsVnbsfGXZos5vFvA4cqFnBEW3/ezgljNwkYwzeUP/Y5wjPnQjP+ZzBn3CnVeIF6s2N2Vk3iA5mQ==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-
-  '@deepseek-ai/dsh-llm@0.1.0-rc.8':
-    resolution: {integrity: sha512-hf6RmX2Stn1UtzpktSHQLkIktQkBm9i/3yFfJlbGSkwyw5Cv9sTYJbyoHzsSnnh6i8nRRcMcBhvMgm23I00oIw==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-attachment': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-brand': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-timeout': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-scope@0.1.0-rc.8':
-    resolution: {integrity: sha512-/o+PxkVV2zUy9lYlMFr4TWSb+ESW4DE+fI891yIbsLzOJdFgfbmmLpGrlWgnz8/unIGJZxjeXdwyppV04Z277Q==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-sdk-client@0.1.0-rc.6':
-    resolution: {integrity: sha512-7y8+dsTljsvHpyZeENeTcUNyxComHlawF8txGdCXxp0VsDt38aKYai8tqdOIrltKAZthmsmj80XuNtmQZxWRlw==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.6
-      '@deepseek-ai/dsh-llm': ^0.1.0-rc.6
-      '@deepseek-ai/dsh-sdk-protocol': ^0.1.0-rc.6
-      '@deepseek-ai/dsh-session': ^0.1.0-rc.6
-
-  '@deepseek-ai/dsh-sdk-protocol@0.1.0-rc.8':
-    resolution: {integrity: sha512-nG+EsNlNT2wvaRL/HJR2N/O3JIQPFRhgUyJKdJy98CkTtleAj6xVWrXsAsaJl6nUZtliYNI7CTo0BxH6ga6rHQ==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-llm': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-session': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-subagent': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-session@0.1.0-rc.8':
-    resolution: {integrity: sha512-Qs5Mgn32WPPVB4rKHjsZBgLOkh0TQurUAcc9GaDVudK4dUkpno2HDh++qu/PrwRA3CZ/iwPAoFHCpB3AMMaoLg==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-brand': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-llm': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-scope': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-typert-protocol': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-subagent@0.1.0-rc.8':
-    resolution: {integrity: sha512-EI94+hYMfAe8BQkkH/FTcciGxajFfAdQe66Jhy2/eyR3dssRAZ+oJsV6SzU20x3m2yd0gmMaXzO1iV3gwYhY+g==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-agent': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-agent-presets': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-brand': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-jobs': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-llm': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-sandbox': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-sandbox-policy': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-scope': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-session': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-session-persistence': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-session-projection': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-session-projection-cache': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-tools': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-user-approval': ^0.1.0-rc.8
-    peerDependenciesMeta:
-      '@deepseek-ai/dsh-agent-presets':
-        optional: true
-      '@deepseek-ai/dsh-jobs':
-        optional: true
-      '@deepseek-ai/dsh-sandbox':
-        optional: true
-      '@deepseek-ai/dsh-sandbox-policy':
-        optional: true
-      '@deepseek-ai/dsh-session-persistence':
-        optional: true
-      '@deepseek-ai/dsh-session-projection':
-        optional: true
-      '@deepseek-ai/dsh-session-projection-cache':
-        optional: true
-      '@deepseek-ai/dsh-user-approval':
-        optional: true
-
-  '@deepseek-ai/dsh-system-prompt@0.1.0-rc.8':
-    resolution: {integrity: sha512-yk8Z85rzX2EwpKNWA5i+K3I3mqsIIUc9niwbDpXO8vlHvpC2qR3RNHjJIJN2EZYDqfSzTVtkbxHFsuMzDXIbew==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-llm': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-scope': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-timeout@0.1.0-rc.8':
-    resolution: {integrity: sha512-RwOC/qHribE6b+LStAO7aAgweefLE5sqDO7Uz6/mnTDyJxCt7HNQnE/Op8sAvRa33d752aUkPfO9S0mgzVAoFQ==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-tools@0.1.0-rc.8':
-    resolution: {integrity: sha512-tvuGAVUS4yoPW9zH7CGWJgMlAzGjfu2UlRiricldlcwSKAaJZPZx/K/YfTivUyDTER6aK1DJUnIpVG7RD/DoHQ==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-agent': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-code-runtime': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-llm': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-scope': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-session': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-system-prompt': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-user-approval': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-typert-protocol@0.1.0-rc.8':
-    resolution: {integrity: sha512-scwEAefRBL7gRpaXiEdiHRMvlr8dLmUbiEvy0LOAX/8X3FZBd/5tHQ/8lCppAQNTDZMI/LSiSMpu5XrFId+7cQ==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-
-  '@deepseek-ai/dsh-user-approval@0.1.0-rc.8':
-    resolution: {integrity: sha512-6SFCxp7dgNFEyzQIcs5i9C+5djgXsAeV0iKmZUCLlcIeVM1chcCMHyGcoXlw8yyB14qFMrMs+TPvhvpu2WWxAw==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ^4.0.1
-      '@deepseek-ai/dsh-agent': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-brand': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-invariants': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-llm': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-scope': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-session': ^0.1.0-rc.8
-      '@deepseek-ai/dsh-system-prompt': ^0.1.0-rc.8
-
-  '@deepseek-ai/schemastery@3.19.0':
-    resolution: {integrity: sha512-bDXoYQa7ghAhmdYD5VPlzKxEzJV/aKkz5l4V5h1u06z8GAPN1ROewSjvR9WiXhpa52E9fng8lpH5QdCRIQgnyQ==}
 
   '@dimforge/rapier3d-compat@0.12.0':
     resolution: {integrity: sha512-uekIGetywIgopfD97oDL5PfeezkFpNhwlzlaEYNOA0N6ghdsOvh/HYjSMek5Q2O1PYvRSDFcqFVJl4r4ZBwOow==}
@@ -20817,140 +20565,6 @@ snapshots:
       '@standard-schema/spec': 1.1.0
 
   '@deepseek-ai/cosmokit@1.8.6': {}
-
-  '@deepseek-ai/cosmokit@1.9.0': {}
-
-  '@deepseek-ai/dsh-agent@0.1.0-rc.8(fe6991b11d0bf390f382b97f7066f117)':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-llm': 0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)
-      '@deepseek-ai/dsh-scope': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-session': 0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55)
-      '@deepseek-ai/dsh-system-prompt': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-scope@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))))
-      '@deepseek-ai/dsh-typert-protocol': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-
-  '@deepseek-ai/dsh-attachment@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-brand@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-brand': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-
-  '@deepseek-ai/dsh-brand@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-
-  '@deepseek-ai/dsh-code-runtime@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-
-  '@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/schemastery': 3.19.0
-
-  '@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-attachment': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-brand@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-brand': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-timeout': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/schemastery': 3.19.0
-
-  '@deepseek-ai/dsh-scope@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-
-  '@deepseek-ai/dsh-sdk-client@0.1.0-rc.6(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-sdk-protocol@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-session@0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55))(@deepseek-ai/dsh-subagent@0.1.0-rc.8(2c79e0526a336eba4a985b25e0e3d271)))(@deepseek-ai/dsh-session@0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-llm': 0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)
-      '@deepseek-ai/dsh-sdk-protocol': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-session@0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55))(@deepseek-ai/dsh-subagent@0.1.0-rc.8(2c79e0526a336eba4a985b25e0e3d271))
-      '@deepseek-ai/dsh-session': 0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55)
-
-  '@deepseek-ai/dsh-sdk-protocol@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-session@0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55))(@deepseek-ai/dsh-subagent@0.1.0-rc.8(2c79e0526a336eba4a985b25e0e3d271))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-llm': 0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)
-      '@deepseek-ai/dsh-session': 0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55)
-      '@deepseek-ai/dsh-subagent': 0.1.0-rc.8(2c79e0526a336eba4a985b25e0e3d271)
-
-  '@deepseek-ai/dsh-session@0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55)':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-brand': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-llm': 0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)
-      '@deepseek-ai/dsh-scope': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-typert-protocol': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-
-  '@deepseek-ai/dsh-subagent@0.1.0-rc.8(2c79e0526a336eba4a985b25e0e3d271)':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-agent': 0.1.0-rc.8(fe6991b11d0bf390f382b97f7066f117)
-      '@deepseek-ai/dsh-brand': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-llm': 0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)
-      '@deepseek-ai/dsh-scope': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-session': 0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55)
-      '@deepseek-ai/dsh-tools': 0.1.0-rc.8(2e4cc959b94830eaa7daf9ddfcae7a94)
-      zod: 4.6.7
-    optionalDependencies:
-      '@deepseek-ai/dsh-user-approval': 0.1.0-rc.8(883e3498fee2f892775580010da6f632)
-
-  '@deepseek-ai/dsh-system-prompt@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-scope@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-llm': 0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)
-      '@deepseek-ai/dsh-scope': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/schemastery': 3.19.0
-
-  '@deepseek-ai/dsh-timeout@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-
-  '@deepseek-ai/dsh-tools@0.1.0-rc.8(2e4cc959b94830eaa7daf9ddfcae7a94)':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-agent': 0.1.0-rc.8(fe6991b11d0bf390f382b97f7066f117)
-      '@deepseek-ai/dsh-code-runtime': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-llm': 0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)
-      '@deepseek-ai/dsh-scope': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-session': 0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55)
-      '@deepseek-ai/dsh-system-prompt': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-scope@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))))
-      '@deepseek-ai/dsh-user-approval': 0.1.0-rc.8(883e3498fee2f892775580010da6f632)
-      '@deepseek-ai/schemastery': 3.19.0
-
-  '@deepseek-ai/dsh-typert-protocol@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-
-  '@deepseek-ai/dsh-user-approval@0.1.0-rc.8(883e3498fee2f892775580010da6f632)':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)
-      '@deepseek-ai/dsh-agent': 0.1.0-rc.8(fe6991b11d0bf390f382b97f7066f117)
-      '@deepseek-ai/dsh-brand': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-invariants': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))
-      '@deepseek-ai/dsh-llm': 0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3)
-      '@deepseek-ai/dsh-scope': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))
-      '@deepseek-ai/dsh-session': 0.1.0-rc.8(db10c81868e5ab5fdbade4ddab25ba55)
-      '@deepseek-ai/dsh-system-prompt': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe)))(@deepseek-ai/dsh-llm@0.1.0-rc.8(7b9a60e3ee6b4cfbca102486f6ded5d3))(@deepseek-ai/dsh-scope@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.4(patch_hash=2112a0cc9336397e3c9f4dbf5a6cf6c4b011dc48870dce385c0d8897fcd7dafe))))
-      '@deepseek-ai/schemastery': 3.19.0
-
-  '@deepseek-ai/schemastery@3.19.0':
-    dependencies:
-      '@deepseek-ai/cosmokit': 1.9.0
-      '@standard-schema/spec': 1.1.0
 
   '@dimforge/rapier3d-compat@0.12.0': {}
 

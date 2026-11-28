@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { sceneSnapshot, setSceneRow } from '../scene/__tests__/scene-row-writes';
 import {
   ProbeBlendSceneProjection,
   type ProbeSceneObjectInput,
   type ProbeSceneProbeInput,
 } from '../scene/probe-blend';
+import { SceneSlotPage, SceneSlots } from '../scene/scene-slots';
 
 const identityWorld = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -118,6 +120,57 @@ describe('PersistentRenderScene probe projection', () => {
 
     expect(moved.dirtyReasons).toContain('object-position');
     expect(moved.affectedObjectKeys).toEqual([7]);
+  });
+
+  it('projects dynamic native translations without constructing Scene row views', () => {
+    const scene = new SceneSlots();
+    const projection = new ProbeBlendSceneProjection();
+    const probes = [probe('fixed')];
+    for (const key of [7, 70, 130])
+      setSceneRow(scene, key, {
+        generation: 0,
+        entityKey: key,
+        snapshot: sceneSnapshot(key, identityWorld),
+      });
+    const original = scene.capture();
+    const read = vi.spyOn(SceneSlotPage.prototype, 'read');
+    try {
+      projection.apply({ objects: original, probes });
+      const pose = identityWorld.slice();
+      for (let frame = 1; frame <= 60; frame++) {
+        pose[0] = 1 + frame;
+        pose[12] = 0;
+        scene.writePreparedPose(70, pose, 0, 2);
+        pose[12] = frame % 2 === 0 ? 0 : 0.5;
+        scene.writePreparedPose(130, pose, 0, 1);
+        const delta = projection.apply({ objects: scene.capture(), probes });
+        expect(delta.affectedObjectKeys).toEqual([130]);
+        expect(delta.dirtyReasons).toEqual(['object-position']);
+      }
+      scene.remove(7);
+      setSceneRow(scene, 70, {
+        generation: 1,
+        entityKey: 700,
+        snapshot: sceneSnapshot(700, identityWorld),
+      });
+      // Lag the Probe reader far enough to retire its journal cursor.
+      for (let frame = 1; frame <= 70; frame++) {
+        pose[12] = frame % 2 === 0 ? 0.25 : 0.5;
+        scene.writePreparedPose(130, pose, 0, 1);
+        scene.capture();
+      }
+      const delta = projection.apply({ objects: scene.capture(), probes });
+      expect(delta.affectedObjectKeys).toEqual([70, 130]);
+      expect(delta.dirtyReasons).toEqual(
+        expect.arrayContaining(['generation', 'object-position', 'object-boundary']),
+      );
+      expect(projection.getRecord(7)).toBeUndefined();
+      expect(projection.getRecord(70)?.generation).toBe(1);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+    }
+    expect(original.slotAt(130)?.snapshot.transform.world[12]).toBe(0);
   });
 
   it('observes in-place manual positions and radiance without mutating an issued read', () => {

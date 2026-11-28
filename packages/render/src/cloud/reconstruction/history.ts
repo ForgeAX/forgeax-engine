@@ -170,6 +170,16 @@ export function abortCloudHistory<T>(
 
 export type CloudTransportFormat = 'rgba16float' | 'rgba32float';
 
+export function cloudMode0DepthFormat(
+  profile:
+    | Pick<import('../../pipeline/standard-profile').StandardProfile, 'cloudMode0Model'>
+    | undefined,
+): CloudTransportFormat {
+  return profile?.cloudMode0Model === 'ue5-desktop' ? 'rgba16float' : 'rgba32float';
+}
+
+export const UE5_CLOUD_DEPTH_CLEAR_KM = 63000;
+
 /** A Mode 0 view needs three 16-byte attachments and a filterable, blendable HDR resolve. */
 export function cloudMode0TransportFormat(device: RhiDevice): CloudTransportFormat {
   return device.caps.float32Filterable &&

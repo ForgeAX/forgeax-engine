@@ -1,5 +1,5 @@
 import type { Texture, TextureView } from '@forgeax/engine-rhi';
-import type { GraphTextureAllocation } from './kernel-internal.js';
+import type { GraphTextureAllocation, PhysicalTextureShape } from './kernel-internal.js';
 import type { GraphTextureViewDescriptor } from './types.js';
 
 interface BoundViews {
@@ -24,6 +24,28 @@ function sliceKey(d: GraphTextureViewDescriptor): string {
   return `${d.format ?? ''}/${d.dimension ?? ''}/${d.aspect ?? ''}/${d.baseMipLevel ?? ''}/${d.mipLevelCount ?? ''}/${d.baseArrayLayer ?? ''}/${d.arrayLayerCount ?? ''}`;
 }
 
+function sameAllocation(a: PhysicalTextureShape, b: PhysicalTextureShape): boolean {
+  const left = a.descriptor;
+  const right = b.descriptor;
+  if (
+    a.lifetime !== b.lifetime ||
+    left.format !== right.format ||
+    left.dimension !== right.dimension ||
+    left.size.width !== right.size.width ||
+    left.size.height !== right.size.height ||
+    left.size.depthOrArrayLayers !== right.size.depthOrArrayLayers ||
+    left.mipLevelCount !== right.mipLevelCount ||
+    left.sampleCount !== right.sampleCount ||
+    left.usage !== right.usage ||
+    left.viewFormats.length !== right.viewFormats.length
+  )
+    return false;
+  for (let index = 0; index < left.viewFormats.length; index++) {
+    if (left.viewFormats[index] !== right.viewFormats[index]) return false;
+  }
+  return true;
+}
+
 /** Physical bindings available to a successor on this device. Only the actual
  * owning slot can lend its allocation. Views belong to the texture and exact
  * subresource range, including when multiple pass-local labels alias it. */
@@ -36,9 +58,11 @@ export class AttachmentBindings {
     this.textures.set(label, allocation);
   }
 
-  texture(label: string, signature: string): GraphTextureAllocation | undefined {
+  texture(label: string, shape: PhysicalTextureShape): GraphTextureAllocation | undefined {
     const allocation = this.textures?.get(label);
-    return allocation?.signature === signature ? allocation : undefined;
+    return allocation !== undefined && sameAllocation(allocation.shape, shape)
+      ? allocation
+      : undefined;
   }
 
   view(texture: Texture, descriptor: GraphTextureViewDescriptor): TextureView | undefined {

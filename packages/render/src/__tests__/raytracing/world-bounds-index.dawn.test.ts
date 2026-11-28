@@ -1,9 +1,8 @@
 import { expect, it } from 'vitest';
 import { runWorldBoundsIndexCases } from './world-bounds-index.fixture';
 
-// The first case cold-compiles both the strict world kernel and its guard mutant.
 it('preserves full-scan payload, canonical tie order and fail-closed bounds admission', async () => {
-  const result = await runWorldBoundsIndexCases();
+  const result = await runWorldBoundsIndexCases('strict');
   expect(result.errors).toEqual([]);
   expect(result.initialCapacity).toBe(1024);
   expect(result.initialCount).toBe(128);
@@ -24,14 +23,8 @@ it('preserves full-scan payload, canonical tie order and fail-closed bounds admi
   expect(result.editWrites[0]?.bytes).toEqual([0, 0, 0, 0]);
   expect(result.editWrites[1]?.bytes).toEqual([0, 0, 0, 0]);
   for (const row of result.rows) {
-    if (row.name.startsWith('bad-canonical') || row.name === 'mutant-canonical-guard') {
-      const bytes = Uint8Array.from(row.composeBytes),
-        words = new Uint32Array(bytes.buffer);
-      expect(
-        Array.from(words)
-          .filter((_, i) => i % 4 === 2)
-          .every((status) => status === 2),
-      ).toBe(true);
+    if (row.name.startsWith('bad-canonical')) {
+      expectRejectedComposition(row.composeBytes);
     } else if (!row.name.includes('edit')) {
       expect(row.composeBytes).toEqual(result.baselineComposeBytes);
     }
@@ -63,15 +56,12 @@ it('preserves full-scan payload, canonical tie order and fail-closed bounds admi
       entry.values.slice(0, 8).some((value, k) => value !== entry.values[k + 8]),
     ).length,
   ).toBeGreaterThan(0);
-  const guardMutant = result.rows.find((row) => row.name === 'mutant-canonical-guard');
-  expect(guardMutant?.cases.filter((entry) => entry.values[20] !== 4).length).toBeGreaterThan(0);
   assertPlacementMoveCases(result);
 }, 120_000);
 
 it('keeps the indexed Card candidate payload after an enclosed placement move', async () => {
   const result = await runWorldBoundsIndexCases('retained-move');
   expect(result.errors).toEqual([]);
-  assertPlacementMoveCases(result);
   const retained = result.rows.find((row) => row.name === 'edited-retained');
   expect(retained).toBeDefined();
   for (const [i, entry] of (retained?.cases ?? []).entries()) {
@@ -90,6 +80,25 @@ it('keeps the indexed Card candidate payload after an enclosed placement move', 
   expect(sample?.values[3]).toBeGreaterThan(4);
   expect((sample?.values[1] ?? 0) & 2).toBe(2);
 }, 60_000);
+
+// The mutated shader has its own cold compile and first dispatch.
+it('detects a missing World guard even when composition rejects the canonical pool', async () => {
+  const result = await runWorldBoundsIndexCases('guard-mutant');
+  expect(result.errors).toEqual([]);
+  const guardMutant = result.rows[0];
+  if (!guardMutant) throw Error('Canonical guard mutant is required');
+  expectRejectedComposition(guardMutant.composeBytes);
+  expect(guardMutant.cases.filter((entry) => entry.values[20] !== 4).length).toBeGreaterThan(0);
+}, 120_000);
+
+function expectRejectedComposition(composeBytes: readonly number[]) {
+  const words = new Uint32Array(Uint8Array.from(composeBytes).buffer);
+  expect(
+    Array.from(words)
+      .filter((_, i) => i % 4 === 2)
+      .every((status) => status === 2),
+  ).toBe(true);
+}
 
 function assertPlacementMoveCases(result: Awaited<ReturnType<typeof runWorldBoundsIndexCases>>) {
   const movedQuery = result.probes.findIndex(

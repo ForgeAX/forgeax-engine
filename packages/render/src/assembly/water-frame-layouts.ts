@@ -165,11 +165,17 @@ export function createWaterFrameLayouts(
       waterWavesBindGroupLayouts.set(state as object, layouts);
     }
     const waterEntries = waterMaterialFrameBindGroupLayoutEntries(waterInfoFormat, 16, entryPoints);
-    const key = `group2:${layoutKind}:${waterInfoFormat}:${waterEntries.map((entry) => `${entry.binding}:${entry.visibility}`).join(',')}`;
+    const usesGeometry =
+      entryPoints === undefined ||
+      entryPoints.some((point) =>
+        point.bindings.some((read) => read.group === 2 && read.binding < 16),
+      );
+    const key = `group2:${layoutKind}:${waterInfoFormat}:${usesGeometry}:${waterEntries.map((entry) => `${entry.binding}:${entry.visibility}`).join(',')}`;
     const cached = layouts.get(key);
     if (cached !== undefined) return cached;
-    const baseEntries: import('@forgeax/engine-rhi').BindGroupLayoutEntry[] =
-      layoutKind === 'hdrp-pbr'
+    const baseEntries: import('@forgeax/engine-rhi').BindGroupLayoutEntry[] = !usesGeometry
+      ? []
+      : layoutKind === 'hdrp-pbr'
         ? createHdrpBindGroupLayoutDescriptor(currentBuildDevice().caps.storageBuffer).entries
         : [
             {
@@ -226,6 +232,26 @@ export function createWaterFrameLayouts(
     return true;
   }
 
+  function waterUnusedGroupLayout(state: PipelineState): BindGroupLayout | null {
+    let layouts = waterWavesBindGroupLayouts.get(state as object);
+    if (layouts === undefined) {
+      layouts = new Map();
+      waterWavesBindGroupLayouts.set(state as object, layouts);
+    }
+    const cached = layouts.get('unused-group');
+    if (cached !== undefined) return cached;
+    const created = currentBuildDevice().createBindGroupLayout({
+      label: 'water-unused-group',
+      entries: [],
+    });
+    if (!created.ok) {
+      internals.errorRegistry.fire(created.error);
+      return null;
+    }
+    layouts.set('unused-group', created.value);
+    return created.value;
+  }
+
   function waterWavesPipelineLayout(
     state: PipelineState | null,
     layoutKind: LayoutKind,
@@ -250,23 +276,32 @@ export function createWaterFrameLayouts(
       layouts = new Map();
       waterWavesPipelineLayouts.set(state as object, layouts);
     }
-    const view =
-      reads === undefined
+    const readsGroup = (group: number) =>
+      entryPoints === undefined ||
+      entryPoints.some((point) => point.bindings.some((read) => read.group === group));
+    const empty = waterUnusedGroupLayout(state);
+    if (empty === null) return null;
+    const view = !readsGroup(0)
+      ? empty
+      : reads === undefined
         ? state.viewBindGroupLayout
         : projectViewLayout(currentBuildDevice(), state.viewBindGroupLayout, reads);
     const key = `${shaderIdentity}:${layoutKind}:${probeBlend}:${waterInfoFormat}:${[...(reads ?? [])].map(([slot, stage]) => `${slot}:${stage}`).join(',')}`;
     const cached = layouts.get(key);
     if (cached !== undefined) return cached;
     const group2 = waterMaterialGroup2Layout(state, meshLayoutKind, waterInfoFormat, entryPoints);
-    const group3 = resolveMaterialPipelineBindGroups(
-      layoutKind,
-      state,
-      probeBlend,
-    )?.instancesLayout;
+    const group3 = !readsGroup(3)
+      ? empty
+      : resolveMaterialPipelineBindGroups(layoutKind, state, probeBlend)?.instancesLayout;
     if (group2 === undefined || group3 == null) return null;
     const created = currentBuildDevice().createPipelineLayout({
       label: `water-waves-${layoutKind}-pipeline-layout`,
-      bindGroupLayouts: [view, materialBgl ?? state.materialBindGroupLayout, group2, group3],
+      bindGroupLayouts: [
+        view,
+        !readsGroup(1) ? empty : (materialBgl ?? state.materialBindGroupLayout),
+        group2,
+        group3,
+      ],
     });
     if (!created.ok) {
       internals.errorRegistry.fire(created.error);

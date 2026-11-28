@@ -1216,6 +1216,66 @@ it('reconstructs Screen Probe lighting from plane-compatible uniform and adaptiv
     // Rejecting the step can also remove the open plane's small self-occlusion.
     expect(farForeground[3]).toBeGreaterThanOrEqual((offAxisOpen[3] ?? 0) - 0.001);
     expect(nearForeground[3]).toBeLessThan((offAxisOpen[3] ?? 0) - 0.005);
+
+    // Padded HZB regression (#5368): active 8x4 viewport occupies [0..4, 0..2]
+    // inside a padded [8, 4] furthest HZB; padding [4..7] clamps the border
+    // occluder (x=6..7). Cell (1, 0) at x=3 only samples up to x=5, so it must
+    // remain unoccluded (~1.0) rather than reading clamped padding texels.
+    const paddedDepth = device.createTexture({ size: [8, 4], format: 'r32float', usage: 4 | 8 });
+    textures.push(paddedDepth);
+    const paddedDepthView = paddedDepth.createView();
+    const seedPaddedInputs = device.createBindGroup({
+      layout: seedAoDepth.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: depth.createView() },
+        { binding: 1, resource: paddedDepthView },
+        { binding: 2, resource: { buffer: view } },
+      ],
+    });
+    const paddedAoSlots = SCREEN_PROBE_TRACE_STAGES.computeScreenProbeShortRangeAo.slots;
+    const paddedAoLayout = device.createBindGroupLayout({
+      entries: paddedAoSlots.map(screenProbeLayoutEntry),
+    });
+    const paddedAoPipeline = device.createComputePipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [paddedAoLayout] }),
+      compute: {
+        module: device.createShaderModule({ code: compiled.wgsl }),
+        entryPoint: 'computeScreenProbeShortRangeAo',
+      },
+    });
+    const paddedAoResources = { ...aoResources, depthPyramid: paddedDepthView };
+    const paddedAoBind = device.createBindGroup({
+      layout: paddedAoLayout,
+      entries: paddedAoSlots.map((slot) => ({
+        binding: SCREEN_PROBE_BINDINGS[slot][0],
+        resource: paddedAoResources[slot],
+      })),
+    });
+    const computePaddedAo = async (offset: number) => {
+      const encoder = device.createCommandEncoder();
+      const seed = encoder.beginComputePass();
+      seed.setPipeline(seedAoDepth);
+      seed.setBindGroup(0, seedPaddedInputs);
+      seed.dispatchWorkgroups(1);
+      seed.end();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(paddedAoPipeline);
+      pass.setBindGroup(0, paddedAoBind);
+      pass.dispatchWorkgroups(1);
+      pass.end();
+      encoder.copyBufferToBuffer(aoBuffer, offset, readback, 0, 16);
+      device.queue.submit([encoder.finish()]);
+      await readback.mapAsync(1);
+      const out = Array.from(new Float32Array(readback.getMappedRange()));
+      readback.unmap();
+      return out;
+    };
+    placeForeground(0.73);
+    const paddedInterior = await computePaddedAo(1 * 16);
+    placeForeground();
+    results['short-range-ao-padded-hzb-interior'] = paddedInterior;
+    expect(paddedInterior[3]).toBeCloseTo(1, 3);
+
     for (let i = 0; i < 8; i++) aoData.set([0, 0, 1, 0.4], i * 4);
     device.queue.writeBuffer(aoBuffer, 0, aoData);
     writeBaseColor(0);

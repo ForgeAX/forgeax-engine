@@ -19,7 +19,7 @@ import { ueCloudWindOffset } from '@forgeax-assets/volumetric-clouds/reference';
 import { shadowConsumerFields, type CloudShadowControls } from './cloud-shadow-controls.ts';
 import { readSunFields, sunDirection, sunFieldsFromDirection, type SunFields } from './sun-controls.ts';
 import {
-  CLOUD_MODES, isRecord, observeCloudRenderer, readCloudSnapshot, receiptTimingMatchesCompletion,
+  CLOUD_MODES, isRecord, isSampledCloudMode, observeCloudRenderer, readCloudSnapshot, receiptTimingMatchesCompletion,
   sameCloudFrameEpoch, unavailableParameter, validateCloudEdit,
   type CameraView, type CloudAssets, type CloudConfiguration, type CloudEdit, type CloudMaterialMode,
   type CloudMode, type CloudPreset, type CloudRenderEvidence, type CloudSnapshotV1, type ReadyCloudFrame,
@@ -28,7 +28,14 @@ import { createCloudRequestTracker, createCloudSnapshotHistory, readWorldReadyCl
 import { cloudParameterLabels, type CloudParameterKey } from './parameter-labels.ts';
 import { readWeatherPreset, WEATHER_PRESET_IDS, WEATHER_PRESETS, WEATHER_PARAMETER_KEYS,
   weatherAtmosphereParameters, weatherCutPose, weatherRoutePose } from './weather-presets.ts';
-import { matchQualityPreset, readQualityPreset } from './quality-presets.ts';
+import { matchQualityPreset, QUALITY_PRESETS, readQualityPreset } from './quality-presets.ts';
+import { BSM_REFERENCE_PRESET, BSM_REFERENCE_PRESET_ID } from './bsm-reference-preset.ts';
+import {
+  DAYTIME_DEFAULT_MATERIAL_MODE, DAYTIME_DURATION_SECONDS, DAYTIME_MAX_ELEVATION, DAYTIME_MIN_ELEVATION,
+  describeDaytimeStage, evaluateDaytimeParameters, readDaytimeSpeed, readDaytimeStage, stepDaytimeElevation,
+  touchesDaytimeDrivenParameter, type DaytimeSpeed, type DaytimeTransformState,
+} from './daytime-transform.ts';
+import { isNubisMode, type NubisMode } from './nubis/presets.ts';
 import {
   degrees, groundShadowCamera, referenceCamera, shadowInspectionCamera, stepGroundCamera,
 } from './terrain.ts';
@@ -36,13 +43,20 @@ import {
 const CHANNEL = 'vc-ue5/ground';
 const SYSTEM = 'vc-ue5-ground-input';
 
+type StreamedCloudSet = NubisMode | 'alpine-valley';
+function isStreamedCloudSet(mode: unknown): mode is StreamedCloudSet {
+  return mode === 'alpine-valley' || isNubisMode(mode);
+}
+
 interface TerrainConfig {
   readonly scene: string;
   readonly cloudMaterial: string;
   readonly referenceCloudMaterial: string;
-  readonly sampleUeCloudMaterial: string;
+  readonly sampleUeTextureSet: string;
+  readonly alpineTextureSet: string;
   readonly bandCloudMaterial: string;
   readonly bandWideInstance: string;
+  readonly nubisInstances: Record<NubisMode, string>;
 }
 
 const LEGACY_CLOUD_FIELDS = [
@@ -65,6 +79,7 @@ export function readCloudFields(data: unknown): CloudFields | undefined {
 }
 
 const REFERENCE_PRESET: CloudPreset = {};
+const CLOUD_PRESET_DEFAULTS = { viewBlueNoise: false } as const;
 
 type CloudRequest = {
   readonly id: number;
@@ -126,27 +141,55 @@ export const engine: Plugin.Object<TerrainConfig> = {
       const referenceMaterial = (await assets.load(config.referenceCloudMaterial, cloudMaterialKind)).unwrap();
       yield () => assets.release(referenceMaterial).unwrap();
       const reference = assets.read(referenceMaterial).unwrap();
-      const sampleUeMaterial = (await assets.load(config.sampleUeCloudMaterial, cloudMaterialKind)).unwrap();
-      yield () => assets.release(sampleUeMaterial).unwrap();
-      const sampleUe = assets.read(sampleUeMaterial).unwrap();
+      const sampleUeInstance = (await assets.load(config.sampleUeTextureSet, cloudMaterialInstanceKind)).unwrap();
+      yield () => assets.release(sampleUeInstance).unwrap();
+      const sampleUe = assets.read(sampleUeInstance).unwrap();
       const bandMaterial = (await assets.load(config.bandCloudMaterial, cloudMaterialKind)).unwrap();
       yield () => assets.release(bandMaterial).unwrap();
       const band = assets.read(bandMaterial).unwrap();
       const bandWideInstance = (await assets.load(config.bandWideInstance, cloudMaterialInstanceKind)).unwrap();
       yield () => assets.release(bandWideInstance).unwrap();
       const bandWide = assets.read(bandWideInstance).unwrap();
-      for (const material of [reference, sampleUe]) {
-        if (material.model !== 'program' || material.densityKernelIdentity === undefined)
-          throw new Error('场景需要已编译的参考密度程序。');
-        if (material.parameters.useDetail?.kind !== 'static')
-          throw new Error('缺少已编译的细节开关。');
-      }
+      type StreamedCloudOption = {
+        handle: typeof referenceMaterial; material: typeof reference; guid: string;
+        instance: typeof bandWide; instanceGuid: string; instanceHandle: typeof bandWideInstance;
+      };
+      const streamedCloudOptions = new Map<StreamedCloudSet, StreamedCloudOption>();
+      let acceptStreamedCloudLoads = true;
+      yield () => {
+        acceptStreamedCloudLoads = false;
+        for (const option of streamedCloudOptions.values()) assets.release(option.instanceHandle).unwrap();
+      };
+      const loadStreamedCloudOption = async (mode: StreamedCloudSet) => {
+        const instanceGuid = mode === 'alpine-valley' ? config.alpineTextureSet : config.nubisInstances[mode];
+        const loaded = await assets.load(instanceGuid, cloudMaterialInstanceKind);
+        if (!loaded.ok) return '云纹理加载失败，请重试。';
+        const instanceHandle = loaded.value;
+        const instance = assets.read(instanceHandle);
+        if (!acceptStreamedCloudLoads || !instance.ok) {
+          assets.release(instanceHandle).unwrap();
+          return '云纹理未就绪，请重试。';
+        }
+        streamedCloudOptions.set(mode, {
+          handle: referenceMaterial, material: reference, guid: config.referenceCloudMaterial,
+          instance: instance.value, instanceGuid, instanceHandle,
+        });
+        return undefined;
+      };
+      if (reference.model !== 'program' || reference.densityKernelIdentity === undefined)
+        throw new Error('The texture sets require the cooked reference density program.');
+      if (reference.parameters.useDetail?.kind !== 'static')
+        throw new Error('The reference material requires a cooked detail switch.');
       let windX = 0;
       let windY = 0;
       let windZ = 0;
       let referenceTimeSeconds = 0;
       let elapsedSeconds = 0;
       let paused = false;
+      let daytimeActive = false;
+      let daytimePlaying = false;
+      let daytimeSpeed: DaytimeSpeed = 1;
+      let daytimeLastPublishSeconds = 0;
       let clockInitializedThisUpdate = false;
       let preset: string | null = null;
       let runtimeParameters: CloudEdit = {};
@@ -184,27 +227,30 @@ export const engine: Plugin.Object<TerrainConfig> = {
       const initialFixtureVisible = fixtureVisible;
       const uniform = assets.read(cloudMaterial).unwrap();
       const materialOptions = {
-        uniform: { handle: cloudMaterial, material: uniform, guid: config.cloudMaterial, instance: undefined, instanceGuid: null },
-        shape: { handle: referenceMaterial, material: reference, guid: config.referenceCloudMaterial, instance: undefined, instanceGuid: null },
-        'sample-ue': { handle: sampleUeMaterial, material: sampleUe, guid: config.sampleUeCloudMaterial, instance: undefined, instanceGuid: null },
-        band: { handle: bandMaterial, material: band, guid: config.bandCloudMaterial, instance: undefined, instanceGuid: null },
-        'band-wide': { handle: bandMaterial, material: band, guid: config.bandCloudMaterial, instance: bandWide, instanceGuid: config.bandWideInstance },
+        uniform: { handle: cloudMaterial, material: uniform, guid: config.cloudMaterial, instance: undefined, instanceGuid: null, instanceHandle: undefined },
+        shape: { handle: referenceMaterial, material: reference, guid: config.referenceCloudMaterial, instance: undefined, instanceGuid: null, instanceHandle: undefined },
+        'sample-ue': { handle: referenceMaterial, material: reference, guid: config.referenceCloudMaterial, instance: sampleUe, instanceGuid: config.sampleUeTextureSet, instanceHandle: sampleUeInstance },
+        band: { handle: bandMaterial, material: band, guid: config.bandCloudMaterial, instance: undefined, instanceGuid: null, instanceHandle: undefined },
+        'band-wide': { handle: bandMaterial, material: band, guid: config.bandCloudMaterial, instance: bandWide, instanceGuid: config.bandWideInstance, instanceHandle: bandWideInstance },
       };
+      const materialOption = (mode: CloudMaterialMode) =>
+        isStreamedCloudSet(mode) ? streamedCloudOptions.get(mode)! : materialOptions[mode];
       const selectCook = (mode: CloudMaterialMode, override?: boolean) => {
-        const option = materialOptions[mode];
-        const { material, instance, guid, instanceGuid } = option;
+        const option = materialOption(mode);
+        const { material, instance, guid, instanceGuid, instanceHandle } = option;
         const values = resolveCloudParameters(material.parameters, instance?.overrides ?? {}, { guid, source: 'vc-ue5.cloud' }).unwrap();
         const staticValues = Object.fromEntries(Object.entries(material.parameters).filter(([, parameter]) => parameter.kind === 'static')
           .map(([name]) => [name, name === 'useDetail' && override !== undefined ? override : values[name]]));
         const variant = material.variants.find(candidate =>
           Object.keys(candidate.staticValues).length === Object.keys(staticValues).length &&
           Object.entries(staticValues).every(([key, value]) => candidate.staticValues[key] === value));
+        const instancePublication = instanceHandle === undefined ? null : assets.source(instanceHandle).unwrap()?.publication ?? null;
         const identity: CloudAssets = {
           materialGuid: guid, instanceGuid, cookIdentity: material.cookIdentity,
-          instanceCookIdentity: instance === undefined ? null : assets.source(bandWideInstance).unwrap()?.publication?.digest ?? null,
+          instanceCookIdentity: instancePublication?.digest ?? null,
           programIdentity: variant?.programIdentity ?? null,
         };
-        return { option, values, variant, identity };
+        return { option, values, variant, identity, instancePublication };
       };
       const viewModeOf = (mode: number) => mode === 3 ? 'transmittance' : mode === 4 ? 'contour' : 'normal';
       const readConfig = (): CloudConfiguration => {
@@ -217,9 +263,6 @@ export const engine: Plugin.Object<TerrainConfig> = {
           assets: selectCook(materialMode, runtimeParameters.useDetail).identity,
         };
       };
-      const baseline = readConfig();
-      cloudRequests.apply({ id: ++lastRequestId, clientId: null, action: 'initial-configuration',
-        requested: null, status: 'cpu-applied' }, () => {});
       const unavailableEvidence = observeCloudRenderer(undefined).read(null);
       const receiptRenderer = gameHost.renderer ?? ('renderer' in gameHost.app ? gameHost.app.renderer : undefined);
       let presentationEvidence: CloudRenderEvidence | undefined;
@@ -274,6 +317,19 @@ export const engine: Plugin.Object<TerrainConfig> = {
           })));
         return { ...(stale ? unavailableEvidence : presentationEvidence ?? unavailableEvidence), completed };
       };
+      const readDaytime = (): DaytimeTransformState => {
+        const elevation = readSun().sunElevation;
+        const completed = daytimeActive && elevation >= DAYTIME_MAX_ELEVATION - 1e-4;
+        return {
+          active: daytimeActive,
+          playing: daytimeActive && daytimePlaying && !paused && !completed,
+          completed,
+          speed: daytimeSpeed,
+          elevation,
+          durationSeconds: DAYTIME_DURATION_SECONDS,
+          stage: describeDaytimeStage(elevation),
+        };
+      };
       const readCloud = () => {
         const layer = world.get(cloud, VolumetricCloudLayer).unwrap();
         const selected = selectCook(materialMode, runtimeParameters.useDetail);
@@ -289,6 +345,8 @@ export const engine: Plugin.Object<TerrainConfig> = {
           shadowLightDistanceMeters: layer.shadowLightDistanceMeters, shadowFarDepthMeters: layer.shadowFarDepthMeters,
           shadowStrength: layer.shadowStrength, shadowDepthBiasMeters: layer.shadowDepthBiasMeters,
           shadowResolution: layer.shadowResolution, shadowMapSamples: layer.shadowMapSamples,
+          shadowMapUe5Reference: layer.shadowMapUe5Reference,
+          shadowMapSpatialPasses: layer.shadowMapSpatialPasses,
           atmosphereTransmittanceMode: layer.atmosphereTransmittanceMode,
           enableDistantSkyLightSampling: layer.enableDistantSkyLightSampling,
         };
@@ -296,6 +354,7 @@ export const engine: Plugin.Object<TerrainConfig> = {
         const weights = Object.fromEntries(SAMPLED_WEIGHTS.map(key => [key, layer[key] === -1 ? scalar(key) ?? null : layer[key]]));
         const fields = {
           enabled: layer.enabled, mode, routeRunning: routeTime !== undefined, cameraView, paused, preset,
+          daytime: readDaytime(),
           exposure: normalExposure, ...readSun(), sunIlluminanceLux: world.get(sun, DirectionalLight).unwrap().intensity,
           ...shadowValues, ...shadowControls, ...weights,
           effectiveSurfaceShadowStrength: layer.surfaceShadowStrength,
@@ -305,7 +364,8 @@ export const engine: Plugin.Object<TerrainConfig> = {
           coverageBias: layer.coverageBias === -2 ? scalar('coverageBias') ?? null : layer.coverageBias,
           useDetail: selected.variant?.staticValues.useDetail ?? false,
           skipEmpty: layer.skipEmpty, windX, windY, windZ, referenceTimeSeconds, elapsedSeconds,
-          viewSampleCountScale: layer.viewSampleCountScale, stopTransmittance: layer.stopTransmittance,
+          viewSampleCountScale: layer.viewSampleCountScale, viewBlueNoise: layer.viewBlueNoise,
+          stopTransmittance: layer.stopTransmittance,
           traceLimitMeters: layer.traceLimitMeters, entryLimitMeters: layer.entryLimitMeters,
           viewMode: viewModeOf(layer.diagnosticMode), initializationRevision: layer.initializationRevision,
           windOffsetMeters: Array.from(layer.windOffsetMeters),
@@ -321,7 +381,7 @@ export const engine: Plugin.Object<TerrainConfig> = {
             resolvedCookValues: selected.values,
             selectedCookStaticValues: selected.variant?.staticValues ?? {},
             materialPublication: assets.source(selected.option.handle).unwrap()?.publication ?? null,
-            instancePublication: selected.identity.instanceGuid === null ? null : assets.source(bandWideInstance).unwrap()?.publication ?? null,
+            instancePublication: selected.instancePublication,
           },
           configuration: cloudConfig, request: latestRequest, snapshot: savedSnapshot, ...readRequest(), ...readEvidence(),
         };
@@ -337,18 +397,16 @@ export const engine: Plugin.Object<TerrainConfig> = {
       let resetRequested = false;
       let shadowViewRequested = false;
       let groundShadowViewRequested = false;
-      let shadowComparisonRequested = false;
       let toggleRequested = false;
       let cloudViewRequested: 0 | 3 | 4 | undefined;
       let cloudReadRequested = true;
-      let presetSunRequestId: number | undefined;
       let cloudStatus: string | undefined;
       const applyUnacknowledgedCloudChange = (action: string, requested: unknown, change: () => void) => {
         const error = cloudRequests.apply({ id: ++lastRequestId, clientId: null, action, requested, status: 'cpu-applied' }, change);
         if (error) cloudStatus = error;
         cloudReadRequested = true;
       };
-      const cloudActions: { action: string; value: unknown; requestId: unknown }[] = [];
+      const cloudActions: { action: string; value: unknown; requestId: unknown; loadError?: string }[] = [];
       const initializeClock = (seconds: number, elapsed = 0, offset?: readonly [number, number, number]) => {
         referenceTimeSeconds = seconds;
         elapsedSeconds = elapsed;
@@ -364,10 +422,10 @@ export const engine: Plugin.Object<TerrainConfig> = {
         world.set(sun, DirectionalLight, { direction: sunDirection(fields) }).unwrap();
       };
       const selectMaterial = (mode: CloudMaterialMode, enabled: boolean) => {
-        const selected = materialOptions[mode];
+        const selected = materialOption(mode);
         materialMode = mode;
         world.set(cloud, VolumetricCloudLayer, { enabled, material: selected.handle,
-          materialInstance: mode === 'band-wide' ? bandWideInstance : 0 as AssetHandle<'cloud-material-instance'> }).unwrap();
+          materialInstance: selected.instanceHandle ?? 0 as AssetHandle<'cloud-material-instance'> }).unwrap();
       };
       const clearDensityOverrides = () => {
         world.set(cloud, VolumetricCloudLayer, {
@@ -422,6 +480,10 @@ export const engine: Plugin.Object<TerrainConfig> = {
         delete stored.referenceTimeSeconds;
         runtimeParameters = { ...runtimeParameters, ...stored };
       };
+      applyParameters({ ...QUALITY_PRESETS['quality-low'].parameters, ...CLOUD_PRESET_DEFAULTS }, false);
+      const baseline = readConfig();
+      cloudRequests.apply({ id: ++lastRequestId, clientId: null, action: 'initial-configuration',
+        requested: null, status: 'cpu-applied' }, () => {});
       const applyView = (mode: 0 | 3 | 4) => {
         world.set(cloud, VolumetricCloudLayer, { diagnosticMode: mode }).unwrap();
         world.set(camera, Camera, mode === 0
@@ -442,7 +504,7 @@ export const engine: Plugin.Object<TerrainConfig> = {
         windX = windY = windZ = 0;
         applyParameters({ ...initialSun, exposure: initialExposure }, false);
         runtimeParameters = {};
-        applyParameters(next.parameters, false);
+        applyParameters({ ...CLOUD_PRESET_DEFAULTS, ...next.parameters }, false);
         paused = next.clock.paused;
         initializeClock(next.clock.referenceTimeSeconds, next.clock.elapsedSeconds, next.clock.windOffsetMeters);
         ({ cameraView, fixtureVisible } = next.camera);
@@ -455,7 +517,7 @@ export const engine: Plugin.Object<TerrainConfig> = {
         world.set(camera, Camera, { historyVersion: world.get(camera, Camera).unwrap().historyVersion + 1 }).unwrap();
       };
       const presetConfiguration = (selection: CloudPreset): CloudConfiguration | string => {
-        const checked = validateCloudEdit(selection.parameters ?? {});
+        const checked = validateCloudEdit({ ...selection.parameters, ...CLOUD_PRESET_DEFAULTS });
         if (!('edit' in checked)) return `参数须在允许范围内。 ${checked.field}`;
         const parameters = checked.edit;
         const seconds = selection.clock?.referenceTimeSeconds ?? parameters.referenceTimeSeconds ?? baseline.clock.referenceTimeSeconds;
@@ -488,6 +550,77 @@ export const engine: Plugin.Object<TerrainConfig> = {
       });
       if (unregisterCloud) yield unregisterCloud;
       type AdoptCloudChange = (requested: unknown, change: () => string | void) => string | undefined;
+      let actionNotice: string | undefined;
+      const applyDaytimeAtElevation = (elevation: number) => {
+        const sunAzimuth = readSun().sunAzimuth;
+        applySun({ sunElevation: elevation, sunAzimuth });
+        applyParameters({ ...evaluateDaytimeParameters(elevation), sunElevation: elevation }, false);
+        preset = null;
+      };
+      const activateDaytime = (elevation: number, playing: boolean) => {
+        selectMaterial(DAYTIME_DEFAULT_MATERIAL_MODE, true);
+        applyView(0);
+        daytimeActive = true;
+        daytimePlaying = playing;
+        if (playing) paused = false;
+        initializeClock(0);
+        applyDaytimeAtElevation(elevation);
+        daytimeLastPublishSeconds = elapsedSeconds;
+      };
+      const deactivateDaytime = (notice?: string) => {
+        if (!daytimeActive) return;
+        daytimeActive = false;
+        daytimePlaying = false;
+        if (notice) actionNotice = notice;
+      };
+      const toggleDaytime = (adopt: AdoptCloudChange): string | undefined => adopt(!daytimeActive, () => {
+        if (daytimeActive) {
+          deactivateDaytime('已关闭白昼变换，保留当前参数。');
+          return;
+        }
+        activateDaytime(DAYTIME_MIN_ELEVATION, true);
+        actionNotice = '已开启白昼变换（UE 原纹理，-4° ～ 180° / 120s）。';
+      });
+      const toggleDaytimePlayback = (adopt: AdoptCloudChange): string | undefined => adopt(daytimePlaying ? 'pause' : 'play', () => {
+        if (!daytimeActive) {
+          activateDaytime(DAYTIME_MIN_ELEVATION, true);
+          actionNotice = '已开启白昼变换（UE 原纹理，-4° ～ 180° / 120s）。';
+          return;
+        }
+        if (daytimePlaying && !paused) {
+          daytimePlaying = false;
+          actionNotice = '白昼变换已暂停，可拖动太阳高度或点击阶段预览。';
+          return;
+        }
+        const atEnd = readSun().sunElevation >= DAYTIME_MAX_ELEVATION - 1e-4;
+        if (atEnd) {
+          initializeClock(0);
+          applyDaytimeAtElevation(DAYTIME_MIN_ELEVATION);
+        }
+        daytimePlaying = true;
+        paused = false;
+        daytimeLastPublishSeconds = elapsedSeconds;
+        actionNotice = atEnd ? '白昼变换已从 -4° 重新开始。' : '白昼变换播放中。';
+      });
+      const setDaytimeSpeed = (value: unknown, adopt: AdoptCloudChange): string | undefined => {
+        const speed = readDaytimeSpeed(value);
+        if (speed === undefined) return '白昼倍速须在允许选项内。';
+        return adopt(speed, () => {
+          daytimeSpeed = speed;
+        });
+      };
+      const jumpDaytimeStage = (value: unknown, adopt: AdoptCloudChange): string | undefined => {
+        const anchor = readDaytimeStage(value);
+        if (anchor === undefined) return '没有该白昼阶段。';
+        return adopt(anchor.id, () => {
+          if (!daytimeActive) activateDaytime(anchor.elevation, false);
+          else {
+            daytimePlaying = false;
+            applyDaytimeAtElevation(anchor.elevation);
+          }
+          actionNotice = `已跳转至${anchor.label}（${anchor.elevation}° · ${anchor.cloudType}）。`;
+        });
+      };
       const updateCloudParameters = (value: unknown, adopt: AdoptCloudChange): string | undefined => {
         const checked = validateCloudEdit(value);
         if (!('edit' in checked)) {
@@ -508,7 +641,12 @@ export const engine: Plugin.Object<TerrainConfig> = {
           return '该材质没有对应的已 Cook 细节变体。';
         }
         const error = adopt(edit, () => applyParameters(edit, false));
-        if (!error && WEATHER_PARAMETER_KEYS.some(key => edit[key] !== undefined)) preset = null;
+        if (!error) {
+          if (daytimeActive && touchesDaytimeDrivenParameter(edit)) {
+            deactivateDaytime('已手动调整受控参数，自动退出白昼变换。');
+          }
+          if (WEATHER_PARAMETER_KEYS.some(key => edit[key] !== undefined)) preset = null;
+        }
         return error;
       };
       const applyCloudPreset = (value: unknown, adopt: AdoptCloudChange): string | undefined => {
@@ -516,15 +654,23 @@ export const engine: Plugin.Object<TerrainConfig> = {
         const quality = readQualityPreset(value);
         const weather = readWeatherPreset(value);
         if (quality) {
-          const parameters: CloudEdit = { ...quality.parameters };
+          const parameters: CloudEdit = { ...quality.parameters, ...CLOUD_PRESET_DEFAULTS };
           if (selectCook(materialMode).option.material.parameters.useDetail?.kind !== 'static') delete parameters.useDetail;
           error = adopt(value, () => applyParameters(parameters, false));
         } else if (weather) {
-          error = adopt(value, () => applyParameters(weatherAtmosphereParameters(weather.forgeax.parameters), false));
+          error = adopt(value, () => {
+            deactivateDaytime();
+            applyParameters({
+              ...weatherAtmosphereParameters(weather.forgeax.parameters), ...CLOUD_PRESET_DEFAULTS,
+            }, false);
+          });
           if (!error) preset = weather.id;
-        } else if (value === 'reference') {
-          const next = presetConfiguration(REFERENCE_PRESET);
-          error = typeof next === 'string' ? next : adopt(value, () => restoreConfiguration(next));
+        } else if (value === 'reference' || value === BSM_REFERENCE_PRESET_ID) {
+          const next = presetConfiguration(value === BSM_REFERENCE_PRESET_ID ? BSM_REFERENCE_PRESET : REFERENCE_PRESET);
+          error = typeof next === 'string' ? next : adopt(value, () => {
+            deactivateDaytime();
+            return restoreConfiguration(next);
+          });
           if (!error) preset = value;
         } else error = '没有该预设。';
         return error;
@@ -534,7 +680,10 @@ export const engine: Plugin.Object<TerrainConfig> = {
         const next = readCloudSnapshot(value);
         if (!next) error = '快照格式、版本或参数无效。';
         else {
-          error = adopt({ version: next.version, preset: next.preset, config: next.config }, () => restoreConfiguration(next.config));
+          error = adopt({ version: next.version, preset: next.preset, config: next.config }, () => {
+            deactivateDaytime();
+            return restoreConfiguration(next.config);
+          });
           if (!error) {
             savedSnapshot = next;
             preset = next.preset;
@@ -543,24 +692,36 @@ export const engine: Plugin.Object<TerrainConfig> = {
         return error;
       };
       const switchCloudMaterial = (value: unknown, adopt: AdoptCloudChange): string | undefined => {
-        if (value === 'off') {
-          return adopt(value, () => {
-            selectMaterial(materialMode, false);
-            applyView(0);
-          });
-        }
+        if (value === 'off') return adopt(value, () => {
+          deactivateDaytime();
+          selectMaterial(materialMode, false);
+          applyView(0);
+        });
+        const layer = world.get(cloud, VolumetricCloudLayer).unwrap();
+        if (value === 'textured') return adopt(value, () => {
+          if (isSampledCloudMode(materialMode)) selectMaterial(materialMode, true);
+          else {
+            clearDensityOverrides();
+            selectMaterial('shape', true);
+            preset = null;
+          }
+        });
         const mode = CLOUD_MODES.find(item => item === value);
         if (mode === undefined) return '该材质没有已 Cook 入口。';
-        const error = adopt(mode, () => {
-          const wasSampled = materialMode === 'shape' || materialMode === 'sample-ue';
-          const isSampled = mode === 'shape' || mode === 'sample-ue';
-          if (mode !== materialMode && !(wasSampled && isSampled) &&
-            !(materialMode.startsWith('band') && mode.startsWith('band'))) clearDensityOverrides();
+        if (isSampledCloudMode(mode)) return adopt(mode, () => {
+          if (!layer.enabled || !isSampledCloudMode(materialMode)) return '切换云资产前请启用纹理云。';
+          world.set(cloud, VolumetricCloudLayer, {
+            materialInstance: materialOption(mode).instanceHandle ?? (0 as AssetHandle<'cloud-material-instance'>),
+          }).unwrap();
+          materialMode = mode;
+        });
+        return adopt(mode, () => {
+          deactivateDaytime();
+          if (mode !== materialMode && !(materialMode.startsWith('band') && mode.startsWith('band'))) clearDensityOverrides();
           selectMaterial(mode, true);
-          if (!isSampled) applyView(0);
+          applyView(0);
           preset = null;
         });
-        return error;
       };
       const applySolarRequest = (action: string, value: Record<string, unknown>) => {
         const fields = readSunFields(value.fields);
@@ -569,6 +730,10 @@ export const engine: Plugin.Object<TerrainConfig> = {
           applySun(fields);
           runtimeParameters = { ...runtimeParameters, ...fields };
           preset = null;
+          if (daytimeActive) {
+            daytimePlaying = false;
+            applyParameters(evaluateDaytimeParameters(fields.sunElevation), false);
+          }
           port?.postMessage({ channel: CHANNEL, sun: readSun(), requestId: value.solarId });
         });
       };
@@ -576,31 +741,58 @@ export const engine: Plugin.Object<TerrainConfig> = {
         const checked = validateCloudEdit({ referenceTimeSeconds: value });
         if (!('edit' in checked)) return '参考时间须在允许范围内。';
         const seconds = checked.edit.referenceTimeSeconds ?? referenceTimeSeconds;
-        return adopt({ referenceTimeSeconds: seconds }, () => initializeClock(seconds));
+        return adopt({ referenceTimeSeconds: seconds }, () => {
+          deactivateDaytime('已手动初始化参考时间，自动退出白昼变换。');
+          initializeClock(seconds);
+        });
       };
       const resetCloudParameters = (adopt: AdoptCloudChange): string | undefined => {
-        const error = adopt(null, () => restoreConfiguration(baseline));
+        const error = adopt(null, () => {
+          deactivateDaytime();
+          return restoreConfiguration(baseline);
+        });
         if (!error) preset = null;
         return error;
       };
-      const processCloudAction = ({ action, value, requestId }: typeof cloudActions[number]) => {
-        if (requestId !== undefined && (typeof requestId !== 'number' || !Number.isSafeInteger(requestId) || requestId <= lastClientRequestId)) return;
-        const clientId = typeof requestId === 'number' ? requestId : null;
-        if (clientId !== null) lastClientRequestId = clientId;
+      const isCurrentCloudRequest = (requestId: unknown) =>
+        requestId === undefined ||
+        (typeof requestId === 'number' && Number.isSafeInteger(requestId) && requestId > lastClientRequestId);
+      const handleUnacknowledgedCloudAction = (action: string, value: unknown): boolean => {
         if (action === 'sun-update' && isRecord(value)) {
           applySolarRequest(action, value);
-          return;
+          return true;
         }
+        if (action === 'shadow-comparison') {
+          applyShadowComparison(value);
+          return true;
+        }
+        return false;
+      };
+      const publishCloudActionResult = (id: number, clientId: number | null, action: string, value: unknown, error: string | undefined) => {
+        latestRequest = { id, clientId, action, requested: value ?? null, status: error ? 'rejected' : 'cpu-applied', ...(error ? { reason: error } : {}) };
+        cloudStatus = error ?? actionNotice;
+        cloudReadRequested = true;
+      };
+      const processCloudAction = ({ action, value, requestId, loadError }: typeof cloudActions[number]) => {
+        if (!isCurrentCloudRequest(requestId)) return;
+        const clientId = typeof requestId === 'number' ? requestId : null;
+        if (clientId !== null) lastClientRequestId = clientId;
+        if (handleUnacknowledgedCloudAction(action, value)) return;
         const id = ++lastRequestId;
         const adopt = (requested: unknown, change: () => string | void) =>
           cloudRequests.apply({ id, clientId, action, requested, status: 'cpu-applied' }, change);
-        let error: string | undefined;
-        switch (action) {
+        actionNotice = undefined;
+        let error = loadError;
+        if (error === undefined) switch (action) {
           case 'cloud-update': error = updateCloudParameters(value, adopt); break;
           case 'cloud-initialize': error = initializeCloudTime(value, adopt); break;
           case 'cloud-pause': paused = !paused; break;
           case 'cloud-reset': error = resetCloudParameters(adopt); break;
           case 'cloud-preset': error = applyCloudPreset(value, adopt); break;
+          case 'daytime-toggle': error = toggleDaytime(adopt); break;
+          case 'daytime-play': error = toggleDaytimePlayback(adopt); break;
+          case 'daytime-speed': error = setDaytimeSpeed(value, adopt); break;
+          case 'daytime-jump': error = jumpDaytimeStage(value, adopt); break;
           case 'cloud-snapshot-save':
             savedSnapshot = captureSnapshot();
             snapshotHistory.capture(savedSnapshot, 'saved');
@@ -609,9 +801,28 @@ export const engine: Plugin.Object<TerrainConfig> = {
           case 'cloud-material': error = switchCloudMaterial(value, adopt); break;
           default: return;
         }
-        latestRequest = { id, clientId, action, requested: value ?? null, status: error ? 'rejected' : 'cpu-applied', ...(error ? { reason: error } : {}) };
-        cloudStatus = error;
-        cloudReadRequested = true;
+        publishCloudActionResult(id, clientId, action, value, error);
+      };
+      let loadingStreamedCloudOption = false;
+      const processCloudActions = () => {
+        // Keep HUD requests ordered while streaming the first-use texture bundle.
+        while (!loadingStreamedCloudOption && cloudActions.length > 0) {
+          const pending = cloudActions[0]!;
+          const target = pending.action === 'cloud-material' ? pending.value
+            : pending.action === 'cloud-snapshot-load' ? readCloudSnapshot(pending.value)?.config.materialMode : undefined;
+          if (pending.loadError === undefined && isStreamedCloudSet(target) && !streamedCloudOptions.has(target) &&
+            isCurrentCloudRequest(pending.requestId)) {
+            loadingStreamedCloudOption = true;
+            const finish = (error: string | undefined) => {
+              if (error !== undefined) pending.loadError = error;
+              loadingStreamedCloudOption = false;
+            };
+            void loadStreamedCloudOption(target).then(finish, () => finish('云纹理加载失败，请重试。'));
+            return;
+          }
+          cloudActions.shift();
+          processCloudAction(pending);
+        }
       };
       const queueSunUpdate = (data: Record<string, unknown>) => {
         const fields = readSunFields('sun' in data ? data.sun : undefined);
@@ -622,11 +833,6 @@ export const engine: Plugin.Object<TerrainConfig> = {
       const handleViewAction = (data: Record<string, unknown>) => {
         if (data.action === 'camera-shadow') shadowViewRequested = true;
         if (data.action === 'camera-ground-shadow') groundShadowViewRequested = true;
-        if (data.action === 'shadow-comparison') {
-          presetSunRequestId = 'sunRequestId' in data && typeof data.sunRequestId === 'number' && Number.isSafeInteger(data.sunRequestId) && data.sunRequestId >= 0 ? data.sunRequestId : undefined;
-          shadowComparisonRequested = true;
-          shadowViewRequested = true;
-        }
         if (data.action === 'route') {
           if (routeTime === undefined) {
             cameraView = 'ground';
@@ -641,6 +847,14 @@ export const engine: Plugin.Object<TerrainConfig> = {
         if (data.action === 'cloud-view-contour') cloudViewRequested = 4;
         if (data.action === 'cloud-read') cloudReadRequested = true;
       };
+      const cloudActionValue = (data: Record<string, unknown>): unknown => {
+        if (data.action === 'cloud-update' && 'fields' in data) return data.fields;
+        if (data.action === 'cloud-preset' && 'preset' in data) return data.preset;
+        if (data.action === 'cloud-snapshot-load' && 'snapshot' in data) return data.snapshot;
+        if (data.action === 'daytime-speed' && 'speed' in data) return data.speed;
+        if (data.action === 'daytime-jump' && 'stage' in data) return data.stage;
+        return 'value' in data ? data.value : undefined;
+      };
       const queueCloudAction = (data: Record<string, unknown>, requestId: unknown) => {
         if ('frame' in data && data.action === 'cloud-snapshot-save')
           receiveReadyFrame(data.frame);
@@ -650,12 +864,9 @@ export const engine: Plugin.Object<TerrainConfig> = {
           presentationEvidence = data.evidence as CloudRenderEvidence;
         }
         if (['cloud-update', 'cloud-initialize', 'cloud-pause', 'cloud-reset', 'cloud-preset',
-          'cloud-snapshot-save', 'cloud-snapshot-load'].includes(String(data.action))) {
-          const value = data.action === 'cloud-update' && 'fields' in data ? data.fields
-            : data.action === 'cloud-preset' && 'preset' in data ? data.preset
-            : data.action === 'cloud-snapshot-load' && 'snapshot' in data ? data.snapshot
-            : 'value' in data ? data.value : undefined;
-          cloudActions.push({ action: String(data.action), value, requestId });
+          'cloud-snapshot-save', 'cloud-snapshot-load',
+          'daytime-toggle', 'daytime-play', 'daytime-speed', 'daytime-jump'].includes(String(data.action))) {
+          cloudActions.push({ action: String(data.action), value: cloudActionValue(data), requestId });
         }
       };
       const handleAction = ({ data }: MessageEvent<unknown>) => {
@@ -666,8 +877,12 @@ export const engine: Plugin.Object<TerrainConfig> = {
           queueSunUpdate(data);
           return;
         }
+        if (data.action === 'shadow-comparison') {
+          cloudActions.push({ action: 'shadow-comparison', value: data.sunRequestId, requestId: undefined });
+          return;
+        }
         const requestId = data.requestId;
-        const mode = (['off', ...CLOUD_MODES] as const).find(mode => data.action === `cloud-${mode}`);
+        const mode = (['off', 'textured', ...CLOUD_MODES] as const).find(mode => data.action === `cloud-${mode}`);
         if (mode !== undefined) {
           cloudActions.push({ action: 'cloud-material', value: mode, requestId });
           return;
@@ -695,27 +910,27 @@ export const engine: Plugin.Object<TerrainConfig> = {
         },
       });
       if (unregister) yield unregister;
-      const applyShadowComparison = () => {
-        if (!shadowComparisonRequested) return;
-        shadowComparisonRequested = false;
+      const applyShadowComparison = (sunRequestId: unknown) => {
+        shadowViewRequested = true;
         const requested = { materialMode: 'band', sunAzimuth: 90, sunElevation: 36,
           windX: 0, windY: 0, windZ: 0, groundShadowEnabled: true,
-          atmosphereShadowEnabled: false, surfaceShadowStrength: 1 };
+          atmosphereShadowEnabled: false, surfaceShadowStrength: 1, ...CLOUD_PRESET_DEFAULTS };
         applyUnacknowledgedCloudChange('shadow-comparison', requested, () => {
+          deactivateDaytime();
           applySun(requested);
           const { materialMode: _materialMode, ...parameters } = requested;
           runtimeParameters = { ...runtimeParameters, ...parameters };
           preset = null;
-          if (presetSunRequestId !== undefined) port?.postMessage({ channel: CHANNEL, sun: readSun(), requestId: presetSunRequestId });
+          if (typeof sunRequestId === 'number' && Number.isSafeInteger(sunRequestId) && sunRequestId >= 0)
+            port?.postMessage({ channel: CHANNEL, sun: readSun(), requestId: sunRequestId });
           windX = windY = windZ = 0;
           initializeClock(0);
           shadowControls = { ...shadowControls, groundShadowEnabled: true, atmosphereShadowEnabled: false, surfaceShadowStrength: 1 };
-          world.set(cloud, VolumetricCloudLayer, shadowConsumerFields(shadowControls)).unwrap();
+          world.set(cloud, VolumetricCloudLayer, { ...shadowConsumerFields(shadowControls), ...CLOUD_PRESET_DEFAULTS }).unwrap();
           clearDensityOverrides();
           selectMaterial('band', true);
           applyView(0);
         });
-        presetSunRequestId = undefined;
       };
       const updateFixture = (keyboard: InputSnapshot['keyboard']) => {
         const reset = resetRequested || keyboard.justPressedCode('KeyR');
@@ -800,10 +1015,24 @@ export const engine: Plugin.Object<TerrainConfig> = {
           const input = world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY);
           clockInitializedThisUpdate = false;
           captureInitialSnapshot();
-          applyShadowComparison();
-          for (const action of cloudActions.splice(0)) processCloudAction(action);
+          processCloudActions();
           const dt = paused || clockInitializedThisUpdate ? 0 : Math.min(0.1, world.getResource(Time).delta);
           elapsedSeconds += dt;
+          if (daytimeActive && daytimePlaying && dt > 0) {
+            const currentElevation = readSun().sunElevation;
+            const previousStage = describeDaytimeStage(currentElevation).label;
+            const stepped = stepDaytimeElevation(currentElevation, dt, daytimeSpeed);
+            applyDaytimeAtElevation(stepped.elevation);
+            const nextStage = describeDaytimeStage(stepped.elevation).label;
+            if (stepped.completed) {
+              daytimePlaying = false;
+              cloudStatus = '白昼变换已到达 180° 落日终点。';
+              cloudReadRequested = true;
+            } else if (nextStage !== previousStage || elapsedSeconds - daytimeLastPublishSeconds >= 0.1) {
+              daytimeLastPublishSeconds = elapsedSeconds;
+              cloudReadRequested = true;
+            }
+          }
           if (dt > 0 && (windX !== 0 || windY !== 0 || windZ !== 0)) {
             const offset = world.get(cloud, VolumetricCloudLayer).unwrap().windOffsetMeters;
             world.set(cloud, VolumetricCloudLayer, {

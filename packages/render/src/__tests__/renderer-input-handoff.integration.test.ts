@@ -1,7 +1,7 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { Transform } from '@forgeax/engine-scene';
 import { assert, expect, it, vi } from 'vitest';
-import { Camera } from '../components/camera';
+import { ANTIALIAS_MSAA, Camera } from '../components/camera';
 import { CameraView } from '../components/camera-view';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { GPU_MATERIAL_DESCRIPTOR, type GpuSceneInputPreparation } from '../gpu-scene-inputs';
@@ -306,6 +306,30 @@ it('rejects a failed actual Scene even when it has no GPU View consumer and Inpu
     expect(f.scene.inputs.isCurrentBuffer(input.buffer)).toBe(false);
   } finally {
     task.release();
+    input.release();
+    expect((await f.close()).ok).toBe(true);
+  }
+});
+
+it('publishes prepared Camera inputs across replacement of display-only attachments', async () => {
+  const f = await fixture();
+  const state = f.manager.currentOwner.frameState;
+  const previous = state.compiledFrameGraph;
+  const input = f.scene.inputs.prepareBuffer().unwrap();
+  finishInput(input);
+  const handoff = f.manager.prepareInputBindings(f.scene, input).unwrap();
+  try {
+    f.world.set(f.camera, Camera, { antialias: ANTIALIAS_MSAA }).unwrap();
+    expect((await f.draw()).presentation).toBe('ready');
+    expect(state.compiledFrameGraph).not.toBe(previous);
+    finishInput(input);
+    expect(handoff.isCurrent()).toBe(true);
+    handoff.publish().unwrap();
+    expect(f.scene.inputs.isCurrentBuffer(input.buffer)).toBe(true);
+    for (const view of f.manager.currentOwner.gpuDriven.inputBindingViews(f.scene))
+      expect(view.sceneInputBuffer).toBe(input.buffer);
+  } finally {
+    handoff.release();
     input.release();
     expect((await f.close()).ok).toBe(true);
   }

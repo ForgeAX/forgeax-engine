@@ -1,4 +1,4 @@
-import { mipmapCacheSize } from '@forgeax/engine-assets-runtime';
+import { canEncodeMipmapLevel } from '@forgeax/engine-assets-runtime';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import type { RenderTargetHost } from '../assembly/render-target-host';
 import { PlanarReflectionInvalidError } from '../components/planar-reflection';
@@ -54,9 +54,8 @@ export function planarReflectionLevelCount(
 const warnedDevices = new WeakSet<RhiDevice>();
 
 /**
- * Mip levels the capture graph fills and receivers sample. Generation reuses
- * the renderer-prewarmed mipmap pipeline; a device without it (a renderer
- * ready without a material manifest) keeps mip 0 and warns once.
+ * Mip levels the capture graph fills and receivers sample. A device without
+ * a prepared pipeline or native compiler keeps mip 0 and warns once.
  */
 export function planarReflectionLevels(
   device: RhiDevice,
@@ -64,7 +63,7 @@ export function planarReflectionLevels(
   descriptor: RenderTargetDescriptor,
 ): number {
   const levels = planarReflectionLevelCount(config, descriptor);
-  if (levels <= 1 || mipmapCacheSize(device) > 0) return levels;
+  if (levels <= 1 || canEncodeMipmapLevel(device, descriptor.format)) return levels;
   if (!warnedDevices.has(device)) {
     warnedDevices.add(device);
     console.warn(

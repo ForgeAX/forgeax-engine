@@ -1,6 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createMeshJobCooker, type MeshJobRequest } from '@forgeax/engine-modeling';
 import { meshJobWorkers } from '@forgeax/engine-modeling/tools';
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
@@ -12,7 +14,27 @@ import { FIXTURE_JOBS } from './fixtures/mesh-jobs.mjs';
 
 const PACKAGE = definePackageId('01900000-0000-7000-8000-0000000c7001');
 const GiB = 1024 ** 3;
+const HEAP_CHILD = fileURLToPath(new URL('./fixtures/worker-heap-child.mjs', import.meta.url));
 const dirs: string[] = [];
+
+/**
+ * One pool job in a child process without the parent's NODE_OPTIONS: `--max-old-space-size`
+ * there overrides a Worker's resourceLimits, so the cap would not bite under the lane's flags.
+ */
+function workerHeapChild(mode: 'mesh' | 'bake' | 'idle', maxHeapMb: number, timeout = 100_000) {
+  const { NODE_OPTIONS: _flags, ...env } = process.env;
+  const out = execFileSync(process.execPath, [HEAP_CHILD, mode, String(maxHeapMb)], {
+    env,
+    encoding: 'utf8',
+    timeout,
+  });
+  return JSON.parse(out.trim().split('\n').at(-1) ?? '{}') as {
+    ok: boolean;
+    code?: string;
+    text?: string;
+    afterCode?: string;
+  };
+}
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -175,4 +197,142 @@ describe('mesh jobs in Worker threads', () => {
     });
     expect(await overlap(meshJobWorkers(tight), corrupted)).toBe(false);
   }, 120_000);
+
+  describe('bounds', () => {
+    const run = (executor: ReturnType<typeof meshJobWorkers>, job: string, params = {}) =>
+      executor(request(job, params), {});
+
+    it('ends a job that outlives its deadline and keeps serving', async () => {
+      const executor = meshJobWorkers({ minFreeGb: 0, maxJobs: 1, jobTimeoutMs: 1500 });
+      const started = Date.now();
+      const hung = await run(executor, 'fixture.hang', { ms: 60_000 });
+      expect(Date.now() - started).toBeLessThan(20_000);
+      expect(hung).toMatchObject({ ok: false, error: { code: 'model-work-budget' } });
+      const after = await run(executor, 'fixture.fail');
+      expect(after).toMatchObject({ ok: false, error: { code: 'fixture-failed' } });
+    }, 60_000);
+
+    it('fails the build, not the host, when a Worker exits mid-job', async () => {
+      const executor = meshJobWorkers({ minFreeGb: 0, maxJobs: 1 });
+      expect(await run(executor, 'fixture.exit')).toMatchObject({
+        ok: false,
+        error: { code: 'model-capability-unavailable', detail: { exitCode: 3 } },
+      });
+      expect(await run(executor, 'fixture.fail')).toMatchObject({
+        ok: false,
+        error: { code: 'fixture-failed' },
+      });
+    }, 60_000);
+
+    it('bounds the queue', async () => {
+      const executor = meshJobWorkers({ minFreeGb: 0, maxJobs: 1, maxQueue: 1 });
+      const running = run(executor, 'fixture.hang', { ms: 1500 });
+      const waiting = run(executor, 'fixture.fail');
+      const refused = await run(executor, 'fixture.fail');
+      expect(refused).toMatchObject({ ok: false, error: { code: 'model-work-budget' } });
+      expect(await running).toMatchObject({ ok: true });
+      expect(await waiting).toMatchObject({ ok: false, error: { code: 'fixture-failed' } });
+    }, 60_000);
+
+    it('ends a Worker whose job outlives the deadline, so the job stops running (falsifier)', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'mesh-job-deadline-'));
+      dirs.push(dir);
+      const log = join(dir, 'log.jsonl');
+      const executor = meshJobWorkers({ minFreeGb: 0, maxJobs: 1, jobTimeoutMs: 600 });
+      const hung = await run(executor, 'fixture.block', { ms: 3000, log, tag: 'late' });
+      expect(hung).toMatchObject({ ok: false, error: { code: 'model-work-budget' } });
+      // The job would write its line at 3 s were its Worker still alive.
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      expect(existsSync(log)).toBe(false);
+    }, 60_000);
+
+    it('clears the deadline once a job settles, so a warm Worker survives it (falsifier)', async () => {
+      const executor = meshJobWorkers({ minFreeGb: 0, maxJobs: 1, jobTimeoutMs: 800 });
+      const keys = async () => {
+        const result = await run(executor, 'fixture.count');
+        return result?.ok ? Object.keys(result.value) : result;
+      };
+      expect(await keys()).toEqual(['mesh/n1']);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // The same Worker served both builds: a deadline that outlived the first job would
+      // have ended it, and the second build would be the first of a new Worker.
+      expect(await keys()).toEqual(['mesh/n2']);
+    }, 60_000);
+
+    it('caps a Worker heap at maxHeapMb and keeps serving (falsifier)', () => {
+      const capped = workerHeapChild('mesh', 64);
+      expect(capped).toMatchObject({ ok: false, code: 'model-capability-unavailable' });
+      expect(capped.text).toContain('ERR_WORKER_OUT_OF_MEMORY');
+      expect(capped.afterCode).toBe('fixture-failed');
+      // The same job fits a roomy heap: the failure above is the limit, not the job.
+      expect(workerHeapChild('mesh', 4096)).toMatchObject({
+        ok: true,
+        afterCode: 'fixture-failed',
+      });
+    }, 120_000);
+
+    it('lets the process exit once the pool is idle (falsifier)', () => {
+      // execFileSync kills the child at its timeout and throws: an idle Worker held ref'd would hang it.
+      expect(workerHeapChild('idle', 0, 30_000)).toEqual({ ok: true });
+    }, 60_000);
+
+    it('fails the build with the cause when a Worker throws outside the job (falsifier)', async () => {
+      const executor = meshJobWorkers({ minFreeGb: 0, maxJobs: 1 });
+      const result = await run(executor, 'fixture.late');
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'model-capability-unavailable' },
+      });
+      expect(JSON.stringify(result)).toContain('late');
+      expect(await run(executor, 'fixture.fail')).toMatchObject({
+        ok: false,
+        error: { code: 'fixture-failed' },
+      });
+    }, 60_000);
+
+    it('maxQueue 0 serves what an idle Worker takes and refuses what would wait (falsifier)', async () => {
+      const executor = meshJobWorkers({ minFreeGb: 0, maxJobs: 1, maxQueue: 0 });
+      expect(await run(executor, 'fixture.fail')).toMatchObject({
+        ok: false,
+        error: { code: 'fixture-failed' },
+      });
+      const running = run(executor, 'fixture.hang', { ms: 1500 });
+      expect(await run(executor, 'fixture.fail')).toMatchObject({
+        ok: false,
+        error: { code: 'model-work-budget' },
+      });
+      expect(await running).toMatchObject({ ok: true });
+      expect(await run(executor, 'fixture.fail')).toMatchObject({
+        ok: false,
+        error: { code: 'fixture-failed' },
+      });
+    }, 60_000);
+
+    it('rejects a deadline Node would fire after 1 ms, and accepts the largest valid one (falsifier)', async () => {
+      for (const jobTimeoutMs of [2 ** 31, 1e10]) {
+        const result = await run(meshJobWorkers({ minFreeGb: 0, jobTimeoutMs }), 'fixture.fail');
+        expect(result, String(jobTimeoutMs)).toMatchObject({
+          ok: false,
+          error: { code: 'model-invalid-argument' },
+        });
+      }
+      const largest = meshJobWorkers({ minFreeGb: 0, jobTimeoutMs: 2 ** 31 - 1 });
+      expect(await run(largest, 'fixture.lid', { depth: 0.04 })).toMatchObject({ ok: true });
+    }, 60_000);
+
+    it('returns a failure for bad options instead of throwing', async () => {
+      for (const bad of [{ maxJobs: 0 }, { maxJobs: 17 }, { jobTimeoutMs: 0 }, { maxQueue: -1 }]) {
+        expect(await run(meshJobWorkers(bad), 'fixture.fail')).toMatchObject({
+          ok: false,
+          error: { code: 'model-invalid-argument' },
+        });
+      }
+    });
+
+    it('refuses a module outside moduleRoots', async () => {
+      const executor = meshJobWorkers({ minFreeGb: 0, moduleRoots: [tmpdir()] });
+      const result = await run(executor, 'fixture.fail');
+      expect(result).toMatchObject({ ok: false, error: { code: 'model-invalid-argument' } });
+    });
+  });
 });

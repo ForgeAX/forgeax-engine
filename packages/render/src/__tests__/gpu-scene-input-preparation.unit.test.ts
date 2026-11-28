@@ -177,15 +177,20 @@ it.each([
     let cause: unknown;
     try {
       work.next();
+      work.next();
     } catch (error) {
       cause = error;
     }
     expect(sibling.holders).toBe(holders);
-    expect(cause).toBeInstanceOf(AggregateError);
-    expect((cause as Error).cause).toBe(construction);
+    expect(cause).toBe(construction);
     assert(task);
     expect(task.privatePageBytes).toBe(1024);
-    expect(task.retirement().ok).toBe(false);
+    let retirement = task.retirement();
+    for (let step = 0; retirement.ok && step < 8; step++) {
+      expect(retirement.value.done).toBe(false);
+      retirement = task.retirement();
+    }
+    expect(retirement.ok).toBe(false);
     expect(task.retirement().ok).toBe(false);
     expect(release.mock.calls.filter(([start]) => start === leaf)).toHaveLength(1);
   } finally {
@@ -281,6 +286,73 @@ it('uploads one private resource-tree successor while ordinary mappings and nume
     read.release();
     mapping.release();
     descriptor.release();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('copies shared mapping pages once and supports cancellation (cancel=%s)', async (cancel) => {
+  const f = await fixture();
+  const accepted = f.inputs.allocateResource(f.row);
+  for (let index = 0; index < 252; index++) f.inputs.allocateResource(f.row);
+  const descriptors = Array.from({ length: 4 }, (_, index) =>
+    f.inputs.arena.reserveDescriptor(1, (_address, words) => words.setUint32(0, index + 31, true)),
+  );
+  const mappings = descriptors.map((descriptor) => f.inputs.reserveResource(descriptor));
+  const [first, second, third, fourth] = mappings;
+  assert(first && second && third && fourth);
+  expect(mappings.map((mapping) => mapping.logicalSlot)).toEqual([254, 255, 256, 257]);
+  const before = f.inputs.resourcePagesWritten;
+  const closed = f.inputs.resourcePagesReleased;
+  let task: GpuSceneInputPreparation | undefined;
+  const work = f.inputs.prepareResourceBuffer(
+    [fourth, first, third, second, second],
+    () => true,
+    (value) => {
+      task = value;
+    },
+  );
+  try {
+    if (cancel) {
+      expect(work.next().done).toBe(false);
+      expect(work.next().done).toBe(false);
+      assert(task);
+      expect(task.privatePageBytes).toBe(2048);
+      task.release();
+      work.return(undefined as never);
+      for (let step = 0; step < 8; step++) {
+        const retirement = task.retirement().unwrap();
+        if (retirement.done) break;
+        await retirement.pending;
+      }
+      expect(task.retirement().unwrap().done).toBe(true);
+      expect(task.privatePageBytes).toBe(0);
+      expect(f.inputs.resourcePagesReleased - closed).toBe(2);
+      for (const mapping of mappings) expect(mapping.isCurrent()).toBe(true);
+      expect(f.inputs.resourceIsCurrent(accepted, f.row)).toBe(true);
+      return;
+    }
+    for (let step = 0; !work.next().done && step < 16; step++) {
+      /* one copied page per grant */
+    }
+    assert(task);
+    expect(f.inputs.resourcePagesWritten - before).toBe(5);
+    expect(task.privatePageBytes).toBe(5 * 1024);
+    finish(task);
+    task.commitPrepared().unwrap();
+    const bytes = f.observed.bytes.get(task.buffer);
+    assert(bytes);
+    expect(mappedDescriptor(bytes, task.resourceRoot, accepted)).toBe(f.row);
+    for (const mapping of mappings)
+      expect(mappedDescriptor(bytes, task.resourceRoot, mapping.logicalSlot)).toBe(
+        mapping.descriptor,
+      );
+  } finally {
+    work.return(undefined as never);
+    task?.release();
+    for (const mapping of mappings) mapping.release();
+    for (const descriptor of descriptors) descriptor.release();
   }
 });
 
@@ -665,7 +737,7 @@ it('cancels private tree construction before native allocation and drains exact 
   );
   const create = vi.spyOn(f.device, 'createBuffer');
   try {
-    expect(work.next().done).toBe(false);
+    for (let page = 0; page < 4; page++) expect(work.next().done).toBe(false);
     assert(task);
     expect(task.privatePageBytes).toBe(4 * 1024);
     task.release();

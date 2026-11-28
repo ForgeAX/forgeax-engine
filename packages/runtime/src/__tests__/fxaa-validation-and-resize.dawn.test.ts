@@ -12,8 +12,16 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // device capture, and pixel readback.
 
 import { World } from '@forgeax/engine-ecs';
-import { ANTIALIAS_FXAA, Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
-import { Transform } from '@forgeax/engine-scene';
+import {
+  ANTIALIAS_FXAA,
+  ANTIALIAS_NONE,
+  Camera,
+  Materials,
+  MeshFilter,
+  MeshRenderer,
+} from '@forgeax/engine-render';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
+import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { drawPublished } from './draw-published';
@@ -69,7 +77,8 @@ async function doReadPixels(
   return bytes;
 }
 
-function spawnCubeScene(world: World): void {
+function spawnCubeScene(world: World, visibleCube = false) {
+  const assets = testAssets(world);
   world.spawn(
     {
       component: Transform,
@@ -82,32 +91,39 @@ function spawnCubeScene(world: World): void {
     {
       component: MeshFilter,
       data: {
-        assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
-      },
-    },
-    { component: MeshRenderer, data: {} },
-  );
-  world.spawn(
-    {
-      component: Transform,
-      data: {
-        pos: [0, 0, 3],
-        quat: [0, 0, 0, 1],
-        scale: [1, 1, 1],
+        assetHandle: assets.create(createPrimitiveMesh('cube').unwrap()).unwrap(),
       },
     },
     {
-      component: Camera,
-      data: {
-        fov: Math.PI / 4,
-        aspect: 1,
-        near: 0.1,
-        far: 100,
-        antialias: ANTIALIAS_FXAA,
-        clearColor: CLEAR_RGBA,
-      },
+      component: MeshRenderer,
+      data: visibleCube
+        ? { materials: [assets.create(Materials.unlit([1, 1, 1, 1])).unwrap()] }
+        : {},
     },
   );
+  return world
+    .spawn(
+      {
+        component: Transform,
+        data: {
+          pos: [0, 0, 3],
+          quat: [0, 0, 0, 1],
+          scale: [1, 1, 1],
+        },
+      },
+      {
+        component: Camera,
+        data: {
+          fov: Math.PI / 4,
+          aspect: 1,
+          near: 0.1,
+          far: 100,
+          antialias: ANTIALIAS_FXAA,
+          clearColor: CLEAR_RGBA,
+        },
+      },
+    )
+    .unwrap();
 }
 
 describe('feat-20260528-fxaa-post-processing M3 w17: AC-07 validation + AC-08 resize dawn test', () => {
@@ -254,6 +270,7 @@ describe('feat-20260528-fxaa-post-processing M3 w17: AC-07 validation + AC-08 re
     let canvasW = WIDTH;
     let canvasH = HEIGHT;
     let renderTarget: GPUTexture | undefined;
+    let canvasFormat: GPUTextureFormat = 'rgba8unorm';
     const ensureRenderTarget = (device: GPUDevice, format: GPUTextureFormat): GPUTexture => {
       if (renderTarget !== undefined) {
         // Recreate on size change.
@@ -288,16 +305,14 @@ describe('feat-20260528-fxaa-post-processing M3 w17: AC-07 validation + AC-08 re
         if (kind !== 'webgpu') return null;
         return {
           configure(desc: { device: GPUDevice; format?: GPUTextureFormat }) {
-            ensureRenderTarget(desc.device, desc.format ?? 'rgba8unorm');
+            canvasFormat = desc.format ?? 'rgba8unorm';
+            ensureRenderTarget(desc.device, canvasFormat);
           },
           unconfigure() {},
           getCurrentTexture(): GPUTexture {
-            if (renderTarget === undefined) {
-              if (sharedDevice === undefined)
-                throw new Error('render target requested before device captured');
-              return ensureRenderTarget(sharedDevice, 'rgba8unorm');
-            }
-            return renderTarget;
+            if (sharedDevice === undefined)
+              throw new Error('render target requested before device captured');
+            return ensureRenderTarget(sharedDevice, canvasFormat);
           },
         };
       },
@@ -324,13 +339,19 @@ describe('feat-20260528-fxaa-post-processing M3 w17: AC-07 validation + AC-08 re
     const device = sharedDevice;
     if (device === undefined) throw new Error('GPUDevice not captured');
 
-    // Frame 1: render at 256x256.
+    // Exercise the built-in Forward lane on a cold frame and on binding replacement.
+    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward' }).unwrap();
     const world = new World();
-    spawnCubeScene(world);
+    const camera = spawnCubeScene(world, true);
+    propagateTransforms(world).unwrap();
+    const totalBefore = renderGraphCompileCount();
+    const orderedBefore = renderOrderedViewBindCount();
 
     const drawn1 = await drawPublished(renderer, world);
     expect(drawn1.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
+    expect(renderOrderedViewBindCount()).toBeGreaterThan(orderedBefore);
+    const afterCold = renderOrderedViewBindCount();
 
     // Read back frame 1 to verify non-empty.
     if (renderTarget === undefined) throw new Error('renderTarget not configured');
@@ -343,6 +364,7 @@ describe('feat-20260528-fxaa-post-processing M3 w17: AC-07 validation + AC-08 re
     const g1 = pixels1[off1 + 1] ?? 0;
     const b1 = pixels1[off1 + 0] ?? 0;
     expect(r1 + g1 + b1, 'center pixel must not be black before resize').toBeGreaterThan(0);
+    expect(pixels1[off1]).toBeGreaterThan((pixels1[0] ?? 0) + 80);
 
     // AC-08: Resize canvas to new dimensions.
     // In dawn-node the mock canvas size change triggers the render target
@@ -357,9 +379,11 @@ describe('feat-20260528-fxaa-post-processing M3 w17: AC-07 validation + AC-08 re
     // AC-08: The draw must not crash.
     expect(drawn2.ok).toBe(true);
     await device.queue.onSubmittedWorkDone();
+    expect(renderOrderedViewBindCount()).toBe(afterCold + 1);
 
     // Read back frame 2 to verify non-empty.
     if (renderTarget === undefined) throw new Error('renderTarget not configured');
+    expect([renderTarget.width, renderTarget.height]).toEqual([canvasW, canvasH]);
     const pixels2 = await doReadPixels(device, renderTarget, canvasW, canvasH);
     const cx2 = canvasW >> 1;
     const cy2 = canvasH >> 1;
@@ -370,5 +394,31 @@ describe('feat-20260528-fxaa-post-processing M3 w17: AC-07 validation + AC-08 re
     const b2 = pixels2[off2 + 0] ?? 0;
     // post-resize frame is non-black (cube rendered correctly at new size).
     expect(r2 + g2 + b2, 'center pixel must not be black after resize').toBeGreaterThan(0);
+    expect(pixels2[off2]).toBeGreaterThan((pixels2[0] ?? 0) + 80);
+
+    for (const antialias of [ANTIALIAS_NONE, ANTIALIAS_FXAA]) {
+      world.set(camera, Camera, { antialias }).unwrap();
+      const bindings = renderOrderedViewBindCount();
+      const drawn = await drawPublished(renderer, world);
+      expect(drawn.ok).toBe(true);
+      await device.queue.onSubmittedWorkDone();
+      expect(renderOrderedViewBindCount()).toBe(bindings + 1);
+      const inspection = renderer.inspect({ fields: ['output', 'viewConfiguration'] });
+      const fxaa = antialias === ANTIALIAS_FXAA;
+      expect(inspection.viewConfiguration?.effective).toMatchObject({
+        renderPath: 'forward',
+        antialias: fxaa ? 'fxaa' : 'none',
+      });
+      expect(
+        inspection.output.graphPassNames.some(
+          (name) => name === 'standard-final' || name === 'fxaa',
+        ),
+      ).toBe(fxaa);
+      const pixels = await doReadPixels(device, renderTarget, canvasW, canvasH);
+      expect(pixels[off2], 'cube differs from canvas clear').toBeGreaterThan((pixels[0] ?? 0) + 80);
+    }
+    expect(renderGraphCompileCount() - totalBefore).toBe(
+      renderOrderedViewBindCount() - orderedBefore,
+    );
   });
 });

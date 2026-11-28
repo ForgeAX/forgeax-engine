@@ -1,8 +1,8 @@
-import { ok, type Result } from '@forgeax/engine-types';
+import { err, ok, type Result } from '@forgeax/engine-types';
 import { type Affine, applyPoint, invertRigid, multiply } from './affine';
-import { pushAll } from './arrays';
+import { maxOf, pushAll } from './arrays';
 import { hypot3 } from './dmath';
-import type { ModelingError } from './errors';
+import { type ModelingError, modelingError } from './errors';
 import { type Tuple3, triangulateLoop, windingNumber } from './geom';
 import { pointTriangleDistance, triangleContact } from './intersect';
 import type { EditMesh } from './mesh';
@@ -64,10 +64,12 @@ export interface ScanOptions extends InterferenceOptions {
   /**
    * Largest distance in meters any part may travel between samples (default 0.005).
    * Intervals where two parts with overlapping swept bounds could move farther are
-   * subdivided, so parts thicker than this cannot pass through each other unseen.
-   * A graze whose path inside the other part is shorter than this (a corner clipping
+   * subdivided. Near a closed part's wall thinner than this, the bound drops to that wall's
+   * thickness (not below 0.1 mm), so closed parts cannot pass through each other unseen.
+   * A graze whose path inside the other part is shorter than the bound (a corner clipping
    * a corner, 0.26 mm deep at the 5 mm default in one probe) can still fall between
-   * samples: lower maxTravel to bound it.
+   * samples: lower maxTravel to bound it. A path that needs subdivision below 1e-7 in u
+   * or more than SCAN_WORK_LIMIT poses fails with `model-work-budget`.
    */
   readonly maxTravel?: number;
   /** Bisection steps that locate each pair's first contact between samples (default 6). */
@@ -106,10 +108,22 @@ export type InterferenceStatus = 'confirmed' | 'candidate' | 'designed';
  */
 export type InterferenceReason = 'penetration' | 'contained' | 'contact' | 'through';
 
+/**
+ * What decided a pair's `depth`: the surface penetration of two closed parts (`depth`), or,
+ * when either part has an open edge, the local `reach` of the crossing triangles (`reach`).
+ */
+export type InterferenceBasis = 'depth' | 'reach';
+
 export interface InterferencePair {
   readonly parts: readonly [string, string];
   readonly status: InterferenceStatus;
   readonly reason: InterferenceReason;
+  /**
+   * `reach` when a part of the pair is open (has an edge with one face): its `depth` is the
+   * `reach`, which overestimates when a third face bounds the overlap, so the status can
+   * differ from the closed twin of the same pose. Close the part or review the pair.
+   */
+  readonly basis: InterferenceBasis;
   /**
    * Estimated penetration depth in meters (0 for touching surfaces): for closed parts the
    * farthest surface point inside the other part, so it is at most half the thinner
@@ -132,11 +146,10 @@ export interface InterferencePair {
   /** A posed model-space point in the contact region. */
   readonly at: Tuple3;
   /**
-   * Translation of `parts[1]` in posed model space that resolves the finding: along the
-   * axis where the two posed bounds overlap least, away from `parts[0]`, by depth plus the
-   * tolerance the pair was judged against (ties take the lowest axis and the positive
-   * direction). Absent without penetration. A `through` pair slices across its other part,
-   * so a move of this size may not clear it; read `reach`.
+   * Translation of `parts[1]` in posed model space that was re-tested and leaves the pair
+   * not confirmed: the shortest axis move among depth plus the pair's tolerance and the full
+   * separation of the two posed bounds on either side. Absent without penetration, for a
+   * designed pair, and when no tried move clears it.
    */
   readonly suggestedMove?: Tuple3;
 }
@@ -186,6 +199,8 @@ export interface ScanPair {
   readonly maxDepthAt: number;
   /** Largest `reach` along the path (see InterferencePair). */
   readonly maxReach: number;
+  /** `reach` when any contact along the path was judged by reach (see `InterferencePair.basis`). */
+  readonly basis: InterferenceBasis;
   /**
    * With a clearance threshold: the smallest surface distance along the path (0 when the
    * parts touch), as `partDistance` measures it at `minDistanceAt`, refined between samples.
@@ -217,9 +232,10 @@ export interface ConnectivityOptions extends PoseOptions {
   readonly gap?: number;
   /**
    * Which parts are hardware: a joint is only crossed through a hardware part (default
-   * parts named `mount-*`).
+   * parts named `mount-*`). The second argument is the tested connected shell's face ids,
+   * so a mixed armor/frame binding can identify actual hardware by authored face tags.
    */
-  readonly hardware?: (part: string) => boolean;
+  readonly hardware?: (part: string, faces: readonly number[]) => boolean;
   /**
    * Seed joints whose parts are fixed (default the rig root); the joints above them (a
    * stand mechanism) are fixed with them and need no crossing.
@@ -229,6 +245,8 @@ export interface ConnectivityOptions extends PoseOptions {
 
 /** A part not connected to the root through touching kinematic neighbours. */
 export interface FloatingPart {
+  /** Detached connected shell inside a part bound from several shells. */
+  readonly faces?: readonly number[];
   readonly part: string;
   readonly joint: string;
   /**
@@ -991,6 +1009,106 @@ function passedThickness(
   return thinnest;
 }
 
+/** Ray o + s*dir (s > 0) against triangle t, boundary inclusive: s, or undefined. */
+function rayHit(o: P, dir: P, t: readonly P[]): number | undefined {
+  const [a, b, c] = t as [P, P, P];
+  const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]] as const;
+  const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]] as const;
+  const h = [
+    dir[1] * e2[2] - dir[2] * e2[1],
+    dir[2] * e2[0] - dir[0] * e2[2],
+    dir[0] * e2[1] - dir[1] * e2[0],
+  ] as const;
+  const det = e1[0] * h[0] + e1[1] * h[1] + e1[2] * h[2];
+  if (Math.abs(det) < 1e-300) return undefined;
+  const s = [o[0] - a[0], o[1] - a[1], o[2] - a[2]] as const;
+  const u = (s[0] * h[0] + s[1] * h[1] + s[2] * h[2]) / det;
+  if (u < -1e-12 || u > 1 + 1e-12) return undefined;
+  const k = [s[1] * e1[2] - s[2] * e1[1], s[2] * e1[0] - s[0] * e1[2], s[0] * e1[1] - s[1] * e1[0]];
+  const v =
+    (dir[0] * (k[0] as number) + dir[1] * (k[1] as number) + dir[2] * (k[2] as number)) / det;
+  if (v < -1e-12 || u + v > 1 + 1e-12) return undefined;
+  return (e2[0] * (k[0] as number) + e2[1] * (k[1] as number) + e2[2] * (k[2] as number)) / det;
+}
+
+/** Distance along unit `dir` from `o` to the part's surface beyond CONTACT_DISTANCE (rest frame). */
+function exitDistance(part: PartGeometry, o: P, dir: P): number {
+  const bvh = part.bvh;
+  if (bvh.order.length === 0) return Infinity;
+  let best = Infinity;
+  const stack = [0];
+  while (stack.length > 0) {
+    const node = stack.pop() as number;
+    // Slab test: the parameter range where the ray is inside the node's box.
+    let enter = 0;
+    let leave = best;
+    for (let k = 0; k < 3 && enter <= leave; k++) {
+      const lo = (bvh.bounds[node * 6 + k] as number) - (o[k] as number);
+      const hi = (bvh.bounds[node * 6 + 3 + k] as number) - (o[k] as number);
+      const d = dir[k] as number;
+      if (d === 0) {
+        if (lo > 0 || hi < 0) leave = -1;
+        continue;
+      }
+      const s0 = lo / d;
+      const s1 = hi / d;
+      enter = Math.max(enter, Math.min(s0, s1));
+      leave = Math.min(leave, Math.max(s0, s1));
+    }
+    if (enter > leave + CONTACT_DISTANCE) continue;
+    const count = bvh.count[node] as number;
+    if (count === 0) {
+      stack.push(node + 1, bvh.start[node] as number);
+      continue;
+    }
+    const first = bvh.start[node] as number;
+    for (let i = first; i < first + count; i++) {
+      const s = rayHit(o, dir, triangle(part.tris, bvh.order[i] as number));
+      if (s !== undefined && s > CONTACT_DISTANCE && s < best) best = s;
+    }
+  }
+  return best;
+}
+
+/** Per closed part, the thinnest wall under each BVH node (NaN until measured). */
+const walls = new WeakMap<PartGeometry, { sign: number; under: Float64Array }>();
+
+/**
+ * Thinnest wall of a closed part's triangles under `node`: from each triangle's centroid,
+ * inward along its normal to the next surface (Infinity for open parts).
+ */
+function wallThickness(part: PartGeometry, node: number): number {
+  if (!part.closed || part.bvh.order.length === 0) return Infinity;
+  let memo = walls.get(part);
+  if (memo === undefined) {
+    memo = { sign: outward(part), under: new Float64Array(part.bvh.count.length).fill(Number.NaN) };
+    walls.set(part, memo);
+  }
+  const known = memo.under[node] as number;
+  if (!Number.isNaN(known)) return known;
+  const count = part.bvh.count[node] as number;
+  let thinnest = Infinity;
+  if (count === 0) {
+    thinnest = Math.min(
+      wallThickness(part, node + 1),
+      wallThickness(part, part.bvh.start[node] as number),
+    );
+  } else {
+    const first = part.bvh.start[node] as number;
+    for (let i = first; i < first + count; i++) {
+      const t = triangle(part.tris, part.bvh.order[i] as number);
+      const plane = planeOf(t);
+      if (plane === undefined) continue;
+      const inward: P = [-memo.sign * plane[0], -memo.sign * plane[1], -memo.sign * plane[2]];
+      const [p, q, r] = t as [P, P, P];
+      const c: P = [(p[0] + q[0] + r[0]) / 3, (p[1] + q[1] + r[1]) / 3, (p[2] + q[2] + r[2]) / 3];
+      thinnest = Math.min(thinnest, exitDistance(part, c, inward));
+    }
+  }
+  memo.under[node] = thinnest;
+  return thinnest;
+}
+
 /** @internal Exact interference of parts `a` and `b` at one placement. */
 export function pairInterference(
   parts: readonly PartGeometry[],
@@ -999,6 +1117,7 @@ export function pairInterference(
   placement: Placement,
   contacts: ReadonlyMap<string, number>,
   tolerance: number,
+  suggest = true,
 ): InterferencePair | undefined {
   const A = parts[a] as PartGeometry;
   const B = parts[b] as PartGeometry;
@@ -1019,7 +1138,7 @@ export function pairInterference(
   const crossB = new Map<number, { tri: P[]; others: P[][] }>();
   // Same-facing coplanar overlaps: no triangle leaves the other's plane, so they are no crossing.
   const flush = new Map<string, Flush>();
-  const scale = Math.max(1, ...boxA[0].map(Math.abs), ...boxA[1].map(Math.abs));
+  const scale = Math.max(1, maxOf(boxA[0].map(Math.abs)), maxOf(boxA[1].map(Math.abs)));
   const flushEps = FLUSH_EPSILON * scale;
   const flushArea = FLUSH_AREA * scale * scale;
   for (const t of trianglesNear(B, rel, boxA, 0)) {
@@ -1178,13 +1297,19 @@ export function pairInterference(
   const posedA = rootBox(A, deltaA);
   const posedB = rootBox(B, deltaB);
   const move =
-    depth > 0 && posedA !== undefined && posedB !== undefined
-      ? suggestedMove(ordered ? posedA : posedB, ordered ? posedB : posedA, depth + limit)
+    suggest && depth > 0 && designed === undefined && posedA !== undefined && posedB !== undefined
+      ? suggestedMove(ordered ? posedA : posedB, ordered ? posedB : posedA, depth, limit, (v) => {
+          const t: Tuple3 = ordered ? v : [-v[0], -v[1], -v[2]];
+          const moved = shiftPlacement(placement, a, b, ordered ? b : a, t);
+          const after = pairInterference(parts, a, b, moved, contacts, tolerance, false);
+          return after === undefined || after.status !== 'confirmed';
+        })
       : undefined;
   return {
     parts: ordered ? [A.name, B.name] : [B.name, A.name],
     status,
     reason,
+    basis: A.closed && B.closed ? 'depth' : 'reach',
     depth,
     reach,
     triangles,
@@ -1194,23 +1319,90 @@ export function pairInterference(
   };
 }
 
-/** Moves `second` away from `first` along the axis where their boxes overlap least. */
-function suggestedMove(first: [P, P], second: [P, P], distance: number): Tuple3 {
-  let axis = 0;
-  let least = Infinity;
+/** `placement` with part `moved` (a or b of the pair) translated by `t` in posed model space. */
+function shiftPlacement(
+  placement: Placement,
+  a: number,
+  b: number,
+  moved: number,
+  t: Tuple3,
+): Placement {
+  const deltas = placement.deltas.map((d, k) => {
+    if (k !== moved) return d;
+    const out = [...d];
+    out[3] = (out[3] as number) + t[0];
+    out[7] = (out[7] as number) + t[1];
+    out[11] = (out[11] as number) + t[2];
+    return out;
+  });
+  const inv = invertRigid(placement.deltas[a] as Affine);
+  const local = [0, 1, 2].map(
+    (r) =>
+      (inv[r * 4] as number) * t[0] +
+      (inv[r * 4 + 1] as number) * t[1] +
+      (inv[r * 4 + 2] as number) * t[2],
+  );
+  const sign = moved === b ? 1 : -1;
+  const rel = placement.relative(a, b);
+  const shifted = [...rel];
+  for (let r = 0; r < 3; r++)
+    shifted[r * 4 + 3] = (rel[r * 4 + 3] as number) + sign * (local[r] as number);
+  return { deltas, relative: (x, y) => (x === a && y === b ? shifted : placement.relative(x, y)) };
+}
+
+/**
+ * Smallest axis translation of `second` away from `first` that `clears` accepts. Candidates are
+ * the penetration depth plus tolerance and the full box separation along each axis and side,
+ * tried by increasing distance; a pair no candidate clears gets no suggestion.
+ */
+function suggestedMove(
+  first: [P, P],
+  second: [P, P],
+  depth: number,
+  limit: number,
+  clears: (move: Tuple3) => boolean,
+): Tuple3 | undefined {
+  const distance = depth + limit;
+  const candidates: {
+    axis: number;
+    sign: number;
+    length: number;
+    overlap: number;
+    toward: boolean;
+  }[] = [];
   for (let k = 0; k < 3; k++) {
     const overlap =
       Math.min(first[1][k] as number, second[1][k] as number) -
       Math.max(first[0][k] as number, second[0][k] as number);
-    if (overlap < least) {
-      least = overlap;
-      axis = k;
+    const toward =
+      (second[0][k] as number) + (second[1][k] as number) >=
+      (first[0][k] as number) + (first[1][k] as number)
+        ? 1
+        : -1;
+    for (const sign of [toward, -toward]) {
+      const separation =
+        sign > 0
+          ? (first[1][k] as number) - (second[0][k] as number)
+          : (second[1][k] as number) - (first[0][k] as number);
+      const lengths = sign === toward && distance < separation ? [distance] : [];
+      lengths.push(separation + limit);
+      for (const length of lengths)
+        candidates.push({ axis: k, sign, length, overlap, toward: sign === toward });
     }
   }
-  const center = (box: [P, P]) => ((box[0][axis] as number) + (box[1][axis] as number)) / 2;
-  const move: [number, number, number] = [0, 0, 0];
-  move[axis] = center(second) >= center(first) ? distance : -distance;
-  return move;
+  candidates.sort(
+    (x, y) =>
+      x.length - y.length ||
+      Number(y.toward) - Number(x.toward) ||
+      x.overlap - y.overlap ||
+      x.axis - y.axis,
+  );
+  for (const c of candidates) {
+    const move: [number, number, number] = [0, 0, 0];
+    move[c.axis] = c.sign * c.length;
+    if (clears(move)) return move;
+  }
+  return undefined;
 }
 
 const RANK: Record<ScanStatus, number> = { confirmed: 0, candidate: 1, clearance: 2, designed: 3 };
@@ -1343,10 +1535,17 @@ function nodeTravel(bvh: Bvh, node: number, motion: MotionBound): number {
   return total >= 0.5 ? Infinity : sum / (1 - total);
 }
 
+/** Smallest travel guard a thin wall lowers the spacing to (meters): thinner walls may still tunnel. */
+const MIN_WALL_TRAVEL = 1e-4;
+
 /**
  * Conservative advancement on the two BVHs: whether some leaf pair is closer at the
- * interval start than its points can travel together, and could travel more than
- * `maxTravel`. Pairs that are farther apart than their motion bound stay apart.
+ * interval start than its points can travel together, and could travel more than its
+ * guard: `maxTravel`, lowered to the thicker of the two nodes' thinnest walls (but not
+ * below MIN_WALL_TRAVEL). Two volumes crossing overlap over a relative travel of at least the
+ * sum of their thicknesses, so a sample lands inside the overlap. A node's guard is at most
+ * its leaves', so a pruned node pair cannot hold a leaf pair that needs a split. Pairs that
+ * are farther apart than their motion bound stay apart.
  */
 function needsSplit(
   a: PartGeometry,
@@ -1362,14 +1561,13 @@ function needsSplit(
     const la = nodeTravel(a.bvh, na, motion[0]);
     const lb = nodeTravel(b.bvh, nb, motion[1]);
     // A node's bound covers every point below it: nothing here can travel farther.
-    if (la + lb <= maxTravel) continue;
+    if (la + lb <= Math.min(maxTravel, MIN_WALL_TRAVEL)) continue;
+    const wall = Math.max(wallThickness(a, na), wallThickness(b, nb));
+    if (la + lb <= Math.min(maxTravel, Math.max(MIN_WALL_TRAVEL, wall))) continue;
     if (boxGap(a.bvh, na, nodeBox(b.bvh, nb, rel)) > la + lb) continue;
     const leafA = (a.bvh.count[na] as number) > 0;
     const leafB = (b.bvh.count[nb] as number) > 0;
-    if (leafA && leafB) {
-      if (la + lb > maxTravel) return true;
-      continue;
-    }
+    if (leafA && leafB) return true;
     if (!leafA && (leafB || la >= lb)) stack.push([na + 1, nb], [a.bvh.start[na] as number, nb]);
     else stack.push([na, nb + 1], [na, b.bvh.start[nb] as number]);
   }
@@ -1435,6 +1633,9 @@ interface Entry {
 }
 
 const GOLDEN = 0.6180339887498949;
+
+/** Poses the travel and clearance subdivision of one scan may evaluate. */
+const SCAN_WORK_LIMIT = 65536;
 
 /**
  * @internal Test every pair at the given samples, subdivide intervals by travel (and, with
@@ -1560,9 +1761,9 @@ export function scanPath(
   for (let i = 0; i + 1 < full.length; i++) {
     stack.push({ s0: full[i] as Posed, s1: full[i + 1] as Posed, active: pairs.map((_, k) => k) });
   }
+  let split = 0;
   while (stack.length > 0) {
     const { s0, s1, active } = stack.pop() as (typeof stack)[number];
-    if (s1.u - s0.u < 1e-7) continue;
     const keep = active.filter((k) => {
       const [a, b] = pairs[k] as [number, number];
       const rel = multiply(invertRigid(s0.deltas[a] as Affine), s0.deltas[b] as Affine);
@@ -1578,6 +1779,23 @@ export function scanPath(
       );
     });
     if (keep.length === 0) continue;
+    if (s1.u - s0.u < 1e-7 || ++split > SCAN_WORK_LIMIT) {
+      const [a, b] = pairs[keep[0] as number] as [number, number];
+      return err(
+        modelingError(
+          'model-work-budget',
+          `a path whose motion bound is met within ${SCAN_WORK_LIMIT} subdivision poses and 1e-7 in u`,
+          {
+            u: [s0.u, s1.u],
+            parts: [(parts[a] as PartGeometry).name, (parts[b] as PartGeometry).name],
+            evaluated,
+          },
+          'the motion between samples cannot be bounded: a joint near a singularity, or a part ' +
+            'moving fast against a wall thinner than maxTravel. Raise maxTravel, split the path ' +
+            'into shorter keys, or check the loop for a lock-up at this u',
+        ),
+      );
+    }
     const mid = pose((s0.u + s1.u) / 2);
     if (!mid.ok) return mid;
     for (const k of keep) test(k, mid.value);
@@ -1681,7 +1899,8 @@ export function scanPath(
       ...(confirmed.value === undefined ? {} : { firstConfirmed: confirmed.value }),
       maxDepth: deepest === undefined ? 0 : (deepest.hit as InterferencePair).depth,
       maxDepthAt: (deepest ?? nearest ?? (sorted[0] as Entry)).u,
-      maxReach: Math.max(0, ...hits.map((e) => (e.hit as InterferencePair).reach)),
+      maxReach: Math.max(0, maxOf(hits.map((e) => (e.hit as InterferencePair).reach))),
+      basis: hits.some((e) => (e.hit as InterferencePair).basis === 'reach') ? 'reach' : 'depth',
       ...(nearest === undefined ? {} : { minDistance: nearest.distance, minDistanceAt: nearest.u }),
     });
   }

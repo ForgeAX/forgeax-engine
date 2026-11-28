@@ -1,3 +1,14 @@
+import {
+  createViewResource,
+  type GpuDrivenViewCreationInput,
+  type GpuDrivenViewCreationStep,
+  prepareViewPipeline,
+  viewCreationInvalid,
+  viewCreationSupported,
+} from './view-gpu-preparation';
+
+export type { GpuDrivenViewCreationInput, GpuDrivenViewCreationStep } from './view-gpu-preparation';
+
 import type {
   ComputeGraphPass,
   GraphBuffer,
@@ -22,6 +33,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
+import { shouldShrinkCapacity } from '../dynamic-capacity';
 import {
   decodeGeometryCommands,
   decodeGeometryView,
@@ -69,6 +81,7 @@ import { type SkinDemandLayout, skinDemandLayout, writeSkinDemandConstants } fro
 import { GpuTaskResidency } from './task-residency';
 import {
   deriveGpuDrivenViewBufferCapacities,
+  type GpuDrivenViewBufferCapacities,
   growGpuDrivenVisibleCapacity,
   nextCapacity,
   type ViewBufferRequest,
@@ -446,107 +459,6 @@ const SHADOW_RASTER_PASS = new PreparedRasterPass({
   sampleCount: 1,
 });
 
-export type GpuDrivenViewCreationInput = {
-  readonly device: RhiDevice;
-  readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory;
-  readonly labelPrefix?: string;
-  /**
-   * @internal
-   * Falsifier hook: scales the HZB screen footprint. Production uses 1.
-   */
-  readonly occlusionFootprintScale?: number;
-  /** Compile the shadow caster cull against the main camera's pyramid. */
-  readonly shadowCameraCull?: boolean;
-  /** Stock shadow consumers need only batch counters; detailed LOD reads are unavailable. */
-  readonly readback?: 'complete' | 'culling-counts';
-};
-export type GpuDrivenViewCreationStep = void | Promise<void>;
-
-function viewCreationInvalid(): RhiError {
-  return new RhiError({
-    code: 'rhi-descriptor-invalid',
-    expected: 'the original live View construction demand and device',
-    hint: 'discard this candidate and prepare again for the current owner',
-  });
-}
-
-function viewCreationSupported(device: RhiDevice, completion: boolean): Result<void, RhiError> {
-  if (!device.caps.compute || !device.caps.storageBuffer || !device.caps.indirectDrawing) {
-    return err(
-      new RhiError({
-        code: 'feature-not-enabled',
-        expected: 'compute && storageBuffer && indirectDrawing',
-        hint: 'use the CPU projection and direct submission fallback on this device',
-      }),
-    );
-  }
-  if (completion && device.createComputePipelineAsync === undefined)
-    return err(
-      new RhiError({
-        code: 'feature-not-enabled',
-        expected: 'completion-qualified native compute pipeline construction',
-        hint: 'use a backend with asynchronous pipeline preparation before qualifying this View',
-      }),
-    );
-  return ok(undefined);
-}
-
-function* createViewResource<T>(
-  current: () => boolean,
-  create: () => Result<T, RhiError>,
-): Generator<void, Result<T, RhiError>> {
-  if (!current()) return err(viewCreationInvalid());
-  const result = create();
-  if (!result.ok) return result;
-  if (!current()) return err(viewCreationInvalid());
-  yield;
-  return current() ? result : err(viewCreationInvalid());
-}
-
-function* prepareViewPipeline(
-  device: RhiDevice,
-  descriptor: import('@forgeax/engine-rhi').ComputePipelineDescriptor,
-  completion: boolean,
-  current: () => boolean,
-): Generator<GpuDrivenViewCreationStep, Result<ComputePipeline, RhiError>> {
-  if (!current()) return err(viewCreationInvalid());
-  const prepare = device.createComputePipelineAsync;
-  if (completion && prepare === undefined)
-    return err(
-      new RhiError({
-        code: 'feature-not-enabled',
-        expected: 'completion-qualified native compute pipeline construction',
-        hint: 'use a backend with asynchronous pipeline preparation before qualifying this View',
-      }),
-    );
-  const requested = completion
-    ? prepare?.call(device, descriptor)
-    : device.createComputePipeline(descriptor);
-  let result: Result<ComputePipeline, RhiError> | undefined;
-  if (requested instanceof Promise) {
-    const done = requested.then(
-      (value) => {
-        result = value;
-      },
-      (cause) => {
-        result = err(
-          cause instanceof RhiError
-            ? cause
-            : new RhiError({
-                code: 'webgpu-runtime-error',
-                expected: 'successful completion of the requested native View pipeline',
-                hint: cause instanceof Error ? cause.message : String(cause),
-              }),
-        );
-      },
-    );
-    while (result === undefined) yield done;
-  } else result = requested;
-  if (!current()) return err(viewCreationInvalid());
-  yield;
-  return result ?? err(viewCreationInvalid());
-}
-
 export class GpuDrivenView {
   private addressPreparation: ViewAddressPreparation | undefined;
   private initialStorage: InitialViewStorage | undefined;
@@ -576,6 +488,7 @@ export class GpuDrivenView {
   /** Stable-order records address flattened executions, not shared member storage. */
   private orderCandidateCapacity = 0;
   private sceneRef: GpuScene | undefined;
+  private sceneStorageReduction = 0;
   private readonly memberResidency: GpuTaskResidency;
   private visibleBufferCapacity = 0;
   /**
@@ -1363,6 +1276,7 @@ export class GpuDrivenView {
       if (!sharedInput.ok) return sharedInput;
       this.sharedInputUploadBytes = scene.inputs.uploadBytes - inputUploadStart;
       this.uploadBytes += this.sharedInputUploadBytes;
+      const reduction = scene.viewStorageReduction;
       const ensured = this.ensureBuffers(
         plan,
         scene,
@@ -1370,6 +1284,7 @@ export class GpuDrivenView {
         visibleSurfaceRows !== undefined,
         skin,
         this.lateMirror || occlusionCamera !== undefined,
+        reduction,
       );
       if (!ensured.ok) return ensured;
       const buffersRebuilt = ensured.value;
@@ -1409,6 +1324,7 @@ export class GpuDrivenView {
       this.sceneInputs = sharedInput.value.buffer;
       this.sceneInputBytes = sharedInput.value.byteLength;
       this.memberResidency.adoptActive(scene.inputs, encoded, encoded.rows, encoded.headers);
+      if (this.sceneRef !== scene || reduction !== 0) this.sceneStorageReduction = reduction;
       this.adoptScene(scene);
       this.assertInputScene(scene);
       this.inputReads = inputs;
@@ -1546,6 +1462,7 @@ export class GpuDrivenView {
     surfaceRows: boolean,
     skin: SkinSceneFrame | undefined,
     lateMirror: boolean,
+    reduction: number,
   ): Result<boolean, RhiError> {
     const skinJointCapacity = Math.max(
       this.skinJointCapacity,
@@ -1569,20 +1486,27 @@ export class GpuDrivenView {
       surfaceRows !== (this.buffers?.visibleSurfaceRows !== undefined) ||
       this.buffers === undefined ||
       suppressionWords > this.suppressionWordCapacity;
-    if (this.plan === plan && !structureGrows) return ok(false);
+    const reviewStorage = this.sceneRef === scene && reduction > this.sceneStorageReduction;
+    if (this.plan === plan && !structureGrows && !reviewStorage) return ok(false);
     // Candidate records and compacted visible indices are different
     // capacity domains: every LOD level owns an aligned visible segment,
     // so the visible address space exceeds the logical candidate count.
     // Never let it inflate candidate/LOD-row storage allocations.
     const capacities = deriveGpuDrivenViewBufferCapacities(plan);
     const orderCandidateCapacity = nextCapacity(plan.candidateCount);
+    const reduceStorage =
+      reviewStorage &&
+      this.storageHasIdleTail(capacities, orderCandidateCapacity, suppressionWords);
     if (
       !structureGrows &&
-      capacities.candidate <= this.candidateCapacity &&
-      orderCandidateCapacity <= this.orderCandidateCapacity &&
-      capacities.visible <= this.visibleBufferCapacity &&
-      capacities.batch <= this.batchCapacity &&
-      capacities.indirect <= this.indirectCapacity
+      !reduceStorage &&
+      this.storageCapacityFits(
+        capacities,
+        plan.candidateCount,
+        suppressionWords,
+        surfaceRows,
+        lateMirror,
+      )
     )
       return ok(false);
     const rebuilt = this.rebuildBuffers(
@@ -1596,8 +1520,24 @@ export class GpuDrivenView {
       skinCandidateCapacity,
       lateMirror,
       orderCandidateCapacity,
+      reduceStorage,
     );
     return rebuilt.ok ? ok(true) : rebuilt;
+  }
+
+  private storageHasIdleTail(
+    capacities: GpuDrivenViewBufferCapacities,
+    orderCandidates: number,
+    suppression: number,
+  ): boolean {
+    return (
+      shouldShrinkCapacity(capacities.candidate, this.candidateCapacity) ||
+      shouldShrinkCapacity(capacities.visible, this.visibleBufferCapacity) ||
+      shouldShrinkCapacity(capacities.batch, this.batchCapacity) ||
+      shouldShrinkCapacity(capacities.indirect, this.indirectCapacity) ||
+      shouldShrinkCapacity(orderCandidates, this.orderCandidateCapacity) ||
+      shouldShrinkCapacity(suppression, this.suppressionWordCapacity)
+    );
   }
 
   /**
@@ -3649,6 +3589,7 @@ export class GpuDrivenView {
     skinCandidateCapacity = this.skinLayout?.candidateCapacity ?? candidateCapacity,
     lateMirror = this.lateMirror,
     orderCandidateCapacity = this.orderCandidateCapacity,
+    reduceStorage = false,
   ): Result<void, RhiError> {
     const work = this.rebuildBufferSteps(
       candidateCapacity,
@@ -3662,6 +3603,9 @@ export class GpuDrivenView {
       lateMirror,
       orderCandidateCapacity,
       () => true,
+      undefined,
+      undefined,
+      reduceStorage,
     );
     for (;;) {
       const next = work.next();
@@ -3717,12 +3661,16 @@ export class GpuDrivenView {
       visibleCapacity: number,
       indirectCapacity: number,
     ) => Result<InputBindingGroups & { readonly consumers: GpuViewInputPreparation }, RhiError>,
+    reduceStorage = false,
   ): Generator<void, Result<void, RhiError>> {
     const nextCandidate = nextCapacity(candidateCapacity);
     const nextOrderCandidate = nextCapacity(
-      Math.max(orderCandidateCapacity, this.orderCandidateCapacity),
+      Math.max(orderCandidateCapacity, reduceStorage ? 0 : this.orderCandidateCapacity),
     );
-    const nextSuppression = Math.max(nextCapacity(suppressionWords), this.suppressionWordCapacity);
+    const nextSuppression = Math.max(
+      nextCapacity(suppressionWords),
+      reduceStorage ? 0 : this.suppressionWordCapacity,
+    );
     const nextBatch = nextCapacity(batchCapacity);
     const nextIndirect = nextCapacity(indirectCapacity);
     // The late mirror starts at the capacity and raster binds its windows at
@@ -3736,7 +3684,7 @@ export class GpuDrivenView {
     const visibleCeiling = this.visibleBufferCeiling(skinTail, lateMirror);
     const nextVisible = growGpuDrivenVisibleCapacity(
       // A changed mirror reserves a new allocation; its capacity restarts exact.
-      lateMirror === this.lateMirror ? this.visibleBufferCapacity : 0,
+      !reduceStorage && lateMirror === this.lateMirror ? this.visibleBufferCapacity : 0,
       visibleCapacity,
       visibleCeiling,
     );

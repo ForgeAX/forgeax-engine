@@ -254,13 +254,11 @@ function segmentTriangleSides(p: P, q: P, t: readonly P[], sp: number, sq: numbe
     );
     return out === 'none' && inside === 'none' ? 'none' : 'touch';
   }
-  const e = [
-    Math.sign(orient3d(p, q, a, b)),
-    Math.sign(orient3d(p, q, b, c)),
-    Math.sign(orient3d(p, q, c, a)),
-  ];
-  const pierces = e.every((s) => s > 0) || e.every((s) => s < 0);
-  const grazes = !pierces && (e.every((s) => s >= 0) || e.every((s) => s <= 0));
+  const e0 = Math.sign(orient3d(p, q, a, b));
+  const e1 = Math.sign(orient3d(p, q, b, c));
+  const e2 = Math.sign(orient3d(p, q, c, a));
+  const pierces = (e0 > 0 && e1 > 0 && e2 > 0) || (e0 < 0 && e1 < 0 && e2 < 0);
+  const grazes = !pierces && ((e0 >= 0 && e1 >= 0 && e2 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0));
   if (!pierces && !grazes) return 'none';
   return pierces && sp !== 0 && sq !== 0 ? 'cross' : 'touch';
 }
@@ -270,19 +268,44 @@ function segmentTriangleSides(p: P, q: P, t: readonly P[], sp: number, sq: numbe
  * are one surface to the model (walls of parts cut from each other end up an ulp
  * apart and an ulp out of plane), so they are classified as coplanar.
  */
+function withinPlaneOf(t: readonly P[], plane: readonly P[], tolerance: number): boolean {
+  const o = plane[0] as P;
+  const p1 = plane[1] as P;
+  const p2 = plane[2] as P;
+  const u0 = p1[0] - o[0];
+  const u1 = p1[1] - o[1];
+  const u2 = p1[2] - o[2];
+  const v0 = p2[0] - o[0];
+  const v1 = p2[1] - o[1];
+  const v2 = p2[2] - o[2];
+  const n0 = u1 * v2 - u2 * v1;
+  const n1 = u2 * v0 - u0 * v2;
+  const n2 = u0 * v1 - u1 * v0;
+  const length = Math.sqrt(n0 * n0 + n1 * n1 + n2 * n2);
+  if (length === 0) return false;
+  for (let k = 0; k < 3; k++) {
+    const p = t[k] as P;
+    const d = (p[0] - o[0]) * n0 + (p[1] - o[1]) * n1 + (p[2] - o[2]) * n2;
+    if (!(Math.abs(d) / length <= tolerance)) return false;
+  }
+  return true;
+}
+
+/**
+ * Every vertex of each triangle lies within `tolerance` of the other's plane: the two
+ * are one surface to the model (walls of parts cut from each other end up an ulp
+ * apart and an ulp out of plane), so they are classified as coplanar.
+ */
 function nearCoplanar(t1: readonly P[], t2: readonly P[], tolerance: number): boolean {
-  const within = (t: readonly P[], plane: readonly P[]) => {
-    const n = normalOf(plane);
-    const length = Math.sqrt(dot3(n, n));
-    if (length === 0) return false;
-    const o = plane[0] as P;
-    return t.every((p) => Math.abs(dot3(minus(p, o), n)) / length <= tolerance);
-  };
-  return within(t1, t2) && within(t2, t1);
+  return withinPlaneOf(t1, t2, tolerance) && withinPlaneOf(t2, t1, tolerance);
 }
 
 function coplanar(t1: readonly P[], t2: readonly P[]): boolean {
   return t2.every((p) => orient3d(t1[0] as P, t1[1] as P, t1[2] as P, p) === 0);
+}
+
+function sideAt(s0: number, s1: number, s2: number, k: number): number {
+  return k === 0 ? s0 : k === 1 ? s1 : s2;
 }
 
 /** Exact contact class of two triangles that share no vertex. */
@@ -290,23 +313,39 @@ export function triangleContact(t1: readonly P[], t2: readonly P[], tolerance = 
   if (tolerance > 0 && nearCoplanar(t1, t2, tolerance)) {
     return coplanarContact(t1, t2, true, tolerance);
   }
-  const side = (t: readonly P[], others: readonly P[]) =>
-    others.map((p) => Math.sign(orient3d(t[0] as P, t[1] as P, t[2] as P, p)));
-  const s2 = side(t1, t2);
-  if (s2.every((s) => s > 0) || s2.every((s) => s < 0)) return 'none';
-  const s1 = side(t2, t1);
-  if (s1.every((s) => s > 0) || s1.every((s) => s < 0)) return 'none';
-  if (s2.every((s) => s === 0)) return coplanarContact(t1, t2, true, tolerance);
+  const [a1, b1, c1] = t1 as [P, P, P];
+  const [a2, b2, c2] = t2 as [P, P, P];
+  const s20 = Math.sign(orient3d(a1, b1, c1, a2));
+  const s21 = Math.sign(orient3d(a1, b1, c1, b2));
+  const s22 = Math.sign(orient3d(a1, b1, c1, c2));
+  if ((s20 > 0 && s21 > 0 && s22 > 0) || (s20 < 0 && s21 < 0 && s22 < 0)) return 'none';
+  const s10 = Math.sign(orient3d(a2, b2, c2, a1));
+  const s11 = Math.sign(orient3d(a2, b2, c2, b1));
+  const s12 = Math.sign(orient3d(a2, b2, c2, c1));
+  if ((s10 > 0 && s11 > 0 && s12 > 0) || (s10 < 0 && s11 < 0 && s12 < 0)) return 'none';
+  if (s20 === 0 && s21 === 0 && s22 === 0) return coplanarContact(t1, t2, true, tolerance);
   let out: Contact = 'none';
   for (let k = 0; k < 3; k++) {
     const next = (k + 1) % 3;
     out = strongest(
       out,
-      segmentTriangleSides(t1[k] as P, t1[next] as P, t2, s1[k] as number, s1[next] as number),
+      segmentTriangleSides(
+        t1[k] as P,
+        t1[next] as P,
+        t2,
+        sideAt(s10, s11, s12, k),
+        sideAt(s10, s11, s12, next),
+      ),
     );
     out = strongest(
       out,
-      segmentTriangleSides(t2[k] as P, t2[next] as P, t1, s2[k] as number, s2[next] as number),
+      segmentTriangleSides(
+        t2[k] as P,
+        t2[next] as P,
+        t1,
+        sideAt(s20, s21, s22, k),
+        sideAt(s20, s21, s22, next),
+      ),
     );
   }
   return out;
@@ -492,7 +531,8 @@ export function pointTriangleDistance(p: P, t: readonly P[]): number {
  * `outer`: one of its vertices or face centroids lies inside `outer` (winding number
  * above 1/2) and farther than `tolerance` from every triangle of it.
  */
-function reachesInto(
+/** @internal */
+export function reachesInto(
   mesh: EditMesh,
   inner: readonly number[],
   outer: readonly number[],
@@ -509,10 +549,89 @@ function reachesInto(
       samples.push(mesh.position(v));
     }
   }
+  // The surface of a closed part lies in its vertex box, and the winding number is zero
+  // outside that box: the complement is connected to infinity without meeting the surface.
+  // Only samples inside the box need the winding test. The tolerance test is not part of
+  // the skip, so the box needs no band: a sample outside it already fails the winding test.
+  const box = vertexBox(mesh, outer);
+  const boxes = triangles.map(triangleBox);
+  const slack = 1e-12 * (1 + maxAbs(boxes));
   return samples.some(
     (p) =>
+      insideBox(p, box) &&
       windingNumber(mesh, outer, p as Tuple3) > 0.5 &&
-      triangles.every((t) => pointTriangleDistance(p, t) > tolerance),
+      triangles.every(
+        (t, i) =>
+          // A gap along one axis already exceeds the distance bound, so the triangle is far
+          // without the exact distance; the slack absorbs rounding in the distance itself.
+          gapOf(p, boxes[i] as Box) > tolerance + slack || pointTriangleDistance(p, t) > tolerance,
+      ),
+  );
+}
+
+interface Box {
+  readonly lo: P;
+  readonly hi: P;
+}
+
+function triangleBox(t: readonly P[]): Box {
+  const lo: [number, number, number] = [Infinity, Infinity, Infinity];
+  const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const p of t) {
+    for (let a = 0; a < 3; a++) {
+      lo[a] = Math.min(lo[a] as number, p[a] as number);
+      hi[a] = Math.max(hi[a] as number, p[a] as number);
+    }
+  }
+  return { lo, hi };
+}
+
+/** Largest per-axis distance from `p` to `box`; a lower bound on the Euclidean distance. */
+function gapOf(p: P, box: Box): number {
+  let gap = 0;
+  for (let a = 0; a < 3; a++) {
+    const g = Math.max(
+      (box.lo[a] as number) - (p[a] as number),
+      (p[a] as number) - (box.hi[a] as number),
+    );
+    if (g > gap) gap = g;
+  }
+  return gap;
+}
+
+function maxAbs(boxes: readonly Box[]): number {
+  let m = 0;
+  for (const b of boxes)
+    for (let a = 0; a < 3; a++) {
+      m = Math.max(m, Math.abs(b.lo[a] as number), Math.abs(b.hi[a] as number));
+    }
+  return m;
+}
+
+function vertexBox(mesh: EditMesh, faces: readonly number[]): Box {
+  const lo: [number, number, number] = [Infinity, Infinity, Infinity];
+  const hi: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const f of faces) {
+    for (const v of mesh.faceVertices(f)) {
+      const p = mesh.position(v);
+      for (let a = 0; a < 3; a++) {
+        lo[a] = Math.min(lo[a] as number, p[a] as number);
+        hi[a] = Math.max(hi[a] as number, p[a] as number);
+      }
+    }
+  }
+  return { lo, hi };
+}
+
+/** Closed box test: a point on the box boundary may still lie on the surface. */
+function insideBox(p: P, box: Box): boolean {
+  return (
+    p[0] >= box.lo[0] &&
+    p[0] <= box.hi[0] &&
+    p[1] >= box.lo[1] &&
+    p[1] <= box.hi[1] &&
+    p[2] >= box.lo[2] &&
+    p[2] <= box.hi[2]
   );
 }
 

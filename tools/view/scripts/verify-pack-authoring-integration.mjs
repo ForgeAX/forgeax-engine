@@ -53,7 +53,7 @@ const client = await connectViewWorkspace({endpoint:bootstrap.endpoint,token:boo
 const launch = JSON.parse(await readFile(join(checkout, 'scripts/ci/browser-launch.json'), 'utf8'));
 const browser = await chromium.launch({ ...launch, headless:true,
  args: [...launch.args, '--use-angle=swiftshader'],
- executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE ?? '/usr/bin/google-chrome', channel: undefined,
+ ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }), channel: undefined } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
  chromiumSandbox:true,
 });
 const page = await browser.newPage({viewport:{width:1680,height:1200}});

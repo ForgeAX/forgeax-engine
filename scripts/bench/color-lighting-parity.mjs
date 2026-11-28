@@ -687,7 +687,7 @@ try {
   await waitOn({ resources: [previewUrl], timeout: 30_000 });
   browser = await chromium.launch({
     headless: browserHeadless,
-    channel: 'chrome-beta',
+    channel: 'chrome',
     args: [
       '--enable-unsafe-webgpu',
       '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',

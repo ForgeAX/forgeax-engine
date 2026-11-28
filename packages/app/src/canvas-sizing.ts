@@ -1,4 +1,5 @@
-import { type Renderer, renderAblation } from '@forgeax/engine-render';
+import type { Renderer } from '@forgeax/engine-render';
+import { renderAblation } from '@forgeax/engine-render/internal/host-data';
 
 type CanvasSurface = Pick<
   HTMLCanvasElement,

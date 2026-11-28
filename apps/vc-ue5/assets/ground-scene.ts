@@ -11,6 +11,7 @@ import {
   OCCLUDER_CENTER, REFERENCE_VERTICAL_FOV, SUN_DIRECTION,
   referenceCamera, viewDirection, type GroundCamera,
 } from './terrain.ts';
+import { DEFAULT_CLOUD_BOUNDS } from './weather-presets.ts';
 
 export const GROUND_SCENE_KEY = 'scene/ground-reference';
 export const GROUND_SCENE_COMPONENTS = [
@@ -81,11 +82,11 @@ export function groundReferenceScene(refs: GroundSceneReferences) {
       } },
       atmosphere: { components: {
         Name: { value: 'Clear atmosphere' },
-        Atmosphere: {},
+        Atmosphere: { aerialPerspectiveStart: 100 },
       } },
       cloud: { components: {
         Name: { value: 'Volumetric cloud layer' },
-        VolumetricCloudLayer: { material: refs.cloudMaterial, ...UE_CLOUD_SCENE_PRESET },
+        VolumetricCloudLayer: { material: refs.cloudMaterial, ...UE_CLOUD_SCENE_PRESET, ...DEFAULT_CLOUD_BOUNDS },
       } },
     },
   } satisfies SceneAsset;

@@ -81,7 +81,7 @@ test('runtime imports cannot depend on build tools even through a constant speci
     'import "@forgeax/engine/devkit";',
     'import "@forgeax/engine-shader-compiler";',
     'import "@forgeax/engine/vfx-compiler";',
-    'import "@forgeax/engine-dsh";',
+    'import "@forgeax/engine-mesh-io";',
     'import "@forgeax/engine-three/build";',
     'import "virtual:forgeax/bundler";',
   ])

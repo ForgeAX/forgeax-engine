@@ -29,7 +29,7 @@ try {
   await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'view-mesh-material-slots-proof', type: 'module', dependencies: { '@forgeax/engine': '*', '@forgeax/view': '*' } }));
   await writeFile(join(root, 'forge.json'), JSON.stringify({ id: 'view-mesh-material-slots-proof', name: 'Mesh material slots proof', schemaVersion: '3.0.0', roots: {} }));
   browser = await chromium.launch({ headless: true,
-    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
       '--use-vulkan=swiftshader', '--use-angle=swiftshader', '--disable-gpu-driver-bug-workarounds', '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'],
     chromiumSandbox: true,

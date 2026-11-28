@@ -7,11 +7,13 @@ import { serializeBridgeResult } from '../internal/browser-remote-bridge';
 const BRIDGE_SOURCE = fileURLToPath(
   new URL('../internal/browser-remote-bridge.ts', import.meta.url),
 );
-const CREATE_APP_SOURCE = fileURLToPath(new URL('../browser.ts', import.meta.url));
+const HOST_SOURCE = fileURLToPath(new URL('../browser.ts', import.meta.url));
+const LOCAL_SOURCE = fileURLToPath(new URL('../browser-local.ts', import.meta.url));
 
 describe('browser remote profiler bridge', () => {
   const bridge = readFileSync(BRIDGE_SOURCE, 'utf8');
-  const createApp = readFileSync(CREATE_APP_SOURCE, 'utf8');
+  const host = readFileSync(HOST_SOURCE, 'utf8');
+  const local = readFileSync(LOCAL_SOURCE, 'utf8');
 
   it('propagates the explicit profiler root through the existing bridge context', () => {
     expect(bridge).toContain('profiler,');
@@ -19,10 +21,11 @@ describe('browser remote profiler bridge', () => {
   });
 
   it('keeps the bridge opt-in and free of a static remote value dependency', () => {
-    expect(createApp).toContain('bundler?.browserRemoteBridge');
-    expect(createApp).toContain('bridge.registerDispose(release)');
-    expect(createApp).toContain('bridgeAdapter.registerDispose(release)');
-    expect(createApp).not.toMatch(/import\.meta\.(?:env|hot|glob)/);
+    expect(host).toContain('bundler?.browserRemoteBridge');
+    expect(local).toContain('bundler?.browserRemoteBridge');
+    expect(host).toContain('bridge.registerDispose(release)');
+    expect(local).toContain('bridgeAdapter.registerDispose(release)');
+    expect(host + local).not.toMatch(/import\.meta\.(?:env|hot|glob)/);
     expect(bridge).not.toMatch(/import\.meta\.(?:env|hot|glob)/);
     expect(bridge).not.toMatch(/^import (?!type ).*@forgeax\/engine-remote/m);
   });

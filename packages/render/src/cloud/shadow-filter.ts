@@ -1,8 +1,13 @@
 import type { RenderFeatureWork } from '../features/plan';
-import { SkyPass } from '../record/gpu-pass-timing/sky-pass-names';
+import type { CloudShadowFormat } from './lighting/shadow-format';
+import type { CloudShadowSpatialPass } from './lighting/shadow-spatial-layout';
 
-export function cloudShadowFilterWork(view: string, source: string): RenderFeatureWork {
-  const name = SkyPass.cloudShadowFilter;
+export function cloudShadowFilterWork(
+  view: string,
+  source: string,
+  format: CloudShadowFormat,
+  { name, input, output }: CloudShadowSpatialPass,
+): RenderFeatureWork {
   return {
     scope: { view },
     resources: [
@@ -11,7 +16,7 @@ export function cloudShadowFilterWork(view: string, source: string): RenderFeatu
         name,
         source,
         usesView: false,
-        reads: [{ key: 'cloud-shadow-raw', sampleType: 'unfilterable-float' }],
+        reads: [{ key: input, sampleType: 'unfilterable-float' }],
       },
       {
         kind: 'graphics-program',
@@ -20,7 +25,7 @@ export function cloudShadowFilterWork(view: string, source: string): RenderFeatu
           shader: name,
           vertexLayout: 'none',
           sampleCount: 1,
-          colorFormats: ['rgba32float'],
+          colorFormats: [format],
           renderState: { depthWriteEnabled: false, depthCompare: 'always' },
         },
       },
@@ -28,15 +33,15 @@ export function cloudShadowFilterWork(view: string, source: string): RenderFeatu
         kind: 'graphics-bindings',
         name: `${name}.inputs`,
         program: `${name}.pipeline`,
-        values: { group: 1, fullscreen: true, shader: name, input: 'cloud-shadow-raw' },
+        values: { group: 1, fullscreen: true, shader: name, input },
       },
     ],
     passes: [
       {
         kind: 'raster',
         name,
-        colorAttachments: [{ target: 'cloud-shadow', loadOp: 'clear', storeOp: 'store' }],
-        sampledTargets: ['cloud-shadow-raw'],
+        colorAttachments: [{ target: output, loadOp: 'clear', storeOp: 'store' }],
+        sampledTargets: [input],
         draws: [
           {
             program: `${name}.pipeline`,

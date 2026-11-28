@@ -1,0 +1,33 @@
+{
+  "tool": "im",
+  "case": "f1-fandisk",
+  "available": true,
+  "toolCommit": "7b3160864a2e1025af498c84cfed91cbfb613698",
+  "inputSha256": "6d6e7b43b6046f09d7239d416cb4e056b676c9d36975413b54275332432f5e5b",
+  "inputFaces": 180,
+  "targetFaces": 1000,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-f", "250", "-c", "30", "-d", "-t", "1", "-o", "<out.obj>", "<in.obj>"],
+      "cwd": null,
+      "wallSeconds": 0.129735082,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 250,
+        "crease": 30,
+        "mode": "pure quad, -f target/4 (pure-quad 2x2 subdivision)"
+      }
+    }
+  ],
+  "wallSeconds": 0.129735082,
+  "outcome": "ok",
+  "outputSha256": "7e3e032422dad509de527b10f149ca07ed5f4619de52a4b849a9b8b77678f0e8",
+  "rawOutputSha256": "6a531fb4cd1a2fe6e71820ada2ca8765c22f9af62ba2d2d37d80497fc2f1249e",
+  "outputFaces": 1006,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

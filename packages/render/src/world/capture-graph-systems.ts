@@ -1,5 +1,4 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
-import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
 import type { RenderGraphPassExecution } from '@forgeax/engine-render-graph';
 import { err } from '@forgeax/engine-rhi';
 import {
@@ -16,27 +15,16 @@ import {
   RenderCaptureGraphCompileOrder,
   RenderCaptureGraphRetireOrder,
   RenderEncoderOpenOrder,
-  RenderGraphCompileOrder,
   RenderSubmissionRetireOrder,
 } from '../system-order';
-import { ViewCaptureWork, viewCaptureWorkOf } from './capture-systems';
 import { stageRecordedFeatureGraph } from './feature-systems';
 import { awaitsRenderRecord } from './graph-systems';
 import { renderFrameEncoder } from './record-systems';
-import {
-  ViewCaptureFits,
-  ViewReflectionProbes,
-  viewCaptureFitsOf,
-  viewReflectionProbesOf,
-} from './reflection-systems';
-import { ViewRecorder, viewCameraOf } from './render-views';
+import { viewCameraOf } from './render-views';
 import { RenderCleanup, RenderRecord, renderSubmission, renderWorldFor } from './render-world';
-import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
 import { retireAfterSubmission } from './submission-systems';
 import { readViewState, requireViewField } from './view-field';
 import { recordContext } from './view-record-context';
-import { ownerOf, type ViewSettlementOwner } from './view-settlement';
-import { ViewTopologyInputs, viewTopologyOf } from './view-topology-systems';
 
 export const RENDER_CAPTURE_GRAPH_COMPILE_SYSTEM = 'render-capture-graph-compile';
 export const RENDER_CAPTURE_GRAPH_RETIRE_SYSTEM = 'render-capture-graph-retire';
@@ -55,6 +43,7 @@ interface CapturePassManifest {
 
 interface CaptureGraphsState {
   frame: number;
+  input: CaptureGraphCompileInput | undefined;
   outcome: CaptureGraphOutcome | undefined;
   /** Producer identity captured with the current admission, when Profiler is configured. */
   phaseProducer: CapturePassProducer | undefined;
@@ -149,11 +138,9 @@ function stateOf(world: World, entity: EntityHandle | undefined): CaptureGraphsS
   return state.frame === renderSubmission(world).frame ? state : undefined;
 }
 
-/** Request capture compilation at the same barrier as the display graph; no prepared inputs are copied. */
-export function stageCaptureGraphCompile(
-  internals: RenderSystemInternals,
-  cameraEntityKey?: number,
-): boolean {
+/** Stage actual capture work only; the compiler borrows the recording's admitted inputs. */
+export function stageCaptureGraphCompile(input: CaptureGraphCompileInput): boolean {
+  const { internals, cameraEntityKey } = input;
   const world = renderWorldFor(internals);
   const entity = internals.viewEntity;
   if (entity === undefined || !awaitsRenderRecord(world)) return false;
@@ -162,6 +149,7 @@ export function stageCaptureGraphCompile(
     root.profiler === undefined ? undefined : capturePassProducer(internals, cameraEntityKey);
   const state: CaptureGraphsState = {
     frame: renderSubmission(world).frame,
+    input,
     outcome: undefined,
     phaseProducer,
     phaseManifest: undefined,
@@ -194,15 +182,6 @@ export function stageCaptureGraphCompile(
       .unwrap();
   }
   return true;
-}
-
-/** Request the system-owned compile, or use the same compiler for a direct harness. */
-export function prepareCaptureGraphs(
-  input: CaptureGraphCompileInput,
-): CaptureGraphOutcome | undefined {
-  return stageCaptureGraphCompile(input.internals, input.cameraEntityKey)
-    ? undefined
-    : compileCaptureGraphBatch(input);
 }
 
 /** Borrow the current compile result; Cleanup remains its sole lifetime owner. */
@@ -244,49 +223,6 @@ export function markCaptureGraphsIncomplete(internals: RenderSystemInternals): v
     root.renderPassCpuIdentityCapture.complete = false;
 }
 
-function compileViewCaptures(
-  world: World,
-  entity: EntityHandle,
-  owner: ViewSettlementOwner,
-): CaptureGraphOutcome {
-  const lighting = viewStandardLightingOf(world, entity);
-  if (
-    lighting?.kind !== 'prepared' ||
-    !lighting.lighting.ok ||
-    lighting.fence.pipelineState === null
-  )
-    return err(captureGraphFailure({ system: 'render-standard-lighting', outcome: lighting }));
-  const topology = viewTopologyOf(world, entity);
-  if (topology?.kind !== 'planned')
-    return err(captureGraphFailure({ system: 'render-view-topology', outcome: topology }));
-  const captures = viewCaptureWorkOf(world, entity);
-  if (captures?.kind !== 'prepared')
-    return err(captureGraphFailure({ system: 'render-capture-schedule', outcome: captures }));
-  const fits = viewCaptureFitsOf(world, entity);
-  if (fits === undefined) return err(captureGraphFailure({ system: 'render-capture-fit' }));
-  const reflection = viewReflectionProbesOf(world, entity);
-  if (reflection?.ok !== true)
-    return err(captureGraphFailure({ system: 'view-reflection-probes', outcome: reflection }));
-  const { value } = captures;
-  const compiled = compileCaptureGraphBatch({
-    internals: owner.internals,
-    frameState: owner.frameState,
-    pipelineState: lighting.fence.pipelineState,
-    capture: {
-      ...value,
-      scheduledWork: value.cube,
-      state: owner.captures,
-      fits,
-      reflectionProbes: reflection.value.probes,
-    },
-    work: value.faces.map((face) => face.work),
-    shadowMapSize: topology.topology.shadowMapSize,
-    terrainReceivers: topology.topology.terrainReceivers,
-  });
-  if (compiled.ok) stageFaceFeatureReceipts(world, entity, compiled.value);
-  return compiled;
-}
-
 /** Acknowledge the Feature plans each compiled capture face records, as a display graph does. */
 function stageFaceFeatureReceipts(
   world: World,
@@ -317,20 +253,7 @@ export function registerCaptureGraphSystems(world: World): void {
         commands: 'none',
         name: RENDER_CAPTURE_GRAPH_COMPILE_SYSTEM,
         after: [RenderEncoderOpenOrder],
-        before: [RenderGraphCompileOrder],
-        queries: [
-          {
-            write: [ViewCaptureGraphs],
-            read: [ViewRecorder],
-            optional: [
-              ViewStandardLighting,
-              ViewTopologyInputs,
-              ViewCaptureWork,
-              ViewCaptureFits,
-              ViewReflectionProbes,
-            ],
-          },
-        ],
+        queries: [{ write: [ViewCaptureGraphs] }],
         fn: (world, [rows]) => {
           if (renderFrameEncoder(world).kind !== 'open') return;
           const frame = renderSubmission(world).frame;
@@ -338,20 +261,23 @@ export function registerCaptureGraphSystems(world: World): void {
           rows.forEach((row) => {
             const entity = row.entity;
 
-            markDerivedComponentChanged(world, entity, ViewCaptureGraphs).unwrap();
             const state = world
               .resolveUniqueRef<CaptureGraphsState>(
                 requireViewField(world, entity, ViewCaptureGraphs, 'state'),
               )
               .unwrap();
-            if (state.frame !== frame || state.outcome !== undefined) return;
-            const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
+            const input = state.input;
+            if (state.frame !== frame || input === undefined || state.outcome !== undefined) return;
+            state.input = undefined;
             try {
-              state.outcome = compileViewCaptures(world, entity, owner);
+              const outcome = compileCaptureGraphBatch(input);
+              state.outcome = outcome;
+              if (outcome.ok) stageFaceFeatureReceipts(world, entity, outcome.value);
             } catch (cause) {
+              if (state.outcome?.ok === true) retireCaptureGraphBatch(state.outcome.value);
               state.outcome = err(captureGraphFailure(cause));
             }
-            if (state.outcome?.ok !== true) markCaptureGraphsIncomplete(owner.internals);
+            if (state.outcome?.ok !== true) markCaptureGraphsIncomplete(input.internals);
           });
         },
       }),
@@ -375,6 +301,7 @@ export function registerCaptureGraphSystems(world: World): void {
                 requireViewField(world, entity, ViewCaptureGraphs, 'state'),
               )
               .unwrap();
+            state.input = undefined;
             const outcome = state.outcome;
             if (outcome?.ok === true && state.phaseProducer !== undefined) {
               const nextManifest = capturePassManifest(

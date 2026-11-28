@@ -94,11 +94,7 @@ try {
   client = await connectViewWorkspace({ endpoint: bootstrap.endpoint, token: bootstrap.token, clientId: 'runtime-content-proof' });
   const browserEnv = Object.fromEntries(['PATH', 'HOME', 'XDG_RUNTIME_DIR', 'DISPLAY', 'XAUTHORITY'].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]]]));
   browser = await chromium.launch({
-    ...(process.env.FORGEAX_BROWSER_EXECUTABLE
-      ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
-      : process.env.FORGEAX_CHROME_CHANNEL
-        ? { channel: process.env.FORGEAX_CHROME_CHANNEL }
-        : { executablePath: '/opt/google/chrome-beta/chrome' }),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: false, env: browserEnv,
     args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--use-angle=swiftshader', '--use-vulkan=swiftshader', '--enable-unsafe-swiftshader', '--disable-vulkan-surface', '--ignore-gpu-blocklist', '--disable-gpu-watchdog', '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'], chromiumSandbox: true});
   page = await browser.newPage({ viewport: workload.runtimeViewport, acceptDownloads: true });

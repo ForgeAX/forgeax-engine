@@ -278,7 +278,7 @@ export function addWaterSlwPasses(
       case 'no-simulation': {
         const target = createRenderPipelineTarget(graph, 'water-foam-simulation', {
           format: 'rgba16float',
-          size: { width: 512, height: 512 },
+          size: { width: 1, height: 1 },
           sampleCount: 1,
         });
         if (!target.ok) return target;

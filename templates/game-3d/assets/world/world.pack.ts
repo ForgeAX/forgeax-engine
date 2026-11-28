@@ -1,32 +1,55 @@
 import { definePack, definePackageId } from '@forgeax/engine/pack/source';
 import { ok } from '@forgeax/engine/types';
 import { assetGuid, guidText, PACKAGE_IDS } from '../shared/asset-refs.ts';
+import { physicsComponentsPlugin } from '@forgeax/engine/physics';
 import { joinPluginFiber, mountPluginAsset, type Plugin } from '@forgeax/engine/plugin';
 import { worldDespawnScene } from '@forgeax/engine/scene';
 import type {} from '../shared/scene-refs.ts';
 export const scene: Plugin.Object<{ readonly scene: string; readonly children: readonly string[] }> =
   {
     name: 'game-3d/scene',
-    inject: ['world', 'assets', 'physics', 'pluginPrograms'],
+    inject: ['world', 'assets', 'pluginPrograms'],
     async apply(ctx, config) {
       const assets = ctx.assets;
       if (!assets) throw new Error('scene owner requires assets');
-      const loaded = await assets.load(assets.parseGuid(config.scene), 'scene', { usage: 'render' });
+      // Asset admission needs the schemas before the simulation backend is ready.
+      await ctx.plugin(physicsComponentsPlugin());
+      const loading = new AbortController();
+      ctx.effect(() => () => loading.abort(), 'game-3d/scene-load');
+      // Overlap definition I/O with scene loading. Mount still checks the current
+      // publication and installs children in the authored dependency order.
+      const children = config.children.map(async (guid) => {
+        await assets.readPluginDefinition(guid).catch(() => undefined);
+        return guid;
+      });
+      const loaded = await assets.load(assets.parseGuid(config.scene), 'scene', {
+        usage: 'render',
+        signal: loading.signal,
+      });
+      if (loading.signal.aborted) {
+        if (loaded.ok) assets.release(loaded.value).unwrap();
+        return;
+      }
       if (!loaded.ok) throw loaded.error;
-      // Register each inverse immediately; generator disposal joins children before scene data.
+      // Instantiate only once the simulation service is available.
       await ctx.effect(async function* () {
         const handle = loaded.value;
         yield () => {
           assets.release(handle).unwrap();
         };
-        const root = assets.instantiate(handle, ctx.world).unwrap();
-        yield () => worldDespawnScene(ctx.world, root).unwrap();
-        yield ctx.provide('gameScene', { root });
-        for (const guid of config.children) {
-          const child = await mountPluginAsset(ctx, guid);
-          if (!child.ok) throw child.error;
-          yield joinPluginFiber(child.value);
-        }
+        yield joinPluginFiber(ctx.inject(['physics'], async (instance) => {
+          // Dispose children before removing the scene they read.
+          await instance.effect(async function* () {
+            const root = assets.instantiate(handle, instance.world).unwrap();
+            yield () => worldDespawnScene(instance.world, root).unwrap();
+            yield instance.provide('gameScene', { root });
+            for (const definition of children) {
+              const child = await mountPluginAsset(instance, await definition);
+              if (!child.ok) throw child.error;
+              yield joinPluginFiber(child.value);
+            }
+          });
+        }));
       });
     },
   };

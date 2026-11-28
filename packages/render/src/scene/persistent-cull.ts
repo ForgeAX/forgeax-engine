@@ -30,7 +30,7 @@ import {
 import { slotContent } from './mesh-draw';
 import type { MeshFrame } from './mesh-frame';
 import type { PersistentShadowCasterProjection } from './render-scene';
-import { writeTransformedWorldBounds } from './render-scene-snapshots';
+import { writeSnapshotWorldBounds } from './render-scene-snapshots';
 import type { RenderSceneSlot } from './render-scene-types';
 import { sceneDrawContentOf } from './render-scene-view';
 import { ResidualBoundsProof } from './residual-bounds-proof';
@@ -92,13 +92,55 @@ function snapshotWorldBounds(
   _index: number,
   out: box3.Box3,
 ): boolean {
-  return (
-    snapshot.frustumCulled !== false &&
-    writeTransformedWorldBounds(out, snapshot.localAabb, snapshot.transform.world)
-  );
+  return snapshot.frustumCulled !== false && writeSnapshotWorldBounds(out, snapshot);
 }
 
+const BATCH_CULL_CONTENTS: (RowContent | undefined)[] = [];
+let BATCH_CULL_RANKS = new Int32Array(256);
+let BATCH_CULL_ENTITIES = new Int32Array(256);
+let BATCH_CULL_BOUNDS_INDEX = new Int32Array(256);
+
+function ensureBatchCullCapacity(count: number): void {
+  if (BATCH_CULL_RANKS.length < count) {
+    let cap = BATCH_CULL_RANKS.length;
+    while (cap < count) cap *= 2;
+    BATCH_CULL_RANKS = new Int32Array(cap);
+    BATCH_CULL_ENTITIES = new Int32Array(cap);
+    BATCH_CULL_BOUNDS_INDEX = new Int32Array(cap);
+  }
+}
+
+function writeBatchCullAabb(dst: Float32Array, index: number, box: box3.Box3): void {
+  const ab = index * 6;
+  dst[ab] = box[0] as number;
+  dst[ab + 1] = box[1] as number;
+  dst[ab + 2] = box[2] as number;
+  dst[ab + 3] = box[3] as number;
+  dst[ab + 4] = box[4] as number;
+  dst[ab + 5] = box[5] as number;
+}
+
+function readBatchCullAabb(src: Float32Array, index: number, out: box3.Box3): void {
+  const ab = index * 6;
+  out[0] = src[ab] as number;
+  out[1] = src[ab + 1] as number;
+  out[2] = src[ab + 2] as number;
+  out[3] = src[ab + 3] as number;
+  out[4] = src[ab + 4] as number;
+  out[5] = src[ab + 5] as number;
+}
+
+const NOOP_FILL_WORLD_AABBS = (): void => {};
+
 type SlotBoundsWriter = (row: RenderSceneSlot, out: box3.Box3) => boolean;
+type SlotPoseBoundsWriter = (
+  slot: number,
+  version: number,
+  content: RowContent,
+  column: Float32Array,
+  offset: number,
+  out: box3.Box3,
+) => boolean;
 
 export function cullPersistentFrame(
   frame: ExtractedFrame,
@@ -114,7 +156,8 @@ export function cullPersistentFrame(
   sourceOwner: object = frame.renderables,
   sourceRevision = 0,
   residencySelection?: RenderResidencySelection,
-  boundsOfSlot?: SlotBoundsWriter,
+  boundsOfPose?: SlotPoseBoundsWriter,
+  renderKernel?: import('../record/render-kernel-bridge').RenderKernelBridge,
 ): PersistentCullResult {
   assertResidencyCurrent(residencySelection);
   const rows = frame.renderables.length;
@@ -141,7 +184,8 @@ export function cullPersistentFrame(
       sourceRevision,
       residencySelection,
       scratch,
-      boundsOfSlot,
+      boundsOfPose,
+      renderKernel,
     ).run();
   } finally {
     if (owner !== undefined) {
@@ -196,7 +240,10 @@ class PersistentFrameCull {
     private readonly sourceRevision: number,
     private readonly residencySelection: RenderResidencySelection | undefined,
     private readonly projection: CullProjection,
-    private readonly boundsOfSlot: SlotBoundsWriter | undefined,
+    private readonly boundsOfPose: SlotPoseBoundsWriter | undefined,
+    private readonly renderKernel:
+      | import('../record/render-kernel-bridge').RenderKernelBridge
+      | undefined,
   ) {
     const previous = memo?.value;
     this.previous = previous;
@@ -218,18 +265,16 @@ class PersistentFrameCull {
 
   run(): PersistentCullResult {
     const sequence = this.frame.renderables;
-    const writeBounds = this.boundsOfSlot;
+    const writeBounds = this.boundsOfPose;
     const rows =
       writeBounds !== undefined && this.gpuCulled === undefined
         ? sceneDrawContentOf(sequence)
         : undefined;
-    let index = 0;
     let admission: CameraAdmission | undefined;
     if (rows?.permitsSlotCull(this.residencySelection) && writeBounds !== undefined) {
       this.columns = rows;
       const slotAdmission = rows.source.length === rows.source.identities.size;
-      for (const row of rows.source)
-        this.projectSlot(rows, row, index++, writeBounds, slotAdmission);
+      this.cullNativeSlotRows(rows, writeBounds, slotAdmission);
       if (slotAdmission) {
         const hidden = this.hasHiddenSlots
           ? this.projection.slots(rows.source, true)
@@ -238,6 +283,7 @@ class PersistentFrameCull {
           admission = { sceneOwner: this.sourceOwner, residency: this.residencySelection, hidden };
       }
     } else {
+      let index = 0;
       for (const candidate of sequence) {
         if (candidate !== undefined) this.projectCandidate(candidate, index);
         index++;
@@ -311,6 +357,7 @@ class PersistentFrameCull {
               admittedSubsurface.add(content, materials, this.meshes);
               return undefined;
             },
+            undefined,
             members,
           );
         else for (const source of selected) admittedSubsurface.add(source, materials, this.meshes);
@@ -368,28 +415,143 @@ class PersistentFrameCull {
     );
   }
 
-  private projectSlot(
+  private cullNativeSlotRows(
     rows: NonNullable<ReturnType<typeof sceneDrawContentOf>>,
-    row: RenderSceneSlot,
-    index: number,
-    writeBounds: SlotBoundsWriter,
+    writeBounds: SlotPoseBoundsWriter,
     slotAdmission: boolean,
   ): void {
-    const content = slotContent(row);
-    if (content.terrainSection !== undefined || content.generatedMesh !== undefined) {
-      this.projectCandidate(rows.project(row), index);
+    const kernel = this.renderKernel;
+    if (
+      kernel !== undefined &&
+      rows.source.length >= 32 &&
+      this.cameraPlanes.length > 0 &&
+      this.cameraPlanes.every((p) => p.length === 24)
+    ) {
+      this.runBatchedSlotCull(rows, writeBounds, slotAdmission, kernel);
       return;
     }
-    if (!this.authorAdmits(content, rows)) return;
-    const shadowOnly = this.cameraAdmission(
-      content,
-      row.entityKey,
-      index,
-      content.frustumCulled !== false && writeBounds(row, this.worldAabb),
-      slotAdmission,
-    );
-    rows.validateCullContent(content);
-    if (shadowOnly !== undefined) this.admitAddress(index, shadowOnly);
+    rows.source.visitPoses((slot, version, content, column, offset, rank, entity) => {
+      if (content.terrainSection !== undefined || content.generatedMesh !== undefined) {
+        const record = rows.source.slotAt(slot);
+        if (record !== undefined) this.projectCandidate(rows.project(record), rank);
+        return;
+      }
+      if (!this.authorAdmits(content, rows)) return;
+      const bounded =
+        content.frustumCulled !== false &&
+        writeBounds(slot, version, content, column, offset, this.worldAabb);
+      const shadowOnly = this.cameraAdmission(content, entity, rank, bounded, slotAdmission);
+      rows.validateCullContent(content);
+      if (shadowOnly !== undefined) this.admitAddress(rank, shadowOnly);
+    });
+  }
+
+  private runBatchedSlotCull(
+    rows: NonNullable<ReturnType<typeof sceneDrawContentOf>>,
+    writeBounds: SlotPoseBoundsWriter,
+    slotAdmission: boolean,
+    kernel: import('../record/render-kernel-bridge').RenderKernelBridge,
+  ): void {
+    const rowCount = rows.source.length;
+    ensureBatchCullCapacity(rowCount);
+    const items = BATCH_CULL_CONTENTS;
+    const ranks = BATCH_CULL_RANKS;
+    const entities = BATCH_CULL_ENTITIES;
+    const boundsIndices = BATCH_CULL_BOUNDS_INDEX;
+    const dstAabbs = kernel.hotPath.borrowWorldAabbCullBuffers(
+      rowCount,
+      this.cameraPlanes.length,
+    ).worldAabbs;
+    let itemCount = 0;
+    let packed = 0;
+    try {
+      rows.source.visitPoses((slot, version, content, column, offset, rank, entity) => {
+        if (content.terrainSection !== undefined || content.generatedMesh !== undefined) {
+          items[itemCount] = undefined;
+          ranks[itemCount] = rank;
+          entities[itemCount] = slot;
+          boundsIndices[itemCount] = -2;
+          itemCount++;
+          return;
+        }
+        if (!this.authorAdmits(content, rows)) return;
+        const bounded =
+          content.frustumCulled !== false &&
+          writeBounds(slot, version, content, column, offset, this.worldAabb);
+        items[itemCount] = content;
+        ranks[itemCount] = rank;
+        entities[itemCount] = entity;
+        if (bounded) {
+          writeBatchCullAabb(dstAabbs, packed, this.worldAabb);
+          boundsIndices[itemCount] = packed++;
+        } else {
+          boundsIndices[itemCount] = -1;
+        }
+        itemCount++;
+      });
+      const visBits =
+        packed > 0
+          ? kernel.cullWorldAabbs(packed, this.cameraPlanes, NOOP_FILL_WORLD_AABBS).bits
+          : undefined;
+      for (let i = 0; i < itemCount; i++) {
+        this.emitBatchedSlotItem(
+          rows,
+          items[i],
+          ranks[i] as number,
+          entities[i] as number,
+          boundsIndices[i] as number,
+          dstAabbs,
+          visBits,
+          slotAdmission,
+        );
+      }
+    } finally {
+      for (let i = 0; i < itemCount; i++) items[i] = undefined;
+      items.length = 0;
+    }
+  }
+
+  private emitBatchedSlotItem(
+    rows: NonNullable<ReturnType<typeof sceneDrawContentOf>>,
+    content: RowContent | undefined,
+    rank: number,
+    entityOrSlot: number,
+    boundsIndex: number,
+    dstAabbs: Float32Array,
+    visBits: Uint32Array | undefined,
+    slotAdmission: boolean,
+  ): void {
+    if (boundsIndex === -2) {
+      const record = rows.source.slotAt(entityOrSlot);
+      if (record !== undefined) this.projectCandidate(rows.project(record), rank);
+      return;
+    }
+    const row = content as RowContent;
+    if (boundsIndex === -1) {
+      const shadowOnly = this.cameraAdmission(row, entityOrSlot, rank, false, slotAdmission);
+      rows.validateCullContent(row);
+      if (shadowOnly !== undefined) this.admitAddress(rank, shadowOnly);
+      return;
+    }
+    this.total++;
+    const visible =
+      visBits !== undefined &&
+      ((visBits[boundsIndex >>> 5] ?? 0) & (1 << (boundsIndex & 31))) !== 0;
+    let shadowOnly: boolean | undefined;
+    if (visible) {
+      shadowOnly = false;
+    } else {
+      this.culled++;
+      if (slotAdmission && row.nativeDraw === undefined) {
+        this.projection.hide(rank);
+        this.hasHiddenSlots = true;
+      } else this.visibility.hide(entityOrSlot, row);
+      readBatchCullAabb(dstAabbs, boundsIndex, this.worldAabb);
+      if (this.shadowCasterVisible(rank)) shadowOnly = true;
+      else this.clippedAuthorRow = true;
+    }
+    rows.validateCullContent(row);
+    if (shadowOnly !== undefined) this.admitAddress(rank, shadowOnly);
   }
 
   private projectCandidate(candidate: RenderableSnapshot, index: number): void {
@@ -483,8 +645,11 @@ class PersistentFrameCull {
       this.frame.cameras[0],
       this.memo?.shadowFrusta,
     );
-    for (const planes of this.shadowFrusta)
-      if (frustum.intersectsBox(planes, this.worldAabb as box3.Box3Like)) return true;
+    const frusta = this.shadowFrusta;
+    for (let light = 0; light < frusta.length; light++) {
+      if (frustum.intersectsBox(frusta[light] as frustum.Frustum, this.worldAabb as box3.Box3Like))
+        return true;
+    }
     return false;
   }
 
@@ -840,15 +1005,27 @@ function residualChanges(
   bounds: ResidualCullBounds,
 ): Set<number> | undefined {
   const dirty = new Set<number>();
-  if (
-    before.slots !== slots &&
-    !slots.visitChangedVersions(before.slots, (slot) => dirty.add(slot))
-  )
-    return undefined;
+  const accept = (slot: number) => {
+    if (residual.has(slot)) dirty.add(slot);
+  };
+  if (before.slots !== slots && !slots.visitChangedVersions(before.slots, accept)) return undefined;
   residual.changesSince(before.admission.residual, (slot) => dirty.add(slot));
-  bounds.unavailable.changesSince(before.unavailable, (slot) => dirty.add(slot));
+  bounds.unavailable.changesSince(before.unavailable, accept);
   if (!sameResidualSkin(before, bounds)) for (const slot of before.facts.skinSlots) dirty.add(slot);
   return dirty;
+}
+
+/** Stage a write only when this tested row changes the retained membership. */
+function recordMembershipEdit(
+  membership: FrameSet,
+  edits: Map<number, boolean> | undefined,
+  slot: number,
+  present: boolean,
+): Map<number, boolean> | undefined {
+  if (membership.has(slot) === present) return edits;
+  edits ??= new Map();
+  edits.set(slot, present);
+  return edits;
 }
 
 function testResidualRows(
@@ -880,7 +1057,7 @@ function testResidualRows(
     proof.record(content, meshes, known ? aabb : undefined);
     return known;
   };
-  if (dirty === undefined) {
+  if (dirty === undefined || before === undefined) {
     const hidden: number[] = [];
     const bounded: number[] = [];
     const skin: number[] = [];
@@ -898,22 +1075,27 @@ function testResidualRows(
       skinSlots: FrameSet.from(skin),
     };
   }
-  const hidden = new Map<number, boolean>();
-  const bounded = new Map<number, boolean>();
-  const skin = new Map<number, boolean>();
+  let hidden: Map<number, boolean> | undefined;
+  let bounded: Map<number, boolean> | undefined;
+  let skin: Map<number, boolean> | undefined;
   for (const slot of dirty) {
     const candidate = residual.has(slot) && !unavailable.has(slot) ? slots.slotAt(slot) : undefined;
     const record = activeResidencyRecord(candidate, residencySelection);
     const known = record !== undefined && test(record);
-    skin.set(slot, record !== undefined && slotContent(record).skinBinding !== undefined);
-    bounded.set(slot, known);
-    hidden.set(slot, known && !intersects(aabb));
+    skin = recordMembershipEdit(
+      before.skinSlots,
+      skin,
+      slot,
+      record !== undefined && slotContent(record).skinBinding !== undefined,
+    );
+    bounded = recordMembershipEdit(before.boundedSlots, bounded, slot, known);
+    hidden = recordMembershipEdit(before.hiddenSlots, hidden, slot, known && !intersects(aabb));
   }
   return {
     bounds: proof,
-    hiddenSlots: (before?.hiddenSlots ?? new FrameSet()).edit(hidden),
-    boundedSlots: (before?.boundedSlots ?? new FrameSet()).edit(bounded),
-    skinSlots: (before?.skinSlots ?? new FrameSet()).edit(skin),
+    hiddenSlots: hidden === undefined ? before.hiddenSlots : before.hiddenSlots.edit(hidden),
+    boundedSlots: bounded === undefined ? before.boundedSlots : before.boundedSlots.edit(bounded),
+    skinSlots: skin === undefined ? before.skinSlots : before.skinSlots.edit(skin),
   };
 }
 
@@ -933,12 +1115,14 @@ export interface SlotCullInput extends ResidualCullBounds {
 }
 
 export function cameraBoundsVisible(planes: readonly Float32Array[], aabb: box3.Box3): boolean {
-  for (const camera of planes)
+  for (let index = 0; index < planes.length; index++) {
+    const camera = planes[index] as Float32Array;
     if (
       camera.length === 0 ||
       frustum.intersectsBox(camera as frustum.Frustum, aabb as box3.Box3Like)
     )
       return true;
+  }
   return planes.length === 0;
 }
 

@@ -21,6 +21,39 @@ type Point = readonly [number, number, number];
 const radius = 6_360_000;
 
 describe('BSM near-plane shell intervals', () => {
+  it('keeps the UE map fixed inside a world grid cell and snaps to filtered texels', () => {
+    const settings = {
+      ...shadowSettings,
+      ue5Reference: true,
+      resolution: 512,
+      extentMeters: 160000,
+    };
+    const a = viewCloudShadowProjection(settings, [6000, 2000, 0]);
+    const b = viewCloudShadowProjection(settings, [9000, 2000, 0]);
+    const c = viewCloudShadowProjection(settings, [11000, 2000, 0]);
+    expect(a.origin).toEqual(b.origin);
+    expect(c.origin).not.toEqual(a.origin);
+    for (const axis of [c.right, c.up]) {
+      const texel = axis.reduce((sum, x, i) => sum + x * (c.origin[i] ?? 0), 0) / 625;
+      expect(texel).toBeCloseTo(Math.round(texel), 10);
+    }
+  });
+
+  it('budgets extra midpoint samples by local sun elevation only in UE mode', () => {
+    const settings = { ...shadowSettings, mapSamples: 16 };
+    expect(viewCloudShadowProjection(settings, [0, 0, 0]).traceSamples).toBeUndefined();
+    const high = viewCloudShadowProjection(
+      { ...settings, ue5Reference: true, directionToLight: [0, 1, 0] },
+      [0, 0, 0],
+    );
+    const low = viewCloudShadowProjection(
+      { ...settings, ue5Reference: true, directionToLight: [1, 0, 0] },
+      [0, 0, 0],
+    );
+    expect(high.traceSamples).toBeCloseTo(19.2);
+    expect(low.traceSamples).toBe(32);
+  });
+
   it('anchors a finite shared projection to the selected camera ground position', () => {
     const camera: Point = [15000, 2000, -30000];
     const map = viewCloudShadowProjection({ ...shadowSettings, depthMeters: 600000 }, camera);

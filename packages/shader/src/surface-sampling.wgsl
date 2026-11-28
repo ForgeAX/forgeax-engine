@@ -9,12 +9,12 @@ fn surfaceTextureFootprint(input: SurfaceInput, transform: vec4<f32>, metadata: 
   if (index >= 4u) { footprint = input.uvFootprint1[index % 4u]; }
   return footprint * max(abs(transform.z), abs(transform.w)) * max(abs(metadata.z), abs(metadata.w));
 }
-fn sampleSurfaceTexture(tex: texture_2d<f32>, smp: sampler, uv: vec2<f32>, footprint: f32) -> vec4<f32> {
+fn sampleSurfaceTexture(tex: texture_2d<f32>, smp: sampler, uv: vec2<f32>, footprint: f32, mipBias: f32) -> vec4<f32> {
 #ifdef RAY_SURFACE_CONTEXT
   let size = textureDimensions(tex, 0);
   let lod = clamp(log2(max(footprint * f32(max(size.x, size.y)), 1.0)), 0.0, f32(textureNumLevels(tex) - 1u));
   return textureSampleLevel(tex, smp, uv, lod);
 #else
-  return textureSample(tex, smp, uv);
+  return textureSampleBias(tex, smp, uv, mipBias);
 #endif
 }

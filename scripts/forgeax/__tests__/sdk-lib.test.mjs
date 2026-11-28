@@ -1174,13 +1174,15 @@ describe('SDK verifier template contract', () => {
     expect(owner).toContain('const inspection = createGameInspection(app, {');
     expect(owner).toContain('list: async () => {');
     expect(owner).toContain('read: (id: string) => {');
-    expect(owner).toContain('}, rendererErrors === undefined ? undefined : {');
+    expect(owner).toContain('const diagnosticReads = diagnostics ? {');
+    expect(owner).toContain('inspectUi: await loadUiInspection()');
+    expect(owner).toContain('}, diagnosticReads === undefined ? undefined : {');
     expect(owner).toContain('globalThis.__forgeaxGameInspection = inspection;');
     expect(source).toContain(
       "if (!import.meta.env.DEV) return { running: false, error: 'the time scale runs only on a development host' };",
     );
     expect(source).toMatch(
-      /if \(\(import\.meta\.env\.DEV \|\| cpuProfileRequested[^\n]*\) && !workerExecution\) exposeGameInspection\(app as App, \(\) => !pageHidden\);/,
+      /if \(\(import\.meta\.env\.DEV \|\| cpuProfileRequested[^\n]*\) && !workerExecution\) exposeGameInspection\(app as App, await loadUiInspection\(\), \(\) => !pageHidden\);/,
     );
   });
 

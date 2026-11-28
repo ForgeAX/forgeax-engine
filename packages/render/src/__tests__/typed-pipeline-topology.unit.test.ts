@@ -280,6 +280,79 @@ function createImportedHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
 
 describe('typed built-in pipeline topology', () => {
   it.each([
+    false,
+    true,
+  ])('composites MSAA OIT onto the scene target needed by later writers (feature=%s)', async (sceneFeature) => {
+    const compiled = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
+        camera: { antialias: 'msaa', bloom: 'off' },
+        transparency: { weightedBlended: true, residual: true },
+      }),
+      undefined,
+      () => ({ hasFeatureWork: (_identity, placement) => sceneFeature && placement === 'scene' }),
+    ).unwrap();
+    try {
+      const passes = compiled.inspect().passes;
+      const colors = (name: string) =>
+        passes
+          .find((pass) => pass.name === name)
+          ?.accesses.filter((access) => access.usage === 'color-attachment')
+          .map((access) => access.resource);
+      expect(colors('transparent')).toEqual(
+        sceneFeature ? ['scene-color-msaa'] : ['scene-color-msaa', 'scene-color'],
+      );
+      expect(colors('oit-composite')).toEqual(
+        sceneFeature ? ['scene-color-msaa', 'scene-color'] : ['scene-color'],
+      );
+    } finally {
+      await compiled.retire();
+    }
+  });
+
+  it.each([
+    'forward',
+    'deferred',
+  ] as const)('places generic %s receiver composition after opaque lighting and before Water', async (renderPath) => {
+    const compiled = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath },
+        camera: { antialias: 'none' },
+        water: true,
+      }),
+      undefined,
+      (graph) => ({
+        contributeFeatures: (projection) => {
+          if (projection.placement !== 'before-medium') return ok(undefined);
+          const color = projection.targets.find((target) => target.kind === 'scene-color');
+          expect(color).toBeDefined();
+          if (color === undefined) throw new Error('Missing lit opaque target');
+          expect(
+            projection.semanticTargets?.some((target) => target.format.startsWith('depth')),
+          ).toBe(true);
+          return graph.addRasterPass('generic-before-medium-receiver', {
+            accesses: [{ resource: color.view, usage: 'color-attachment' }],
+            colorAttachments: [{ view: color.view, loadOp: 'load', storeOp: 'store' }],
+            encodeDirect: () => {},
+          });
+        },
+      }),
+    ).unwrap();
+    const names = compiled.inspect().passes.map((pass) => pass.name);
+    const receiver = names.indexOf('generic-before-medium-receiver');
+    expect(receiver, JSON.stringify(names)).toBeGreaterThan(0);
+    const opaque = names.findIndex(
+      (name) => name === (renderPath === 'deferred' ? 'lighting' : 'main'),
+    );
+    expect(opaque, JSON.stringify(names)).toBeGreaterThanOrEqual(0);
+    expect(receiver).toBeGreaterThan(opaque);
+    const firstWater = names.indexOf('water-no-water-color-copy');
+    expect(firstWater, JSON.stringify(names)).toBeGreaterThan(receiver);
+    await compiled.retire();
+  });
+  it.each([
     'forward',
     'deferred',
   ] as const)('compiles native scene contribution through the real Standard %s pipeline', async (renderPath) => {
@@ -1874,7 +1947,7 @@ describe('typed built-in pipeline topology', () => {
     const info = compiled.inspect();
     expect(
       info.resources.filter((resource) => resource.label === 'water-foam-simulation'),
-    ).toHaveLength(1);
+    ).toMatchObject([{ descriptor: { width: 1, height: 1, format: 'rgba16float' } }]);
     const producers = info.passes.filter(
       (pass) => pass.name === 'water-foam-no-simulation-initialize',
     );

@@ -23,7 +23,6 @@ import {
   buildPerSubmeshMaterialBg,
   type MaterialBindingAddress,
   prepareMaterialSkylight,
-  resolveMaterialReflection,
 } from '../record/main-pass-material';
 import { materialMatchesPass } from '../record/material-pass-selection';
 import { MaterialUniformRecording } from '../record/material-uniforms';
@@ -74,7 +73,7 @@ export function* prepareSourceMainBindings(
       yield* preparePassBindings(scope, demand, demand.bindings);
     }
     const isCurrent = () =>
-      !scope.graph.isRetired() &&
+      !scope.resources.isRetired() &&
       native.isCurrent() &&
       scope.receipts.every((receipt) => receipt());
     if (!scope.live() || !isCurrent()) throw invalid('complete current main bindings');
@@ -110,22 +109,25 @@ function captureMainBindingScope(
   if (reflection?.ok !== true) throw invalid('actual prepared reflection resources');
   const counts = { createBindGroup: 0, keys: [] as string[] };
   const receipts: (() => boolean)[] = [];
-  const graph = installed.graph;
-  const resolve = (port: GraphTextureView): TextureView => {
-    const view = graph.createdTextureView(port);
-    if (view === undefined) throw invalid('actual fixed created Pass view');
-    receipts.push(() => graph.createdTextureView(port) === view);
+  const resources = installed.nativeResources;
+  const retainView = (port: GraphTextureView, view: TextureView): TextureView => {
+    receipts.push(() => resources.createdTextureView(port) === view);
     return view;
   };
+  const resolve = (port: GraphTextureView): TextureView => {
+    const view = resources.createdTextureView(port);
+    if (view === undefined) throw invalid('actual fixed created Pass view');
+    return retainView(port, view);
+  };
   const targetView = (target: import('../render-pipeline').RenderPipelineTarget): TextureView => {
-    const actual = graph.createdTextureView(target.view);
-    if (actual !== undefined) return resolve(target.view);
+    const actual = resources.createdTextureView(target.view);
+    if (actual !== undefined) return retainView(target.view, actual);
     const resident = target.residentView?.();
     if (resident === undefined) throw invalid('the exact resident imported Pass view');
     receipts.push(() => target.residentView?.() === resident);
     return resident;
   };
-  const live = () => current() && native.isCurrent() && !graph.isRetired();
+  const live = () => current() && native.isCurrent() && !resources.isRetired();
   if (!live()) throw invalid('current Source main binding demand');
   const hdrp =
     lighting.lighting.value.standard.kind === 'clustered'
@@ -144,7 +146,7 @@ function captureMainBindingScope(
     reflection,
     counts,
     receipts,
-    graph,
+    resources,
     resolve,
     targetView,
     live,
@@ -209,7 +211,15 @@ function passTargets(scope: MainScope, bindings: BindingDemand) {
     atmosphere:
       bindings.environment?.atmosphere?.execution === 'compute-volume'
         ? atmosphereVolumeViews(
-            { textureView: (port: GraphTextureView) => ok(resolve(port)) },
+            {
+              textureView: (port: GraphTextureView) => ok(resolve(port)),
+              buffer: () => {
+                const storage = currentAtmosphereStorage(scope.internals);
+                if (storage === undefined) throw invalid('the prepared atmosphere generation');
+                scope.receipts.push(() => currentAtmosphereStorage(scope.internals) === storage);
+                return ok(storage.distantSkyBuffer);
+              },
+            },
             bindings.environment.atmosphere,
             bindings.atmosphereReads,
           )
@@ -321,15 +331,13 @@ function* preparePassMaterials(
       program: string | undefined,
     ): SourceRasterMaterialBinding => {
       if (!live()) throw invalid('current Source material binding');
-      const reflection = resolveMaterialReflection(
-        deps,
-        accepted.snapshot,
-        source,
-        undefined,
-        binding.resourceClass,
-      );
       const capture: NonNullable<MaterialBindingAddress['capture']> = { current: undefined };
-      const address: MaterialBindingAddress = { byteOffset: 0, dynamicOffsetCount: 1, capture };
+      const address: MaterialBindingAddress = {
+        byteOffset: 0,
+        dynamicOffsetCount: 1,
+        capture,
+        reflection: undefined,
+      };
       const group = scope.uniforms.runPrepared(() =>
         buildPerSubmeshMaterialBg(
           deps,
@@ -340,7 +348,7 @@ function* preparePassMaterials(
           0,
           binding.resourceClass,
           standardMaterialLayoutIndex,
-          reflection ?? null,
+          undefined,
           address,
         ),
       );
@@ -352,7 +360,7 @@ function* preparePassMaterials(
         group,
         byteOffset: address.byteOffset,
         dynamicOffsetCount: address.dynamicOffsetCount,
-        reflection: reflection?.resources ?? resources,
+        reflection: address.reflection ?? resources,
       };
     };
     let classes = prepared.get(binding.material);

@@ -3,6 +3,7 @@ import {
   assertMaterialStaticSelection,
   findMaterialPassProgram,
   type MaterialRenderProjection,
+  runtimeMaterialShaderId,
   selectMaterialPassProgram,
 } from '@forgeax/engine-assets-runtime';
 import {
@@ -21,10 +22,29 @@ import type {
   MaterialProgramAbi,
   MaterialSurfaceModel,
 } from '@forgeax/engine-types';
-import { materialProgramUsesSkin } from '@forgeax/engine-types';
+import { materialPassLightMode, materialProgramUsesSkin } from '@forgeax/engine-types';
 import { runtimeMaterialShaderIdForMaterial } from './material-resource';
 import { isCanonicalStandardPbrMaterialShader } from './pbr-pipeline';
+import type { RenderProfile } from './render-contract';
 import type { MaterialSceneIndexProgramKey, MaterialSnapshot } from './render-system-extract';
+
+export interface SourceMaterialProgramDemand {
+  readonly deferred: boolean;
+  readonly ray: boolean;
+  readonly sceneIndex: boolean;
+}
+
+/** Unmanaged sources have no profile and retain the available program closure. */
+export function sourceMaterialProgramDemand(
+  profile: RenderProfile | undefined,
+): SourceMaterialProgramDemand | undefined {
+  if (profile === undefined) return undefined;
+  return {
+    deferred: profile.renderPath !== 'forward',
+    ray: profile.diffuseGi !== undefined || profile.probePlacement !== undefined,
+    sceneIndex: profile.renderPath !== 'forward',
+  };
+}
 
 /**
  * A skinned row certifies its position when the program it actually draws
@@ -178,11 +198,17 @@ export function materialProgramSelectionsForMaterial(
   const projection = materialProjectionForSelection(material, assets);
   return projection === undefined
     ? undefined
-    : selectRasterPrograms(material, projection, context, address, vertexColorAvailable);
+    : selectRasterPrograms(
+        material.passes ?? [],
+        projection,
+        context,
+        address,
+        vertexColorAvailable,
+      );
 }
 
 function selectRasterPrograms(
-  material: MaterialAsset,
+  passes: readonly MaterialPass[],
   projection: MaterialRenderProjection,
   context: MaterialCookRasterContext | undefined,
   address: 'direct' | 'scene-index',
@@ -190,7 +216,7 @@ function selectRasterPrograms(
 ): readonly (MaterialProgramSelection & { readonly artifactHash: string })[] {
   if (context === undefined)
     throw new Error('Published material selection requires renderer-owned compiler context');
-  return (material.passes ?? []).map((pass) => {
+  return passes.map((pass) => {
     const mode = String(
       (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
     );
@@ -216,6 +242,7 @@ function selectRasterPrograms(
  * optional consumers read this same projection, including when the material is authored. */
 export interface MaterialRasterPrograms {
   readonly projection?: MaterialRenderProjection;
+  readonly passes?: readonly MaterialPass[];
   readonly selections?: readonly MaterialProgramSelection[];
   readonly keys?: NonNullable<MaterialSnapshot['materialProgramKeys']>;
   readonly publication?: NonNullable<MaterialSnapshot['materialPublication']>;
@@ -228,11 +255,24 @@ export function captureMaterialRasterPrograms(
   assets: AssetRegistry,
   context: MaterialCookRasterContext | undefined,
   vertexColorAvailable: boolean,
+  forwardOnly = false,
 ): MaterialRasterPrograms {
   const projection = materialProjectionForSelection(material, assets);
   if (projection === undefined) return authoredRasterPrograms;
+  const declared = material.passes ?? [];
+  const passes =
+    forwardOnly &&
+    projection.sourceTemplate !== undefined &&
+    declared.some((pass) => materialPassLightMode(pass) === 'Forward')
+      ? declared.filter(
+          (pass) =>
+            materialPassLightMode(pass) !== 'Deferred' ||
+            !isCanonicalStandardPbrMaterialShader(runtimeMaterialShaderId(pass.program.module)) ||
+            pass.program.fragmentEntry !== 'fs_gbuffer',
+        )
+      : declared;
   const selections = selectRasterPrograms(
-    material,
+    passes,
     projection,
     context,
     'direct',
@@ -252,6 +292,7 @@ export function captureMaterialRasterPrograms(
   );
   return {
     projection,
+    ...(passes.length === declared.length ? {} : { passes }),
     selections,
     keys: Object.freeze(keys),
     publication: Object.freeze({
@@ -264,6 +305,15 @@ export function captureMaterialRasterPrograms(
       programs: Object.freeze(programs),
     }),
   };
+}
+
+// An empty map explicitly has no GPU raster program; an absent map allows legacy
+// material artifacts to resolve their built-in scene-index entry.
+const deferredSceneIndexPrograms = Object.freeze({});
+
+export function sceneIndexProgramsDeferred(material: MaterialSnapshot): boolean {
+  const programs = material.materialSceneIndexProgramKeys;
+  return programs !== undefined && Object.keys(programs).length === 0;
 }
 
 /** Resolve the producer's scene-index program key for each cooked Pass. */
@@ -286,12 +336,24 @@ export function materialSceneIndexProgramsForProjection(
   projection: MaterialRenderProjection | undefined,
   context: MaterialCookRasterContext | undefined,
   vertexColorAvailable: boolean,
+  passes: readonly MaterialPass[] = material.passes ?? [],
+  demand = true,
 ): Readonly<Record<string, MaterialSceneIndexProgramKey>> | undefined {
   if (projection === undefined) return undefined;
+  if (
+    !demand &&
+    projection.sourceTemplate !== undefined &&
+    passes.some(
+      (pass) =>
+        materialPassLightMode(pass) === 'Forward' &&
+        isCanonicalStandardPbrMaterialShader(runtimeMaterialShaderId(pass.program.module)),
+    )
+  )
+    return deferredSceneIndexPrograms;
   if (context === undefined)
     throw new Error('Published material selection requires renderer-owned compiler context');
   const entries: Record<string, MaterialSceneIndexProgramKey> = {};
-  for (const pass of material.passes ?? []) {
+  for (const pass of passes) {
     const mode = String(
       (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
     );

@@ -1,0 +1,137 @@
+{
+	"tests": ["src/brep/__tests__/e1/e1-corpus.unit.test.ts"],
+	"mutations": [
+		{
+			"id": "e1-label-tangent-sphere-full",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "['plane-sphere/tangent', psAt(() => 0, 'tangent-partial')]",
+			"new": "['plane-sphere/tangent', psAt(() => 0, 'full')]"
+		},
+		{
+			"id": "e1-near-collapses-to-tangent",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "export const E1_NEAR = 20 * E1_TOL;",
+			"new": "export const E1_NEAR = 0.5 * E1_TOL;"
+		},
+		{
+			"id": "e1-classify-strict",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "Math.abs(gap) <= tol",
+			"new": "Math.abs(gap) < tol"
+		},
+		{
+			"id": "e1-classify-wide",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "Math.abs(gap) <= tol",
+			"new": "Math.abs(gap) <= 100 * tol"
+		},
+		{
+			"id": "e1-sphere-radius-formula",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "Math.sqrt(Math.max(0, R * R - d * d))",
+			"new": "Math.sqrt(Math.max(0, R * R - d))"
+		},
+		{
+			"id": "e1-cone-ellipse-axis",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "const A = 1 - k * k * m * m;",
+			"new": "const A = 1 + k * k * m * m;"
+		},
+		{
+			"id": "e1-hyperbola-one-nappe",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "    gap: null,\n    branches: [sheet(1), sheet(-1)],",
+			"new": "    gap: null,\n    branches: [sheet(1)],"
+		},
+		{
+			"id": "e1-pole-parameter",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "      { on: 'b', branch: 0, t: 0, feature: 'pole' },\n      { on: 'b', branch: 0, t: Math.PI, feature: 'pole' },",
+			"new": "      { on: 'b', branch: 0, t: 1, feature: 'pole' },\n      { on: 'b', branch: 0, t: Math.PI, feature: 'pole' },"
+		},
+		{
+			"id": "e1-steinmetz-not-equal",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "kind === 'steinmetz' ? r1 :",
+			"new": "kind === 'steinmetz' ? r1 * 0.9 :"
+		},
+		{
+			"id": "e1-motion-skips-branches",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "at: (t: number) => place(mo, b.at(t)) })",
+			"new": "at: b.at })"
+		},
+		{
+			"id": "e1-torus-spiric-angle",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "const u = acosClamped(d / (R + r * Math.cos(v)));\n        return torusAt(R, r, fwd ? u : -u, v);",
+			"new": "const u = acosClamped(d / (R + r * Math.cos(v)) * 0.99);\n        return torusAt(R, r, fwd ? u : -u, v);"
+		},
+		{
+			"id": "e1-cyl-cyl-loop-sign",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "          s * Math.sqrt(r1 * r1 - r2 * r2 * Math.cos(t) ** 2),",
+			"new": "          s * 0.5 * Math.sqrt(r1 * r1 - r2 * r2 * Math.cos(t) ** 2),"
+		},
+		{
+			"id": "e1-implicit-sphere",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "return Math.hypot(rho, w) - s.radius;",
+			"new": "return rho - s.radius;"
+		},
+		{
+			"id": "e1-implicit-cone-single-nappe",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "return rho - Math.abs(s.radius + w * Math.tan(s.halfAngle));",
+			"new": "return rho - (s.radius + w * Math.tan(s.halfAngle));"
+		},
+		{
+			"id": "e1-completeness-tol-open",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "const COMPLETE_TOL = 4e-3;",
+			"new": "const COMPLETE_TOL = 1e9;"
+		},
+		{
+			"id": "e1-gap-plane-sphere",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "      return b.kind === 'sphere'\n        ? b.radius - Math.abs(",
+			"new": "      return b.kind === 'sphere'\n        ? b.radius + Math.abs("
+		},
+		{
+			"id": "e1-seam-halfplane",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "ok: dot3(d, s.frame.x) > 0",
+			"new": "ok: true"
+		},
+		{
+			"id": "e1-pole-claim-surface",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "const s = claim.on === 'a' ? pair.a : pair.b;",
+			"new": "const s = pair.a;"
+		},
+		{
+			"id": "e1-prng-constant",
+			"file": "src/brep/__tests__/e1/prng.ts",
+			"old": "0x6d2b79f5",
+			"new": "0x6d2b79f7"
+		},
+		{
+			"id": "e1-label-check-dropped",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "if (labels[p.id] !== p.expected)",
+			"new": "if (false)"
+		},
+		{
+			"id": "e1-residual-bound",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "if (!(res < 1e-10))",
+			"new": "if (!(res < 1e10))"
+		},
+		{
+			"id": "e1-plane-sphere-tangent-normal-tilt",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "a: plane(scale3(n, d), n, phi(g)),\n      b: sphere(ORIGIN, AXIS_Z, R, phi(g)),\n      expected,",
+			"new": "a: plane(scale3(n, d), [n[0], n[1] + 1e-5, n[2]], phi(g)),\n      b: sphere(ORIGIN, AXIS_Z, R, phi(g)),\n      expected,"
+		}
+	]
+}

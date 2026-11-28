@@ -219,10 +219,10 @@ const OFFSETS: readonly (readonly [number, number, number])[] = (() => {
  */
 function boneField(grid: Grid, bone: SkinBone, work: WorkMeter): Float64Array | undefined {
   const { nx, ny, nz, size, origin, state } = grid;
+  if (!work.spend(state.length)) return undefined;
   const field = new Float64Array(state.length).fill(Infinity);
   const straight = new Float64Array(state.length).fill(Infinity);
   let nearest = Infinity;
-  if (!work.spend(state.length)) return undefined;
   for (let index = 0; index < state.length; index++) {
     if (state[index] === EXTERIOR) continue;
     const i = index % nx;
@@ -454,6 +454,7 @@ export function runSkinBindJob(
     diagonal = Math.max(length(sub(hi, lo)), 1e-12);
   }
 
+  if (!work.spend(vertexCount * B)) return err(work.failure as ModelingError);
   const dense = new Float64Array(vertexCount * B);
   const reached = new Uint8Array(vertexCount);
   for (let b = 0; b < B; b++) {

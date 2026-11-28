@@ -243,7 +243,7 @@ function persistentFixture() {
     const fixed = required(frame),
       slot = required(fixed.slots.lookup(entity)),
       out = mat4.create();
-    expect(fixed.current.matrix(slot.slot, 0, out, mat4.create())).toBe(true);
+    expect(fixed.current.matrix(slot.slot, 0, out)).toBe(true);
     return out[12];
   };
   return { world, scene, lease, joint, entity, requests, extract, x };
@@ -329,7 +329,7 @@ it('keeps submitted roots through physical completion, advances only accepted Sc
       currentSlot = required(c.slots.lookup(f.entity)),
       previous = required(c.previous),
       out = mat4.create();
-    expect(previous.matrix(currentSlot.slot, 0, out, mat4.create())).toBe(true);
+    expect(previous.matrix(currentSlot.slot, 0, out)).toBe(true);
     expect(out[12]).toBe(0);
     f.scene.resetGpuForRecover();
     expect(() => f.x(c)).toThrow();

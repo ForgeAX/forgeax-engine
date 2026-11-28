@@ -32,13 +32,15 @@ export async function* installCheckpoint(
 ): AsyncGenerator<() => void, () => void, void> {
   const { port, assets, saves } = host;
   const audio = world.hasResource(AUDIO_ENGINE_RESOURCE_KEY) ? world.getResource(AUDIO_ENGINE_RESOURCE_KEY) : undefined;
-  const load = async (guid: string) => (await assets.load(assets.parseGuid(guid), 'audio')).unwrap();
   let chime: (() => void) | undefined;
   if (audio !== undefined) {
-    const music = await load(musicGuid);
-    yield () => { assets.release(music).unwrap(); };
-    const feedback = await load(chimeGuid);
-    yield () => { assets.release(feedback).unwrap(); };
+    const [music, feedback] = (await assets.loadMany([musicGuid, chimeGuid], 'audio')).unwrap();
+    yield () => {
+      const feedbackRelease = assets.release(feedback);
+      const musicRelease = assets.release(music);
+      feedbackRelease.unwrap();
+      musicRelease.unwrap();
+    };
     let musicVoice: EntityHandle | undefined;
     yield () => {
       if (musicVoice !== undefined) {

@@ -1505,9 +1505,7 @@ function resolveCorner(
       if (on !== undefined)
         meet = Math.max(
           meet,
-          Math.min(
-            ...([0, 1] as const).map((e) => norm(sub(sidePoint(on.surface, on.side, e), p))),
-          ),
+          minOf(([0, 1] as const).map((e) => norm(sub(sidePoint(on.surface, on.side, e), p)))),
         );
     if (onA === undefined || onB === undefined)
       return err(
@@ -1576,9 +1574,10 @@ function resolveCorner(
     blendPatches.push(blendPatch(spec, specOf(i + 1), blendOf(i), results[i] as BlendResult));
   }
   const flip = specOf(0).flip;
-  out.push(
-    ...blendPatches,
-    ...fill.value.patches.map(
+  pushAll(out, blendPatches);
+  pushAll(
+    out,
+    fill.value.patches.map(
       (surface, k): SurfacePatch => ({
         name: `${name}-${k}`,
         surface,
@@ -1591,8 +1590,8 @@ function resolveCorner(
     maxOf(fill.value.residual.filter((r) => r.edge === edge).map((r) => r[key]));
   // Per sample the jump is relative to the larger of two near-zero cross curvatures (always
   // about 1 beside a flat face); the corner's scale is its blend curvature 1 / r.
-  const curvatureRatio = Math.max(
-    ...fill.value.residual
+  const curvatureRatio = maxOf(
+    fill.value.residual
       .filter((r) => r.edge === 'side')
       .map((r) => r.curvature * (blendOf(r.index).radius as number)),
   );

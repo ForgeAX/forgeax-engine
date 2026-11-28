@@ -59,6 +59,12 @@ A real hard edge is slightly rounded; the highlight on that radius is what reads
   four selected edges meet get a patched `corner` automatically. Interior edges only;
   widths past the adjacent faces are clamped with a warning. Tag/label what you bevel so a
   later pass can select the strips (`role` `bevel`, `corner`).
+  Where a design does want mixed radii (a heavy outer rim, fine inner edges, a size gradient
+  along a row of teeth), pass `width` as a list of `{ edges, width }` entries in one call
+  rather than several calls: one call keeps each corner a single patch, and the first entry
+  holding an edge wins, so order entries from specific to general. Change the width at a
+  sharp corner; along a smooth rim the step shows as a kink and very different widths
+  meeting at a shallow corner clamp.
 - `markSharp(edges)` leaves the edge crisp at export (a shading choice); `markCrease(edges,
   sharpness)` gives a finite crease for subdivision.
 - `supportLoops(edges, { offset })` adds one or two edge loops beside an edge so a
@@ -130,7 +136,15 @@ dead line; an uneven radius as beading. `checkEdgeFlow` (see
 - `textStrokes(text, { height, tracking?, slant?, align? })` lays text out in a built-in
   single-stroke font (capitals, digits, `- . / + : #`); `textRegion` turns it into filled
   outlines. Use the result as a layer in `decalTexture` or as a geometric imprint with
-  `m.surface`. `stamp.text` makes the same as a sheet cell.
+  `m.surface`. `stamp.text` makes the same as a sheet cell; `stamp.outline` does the same
+  for any filled region (gear, cloud, badge) with holes, depth and an optional sloped edge.
+- Real typefaces: `parseTrueTypeFont(bytes)` reads a static TrueType (quadratic glyf) file,
+  and `fontRegion(font, text, { size, direction?, tracking?, lineSpacing?, align?, tolerance? })`
+  returns the filled `Region2` plus the characters the font lacks. Vertical text stacks
+  columns right to left on each newline. Feed the region to `stamp.outline` for an engraved
+  plaque or seal. CFF outlines, collections, variable fonts and point-matching composites are
+  refused with `model-capability-unavailable`. Ship only a static subset whose licence allows
+  redistribution.
 - Large lettering on a silhouette is geometry; small marking is a decal (`proceduralMaterials`
   `decal(base, { width, height, background, layers, texture, key })` puts a decal sheet on
   `uv1`).

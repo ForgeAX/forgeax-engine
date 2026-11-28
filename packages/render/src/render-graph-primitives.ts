@@ -28,7 +28,7 @@ import {
 import { buildBeginRenderPassDescriptor } from './pipeline-spec';
 import { PostProcessError } from './post-process-errors';
 import { getOrCreateFromChain } from './record/mesh-ssbo';
-import type { _InternalRenderPipelineContext } from './record/render-context';
+import type { _InternalRenderPipelineContext, LegacySsaoResources } from './record/render-context';
 import { recordFxaaPass } from './record/skybox-post-pass';
 import type { RenderPipelineContext } from './render-contract';
 import {
@@ -270,7 +270,8 @@ export function recordGtaoComputePass(
   views: GtaoComputePassViews,
 ): void {
   const { runtime, pipelineState } = context;
-  const pp = pipelineState.perPassResources;
+  const perPass = pipelineState.perPassResources;
+  const pp = perPass.getLegacyGtaoResources?.() ?? perPass;
   const pipeline =
     views.gbufferV2 === true ? pp.gtaoGBufferComputePipeline?.() : pp.gtaoComputePipeline;
   const layout = pp.gtaoComputeBgl;
@@ -320,8 +321,14 @@ export function recordGtaoComputePass(
   pass.dispatchWorkgroups(Math.ceil(views.width / 8), Math.ceil(views.height / 8), 1);
 }
 
-function ssaoSurfacePipeline(
+function resolveLegacySsao(
   resources: _InternalRenderPipelineContext['pipelineState']['perPassResources'],
+): LegacySsaoResources {
+  return resources.getLegacySsaoResources?.() ?? resources;
+}
+
+function ssaoSurfacePipeline(
+  resources: LegacySsaoResources,
   stage: 'calc' | 'blur',
   gbufferLayout: DeferredAoNormalLayout | undefined,
 ) {
@@ -339,7 +346,7 @@ export function recordSsaoCalcPass(
   graphViews?: SsaoCalcPassViews,
 ): void {
   const { runtime, pipelineState, encoder } = _c;
-  const pp = pipelineState.perPassResources;
+  const pp = resolveLegacySsao(pipelineState.perPassResources);
 
   const pipeline = ssaoSurfacePipeline(pp, 'calc', graphViews?.gbufferLayout);
   if (pipeline == null || pp.ssaoBgl === null) {
@@ -469,7 +476,7 @@ export function recordSsaoDepthPass(
   pass: RhiRenderPassEncoder,
   views: SsaoDepthPassViews,
 ): void {
-  const pp = _c.pipelineState.perPassResources;
+  const pp = resolveLegacySsao(_c.pipelineState.perPassResources);
   const pipeline = stage === 'calc' ? pp.ssaoDepthCalcPipeline : pp.ssaoDepthBlurPipeline;
   const layout = pp.ssaoDepthBgl;
   if (pipeline == null || layout == null) {
@@ -525,7 +532,7 @@ export function recordSsaoBlurPass(
   graphViews?: SsaoBlurPassViews,
 ): void {
   const { runtime, pipelineState, encoder } = _c;
-  const pp = pipelineState.perPassResources;
+  const pp = resolveLegacySsao(pipelineState.perPassResources);
 
   const pipeline = ssaoSurfacePipeline(pp, 'blur', graphViews?.gbufferLayout);
   if (pipeline == null || pp.ssaoBgl === null) {

@@ -16,6 +16,7 @@ import { numMipLevels } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   blitMipmapsSync,
+  configureNativeMipmapCompiler,
   encodeMipmaps,
   generateMipmaps,
   getOrCreateMipmapPipeline,
@@ -85,6 +86,47 @@ async function prewarmFormat(device: RhiDevice, format: GPUTextureFormat = 'rgba
   if (!result.ok) throw result.error;
   return result.value;
 }
+
+it('builds only demanded formats with one native shader and shares it across upload paths', async () => {
+  const device = makeBlitDevice();
+  const compiler = vi.fn(() => rhiOk({} as ShaderModule));
+  const eagerCompiler = vi.fn(stubShaderFactory);
+  const layout = vi.spyOn(device, 'createPipelineLayout');
+  const pipelines = vi.spyOn(device, 'createRenderPipeline');
+  configureNativeMipmapCompiler(device, compiler);
+  expect(mipmapCacheSize(device)).toBe(0);
+  expect(compiler).not.toHaveBeenCalled();
+  const descriptor = { width: 4, height: 4, format: 'rgba8unorm-srgb' } as const;
+  const texture = {} as Texture;
+  blitMipmapsSync(device, texture, descriptor).unwrap();
+  const second = await getOrCreateMipmapPipeline(device, 'rgba16float', eagerCompiler);
+  expect(second.ok).toBe(true);
+  blitMipmapsSync(device, texture, descriptor).unwrap();
+  expect(compiler).toHaveBeenCalledTimes(1);
+  expect(eagerCompiler).not.toHaveBeenCalled();
+  expect(layout).toHaveBeenCalledTimes(1);
+  expect(pipelines).toHaveBeenCalledTimes(2);
+  expect(mipmapCacheSize(device)).toBe(2);
+});
+
+it('keeps the mip pipeline already issued while an earlier async compile completes', async () => {
+  const device = makeBlitDevice();
+  const nativeModule = {} as ShaderModule;
+  const shader = Promise.withResolvers<Awaited<ReturnType<MipmapShaderModuleFactory>>>();
+  const compileAsync = vi.fn(() => shader.promise);
+  const createSampler = vi.spyOn(device, 'createSampler');
+  const createPipeline = vi.spyOn(device, 'createRenderPipeline');
+  const pending = getOrCreateMipmapPipeline(device, 'rgba8unorm', compileAsync);
+  await Promise.resolve();
+  expect(compileAsync).toHaveBeenCalledTimes(1);
+  configureNativeMipmapCompiler(device, () => rhiOk(nativeModule));
+  blitMipmapsSync(device, {} as Texture, { width: 2, height: 2, format: 'rgba8unorm' }).unwrap();
+  shader.resolve(rhiOk({} as ShaderModule));
+  expect((await pending).ok).toBe(true);
+  expect(createSampler).toHaveBeenCalledTimes(1);
+  expect(createPipeline).toHaveBeenCalledTimes(1);
+  expect(createPipeline.mock.calls[0]?.[0].vertex.module).toBe(nativeModule);
+});
 
 describe('numMipLevels', () => {
   it('256x256 -> 9', () => expect(numMipLevels({ width: 256, height: 256 })).toBe(9));

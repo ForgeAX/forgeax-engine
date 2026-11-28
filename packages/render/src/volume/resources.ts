@@ -21,7 +21,9 @@ export const VOLUME_RESOLVED_FORMAT = 'rgba16float' as const;
 
 export const VOLUME_PACKING_Z = 4;
 /** Renderer-owned parameter allocation shared by staging and inspection. */
-export const VOLUMETRIC_FOG_PARAMS_BYTES = (1 + MAX_VOLUMETRIC_FOG_OWNERS) * 9 * 16;
+export const VOLUMETRIC_FOG_MEMBER_WORDS = 9 * 4;
+export const VOLUMETRIC_FOG_PARAMS_BYTES =
+  (1 + MAX_VOLUMETRIC_FOG_OWNERS) * VOLUMETRIC_FOG_MEMBER_WORDS * Float32Array.BYTES_PER_ELEMENT;
 
 interface VolumetricFogExtent {
   readonly width: number;

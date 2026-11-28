@@ -20,6 +20,28 @@ function targets(
 }
 
 describe('urp render feature targets', () => {
+  it('exposes the optional temporal reactivity attachment only for temporal AA', () => {
+    const input = {
+      tonemap: 'aces-filmic',
+      colorAttachmentFormat: 'bgra8unorm-srgb' as const,
+      storageBuffer: true,
+      multisample: true,
+    };
+    for (const antialias of ['taa', 'tsr']) {
+      const first = resolveStandardRenderFeatureTargets({ ...input, antialias });
+      expect(first.find((target) => target.name === 'temporal-reactivity')).toMatchObject({
+        format: 'rgba16float',
+        sampleCount: 1,
+      });
+      expect(resolveStandardRenderFeatureTargets({ ...input, antialias })).toBe(first);
+    }
+    for (const antialias of ['none', 'fxaa', 'msaa'])
+      expect(
+        resolveStandardRenderFeatureTargets({ ...input, antialias }).some(
+          (target) => target.name === 'temporal-reactivity',
+        ),
+      ).toBe(false);
+  });
   it('keeps FP32 Mode 0 radiance through resolve without widening input or probes', () => {
     const targets = resolveStandardRenderFeatureTargets({
       tonemap: 'aces-filmic',
@@ -68,7 +90,7 @@ describe('urp render feature targets', () => {
     expect(water).not.toBe(opaque);
   });
 
-  it('uses four immutable Standard definitions across equivalent configuration objects', () => {
+  it('reuses immutable Standard definitions across equivalent configuration objects', () => {
     const definitions = new Set<unknown>();
     for (const tonemap of ['none', 'aces-filmic', 'agx', 'future-tonemap']) {
       for (const antialias of ['none', 'fxaa', 'msaa', 'taa', 'smaa', 'future-aa']) {
@@ -92,7 +114,9 @@ describe('urp render feature targets', () => {
                 expect(resolveStandardRenderFeatureTargets({ ...input })).toBe(targets);
                 const logical = logicalRenderFeatureTargets(targets);
                 expect(logicalRenderFeatureTargets(targets)).toBe(logical);
-                expect(targets).toHaveLength(cloudHistory ? 18 : 12);
+                expect(targets).toHaveLength(
+                  (cloudHistory ? 21 : 15) + Number(antialias === 'taa'),
+                );
                 expect(targets.find((target) => target.name === 'cloud-shadow-raw')?.format).toBe(
                   'rgba32float',
                 );
@@ -140,7 +164,7 @@ describe('urp render feature targets', () => {
         }
       }
     }
-    expect(definitions.size).toBe(4);
+    expect(definitions.size).toBe(6);
   });
 
   it('preserves live array methods and borrowed handle observations around Standard definitions', () => {
@@ -246,7 +270,7 @@ describe('urp render feature targets', () => {
     input.cloudHistory = true;
     const cloud = resolveStandardRenderFeatureTargets(input);
     expect(cloud).toHaveLength(first.length + 6);
-    expect(first).toHaveLength(12);
+    expect(first).toHaveLength(15);
     expect(first.at(-1)).toMatchObject({ name: 'opaque-depth', sampleCount: 1 });
     expect(resolveStandardRenderFeatureTargets(input)).toEqual(cloud);
   });

@@ -1,7 +1,7 @@
 #define_import_path forgeax_atmosphere::visibility
 #import forgeax_view::common::{AtmosphereMedium, View}
 #import forgeax_pbr::shadow_pcf::{shadow_sample_compare}
-#import forgeax_cloud::shadow::{cloud_shadow_map_load_rgba, cloud_shadow_optical_depth}
+#import forgeax_cloud::shadow::{cloud_shadow_map_load_rgba, cloud_shadow_receiver_beer_factor, cloud_shadow_uv}
 #ifdef ATMOSPHERE_UTILITY_SHADOWS
 @group(1) @binding(0) var visibilityShadow: texture_depth_2d_array;
 @group(1) @binding(1) var visibilityCompare: sampler_comparison;
@@ -54,16 +54,16 @@ fn atmosphere_visibility_sample(v:View, m:AtmosphereMedium, p:vec3<f32>, depth:t
   let strength=select(v.cloudShadowProjection.y,v.cloudShadowRight.w,v.cloudShadowProjection.w>0.5);
   if strength>0.0 && v.cloudShadowProjection.z<0.5 && v.cloudShadowProjection.x>0.0 {
     let offset=world-v.cloudShadowOrigin.xyz;
-    let uv=vec2<f32>(dot(offset,v.cloudShadowRight.xyz),dot(offset,v.cloudShadowUp.xyz))/v.cloudShadowProjection.x+vec2<f32>(0.5);
-    if all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0)) {
-      let column=cloud_shadow_map_load_rgba(cloud,uv);
+    let uv=cloud_shadow_uv(offset,v.cloudShadowRight.xyz,v.cloudShadowUp.xyz,v.cloudShadowProjection.x);
+    if v.cloudShadowProjection.w>0.5 {
+      let depthMeters=dot(offset,-normalize(cross(v.cloudShadowRight.xyz,v.cloudShadowUp.xyz)));
+      let farMeters=select(0.0,v.cloudShadowOrigin.w,v.cloudShadowProjection.w>1.5);
+      visibility*=cloud_shadow_receiver_beer_factor(cloud,uv,depthMeters,farMeters,strength);
+    } else if all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0)) {
+      let column=cloud_shadow_map_load_rgba(cloud,uv,false);
       var factor=clamp(column.r,0.0,1.0);
-      if v.cloudShadowProjection.w>0.5 {
-        let depthMeters=dot(offset,-normalize(cross(v.cloudShadowRight.xyz,v.cloudShadowUp.xyz)));
-        factor=mix(1.0,exp(-cloud_shadow_optical_depth(column.xyz,depthMeters)),clamp(strength,0.0,1.0));
-      } else if v.cloudShadowRight.w>0.0 && column.r<1.0 {
+      if v.cloudShadowRight.w>0.0 && column.r<1.0 {
         let height=(world.y-v.cloudShadowOrigin.w)/v.cloudShadowRight.w;
-        // Same occupied-column approximation as the cloud transport owner.
         let remaining=clamp((column.b-height)/max(column.b-column.g,0.0001),0.0,1.0);
         factor=exp(-max(column.a,0.0)*remaining);
       }

@@ -201,7 +201,7 @@ describe('bake cage: a hard-rimmed cylinder (S3 golden finding, gate)', () => {
     expect(Math.max(...fixed)).toBeLessThan(1);
     const sources = bakeSources({ ...options, maps: [...options.maps], key: 'rim' });
     if (!sources.ok) throw sources.error;
-    const params = (sources.value['texture/rim-normalObject']?.source as { params: BakeJobParams })
+    const params = (sources.value['texture/rim-normal-object']?.source as { params: BakeJobParams })
       .params;
     const raw = runComputeJob(
       {

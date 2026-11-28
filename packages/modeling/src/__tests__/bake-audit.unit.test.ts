@@ -116,6 +116,44 @@ describe('cage-clip: facing detail outside the cage span (audit A1)', () => {
   });
 });
 
+describe('cage-clip through validate: the bake outcome routes into the report', () => {
+  const stamp = () => heightfield(FEATURES.smallstamp, 128);
+  const cageClipIssue = {
+    code: 'bake',
+    severity: 'error',
+    detail: expect.objectContaining({ check: 'cage-clip' }),
+  };
+
+  it('a clipped outcome fails validate with a bake error tagged cage-clip (falsifier)', {
+    timeout: 30000,
+  }, () => {
+    const outcome = bake(stamp(), { cage: { offset: 0.01, maxRay: 0.1 } });
+    const report = plate().validate({ bake: { outcome } });
+    expect(report.pass).toBe(false);
+    expect(report.issues).toContainEqual(expect.objectContaining(cageClipIssue));
+  });
+
+  it('a covering outcome passes and reports cage-clip as checked', {
+    timeout: 30000,
+  }, () => {
+    const outcome = bake(stamp(), { cage: { offset: 0.05, maxRay: 0.1 } });
+    const report = plate().validate({ bake: { outcome } });
+    expect(report.issues).not.toContainEqual(expect.objectContaining(cageClipIssue));
+    expect(report.coverage.checked).toContainEqual({ code: 'bake', subjects: 2 });
+  });
+
+  it('without an outcome cage-clip is listed as missing-input and never as checked', () => {
+    const report = plate().validate({ bake: true });
+    expect(report.coverage.unchecked).toContainEqual({
+      code: 'bake',
+      reason: 'missing-input',
+      subjects: 1,
+      sample: ['cage-clip'],
+    });
+    expect(report.issues).not.toContainEqual(expect.objectContaining(cageClipIssue));
+  });
+});
+
 describe('stray-detail: a part hovering off the base (audit A3)', () => {
   /** A 0.2 m square tilted 30 degrees, centered 0.1 m above the plate. */
   const hovering = (half: number): number[][][] => {

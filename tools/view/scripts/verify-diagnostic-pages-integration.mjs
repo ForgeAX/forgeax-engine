@@ -140,7 +140,7 @@ try {
  const bootstrap = await fetch(new URL('/__forgeax/view/bootstrap', state.url)).then(response => response.json());
  client = await connectViewWorkspace({ endpoint: bootstrap.endpoint, token: bootstrap.token, clientId: 'engine-view-integration' });
  browser = await chromium.launch({
-  ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? (process.platform === 'darwin' ? 'chrome' : process.platform === 'linux' ? linuxBrowserLaunch.channel : undefined) }),
+  ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? linuxBrowserLaunch.channel }),
   headless: false,
   args: [
     '--enable-unsafe-webgpu',

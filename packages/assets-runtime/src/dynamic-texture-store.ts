@@ -51,7 +51,7 @@ export interface DynamicTextureDevice {
   }): Result<Texture, RhiError>;
   createTextureView(texture: Texture, desc: Record<string, never>): Result<TextureView, RhiError>;
   destroyTexture(texture: Texture): Result<void, RhiError>;
-  /** Record prewarmed mips into the Renderer encoder; release scratch after submit/abort. */
+  /** Record mips into the Renderer encoder; release scratch after submit/abort. */
   encodeMipmaps?: (
     encoder: RhiCommandEncoder,
     texture: Texture,
@@ -376,7 +376,7 @@ export class DynamicTextureStore {
               new RhiError({
                 code: 'rhi-not-available',
                 expected: 'dynamic mipmap encoder is configured',
-                hint: 'use adaptDynamicTextureDevice with prewarmed mipmap pipelines',
+                hint: 'configure the Renderer device and its mipmap encoder',
               }),
             )
           );

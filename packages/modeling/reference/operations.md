@@ -8,6 +8,7 @@ Part of the [`@forgeax/engine/modeling` reference](../README.md).
 |:--|:--|:--|
 | `box`, `plane`, `polygon`, `sphere`, `torus` | `face` | sizes, radii, segment counts |
 | `cylinder`, `cone`, `revolve`, `extrudePolygon` | `side`, plus `top`/`bottom` caps (`hole` walls for `extrudePolygon` holes) | radii, height or depth, segment counts |
+| `sheet({ thickness, kFactor?, outline, bends })` | `sheet` (one `bend` and `sheet-edge` strip set per bend, only with a `label`) | `thickness`, every bend `radius` (> 0), `angle` in (-180, 180) and not 0; a flat pattern whose bends are straight lines spanning it |
 | `extrude(faces, { distance, region })` | `top`, `side` | `distance` (non-zero) |
 | `extrude(faces, { path, frame?, up?, scale?, twist? })` | `top`, `side` | a path of non-zero length; `scale` > 0 at every station |
 | `offset(faces, { distance, region })` | `top`, `side` | `distance` (non-zero) |
@@ -18,7 +19,9 @@ Part of the [`@forgeax/engine/modeling` reference](../README.md).
 | `bridge(edges, { segments?, material? })` | `side` | two closed boundary loops of equal size |
 | `loopCut(edges, { cuts })` | none | `cuts` (>= 1); a ring crossing no face is `model-op-no-effect` |
 | `supportLoops(edges, { offset })` | none (strips tagged `support`) | one or two rising offsets below half of each rung; side faces with one selected edge |
-| `bevel(edges, { width, segments, material? })` | `bevel`, `corner` | `width` (> 0), `segments` (1 to 64); interior edges only |
+| `bevel(edges, { width, segments, material? })` | `bevel`, `corner` | `width` (> 0, or a list of `{ edges, width }` entries, see [detail](detail.md#bevel)), `segments` (1 to 64); interior edges only |
+| `hole(faces, { kind, diameter \| thread, depth, centers, counterbore?, countersink?, threadGeometry?, segments? \| tolerance? })` | `hole-wall`, `hole-floor` (blind), `counterbore`, `countersink`, `hole-thread` (modeled) | `kind` `simple`, `counterbore`, `countersink` or `tapped`; `depth` > 0 or `'through'`; non-empty `centers` in the face frame, a rim diameter apart; a tapped `thread` is a catalogue designation, a typo is `model-invalid-argument`; a face that is not planar is `model-precondition` (`hole-face`), a blind depth past the solid `hole-through`, a thread that leaves no wall `tap-wall`; `threadGeometry: 'modeled'` sweeps a real helical groove (`thread-length` when `depth` is under one pitch) |
+| `applyDraft(faces, { angle, direction, neutral })` | none (walls keep their faces) | `angle` in (0, 45) degrees, non-zero `direction`; walls are planar prism walls parallel to `direction`, `neutral` planar faces perpendicular to it |
 | `panelLine(edges or { faces, point, normal }, { width, depth, profile?, material? })` | `groove`, `lip` | `width`, `depth` (> 0); `profile` `square` (default), `v` or `u` |
 
 | `sweep({ profile, path, frame?, up?, twist?, scale?, closed?, caps?, segments?, sharpAngle? })` | `side`, `start`, `end` | a closed `[x, y]` section (or several), a path of non-zero length |
@@ -45,8 +48,9 @@ Part of the [`@forgeax/engine/modeling` reference](../README.md).
 | `translate`, `scale`, `rotate` (faces or vertices, optional `{ falloff?, symmetry? }`), `flip`, `delete`, `weld` | none | offsets, positive scale factors, distance; a soft edit moves at least one vertex |
 | `knife({ points, direction?, closed?, through?, snap?, sharp?, seam?, faces? })` | `inside` (closed paths) | 2+ points (3+ closed), a segment length across the sweep, at least one face cut from edge to edge or an edge followed |
 | `tag`, `assign`, `markSharp`, `markSeam`, `uv.project` (`box`, `planar`, `cylinder`) | none | projection `scale` |
+| `markRole(faces, 'form' \| 'detail' \| 'tool')`, `markFloat(faces, float = true)` | none (journal counts per role) | `markRole` writes only the part-role bits and never touches the floating flag, mirrored or edge-round bits; unmarked faces are `form`. `markFloat(sel.all(), false)` is the one way to undo a `details: 'float'` join (a floated shell stays floating through `markRole`); `sel.role(role)` selects, `inspect().roles` counts `form`, `detail`, `tool` and `float` |
 | `featureLine({ name, curve, continuity?, inflections? })` | none (records a feature line; no geometry) | a unique name, a valid NURBS curve, continuity `G0`, `G1` or `G2`; `inflections` ranges `[t0, t1]` with 0 <= t0 < t1 <= 1 |
-| `uv.unwrap({ faces?, method?, seams?, pins?, refine? })`, `uv.pack({ faces?, resolution, padding, rotate?, normalize? })` | none | atlas `resolution` and `padding` (texels) |
+| `uv.unwrap({ faces?, method?, seams?, pins?, refine? })`, `uv.pack({ faces?, resolution, padding, rotate?, normalize?, orient?, groups?, tiles?, priority?, fill? })`, `uv.straighten({ edges?, faces?, maxAngle?, maxStretch? })` | none | atlas `resolution` and `padding` (texels) |
 | `uv.auto({ faces?, maxCharts?, maxDistortion?, maxNormalDeviation?, respectSharp?, method?, refine?, resolution, padding, pack? })` | none (role `charted`) | atlas `resolution` and `padding` (texels) |
 | `voxel.fromMesh(faces?, { voxelSize, band, sign? })` returns an `SdfGrid`; `voxel.toMesh(grid, { iso?, smooth?, sharp? })` | `surface` (toMesh) | `voxelSize` (> 0), `band` (voxels, >= 1); a non-empty grid |
 | `voxel.union(faces?, { voxelSize, radius })`, `voxel.offset(faces?, { voxelSize, distance })`, `voxel.fillHoles(faces?, { voxelSize })` | `surface` | `voxelSize`, `radius` (>= 0), non-zero `distance` |
@@ -79,18 +83,34 @@ no `center`: their profile coordinates place them.
 | Primitive | Shape |
 |:--|:--|
 | `plane({ width, height, widthSegments?, heightSegments? })` | quad grid in XY facing +Z |
-| `cylinder({ radiusTop, radiusBottom, height, radialSegments, heightSegments?, openEnded? })` | along +Y; a zero radius ends in a pole |
-| `cone({ radius, height, radialSegments, heightSegments?, openEnded? })` | apex at +height/2 |
-| `sphere({ radius, widthSegments, heightSegments })` | quad bands, triangle fans at the poles |
-| `torus({ radius, tube, radialSegments, tubularSegments, angle? })` | ring in XY around +Z, starting at +X |
+| `cylinder({ radiusTop, radiusBottom, height, radialSegments \| tolerance, heightSegments?, openEnded? })` | along +Y; a zero radius ends in a pole |
+| `cone({ radius, height, radialSegments \| tolerance, heightSegments?, openEnded? })` | apex at +height/2 |
+| `sphere({ radius, widthSegments, heightSegments } \| { radius, tolerance })` | quad bands, triangle fans at the poles |
+| `torus({ radius, tube, radialSegments, tubularSegments, angle? } \| { radius, tube, tolerance, angle? })` | ring in XY around +Z, starting at +X |
 | `revolve({ points, segments, angle? })` | `[radius, y]` profile about +Y, starting at +Z |
 | `extrudePolygon({ points, holes?, depth, steps? })` | `[x, y]` outline and hole outlines, z = 0 to depth |
 
+- Resolution follows size when you give `tolerance` (the largest chord sagitta in meters)
+  instead of segment counts; giving both, or neither, is `model-invalid-argument`, and
+  explicit counts stay byte-for-byte as before. `segmentsFor(radius, tolerance, minimum?)`
+  returns `max(minimum, ceil(pi / acos(1 - tolerance / radius)))` (radius 1, tolerance
+  0.01 gives 23). `cylinder` and `cone` use the larger radius; `sphere` derives
+  `heightSegments` as half of `widthSegments` (at least 2); `torus` derives
+  `radialSegments` from `tube` and `tubularSegments` from `radius + tube`, scaled by
+  `angle / 360`. A tolerance of `1e-4` on a 5 cm part is far more faces than a viewer
+  needs: choose it from the finest feature that must read, not from the coarsest.
 - `cylinder`, `cone`, `sphere` and `torus` are profiles of the one `revolve` kernel.
   A profile listed bottom to top faces outward; ends on the axis become poles, and an
   end segment that is also perpendicular to the axis becomes one n-gon cap with a
   sharp rim. Only profile ends may touch the axis; a last point equal to the first
   closes the profile.
+- `uv: 'metric'` on `cylinder`, `cone`, `sphere`, `torus`, `revolve` and `extrudePolygon` writes the
+  `sweep` uv0 convention at creation (omitted: no uv0, as before). u runs around the generator
+  (revolve: angle x ring radius; extrude: distance along the outline), v along it (revolve: profile
+  length; extrude: depth), in meters of the unplaced surface, counter-clockwise on the outward face.
+  The seam is explicit and flagged: the meridian at the start angle (a closed profile such as a torus
+  also gets its profile ring), the first point of each extrude loop. Caps are planar meters. Booleans
+  carry these corners like sweep UVs; `uv.project` still overwrites them.
 - `extrudePolygon` accepts either winding and a closing duplicate point; caps are
   n-gons with sharp rims, walls are smooth. Self-crossing outlines are rejected.
   `holes` are outlines strictly inside `points` and outside each other (crossing,
@@ -100,6 +120,26 @@ no `center`: their profile coordinates place them.
   convex and both caps carry the same faces.
 - Closed results assert a positive enclosed volume. An inside-out profile fails with
   `model-degenerate` and a hint to reverse the point order.
+
+## Sheet metal
+
+`sheet` takes the flat pattern as the data: an outline (with optional holes, a `RegionInput`)
+and a list of straight bends `{ line, angle, radius }`. The folded solid is derived and the
+operation never unfolds a body back. Each bend zone is centered on its line and is as wide as
+the bend allowance `BA = angle(rad) * (radius + k * thickness)` (the `angle` argument is in degrees), `k` being the neutral-axis
+fraction `kFactor` (default 0.44). `sheet.bendAllowance(angle, radius, thickness, k?)` returns
+that length. The zone folds as a faceted arc (5 degrees per facet), so the volume is the
+faceted closed form: it equals flat area x thickness exactly at `k = 0.5` up to the facet
+error (about 2e-3 relative in the tests), and deviates with `k` because the neutral axis
+moves off the mid-plane.
+
+`sheet.flat(spec)`, `sheet.drawing(spec)` and `sheet.dxf(spec)` give the flat pattern as a
+`Region2`, as a `Drawing` (view `flat`; outline and holes `visible`, bend lines `guide`,
+plus a bend table) and as the text from `drawingDxf`; there is no second DXF writer.
+A pattern that cannot fold (a bend line that misses the material, is shorter than the zone
+needs, runs oblique to an outline edge, overlaps another zone, or leaves a disconnected or
+closed-loop body) is `model-precondition` with `detail.reason` `not-sheet` and a `cause`.
+Cut reliefs into the outline with `region2d.difference` before folding.
 
 ## Region operators
 

@@ -99,9 +99,15 @@ it('shares installed Engine component, schedule and resource identity across dev
       server: { host: '127.0.0.1', port: 0, fs: { allow: [root, packages] } },
     });
     await server.listen();
-    const executablePath = ['/opt/google/chrome-beta/chrome', chromium.executablePath()].find(
-      existsSync,
-    );
+    const executablePath = [
+      process.env.FORGEAX_BROWSER_EXECUTABLE,
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/opt/google/chrome/chrome',
+      '/usr/bin/google-chrome',
+      chromium.executablePath(),
+    ]
+      .filter((p): p is string => Boolean(p))
+      .find(existsSync);
     browser = await chromium.launch({
       headless: true,
       ...(executablePath === undefined ? {} : { executablePath }),
@@ -460,9 +466,15 @@ it('discovers nested native Engine dependencies before a cold browser target act
       messages.push(args[0]);
       return send(...args);
     }) as typeof send;
-    const executablePath = ['/opt/google/chrome-beta/chrome', chromium.executablePath()].find(
-      existsSync,
-    );
+    const executablePath = [
+      process.env.FORGEAX_BROWSER_EXECUTABLE,
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/opt/google/chrome/chrome',
+      '/usr/bin/google-chrome',
+      chromium.executablePath(),
+    ]
+      .filter((p): p is string => Boolean(p))
+      .find(existsSync);
     browser = await chromium.launch({
       headless: true,
       ...(executablePath ? { executablePath } : {}),
@@ -488,7 +500,7 @@ it('discovers nested native Engine dependencies before a cold browser target act
 // The App Worker closure must stay usable by ordinary animation consumers.
 it('builds ordinary App module Workers without opting into skeletal Physics', async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-ordinary-app-worker-')));
-  const app = resolve(import.meta.dirname, '../../../app/dist/index.mjs').replaceAll('\\', '/');
+  const app = resolve(import.meta.dirname, '../../../app/dist/browser.mjs').replaceAll('\\', '/');
   try {
     await writeFile(resolve(root, 'package.json'), '{"type":"module"}');
     await writeFile(

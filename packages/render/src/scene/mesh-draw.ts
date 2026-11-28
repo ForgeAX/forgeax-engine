@@ -1,7 +1,8 @@
 import { meshGeometryDraws } from '../gpu-driven/mesh-batches';
+import { getOpaqueResourceIdentity } from '../opaque-resource-identity';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { offsetWaterMeshAdmissionDraw } from '../water/mesh-source-admission';
-import { CapturedSceneTransform } from './captured-transform';
+import { CapturedSceneTransform, ScenePose, type ScenePoseStorage } from './captured-transform';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import {
   BoundMeshMaterials,
@@ -101,6 +102,7 @@ class MeshDrawShape extends BoundMeshMaterials {
 }
 
 export class SceneMeshDrawShapes {
+  readonly uploadOwner = -getOpaqueResourceIdentity(this);
   readonly #shapes = new WeakMap<RowContent, MeshDrawShape>();
 
   resolve(content: RowContent, meshes: MeshFrame): RowContent {
@@ -131,9 +133,48 @@ export class SceneMeshDrawShapes {
   }
 }
 
+/** A draw which keeps the exact published pose address. The public transform
+ * property is enumerable so copying or serializing the observation still works. */
+class SceneDrawSnapshot {
+  readonly #slot: SceneDrawSlot;
+  readonly entityKey: number;
+  declare readonly transform: RenderableSnapshot['transform'];
+
+  static readonly #transformProperty = {
+    configurable: true,
+    enumerable: true,
+    get(this: SceneDrawSnapshot) {
+      return this.#slot.transform;
+    },
+  };
+
+  constructor(slot: SceneDrawSlot) {
+    this.#slot = slot;
+    this.entityKey = slot.entityKey;
+    Object.defineProperty(this, 'transform', SceneDrawSnapshot.#transformProperty);
+  }
+
+  static pose(source: Pick<RenderableSnapshot, 'transform'>): SceneDrawSlot | undefined {
+    return source instanceof SceneDrawSnapshot ? source.#slot : undefined;
+  }
+}
+
+/** Numeric recording and sorting can use the existing address without opening a matrix view. */
+export function drawPoseStorage(source: Pick<RenderableSnapshot, 'transform'>): ScenePoseStorage {
+  return SceneDrawSnapshot.pose(source) ?? CapturedSceneTransform.storage(source.transform);
+}
+
+export function nativeDrawSlot(source: RenderableSnapshot): SceneDrawSlot | undefined {
+  return SceneDrawSnapshot.pose(source);
+}
+
+export function drawPoseReflected(source: Pick<RenderableSnapshot, 'transform'>): boolean {
+  return CapturedSceneTransform.reflectedStorage(drawPoseStorage(source));
+}
+
 /** A captured lane owns an immutable pose and shared authored fields. Public
  * enumeration includes snapshot; native draw and bounds readers consume their own fields. */
-export class SceneDrawSlot implements RenderSceneSlot {
+export class SceneDrawSlot extends ScenePose implements RenderSceneSlot {
   declare readonly snapshot: RenderableSnapshot;
   static readonly #snapshotProperty = {
     configurable: true,
@@ -143,12 +184,8 @@ export class SceneDrawSlot implements RenderSceneSlot {
     },
   };
   readonly #content: RowContent;
-  readonly #pose: Float32Array;
-  readonly #offset: number;
   #transform: RenderableSnapshot['transform'] | undefined;
   readonly #shapes: SceneMeshDrawShapes;
-  static #nextUploadVersion = 0;
-  #uploadVersion: number | undefined;
   #authored: RenderableSnapshot | undefined;
   #drawShape: RowContent | undefined;
   #draw: RenderableSnapshot | undefined;
@@ -163,9 +200,8 @@ export class SceneDrawSlot implements RenderSceneSlot {
     offset: number,
     shapes: SceneMeshDrawShapes,
   ) {
+    super(poses, offset);
     this.#content = content;
-    this.#pose = poses;
-    this.#offset = offset;
     this.#shapes = shapes;
     Object.defineProperty(this, 'snapshot', SceneDrawSlot.#snapshotProperty);
   }
@@ -187,44 +223,28 @@ export class SceneDrawSlot implements RenderSceneSlot {
     );
   }
 
-  /** The column and its offset remain valid for the full lifetime of this issued row. */
-  get poseColumn(): Float32Array {
-    return this.#pose;
-  }
-
-  get poseOffset(): number {
-    return this.#offset;
-  }
-
   get transform(): RenderableSnapshot['transform'] {
-    this.#transform ??= new CapturedSceneTransform(this.#pose, this.#offset);
+    // Dense writes share internal pages. Explicit matrix reads detach only their own
+    // sixteen floats, so a retained matrix cannot pin that wider backing.
+    this.#transform ??= new CapturedSceneTransform(this.poseColumn, this.poseOffset);
     return this.#transform;
   }
 
-  /** Authored and ordinary Mesh projections share this row's physical pose, temporal and
-   * surface bytes. View overlays and externally supplied sources carry independent facts. */
-  meshUploadVersion(source: RenderableSnapshot): number | undefined {
-    if (!this.ownsSnapshot(source)) return undefined;
-    // Opaque external identities are positive. Each issued native version is unique
-    // across scene owners, including replacements that reuse the same physical address.
-    if (
-      this.#uploadVersion === undefined &&
-      SceneDrawSlot.#nextUploadVersion > Number.MIN_SAFE_INTEGER
-    )
-      this.#uploadVersion = --SceneDrawSlot.#nextUploadVersion;
-    return this.#uploadVersion;
+  /** Native pose versions are scoped to this Scene owner. */
+  get uploadOwner(): number {
+    return this.#shapes.uploadOwner;
   }
 
   ownsSnapshot(source: RenderableSnapshot): boolean {
     return source === this.#authored || source === this.#draw;
   }
 
+  ownsAuthoredSnapshot(source: RenderableSnapshot): boolean {
+    return source === this.#authored;
+  }
+
   authoredSnapshot(): RenderableSnapshot {
-    this.#authored ??= {
-      ...this.#content,
-      entityKey: this.entityKey,
-      transform: this.transform,
-    };
+    this.#authored ??= Object.assign(new SceneDrawSnapshot(this), this.#content);
     return this.#authored;
   }
 
@@ -232,14 +252,18 @@ export class SceneDrawSlot implements RenderSceneSlot {
     return this.#shapes.materials(this.#content, meshes);
   }
 
+  drawContent(meshes: MeshFrame): RowContent {
+    return this.#shapes.resolve(this.#content, meshes);
+  }
+
   draw(meshes: MeshFrame): RenderableSnapshot {
-    const shape = this.#shapes.resolve(this.#content, meshes);
+    const shape = this.drawContent(meshes);
     if (shape === this.#content) {
       this.#draw = this.#drawShape = undefined;
       return this.authoredSnapshot();
     }
     if (shape !== this.#drawShape || this.#draw === undefined) {
-      this.#draw = { ...shape, entityKey: this.entityKey, transform: this.transform };
+      this.#draw = Object.assign(new SceneDrawSnapshot(this), shape);
       this.#drawShape = shape;
     }
     return this.#draw;

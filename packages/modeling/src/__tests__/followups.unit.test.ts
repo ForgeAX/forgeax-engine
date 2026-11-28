@@ -500,3 +500,47 @@ describe('triangulateLoop keeps fan triangles f32-safe', () => {
     expect(triangulateLoop(square)).toEqual([0, 1, 2, 0, 2, 3]);
   });
 });
+
+describe('triangulateLoop leaves no vertex only in zero-area triangles', () => {
+  // Reduced from the 157-corner side wall that cleanup.planar merged on the C-600 turret low:
+  // a run of straight corners (1.5, 2.5, 3.5 along one line) next to a far reflex corner.
+  // Ear clipping left corners 1.5 and 2.5 only in flat triangles, and uv.auto then failed
+  // with model-degenerate.
+  const loop: [number, number][] = [
+    [1.1800000000000004, -2.5000000000000004],
+    [1.1565685424949241, -1.556568542494924],
+    [1.1800000000000002, 1.4999999999999996],
+    [1.1800000000000002, 2.5],
+    [1.18, 3.4999999999999996],
+    [0.38, -6.92],
+    [0.38, 6.42],
+    [1.1800000000000002, 4.5],
+    [1.22, -6.92],
+  ];
+  const points: Tuple3[] = loop.map(([y, z]) => [0, y, z]);
+
+  it('gives every corner a triangle with positive area', () => {
+    const tris = triangulateLoop(points) as number[];
+    const covered = new Set<number>();
+    let area = 0;
+    for (let i = 0; i < tris.length; i += 3) {
+      const [a, b, c] = [0, 1, 2].map((k) => points[tris[i + k] as number] as Tuple3) as [
+        Tuple3,
+        Tuple3,
+        Tuple3,
+      ];
+      const twice = Math.abs(cross(sub(b, a), sub(c, a))[0] as number);
+      expect(twice).toBeGreaterThan(1e-9);
+      area += twice / 2;
+      for (let k = 0; k < 3; k++) covered.add(tris[i + k] as number);
+    }
+    expect(covered.size).toBe(points.length);
+    let shoelace = 0;
+    for (let i = 0; i < loop.length; i++) {
+      const [y0, z0] = loop[i] as [number, number];
+      const [y1, z1] = loop[(i + 1) % loop.length] as [number, number];
+      shoelace += z0 * y1 - z1 * y0;
+    }
+    expect(area).toBeCloseTo(Math.abs(shoelace) / 2, 9);
+  });
+});

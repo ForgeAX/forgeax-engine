@@ -7,6 +7,7 @@ import { MaterialResource } from '../../material-resource';
 import type { CameraSnapshot } from '../../render-contract';
 import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
 import type { TemporalView } from '../../temporal/temporal-view';
+import { createTemporalView } from '../../temporal/view';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import {
   computeProjectionMatrix,
@@ -139,14 +140,24 @@ function temporalView(): TemporalView {
 }
 
 describe('temporal GPU payloads', () => {
-  it('retains the complete View facts while pairing post-process reconstruction with TAA depth', () => {
+  it.each([
+    'none',
+    'taa',
+  ] as const)('uses a staged moving camera for the main and post-process View with %s antialiasing', (antialias) => {
     const { queue, uploads, offsets } = recordingQueue();
     const source = {
       ...camera(),
-      antialias: 'taa' as const,
+      world: translatedMatrix(7),
+      antialias,
       clipping: { planes: [[1, 0, 0, -3] as const], clipShadows: true },
     };
-    const temporal = { ...temporalView(), currentJitterUv: [0.25 / 800, -0.5 / 600] as const };
+    const staged = computeViewProjectionMatrix(source, mat4.create());
+    const temporal = createTemporalView({
+      antialias,
+      width: 800,
+      height: 600,
+      currentUnjitteredViewProjection: staged,
+    });
     writeViewUbo(
       queue,
       {} as Buffer,
@@ -175,18 +186,34 @@ describe('temporal GPU payloads', () => {
         far: 100,
       },
       earthAtmosphere,
+      false,
+      undefined,
+      { width: 800, height: 600, outputWidth: 1200, outputHeight: 900 },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      staged,
     );
     const main = new Float32Array(uploads[0]?.buffer ?? new ArrayBuffer(0));
     const copyIndex = offsets.indexOf(PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE);
     expect(copyIndex).toBeGreaterThan(-1);
     const copy = new Float32Array(uploads[copyIndex]?.buffer ?? new ArrayBuffer(0));
     const expected = main.slice();
-    expected.set(main.subarray(196, 212), 0);
+    expect(main.subarray(196, 212)).toEqual(staged);
+    expected.set(staged, 0);
+    expected[23] = 1200;
+    expected[27] = 900;
     const inverse = mat4.create();
     mat4.invert(inverse, mat4.view(expected));
     expected.set(inverse, 44);
     expect(copy).toEqual(expected);
-    expect(copy.subarray(0, 16)).not.toEqual(main.subarray(0, 16));
+    if (antialias === 'taa') expect(copy.subarray(0, 16)).not.toEqual(main.subarray(0, 16));
+    else expect(copy.subarray(0, 16)).toEqual(main.subarray(0, 16));
     const product = mat4.create();
     mat4.multiply(product, mat4.view(copy), mat4.view(copy.subarray(44, 60)));
     for (let index = 0; index < 16; index++)

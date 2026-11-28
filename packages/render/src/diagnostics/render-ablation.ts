@@ -174,9 +174,9 @@ function withoutShadow(source: object): object {
  * corpus. Returns the input unchanged when neither is ablated.
  */
 export function ablateLocalLights<T extends AblatableLocalLight>(
-  local: T[],
+  local: readonly T[],
   ablation: RenderAblation | undefined = active,
-): T[] {
+): readonly T[] {
   if (ablation === undefined) return local;
   const keep = ablation.punctualLights;
   const sampling = ablation.shadowSampling !== false;

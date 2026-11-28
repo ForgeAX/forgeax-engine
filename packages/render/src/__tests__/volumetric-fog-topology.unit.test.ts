@@ -207,7 +207,7 @@ describe('volumetric fog RenderGraph topology', () => {
     expect(commitSource).toContain('promoteVolumetricFogHistory(');
     expect(
       readFileSync(fileURLToPath(new URL('../record/volume-params.ts', import.meta.url)), 'utf8'),
-    ).toContain('params[32] = fog.worldTimeSeconds ?? 0');
+    ).toContain('params[offset + 32] = fog.worldTimeSeconds ?? 0');
     expect(
       readFileSync(fileURLToPath(new URL('../volume/temporal.ts', import.meta.url)), 'utf8'),
     ).toContain("reason: 'simulation-time'");

@@ -15,11 +15,19 @@ import {
   directionalShadowViewIdentity,
 } from '../gpu-driven/shadow-view-identity';
 import type { ShadowViewIdentity } from '../inspection-types';
+import type { StandardLocalLightInput } from '../pipeline/standard-lighting/light-frame';
+import {
+  type LocalLightPublication,
+  projectLocalLight,
+  sameLocalLightSources,
+} from '../pipeline/standard-lighting/local-lights';
+import { projectLightSlotWork } from '../pipeline/standard-lighting/slot-work';
 import {
   CSM_CAMERA_KEYS,
   type CsmCameraData,
   computeDirectionalCsm,
   type LightRoster,
+  type LightSnapshot,
   type PointLightSnapshot,
   type PointShadowSnapshot,
   pssmSplit,
@@ -169,6 +177,8 @@ export interface CascadeFit {
  * owner's and are never copied.
  */
 export interface ViewLights extends LightRoster {
+  /** Shared world-space Cluster operands from the adopted local light rows. */
+  readonly localLightPublication?: LocalLightPublication | undefined;
   readonly cascades: DirectionalCascades | undefined;
   readonly shadowViews: readonly ShadowViewProjection[];
 }
@@ -413,11 +423,27 @@ function keyOf(light: { readonly entity?: unknown }, ordinal: number): number {
 
 /** The exact immutable facts issued to both the ECS entity and the drawing roster. */
 interface PublishedLight {
+  readonly key: number;
   readonly entity: EntityHandle;
   seen: number;
   facts: LightFacts;
+  local?: StandardLocalLightInput | undefined;
   shadow: PointShadowSnapshot | undefined;
   cubeIndex?: number;
+}
+
+function pointLightFacts(light: PublishedLight): PointLightSnapshot {
+  return light.facts as PointLightSnapshot;
+}
+
+function spotLightFacts(light: PublishedLight): SpotLightSnapshot {
+  return light.facts as SpotLightSnapshot;
+}
+
+/** The shape has the same lifetime as its accepted light version. */
+function localLightRow(light: PublishedLight, source: LightSnapshot): StandardLocalLightInput {
+  light.local ??= projectLocalLight(source);
+  return light.local;
 }
 
 interface LightKind {
@@ -458,9 +484,14 @@ export class RenderLights {
   private readonly rect = lightKind(LightKindValue.rect, undefined);
   /** The source roster last adopted. */
   private adopted: LightRoster | undefined;
+  private localLightPublication: LocalLightPublication | undefined;
+  private additionalLocalLights: readonly StandardLocalLightInput[] = EMPTY_ADDITIONAL;
   /** Shadowed point lights (pointShadow order) then casting spots: the `shadowViews` order. */
   private pointOrder: readonly PublishedLight[] = [];
   private spotOrder: readonly PublishedLight[] = [];
+  /** Source-order rows for reconciliation, consumed after departing layers have been freed. */
+  private readonly pointRows: PublishedLight[] = [];
+  private readonly spotRows: PublishedLight[] = [];
   private orderChanged = false;
   /** Lights whose shadow views refit this run; reused. */
   private readonly refit = new Set<EntityHandle>();
@@ -553,6 +584,7 @@ export class RenderLights {
     record.pointSpotViews = this.shadowViews;
     const cascadeViews = record.cascades?.views ?? [];
     record.lights = Object.freeze({
+      localLightPublication: this.publishLocalLights(roster),
       directional: roster.directional,
       directionalCount: roster.directionalCount,
       additionalDirectional: roster.additionalDirectional ?? [],
@@ -572,6 +604,39 @@ export class RenderLights {
           : Object.freeze([...cascadeViews, ...this.shadowViews]),
     });
     return record.lights;
+  }
+
+  private publishLocalLights(roster: LightRoster): LocalLightPublication | undefined {
+    const sources = this.roster;
+    if (!sameLocalLightSources(sources, roster)) return undefined;
+    if (this.localLightPublication !== undefined) return this.localLightPublication;
+    const local: StandardLocalLightInput[] = [];
+    for (let i = 0; i < sources.point.length; i++)
+      local.push(
+        localLightRow(this.pointRows[i] as PublishedLight, sources.point[i] as PointLightSnapshot),
+      );
+    for (let i = 0; i < sources.spot.length; i++)
+      local.push(
+        localLightRow(this.spotRows[i] as PublishedLight, sources.spot[i] as SpotLightSnapshot),
+      );
+    for (let i = 0; i < sources.rect.length; i++) {
+      const source = sources.rect[i] as RectAreaDirectLightSnapshot;
+      const row = this.rect.declared.get(keyOf(source, i)) as PublishedLight;
+      local.push(localLightRow(row, source));
+    }
+    for (const row of this.additionalLocalLights) local.push(row);
+    this.localLightPublication = {
+      sources: {
+        point: sources.point,
+        spot: sources.spot,
+        rect: sources.rect,
+        ...(sources.additionalDirectional === undefined
+          ? {}
+          : { additionalDirectional: sources.additionalDirectional }),
+      },
+      work: projectLightSlotWork(Object.freeze(local)),
+    };
+    return this.localLightPublication;
   }
 
   /** A recording view retired: despawn its cascade views. */
@@ -646,11 +711,11 @@ export class RenderLights {
 
   /** Only members of the reconciled family can depart or release its atlas layers. */
   private retireDeparted(kind: LightKind, frame: number): void {
-    for (const [key, light] of kind.declared) {
+    for (const light of kind.declared.values()) {
       if (light.seen === frame) continue;
       this.freeLayer(kind, publishedLayer(kind, light));
       this.world.despawn(light.entity).unwrap();
-      kind.declared.delete(key);
+      kind.declared.delete(light.key);
     }
   }
 
@@ -683,7 +748,9 @@ export class RenderLights {
         newCubes.set(key, i);
       }
     }
-    for (let i = 0; i < source.point.length; i++) {
+    const pointRows = this.pointRows;
+    pointRows.length = source.point.length;
+    for (let i = 0; i < pointRows.length; i++) {
       const facts = source.point[i] as PointLightSnapshot;
       const key = keyOf(facts, i);
       const previous = this.point.declared.get(key);
@@ -700,6 +767,7 @@ export class RenderLights {
         previous,
       );
       if (previous === undefined && index !== undefined) row.cubeIndex = index;
+      pointRows[i] = row;
     }
     this.retireDeparted(this.point, frame);
     const pointOrder = publishRows(this.pointOrder, cubes, (shadow, i) => {
@@ -707,30 +775,22 @@ export class RenderLights {
       if (light !== undefined) this.acquire(this.point, light);
       return light;
     });
-    const point = publishRows(
-      current.point,
-      source.point,
-      (facts, i) =>
-        this.point.declared.get(keyOf(facts, i))?.facts as PointLightSnapshot | undefined,
-    );
+    const point = publishRows(current.point, pointRows, pointLightFacts);
     const pointShadow = publishRows(current.pointShadow, pointOrder, (light) => light.shadow);
 
-    for (let i = 0; i < source.spot.length; i++) {
+    const spotRows = this.spotRows;
+    spotRows.length = source.spot.length;
+    for (let i = 0; i < spotRows.length; i++) {
       const facts = source.spot[i] as SpotLightSnapshot;
-      this.declare(this.spot, keyOf(facts, i), frame, facts);
+      spotRows[i] = this.declare(this.spot, keyOf(facts, i), frame, facts);
     }
     this.retireDeparted(this.spot, frame);
-    const spotOrder = publishRows(this.spotOrder, source.spot, (facts, i) => {
-      const light = this.spot.declared.get(keyOf(facts, i));
-      if (light === undefined || !castsSpot(light.facts)) return undefined;
+    const spotOrder = publishRows(this.spotOrder, spotRows, (light) => {
+      if (!castsSpot(light.facts)) return undefined;
       this.acquire(this.spot, light);
       return publishedLayer(this.spot, light) >= 0 ? light : undefined;
     });
-    const spot = publishRows(
-      current.spot,
-      source.spot,
-      (facts, i) => this.spot.declared.get(keyOf(facts, i))?.facts as SpotLightSnapshot | undefined,
-    );
+    const spot = publishRows(current.spot, spotRows, spotLightFacts);
     if (pointOrder !== this.pointOrder || spotOrder !== this.spotOrder) this.orderChanged = true;
     this.pointOrder = pointOrder;
     this.spotOrder = spotOrder;
@@ -777,6 +837,17 @@ export class RenderLights {
       spot,
       rect,
     });
+    this.updateLocalLightSources(current);
+  }
+
+  private updateLocalLightSources(previous: LightRoster): void {
+    const next = this.roster;
+    if (!sameLocalLightSources(previous, next)) this.localLightPublication = undefined;
+    if (previous.additionalDirectional !== next.additionalDirectional) {
+      const extra = next.additionalDirectional ?? EMPTY_ADDITIONAL;
+      this.additionalLocalLights =
+        extra.length === 0 ? EMPTY_ADDITIONAL : extra.map(projectLocalLight);
+    }
   }
 
   /**
@@ -824,7 +895,7 @@ export class RenderLights {
           },
         })
         .unwrap();
-      const row: PublishedLight = { entity, seen: frame, facts: issued, shadow: undefined };
+      const row: PublishedLight = { key, entity, seen: frame, facts: issued, shadow: undefined };
       if (shadow !== undefined) this.writeShadow(row, -1, shadow);
       kind.declared.set(key, row);
       return row;
@@ -968,6 +1039,7 @@ export class RenderLights {
       .set(light.entity, RenderLight, { facts: world.allocUniqueRef('LightFacts', facts) })
       .unwrap();
     light.facts = facts;
+    light.local = undefined;
   }
 
   private writeShadow(

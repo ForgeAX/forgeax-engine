@@ -34,14 +34,9 @@ async function assemble(
       },
     },
   };
-  const dependencies = {
-    canvas: {},
-    previewVfxHosts: new WeakMap(),
-    prepareAssetRegistry: async () => {},
-    canonicalEnvironmentGuid: 'environment',
+  const appPreview = {
     captureEngineWorkspaceAssetBinding: () => ({}),
     loadEngineWorkspaceMaterialSlots: async () => handles,
-    createPrimitiveMesh: () => ({ unwrap: () => ({ kind: 'mesh' }) }),
     fitToolPreviewCameraToAabb: () => ({
       center: [0, 0, 0],
       radius: 1,
@@ -51,13 +46,12 @@ async function assemble(
     }),
     createWorkspaceMeshDisplay: async () => (closeDisplay ? { close: closeDisplay } : undefined),
     createWorkspaceMaterialPreview: async () => ({ material: {}, close: async () => {} }),
-    previewCameraEntities: new WeakMap(),
-    previewCameraTargets: new WeakMap(),
+  };
+  const render = {
     materialSampledTextureBudget: () => undefined,
     TONEMAP_REINHARD_EXTENDED: 1,
     ...Object.fromEntries(
       [
-        'Transform',
         'MeshFilter',
         'MeshRenderer',
         'Camera',
@@ -67,9 +61,34 @@ async function assemble(
       ].map((name) => [name, name]),
     ),
   };
+  const modules = new Map<string, object>([
+    ['app', appPreview],
+    ['geometry', { createPrimitiveMesh: () => ({ unwrap: () => ({ kind: 'mesh' }) }) }],
+    ['render', render],
+    ['scene', { Transform: 'Transform' }],
+    ['vfx', {}],
+    ['preview', {}],
+  ]);
+  const dependencies = {
+    canvas: {},
+    previewVfxHosts: new WeakMap(),
+    prepareAssetRegistry: async () => {},
+    canonicalEnvironmentGuid: 'environment',
+    previewCameraEntities: new WeakMap(),
+    previewCameraTargets: new WeakMap(),
+    async importEngineModule(name: string) {
+      const module = modules.get(name);
+      if (module === undefined) throw new Error(`Unexpected preview module: ${name}`);
+      return module;
+    },
+  };
+  const source = resourcePresentationSource.replaceAll(
+    /\bimport\('@forgeax\/engine\/([a-z-]+)'\)/g,
+    "importEngineModule('$1')",
+  );
   const prepare = new Function(
     ...Object.keys(dependencies),
-    `${resourcePresentationSource}; return prepareResourcePreview;`,
+    `${source}; return prepareResourcePreview;`,
   )(...Object.values(dependencies)) as (
     app: unknown,
     resource: unknown,

@@ -65,6 +65,20 @@ describe('generic cooked cloud renderer', () => {
           .sort((a, b) => a - b);
       expect(atmosphereSlots(raw)).toEqual([]);
       expect(atmosphereSlots(air)).toEqual([18, 19, 20, 21]);
+      const rangeBinding = entry === engine.cloudAnalytic ? 5 : 12;
+      for (const base of [raw, air]) {
+        const range = compiled.value.reflection.entryPoints?.find(
+          (point) => point.name === `${base.name}_depth_range`,
+        );
+        expect(
+          range?.bindings
+            .filter((binding) => binding.group === 1)
+            .map((binding) => binding.binding),
+        ).toContain(rangeBinding);
+        expect(
+          base.bindings.filter((binding) => binding.group === 1).map((binding) => binding.binding),
+        ).not.toContain(rangeBinding);
+      }
     }
   }, 30000);
 

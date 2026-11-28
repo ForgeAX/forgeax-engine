@@ -11,11 +11,11 @@
 
 import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { MaterialResource } from '../../../render/src/material-resource';
 import { foldDispatchBuckets } from '../../../render/src/record/mesh-ssbo';
 import {
   type DispatchEntry,
   defaultMaterialSnapshot,
-  type MaterialSnapshot,
 } from '../../../render/src/render-system-extract';
 import { TRANSPARENT_SORT_MODE_LAYER_Z } from '../../../render/src/systems/transparent-sort-config';
 
@@ -43,7 +43,7 @@ function mockEntry(opts: {
 
 function mockRenderable(tz: number): {
   transform: { world: Float32Array };
-  material: MaterialSnapshot;
+  material: MaterialResource;
 } {
   const world = new Float32Array(16);
   world[0] = 1;
@@ -57,11 +57,11 @@ function mockRenderable(tz: number): {
   // `transparent === true` (M3 / w15 collapsed the sprite union member).
   return {
     transform: { world },
-    material: {
+    material: new MaterialResource({
       ...defaultMaterialSnapshot(),
       transparent: true,
       passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
-    },
+    }),
   };
 }
 
@@ -110,7 +110,11 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
       mockRenderable(3.0),
     ];
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets).toHaveLength(2);
     const b0 = buckets[0];
@@ -141,7 +145,11 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
       mockRenderable(0),
     ];
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     // 4 direct draws — consecutive-run fold preserves stable ordering.
     expect(buckets).toEqual([]);
@@ -160,7 +168,11 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
       mockRenderable(4.0),
     ];
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets).toEqual([]);
   });
@@ -185,7 +197,11 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
       spriteRegion: values.region as [number, number, number, number],
     }));
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets.map((bucket) => bucket.bucketSize)).toEqual([2]);
     expect(
@@ -211,7 +227,11 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
       spriteRegion: [0, 0, 0.5, 0.5] as const,
     }));
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets.map((bucket) => bucket.bucketSize)).toEqual([3]);
   });

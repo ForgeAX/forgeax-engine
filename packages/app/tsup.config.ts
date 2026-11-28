@@ -13,7 +13,7 @@ export default defineConfig({
     internal: 'src/internal.ts',
     browser: 'src/browser.ts',
     'host-adapter': 'src/host-adapter.ts',
-    'engine-worker-runtime': 'src/execution/engine-worker-runtime.ts',
+    'engine-worker-runtime': 'src/execution/engine-worker-entry.ts',
     'render-worker-runtime': 'src/execution/render-worker-entry.ts',
     'task-worker-runtime': 'src/execution/task-worker-runtime.ts',
   },

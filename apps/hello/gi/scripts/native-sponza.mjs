@@ -8,7 +8,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { execFileSync } from "node:child_process";
 
 import { Transform } from "@forgeax/engine-scene";
-import { DIFFUSE_GI_TIER_BUDGETS, resolveDiffuseGiTier } from "@forgeax/engine-render";
+import {
+  DIFFUSE_GI_TIER_BUDGETS,
+  resolveDiffuseGiTier,
+  skyEnvironmentFromSun,
+} from "@forgeax/engine-render";
 import { summarizeGpuPassTimingIntervals } from "@forgeax/engine-render/internal";
 import { attachRecorder } from "@forgeax/engine-rhi-debug";
 import {
@@ -33,6 +37,8 @@ import {
   commandForKey,
   exposureForControls,
   initialHardwareRayTracing,
+  initialReflections,
+  initialSkyEnvironment,
   createRoamCamera,
   roamCameraPose,
 } from "./native-sponza-controls.mjs";
@@ -60,9 +66,15 @@ const captureRhiBudgets = nativeSponzaCaptureBudgetsFromOptions(option);
 const captureRhiMaxResourceMiB = captureRhiBudgets.maxResourceMiB;
 const requestedMode = option("gi", "screen-probe");
 const requestedHardwareRayTracing = initialHardwareRayTracing(option("hardware-ray-tracing", "on"));
+const requestedReflections = initialReflections(option("reflections", "on"));
+const requestedSkyEnvironment = initialSkyEnvironment(option("sky-environment", "legacy"));
 const softwareTracing = option("software-tracing", "strict");
 if (softwareTracing !== "strict" && softwareTracing !== "mesh-df")
   throw new Error(`invalid --software-tracing ${softwareTracing}; choose strict or mesh-df`);
+const antialiasOption = option("antialias", "tsr");
+const antialiasModes = { none: 0, taa: 3, tsr: 5 };
+if (!(antialiasOption in antialiasModes))
+  throw new Error(`invalid --antialias ${antialiasOption}; choose none, taa or tsr`);
 const screenProbeTier = option("screen-probe-tier", "high");
 if (screenProbeTier !== "high" && screenProbeTier !== "epic")
   throw new Error(`invalid --screen-probe-tier ${screenProbeTier}; choose high or epic`);
@@ -210,6 +222,8 @@ const report = {
   runtimeModules: undefined,
   requestedWindow: { width, height },
   requestedHardwareRayTracing,
+  requestedReflections,
+  requestedSkyEnvironment,
   requestedSoftwareTracing: softwareTracing,
   requestedScreenProbeTier: screenProbeTier,
   requestedProbeIrradiance: probeIrradiance,
@@ -467,6 +481,7 @@ try {
     // The same filmic shoulder protects direct highlights in both exposure modes.
     world.set(cameraEntity, CameraComponent, {
       exposureMode, exposure, compensationEv, rangeEv, rates, tonemap: TONEMAP_UE_FILMIC,
+      antialias: antialiasModes[antialiasOption],
     }).unwrap();
     report.exposure = { automatic: automaticExposure, ev: exposureEv };
   };
@@ -479,10 +494,20 @@ try {
   const baseProfile = gi.directProfile(renderer.inspect().profile);
   let mode = requestedMode;
   let hardwareRayTracing = requestedHardwareRayTracing;
+  let reflectionsEnabled = requestedReflections;
+  const sponzaEnvironment =
+    requestedSkyEnvironment === 'sun'
+      ? skyEnvironmentFromSun(SPONZA.light.direction, SPONZA.light.color, SPONZA.light.intensity)
+      : SPONZA.environment;
   const profileFor = (next) => {
     if (next === 'off') return baseProfile;
     const tier = next === 'screen-probe' ? screenProbeTier : 'medium';
-    const resolved = resolveDiffuseGiTier(tier, tierSceneFor(SPONZA), rendererCapabilities).unwrap();
+    const tierScene = {
+      ...tierSceneFor(SPONZA),
+      environment: sponzaEnvironment,
+      ...(reflectionsEnabled ? { reflections: true } : {}),
+    };
+    const resolved = resolveDiffuseGiTier(tier, tierScene, rendererCapabilities).unwrap();
     const diffuseGi = resolved.profile.diffuseGi;
     const profile = { ...baseProfile, ...resolved.profile };
     if (diffuseGi === undefined || !('field' in diffuseGi)) return profile;
@@ -544,7 +569,10 @@ try {
     );
     const presentationReady = surfacePresentation.ready;
     const giReady =
-      mode === "off" || (diffuseGi.state === "ready" && diffuseGi.submittedFrames > 0);
+      mode === "off" ||
+      (diffuseGi.state === "ready" &&
+        diffuseGi.submittedFrames > 0 &&
+        (!reflectionsEnabled || diffuseGi.fieldState === "ready"));
     const qualified = presentationReady && giReady;
     const byMode = (report.frameReadiness.byMode[mode] ??= {
       completed: 0,
@@ -766,6 +794,10 @@ try {
       if (validModes.has(command)) setMode(command, source);
       else if (command === 'toggle-hardware') {
         hardwareRayTracing = !hardwareRayTracing;
+        setMode(mode, source, true);
+      }
+      else if (command === 'toggle-reflections') {
+        reflectionsEnabled = !reflectionsEnabled;
         setMode(mode, source, true);
       }
       else if (command === 'reset-camera') {

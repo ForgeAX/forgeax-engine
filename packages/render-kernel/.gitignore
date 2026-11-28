@@ -1,0 +1,3 @@
+wasm/*.wasm
+native/*.node
+rust/target/

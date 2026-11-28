@@ -118,6 +118,8 @@ export {
 // ─── Mipmap generation helpers ──────────────────────────────────────────────
 export {
   blitMipmapsSync,
+  canEncodeMipmapLevel,
+  configureNativeMipmapCompiler,
   encodeMipmapLevel,
   encodeMipmaps,
   getOrCreateMipmapPipeline,
@@ -126,6 +128,7 @@ export {
   type MipmapTextureDescriptor,
   mipmapCacheSize,
   mipmapTemporaryByteLength,
+  type NativeMipmapShaderCompiler,
   prepareMipmaps,
 } from './mipmap-generator.js';
 // ─── Register-time payload validation ───────────────────────────────────────

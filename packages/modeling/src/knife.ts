@@ -1,5 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { pushAll, replaceAll } from './arrays';
+import { maxOf, pushAll, replaceAll } from './arrays';
 import { mergeFlags } from './crease';
 import { type ModelingError, modelingError } from './errors';
 import {
@@ -481,8 +481,8 @@ function knifeAt(
     for (const f of candidates) {
       const loop = mesh.faceVertices(f);
       const polygon = loop.map((v) => to2(segment, mesh.position(v)));
-      const span = Math.max(
-        ...loop.map((v, i) =>
+      const span = maxOf(
+        loop.map((v, i) =>
           length(sub(mesh.position(v), mesh.position(loop[(i + 1) % loop.length] as number))),
         ),
       );

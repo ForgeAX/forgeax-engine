@@ -2,7 +2,10 @@ import type { AuthoredRuntimePack } from '@forgeax/engine-app';
 import type { ProjectFacts } from '../types.js';
 import { authoredRuntimePackDeclarations } from './authored-runtime-packs.js';
 import type { PluginSourceInventory } from './plugin-assets.js';
-import { staticPackProgramsSource } from './static-pack-programs.js';
+import {
+  shippedBrowserPackProgramsSource,
+  staticPackProgramsSource,
+} from './static-pack-programs.js';
 
 /** Shared generated module: metadata is eager, native module delivery is explicit and lazy. */
 export const runtimePacksSource = runtimePacksModule('const authored = [];');
@@ -10,14 +13,17 @@ export const runtimePacksSource = runtimePacksModule('const authored = [];');
 export async function runtimePacksModuleSource(
   facts: ProjectFacts,
   sourceInventory: PluginSourceInventory,
-  staticPrograms: boolean,
+  delivery: 'native' | 'browser' | 'published-browser',
   packs: readonly AuthoredRuntimePack[],
   generatedRoot: string,
 ): Promise<string> {
-  if (!staticPrograms)
+  if (delivery !== 'native')
     return runtimePacksModule(
       authoredRuntimePackDeclarations(packs),
       packs.length ? facts.id : undefined,
+      delivery === 'published-browser' && packs.length > 0
+        ? await shippedBrowserPackProgramsSource(packs, generatedRoot)
+        : undefined,
     );
   return `${await staticPackProgramsSource(facts, sourceInventory, { packs, generatedRoot })}
 import type { RuntimePackOptions } from '@forgeax/engine/app';
@@ -27,13 +33,23 @@ export async function createRuntimePackOptions(scopeId: string): Promise<Runtime
 `;
 }
 
-export function runtimePacksModule(declarations: string, projectId?: string): string {
+export function runtimePacksModule(
+  declarations: string,
+  projectId?: string,
+  shippedPrograms?: string,
+): string {
   return `${declarations}
 import type { RuntimePackOptions } from '@forgeax/engine/app';
 ${projectId === undefined ? '' : "import { createBrowserRuntimePackCache } from '@forgeax/engine/platform-browser';"}
 import { createBrowserPackProgramHost, prepareBrowserPackProgramScope } from '@forgeax/engine/pack/runtime-browser';
 import type { PackProgramHostFactory } from '@forgeax/engine/pack/runtime';
 import imports, { loadImport } from 'virtual:forgeax/pack-program-imports';
+${
+  shippedPrograms === undefined
+    ? ''
+    : `import { createStaticPackProgramHost } from '@forgeax/engine/pack/runtime';
+${shippedPrograms}`
+}
 
 type Delivery = { scope: string } | { error: string };
 let preparing: Promise<Delivery> | undefined;
@@ -119,15 +135,13 @@ export async function createRuntimePackOptions(scopeId: string, prepared?: Deliv
   if (nativeHost) return { ...options, programHost: nativeHost(imports, loadImport) };
   const delivery = prepared;
   let host: ReturnType<typeof createBrowserPackProgramHost> | undefined;
-  return {
-    ...options,
-    programHost: { async publish(program, bindings) {
-      const ready = typeof delivery === 'function' ? await delivery() : delivery ?? await prepareRuntimePackDelivery();
-      if ('error' in ready) throw new Error(ready.error);
-      host ??= createBrowserPackProgramHost(ready.scope);
-      return host.publish(program, bindings);
-    } },
-  };
+  const browserHost: Pick<import('@forgeax/engine/pack/runtime').PackProgramHost, 'publish'> = { async publish(program, bindings) {
+    const ready = typeof delivery === 'function' ? await delivery() : delivery ?? await prepareRuntimePackDelivery();
+    if ('error' in ready) throw new Error(ready.error);
+    host ??= createBrowserPackProgramHost(ready.scope);
+    return host.publish(program, bindings);
+  } };
+  return { ...options, programHost: ${shippedPrograms === undefined ? 'browserHost' : 'createStaticPackProgramHost(shippedPrograms, imports, browserHost)'} };
 }
 `;
 }

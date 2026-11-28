@@ -1,5 +1,5 @@
 #define_import_path forgeax_material::standard_physical_inputs
-#import forgeax_view::common::{sampleMaterialTexture}
+#import forgeax_view::common::{sampleMaterialTextureBiased}
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_pbr::tbn::{applyTBN, decodeTangentSpaceNormalRg, scaleTangentSpaceNormal}
 
@@ -52,7 +52,7 @@ fn evaluateStandardSpecular(uvs : PhysicalMaterialUvs, metallic : f32, dielectri
       material.specularColorTextureCoordinatesRotation,
       uvs,
     );
-    specularColor = specularColor * sampleMaterialTexture(
+    specularColor = specularColor * sampleMaterialTextureBiased(
       specularColorTexture,
       specularColorTexture_sampler,
       specularUv,
@@ -69,7 +69,7 @@ fn evaluateStandardSpecular(uvs : PhysicalMaterialUvs, metallic : f32, dielectri
       material.specularTextureCoordinatesRotation,
       uvs,
     );
-    specularWeight = specularWeight * sampleMaterialTexture(
+    specularWeight = specularWeight * sampleMaterialTextureBiased(
       specularTexture,
       specularTexture_sampler,
       specularWeightUv,
@@ -94,7 +94,7 @@ fn evaluateStandardAnisotropy(uvs : PhysicalMaterialUvs) -> vec4<f32> {
       material.anisotropyTextureCoordinatesRotation,
       uvs,
     );
-    let anisotropySample = sampleMaterialTexture(
+    let anisotropySample = sampleMaterialTextureBiased(
       anisotropyTexture,
       anisotropyTexture_sampler,
       anisotropyUv,
@@ -123,7 +123,7 @@ fn evaluateStandardIridescence(uvs : PhysicalMaterialUvs) -> vec3<f32> {
       material.iridescenceTextureCoordinatesRotation,
       uvs,
     );
-    let iridescenceSample = sampleMaterialTexture(
+    let iridescenceSample = sampleMaterialTextureBiased(
       iridescenceTexture,
       iridescenceTexture_sampler,
       iridescenceUv,
@@ -140,7 +140,7 @@ fn evaluateStandardIridescence(uvs : PhysicalMaterialUvs) -> vec3<f32> {
       material.iridescenceThicknessTextureCoordinatesRotation,
       uvs,
     );
-    let iridescenceThicknessSample = sampleMaterialTexture(
+    let iridescenceThicknessSample = sampleMaterialTextureBiased(
       iridescenceThicknessTexture,
       iridescenceThicknessTexture_sampler,
       iridescenceThicknessUv,
@@ -177,7 +177,7 @@ fn evaluateStandardTransmission(uvs : PhysicalMaterialUvs) -> StandardTransmissi
       material.transmissionTextureCoordinatesRotation,
       uvs,
     );
-    transmissionSample = sampleMaterialTexture(
+    transmissionSample = sampleMaterialTextureBiased(
       transmissionTexture,
       transmissionTexture_sampler,
       transmissionUv,
@@ -194,7 +194,7 @@ fn evaluateStandardTransmission(uvs : PhysicalMaterialUvs) -> StandardTransmissi
       material.thicknessTextureCoordinatesRotation,
       uvs,
     );
-    thicknessSample = sampleMaterialTexture(
+    thicknessSample = sampleMaterialTextureBiased(
       thicknessTexture,
       thicknessTexture_sampler,
       thicknessUv,
@@ -228,7 +228,7 @@ fn evaluateStandardDiffuseTransmission(uvs : PhysicalMaterialUvs) -> vec4<f32> {
       material.diffuseTransmissionTextureCoordinatesRotation,
       uvs,
     );
-    diffuseTransmissionSample = sampleMaterialTexture(
+    diffuseTransmissionSample = sampleMaterialTextureBiased(
       diffuseTransmissionTexture,
       diffuseTransmissionTexture_sampler,
       diffuseTransmissionUv,
@@ -245,7 +245,7 @@ fn evaluateStandardDiffuseTransmission(uvs : PhysicalMaterialUvs) -> vec4<f32> {
       material.diffuseTransmissionColorTextureCoordinatesRotation,
       uvs,
     );
-    diffuseTransmissionTint = diffuseTransmissionTint * sampleMaterialTexture(
+    diffuseTransmissionTint = diffuseTransmissionTint * sampleMaterialTextureBiased(
       diffuseTransmissionColorTexture,
       diffuseTransmissionColorTexture_sampler,
       diffuseTransmissionColorUv,
@@ -274,7 +274,7 @@ fn evaluateStandardSheen(uvs : PhysicalMaterialUvs, roughness : f32) -> vec4<f32
       material.sheenColorTextureCoordinatesRotation,
       uvs,
     );
-    sheenColor = sheenColor * sampleMaterialTexture(
+    sheenColor = sheenColor * sampleMaterialTextureBiased(
       sheenColorTexture,
       sheenColorTexture_sampler,
       sheenColorUv,
@@ -290,7 +290,7 @@ fn evaluateStandardSheen(uvs : PhysicalMaterialUvs, roughness : f32) -> vec4<f32
       material.sheenRoughnessTextureCoordinatesRotation,
       uvs,
     );
-    sheenRoughnessFactor = sampleMaterialTexture(
+    sheenRoughnessFactor = sampleMaterialTextureBiased(
       sheenRoughnessTexture,
       sheenRoughnessTexture_sampler,
       sheenRoughnessUv,
@@ -319,7 +319,7 @@ fn evaluateStandardClearcoat(uvs : PhysicalMaterialUvs) -> vec2<f32> {
       uvs,
     );
     clearcoatFactor = clamp(
-      material.clearcoat * sampleMaterialTexture(
+      material.clearcoat * sampleMaterialTextureBiased(
         clearcoatTexture,
         clearcoatTexture_sampler,
         clearcoatUv,
@@ -340,7 +340,7 @@ fn evaluateStandardClearcoat(uvs : PhysicalMaterialUvs) -> vec2<f32> {
       uvs,
     );
     clearcoatRoughnessValue = clamp(
-      max(material.clearcoatRoughness, 0.04) * sampleMaterialTexture(
+      max(material.clearcoatRoughness, 0.04) * sampleMaterialTextureBiased(
         clearcoatRoughnessTexture,
         clearcoatRoughnessTexture_sampler,
         clearcoatRoughnessUv,
@@ -369,7 +369,7 @@ fn evaluateStandardClearcoatNormal(uvs : PhysicalMaterialUvs, clearcoatBaseNorma
       clearcoatBaseNormal,
       tangent,
       scaleTangentSpaceNormal(
-        decodeTangentSpaceNormalRg(sampleMaterialTexture(
+        decodeTangentSpaceNormalRg(sampleMaterialTextureBiased(
           clearcoatNormalTexture,
           clearcoatNormalTexture_sampler,
           clearcoatNormalUv,

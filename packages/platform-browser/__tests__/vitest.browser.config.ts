@@ -1,5 +1,6 @@
 import { playwright } from '@vitest/browser-playwright';
 import { defineConfig } from 'vitest/config';
+import { selectBrowserExecutable } from '../../../scripts/ci/browser-executable.mjs';
 
 export default defineConfig({
   test: {
@@ -7,7 +8,9 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright({ launchOptions: { chromiumSandbox: true } }),
+      provider: playwright({
+        launchOptions: selectBrowserExecutable({ channel: 'chrome', chromiumSandbox: true }),
+      }),
       instances: [{ browser: 'chromium' }],
     },
   },

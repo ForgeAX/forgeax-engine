@@ -221,6 +221,31 @@ missing.
 - `explodeMesh` and `explodeDrawing(mesh, drawing)` produce the exploded view, its part
   balloons and a `bom` table from the same options, so the sheet and the 3D agree.
 
+### Bitmap from the SVG
+
+The sheet of record is the SVG that `drawingSvg` writes. A bitmap is derived from it, not built
+from a second layout: `drawingRaster` parses that string and paints it, so there is one place where
+view placement, scale and text sizing are decided. The alternative, a typed scene that both
+writers consume, would have changed about twenty per-site number formats and risked the
+byte-identical SVG that existing consumers compare, so it was not taken.
+
+The cost of this choice is that the reader must be strict. It accepts the writer's element and
+attribute set and rejects everything else with a named element or attribute, so a writer change
+that the reader does not know fails loudly instead of drawing a wrong picture. The dialect is
+measured from writer output and held in `drawing-raster.ts`; adding a writer feature means adding
+its dialect entry in the same change.
+
+Two raster decisions follow from that reader. Text never loses a character silently: the subset
+font covers 53 code points, so each character falls back from its font outline to its stroke glyph
+and only then to a structured error that names the code point. A solid full circle is written as
+`<circle>` so a detail view does not show the polygon facets of the writer's chord tolerance; the
+dashed roles keep their polylines because the raster has no trigonometry to dash a circle.
+
+Stroke coverage is computed per pixel from the distance to the centreline, so role weights stay
+proportional at any output size, and fills use the even-odd rule so nested outlines stay holes.
+Supersampling is a box average over `supersample^2` samples. Output is deterministic: the same
+drawing and options give the same bytes.
+
 ## Failure codes you will meet
 
 | Code | Typical cause here | Recovery |
@@ -229,6 +254,19 @@ missing.
 | `model-degenerate` | closed curve with zero area, `up`-parallel 3/4 direction | change the points or direction |
 | `model-precondition` | sheet too small, curve not single-valued for `drawingCurve3` | enlarge the sheet or split the line |
 | `model-work-budget` | too many table cells or hidden-line work past `workLimit` | split the sheet or raise the limit deliberately |
+
+## Sheet-metal parts
+
+A bent sheet part is described by its flat pattern: the cut outline, the holes and a list of
+straight bends. Consider which side the shop or the reader needs. A flat pattern is what a laser
+cutter takes, so it is the primary data and the folded body is derived from it (`sheet`). The
+bend allowance depends on the neutral-axis position (`kFactor`), which depends on material and
+tooling; a different K-factor moves the cut lengths while the folded shape stays the same, so
+state the K-factor next to the thickness. Reliefs at bend ends and corners belong to the outline.
+A pattern whose bends do not span the material, or that has a closed bend loop, cannot fold and
+fails as `not-sheet`; curved or conical bends, hems and unfolding an existing body are outside
+the operation. See [operations](../reference/operations.md#sheet-metal) and
+[sheet-bracket](../examples/sheet-bracket/).
 
 ## Limits
 

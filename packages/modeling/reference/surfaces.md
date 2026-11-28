@@ -18,6 +18,12 @@ the intersections land on shared isoparms; curves that miss each other are
 `model-precondition`). Failures are structured: malformed knots or weights
 `model-invalid-argument`, singular fits `model-degenerate`.
 
+`nurbs.sweep(rail, sections, options?)` carries one or more NURBS sections along a NURBS rail in a rotation-minimizing frame (or a fixed-up frame). `parameters` places each section at a normalized arc-length station; otherwise stations are even from 0 to 1. `tolerance` is the maximum measured between-station deviation in meters (default 1e-5), `maxStations` caps refinement (default 65), and `degree` sets the rail direction degree (default 3). The result reports `stations`, `deviation` and `converged`, so a cap that misses tolerance is visible.
+
+`nurbs.birail(railA, railB, sections, options?)` places sections between both rails; each section starts on rail A and ends on rail B within `tolerance`. `scale: 'uniform'` (default) scales the section with the rail spacing, while `'width'` scales only along the chord. It reports the same station and deviation evidence plus `railGap` for each boundary. `railGap` is a sampled estimate, not a bound.
+
+`nurbs.offset(surface, distance, options?)` fits a constant normal offset to a NURBS surface. `tolerance` is in meters (default 1e-5), and `maxNet` caps the fitted control net (default [32, 32]). The result reports `max`, `rms`, `net`, `minRadius` and `converged`; the offset is a fit, not generally an exact NURBS surface. A distance at or beyond the focal radius on the concave side is rejected with `model-precondition`; fold detection is sampled.
+
 `nurbs.surface` is the surface algebra a patch layout needs, each
 acting along one direction `'u'` or `'v'` and returning a Result: `insertKnot(s, dir, t,
 times?)`, `refine(s, dir, knots)`, `elevate(s, dir, by?)` (A5.9 per control line),
@@ -45,6 +51,16 @@ reached (`converged: false`). The result carries `surface`, `rms`, `max`, `at` (
 indices of `max`) and `net`. Curvature-rate fairing removes trace noise without the
 flattening bending fairing causes; a net of the grid size without fairing is plain
 interpolation and fails surface quality like `grid`.
+
+`nurbs.surface.fair(s, { fair: { stretch?, bend?, rate? }, keep? })` fairs an existing
+non-rational net with the same thin-plate energy: it minimises the energy plus the squared
+distance of the free control points to their input positions, so a weight of 0 returns the
+input and a larger weight lowers the energy monotonically. `keep: 'boundary'` (default) holds
+the four boundary rows byte-identical; `'none'` frees every point. Knots and degrees are
+kept; the result drops `weights` (all equal weights count as non-rational, others are
+`model-precondition`). A negative or non-finite weight is `model-invalid-argument`. The
+sparse system is solved by preconditioned conjugate gradients started at the input net. See
+the [shaping](../examples/shaping/) hood.
 
 `nurbs.match(a, sideA, b, sideB, { level, modify?, lockPosition?, opposite?, influence?,
 samples? })` aligns patch `a`'s side to `b`'s at `level`
@@ -197,8 +213,9 @@ is still a `curve-inflection` issue (so an accidental wiggle on a designed S sti
 | Surface | Contract |
 |:--|:--|
 | `surfaceField(mesh, surfaces?, { tolerance? })` | Normal, Gaussian and mean curvature of every render vertex. A vertex whose `uv1` (the normalized patch domain `m.surface` writes) maps onto a given patch within `tolerance` (default 2e-5 m) is exact (one Gauss-Newton step removes the float32 rounding; its normal keeps the mesh side). Elsewhere: the exported vertex normal and a quadric `z = ax^2 + bxy + cy^2` fitted over the one-ring (two-ring below five neighbours), vertices welded by position and normal so UV seams do not cut the neighbourhood and sharp edges do. Mesh estimates depend on the tessellation (about 4 % of the mean curvature on a 2 mm chord) and amplify facet noise; mirrored or later-edited vertices fall back to them |
+| `surfaceDeviation(surfaces, target, options?)` | Sampled, bidirectional deviation from NURBS patches to points, a mesh or other surfaces. Defaults: tolerance 1e-4 m and 24 samples per parameter direction. `toSurfaces` measures target samples against the patches; mesh and surface targets also report `toTarget` for patch samples against the target. The directions pass independently: a target covering only part of the patches can fail `toTarget` even when `toSurfaces` passes. The report includes max, mean, RMS, p95, signed normal range, worst sample and shares within each distance band |
 | `zebraStripes(field, surfaces, { eye \| direction, right, up, width?, orientation?, refine? })` | Reflected parallel light tubes: the view ray reflected about the normal, its angle around the stripe axis (`orientation` degrees from screen right, default 0) in stripes of `width` degrees (default 4). Triangles split exactly on the stripe borders of the linearly interpolated angle; a triangle spanning more than two stripes subdivides (up to `refine`, default 3) and re-evaluates exact patch points and normals when its corners share a patch |
-| `highlightLines(surfaces, { field: 'reflection', eye \| direction, right, up, width?, orientation? } \| { field: 'isophote', direction, step }, weld?)` | Highlight lines as curves: `reflection` uses the zebra's own phase (one definition), so the lines are the stripe borders at multiples of `width`; `isophote` the view-independent lines where the angle between the patch normal (dS/du x dS/dv) and `direction` is a multiple of `step` degrees (n · direction = cos(k · step), `step` in (0, 90]). Each patch is sampled on a 64 x 64 parameter grid, marching squares find the level crossings, each is bisected onto the exact level, polylines chain across patches where their ends meet within `weld` (default 1e-6 x the scene diagonal), and each chain (8 points and 1 % of the diagonal at least) is fit with a cubic `approximate` (a control point per 3 points, at most 48). Returns `{ lines: { curve, level (degrees), patches (crossed, in order) }[] }`, deterministic |
+| `highlightLines(surfaces, { field: 'reflection', eye \| direction, right, up, width?, orientation? } \| { field: 'isophote', direction, step } \| { field: 'section', normal, step, origin? }, weld?)` | Highlight lines as curves: `reflection` uses the zebra's own phase (one definition), so the lines are the stripe borders at multiples of `width`; `isophote` the view-independent lines where the angle between the patch normal (dS/du x dS/dv) and `direction` is a multiple of `step` degrees (n · direction = cos(k · step), `step` in (0, 90]); `section` cuts planes `p · normal = origin + k · step`, with positive `step` and `origin` in meters (default 0). Each patch is sampled on a 64 x 64 parameter grid, marching squares find the level crossings, each is bisected onto the exact level, polylines chain across patches where their ends meet within `weld` (default 1e-6 x the scene diagonal), and each chain (8 points and 1 % of the diagonal at least) is fit with a cubic `approximate` (a control point per 3 points, at most 48). Returns `{ lines: { curve, level (degrees, or meters for section), patches (crossed, in order) }[] }`, deterministic |
 | `curvatureShading(field, { kind: 'gaussian' \| 'mean', range? })` | Diverging blue (negative), white, red (positive) per vertex; `range` (1/m^2 or 1/m) maps to the ends, default per scene: the 95th percentile of the absolute value. Colors are linear (display color squared) |
 | `curvatureComb(curve, { samples?, scale? })` | Line list: a tooth per sample away from the center of curvature, curvature x `scale` long (default: the longest tooth is 15 % of the curve, less on gentle lines whose curvature stays below 1 / length, so a straight line shows no noise), and the envelope through the tips. Teeth change side at an inflection |
 | `coloredMesh(triangles)` | The colored triangles as a MeshAsset (slot `analysis`) for an unlit vertex-color material |

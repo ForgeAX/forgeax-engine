@@ -2,7 +2,7 @@
 // view. Prepare each writer's recording, upload its View UBO and issue its
 // physical passes on the shared frame encoder.
 
-import { err, ok, type Result } from '@forgeax/engine-rhi';
+import { err, ok, type Result, type TextureFormat } from '@forgeax/engine-rhi';
 import type { CloudShadowProjection } from '../cloud/lighting/shadow';
 import { stageAtmospherePublish } from '../environment/storage';
 import { RendererOperationError } from '../errors/render';
@@ -19,6 +19,7 @@ import {
   createRenderGraphPassInstrumentation,
   renderGraphPassInstrumentationActive,
 } from './frame-targets';
+import { requestVisibleForwardPipelines } from './main-pass';
 import { flushMeshDrawUploads } from './mesh-ssbo';
 import {
   type CaptureRecording,
@@ -49,7 +50,9 @@ export type CubeCaptureFrame = ReturnType<
 > &
   CaptureViewRecording;
 export type ProbeCaptureFrame = ReturnType<typeof prepareTargetCaptureLighting> &
-  CaptureViewRecording;
+  CaptureViewRecording & {
+    readonly outputFormat: TextureFormat;
+  };
 /** The planar mirror records inside the display graph, on the display view's shadows. */
 export type PlanarCaptureFrame = CubeCaptureFrame & { readonly shadows: SharedShadowSource };
 
@@ -145,7 +148,7 @@ function prepareProbeCaptureFrame(
     undefined,
     lighting.scenePasses,
   );
-  return { ...lighting, recording, viewport };
+  return { ...lighting, recording, viewport, outputFormat: probe.outputFormat };
 }
 
 interface RecordingCaptureBatch {
@@ -217,7 +220,7 @@ function compileCaptureFrames(
   }
 }
 
-/** The capture compiler's explicit input; production resolves it from current view components. */
+/** The admitted faces, fits and resources of one recording. */
 export interface CaptureGraphCompileInput {
   readonly internals: RenderSystemInternals;
   /** Immutable resolved camera identity for the producer that admits this pass vocabulary. */
@@ -241,6 +244,14 @@ export type CaptureGraphOutcome = Result<
   CaptureGraphBatch,
   RendererOperationError<'graph-build-failed'>
 >;
+
+export const EMPTY_CAPTURE_GRAPH_BATCH: CaptureGraphBatch = Object.freeze({
+  cube: Object.freeze([]),
+  probes: Object.freeze([]),
+});
+export const EMPTY_CAPTURE_GRAPH_OUTCOME: CaptureGraphOutcome = Object.freeze(
+  ok(EMPTY_CAPTURE_GRAPH_BATCH),
+);
 
 export function captureGraphFailure(cause: unknown): RendererOperationError<'graph-build-failed'> {
   return new RendererOperationError('graph-build-failed', {
@@ -308,6 +319,17 @@ function captureGraphInstrumentation(capture: CubeCaptureFrame | ProbeCaptureFra
       ? { generation: capture.recording.generation }
       : { graph: capture.recording }),
   });
+}
+
+function recordEncodedCaptureTarget(
+  internals: RenderSystemInternals,
+  work: (CubeCaptureFrame | ProbeCaptureFrame)['work'],
+): void {
+  if (!('physical' in work) || !('layer' in work)) return;
+  const root = internals.viewContext?.root ?? internals;
+  if ('candidateGeneration' in work && typeof work.candidateGeneration === 'number')
+    root.rendererCaptureOwner?.recordEncoded(work.target, work.candidateGeneration);
+  root.stageRenderTargetWrite?.(work);
 }
 
 function executeCaptureFrame(
@@ -427,19 +449,57 @@ function executeCaptureFrame(
       frameState,
       capture.frameState.pipelinePreparationPendingReason ?? { code: 'scene-pipeline-preparation' },
     );
-  if (
-    encoded &&
-    !capture.frameState.pipelinePreparationPending &&
-    'candidateGeneration' in capture.work &&
-    typeof capture.work.candidateGeneration === 'number'
-  )
-    (internals.viewContext?.root ?? internals).rendererCaptureOwner?.recordEncoded(
-      capture.work.target,
-      capture.work.candidateGeneration,
-    );
+  if (passSequenceCompleted) recordEncodedCaptureTarget(internals, capture.work);
   flushMeshDrawUploads(internals.device.queue, capture.pipeline.meshStorageBuffer);
   const publishCapture = capture.frameState.pendingAtmospherePublish;
   if (publishCapture !== undefined) stageAtmospherePublish(frameState, publishCapture);
+}
+
+/** Start probe-capture material PSO requests while earlier shadow preparation is pending. */
+export function requestProbeCapturePipelines(
+  passCtx: _InternalRenderPipelineContext,
+  captures: readonly ProbeCaptureFrame[],
+): void {
+  const seen = new Map<object, Set<string>>();
+  for (const capture of captures) {
+    const colorFormat = capture.outputFormat as GPUTextureFormat;
+    let formats = seen.get(capture.frameState);
+    if (formats?.has(colorFormat)) continue;
+    if (formats === undefined) {
+      formats = new Set();
+      seen.set(capture.frameState, formats);
+    }
+    formats.add(colorFormat);
+    const probeCtx = {
+      ...passCtx,
+      runtime: capture.runtime,
+      capturedAtmosphere: capture.capturedAtmosphere,
+      pipelineState: capture.pipeline,
+      camera: capture.work.faceCamera,
+      frameState: capture.frameState,
+      bakedField: undefined,
+      standardLighting: capture.lighting,
+      capsuleShadowDirectional: false,
+      foldDispatchPlan: null,
+      viewBindGroupDynamicOffset: 0,
+      transparentColorFormat: colorFormat,
+      msaaActive: false,
+      splitLdrSprite: false,
+    };
+    delete probeCtx.reflectionProbes;
+    delete probeCtx.gpuDrivenSelection;
+    delete probeCtx.gpuDrivenStandardPbrFrameResources;
+    delete probeCtx.capsuleShadowLight;
+    delete probeCtx.planarReflectionCapture;
+    delete probeCtx.gpuDrivenShadowViews;
+    delete probeCtx.shadowDirectRequired;
+    delete probeCtx.directionalShadowCascadeMiss;
+    delete probeCtx.gpuDrivenShadowBatchProjections;
+    requestVisibleForwardPipelines(probeCtx, undefined, {
+      formats: [colorFormat],
+      sampleCount: 1,
+    });
+  }
 }
 
 /** Capture views share the display pass context minus its GPU-owned shadow state. */

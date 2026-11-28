@@ -225,7 +225,7 @@ fn volume_light_radiance(world_position : vec3<f32>) -> vec3<f32> {
     return cloud_apply_direct_solar(
     volume_params.light_color.xyz*solar,
     world_position,
-    volume_view.cloudShadowOrigin.xyz,
+    volume_view.cloudShadowOrigin,
     volume_view.cloudShadowRight.xyz,
     volume_view.cloudShadowUp.xyz,
     volume_view.cloudShadowProjection,

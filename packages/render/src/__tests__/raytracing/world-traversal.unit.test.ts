@@ -110,8 +110,19 @@ describe('world traversal seam', () => {
       expect(source.includes(RAY_QUERY_WGSL_ENABLE), traversal).toBe(traversal === 'ray-query');
       if (traversal === 'ray-query')
         expect(source.trimStart().startsWith(RAY_QUERY_WGSL_ENABLE)).toBe(true);
-      for (const seam of ['fn traceWorld(ray: Ray', 'fn worldHitCandidates(hit: Hit)'])
+      for (const seam of [
+        'fn traceWorld(ray: Ray',
+        'fn traceWorldVisibility(ray: Ray',
+        'fn worldHitCandidates(hit: Hit)',
+      ])
         expect(source, traversal).toContain(seam);
+      if (traversal === 'ray-query') {
+        expect(source).toContain('RAY_FLAG_TERMINATE_ON_FIRST_HIT');
+        expect(source).toContain('rayQueryTerminate(&query);');
+        expect(source).not.toContain('rayQueryTerminate(&query);break;');
+        expect(source).toContain('result.state.z=steps;');
+        expect(source).toContain('result.state=vec4u(1u,0u,steps,row.x);');
+      }
     }
   });
 

@@ -61,7 +61,7 @@ fn leak_str(s: String) -> &'static str {
 /// kept alive by the JS side for at least the duration of the
 /// `createRenderPipeline` call.
 #[allow(dead_code)]
-unsafe fn read_wbg_ptr<T>(js: &JsValue) -> Option<&'static T> {
+pub(crate) unsafe fn read_wbg_ptr<T>(js: &JsValue) -> Option<&'static T> {
     let n = js_sys::Reflect::get(js, &JsValue::from_str("__wbg_ptr"))
         .ok()?
         .as_f64()? as u32;
@@ -297,7 +297,7 @@ fn register_device(
     });
 }
 
-fn lookup_device(token: u32) -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(crate) fn lookup_device(token: u32) -> Option<(wgpu::Device, wgpu::Queue)> {
     DEVICE_REGISTRY.with(|r| {
         r.borrow()
             .get(&token)
@@ -372,7 +372,7 @@ fn register_texture_view(token: u32, tv: wgpu::TextureView) {
     });
 }
 
-fn lookup_texture_view(token: u32) -> Option<wgpu::TextureView> {
+pub(crate) fn lookup_texture_view(token: u32) -> Option<wgpu::TextureView> {
     TEXTURE_VIEW_REGISTRY.with(|r| r.borrow().get(&token).cloned())
 }
 
@@ -439,8 +439,8 @@ pub struct RhiWgpuDevice {
     loss: std::rc::Rc<RefCell<DeviceLossState>>,
     #[cfg(target_arch = "wasm32")]
     context_loss_listener: RefCell<Option<ContextLossListener>>,
-    inner: wgpu::Device,
-    queue: wgpu::Queue,
+    pub(crate) inner: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
     queue_completion: std::rc::Rc<RefCell<js_sys::Promise>>,
     token: u32,
     surface_view_formats: bool,
@@ -487,7 +487,7 @@ pub struct RhiWgpuTexture {
 
 #[wasm_bindgen]
 pub struct RhiWgpuTextureView {
-    inner: wgpu::TextureView,
+    pub(crate) inner: wgpu::TextureView,
     token: u32,
 }
 

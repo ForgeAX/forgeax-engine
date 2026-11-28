@@ -12,7 +12,7 @@ it('marches furthest mip one and retires mirror and glossy SSR at different roug
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
   const view = device.createBuffer({
-    size: 1392,
+    size: 1408,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   const output = device.createBuffer({
@@ -60,7 +60,7 @@ ${shader('ssr-ray')}
     ).toEqual([]);
     const near = 0.5;
     const far = 10;
-    const viewData = new Float32Array(348);
+    const viewData = new Float32Array(352);
     viewData.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, -1 / (far - near), 0, 0, 0, far / (far - near), 1]);
     viewData.set([near, far, 1, 0, 0, 0, 0, 0, 4, 0.1, 0.6, 1], 228);
     device.queue.writeBuffer(view, 0, viewData);

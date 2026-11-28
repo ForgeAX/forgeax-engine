@@ -101,6 +101,61 @@ describe('material pipeline requests', () => {
     expect(rows.map((row) => requests.get(row))).toEqual(Array(5).fill(undefined));
     expect(requests.get([undefined, undefined])).toBe(5);
   });
+  it('reuses scoped request rows without retaining a prior pass or overwriting an issued key', () => {
+    const cache = new MaterialPipelineRequestCache<number>(Infinity, 2);
+    const first = {};
+    const second = {};
+    const facts = [first, second];
+    const issued = cache.captureFacts(facts);
+    facts[1] = first;
+    const nested = cache.captureFacts(facts);
+    const overflow = cache.captureFacts([first, null]);
+    cache.set(nested, 1);
+    cache.set(issued, 2);
+    cache.set(overflow, 3);
+    expect(cache.get([first, first])).toBe(1);
+    expect(cache.get([first, second])).toBe(2);
+    expect(cache.get([first, null])).toBe(3);
+
+    cache.clear();
+    expect(issued).toEqual([undefined, undefined]);
+    expect(nested).toEqual([undefined, undefined]);
+    expect(cache.get([first, second])).toBeUndefined();
+    expect(cache.get([first, null])).toBeUndefined();
+    const next = cache.captureFacts([second, NaN, -0, undefined]);
+    expect(next).toBe(issued);
+    cache.set(next, 4);
+    expect(cache.get([second, NaN, 0, undefined])).toBeUndefined();
+    expect(cache.get([second, NaN, -0, undefined])).toBe(4);
+  });
+  it('reissues small branch storage across passes and releases wide branch keys', () => {
+    const cache = new MaterialPipelineRequestCache<object>(Infinity, 8);
+    let branch: object | undefined;
+    let cells: unknown[] | undefined;
+    for (let pass = 0; pass < 60; pass++) {
+      const owner = {};
+      const answer = {};
+      const extra = {};
+      cache.set(cache.captureFacts([owner, NaN]), answer);
+      cache.set(cache.captureFacts([extra, NaN]), {});
+      branch ??= Reflect.get(cache, 'root');
+      expect(Reflect.get(cache, 'root')).toBe(branch);
+      cells ??= Reflect.get(branch as object, 'inline');
+      expect(Reflect.get(branch as object, 'inline')).toBe(cells);
+      expect(cache.get([owner, NaN])).toBe(answer);
+      expect(cache.get([{}, NaN])).toBeUndefined();
+      if (pass % 2 === 0) {
+        for (let n = 0; n < 10; n++) cache.set([n, NaN], answer);
+        expect(cache.get([9, NaN])).toBe(answer);
+        expect(cache.get([owner, NaN])).toBe(answer);
+        expect(Reflect.get(branch as object, 'wide')).toBeInstanceOf(Map);
+      }
+      cache.clear();
+      expect(Reflect.get(branch as object, 'wide')).toBeUndefined();
+      expect(cells?.every((value) => value === undefined)).toBe(true);
+      expect(cache.get([owner, NaN])).toBeUndefined();
+    }
+  });
   it('retains high-variant rotation and bounds one-off requests', () => {
     const cache = new MaterialPipelineRequestCache<number>(64);
     const owner = {};

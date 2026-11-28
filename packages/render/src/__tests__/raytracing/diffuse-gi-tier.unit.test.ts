@@ -14,8 +14,10 @@ import {
   type DiffuseGiTierScene,
   parseDiffuseGiTier,
   resolveDiffuseGiTier,
+  skyEnvironmentFromSun,
 } from '../../raytracing/diffuse-gi-tier';
 import { planIrradianceField } from '../../raytracing/irradiance-field-plan';
+import { DEFAULT_LITE_REFLECTIONS } from '../../raytracing/reflections-plan';
 
 const scene: DiffuseGiTierScene = {
   maxDistance: 40,
@@ -172,5 +174,38 @@ describe('diffuse GI quality tiers', () => {
     expect(parseDiffuseGiTier('epic')).toBe('epic');
     expect(parseDiffuseGiTier('ultra')).toBeUndefined();
     expect(parseDiffuseGiTier(null)).toBeUndefined();
+  });
+
+  it('forwards optional Lite reflections through GI tiers and validates bounds', () => {
+    const withDefault = resolveDiffuseGiTier('high', { ...scene, reflections: true }, gpu).unwrap();
+    expect(withDefault.profile.diffuseGi?.gather).toBe('screen-probe');
+    if (withDefault.profile.diffuseGi?.gather === 'screen-probe') {
+      expect(withDefault.profile.diffuseGi.reflections).toEqual(DEFAULT_LITE_REFLECTIONS);
+      expect(Object.isFrozen(withDefault.profile.diffuseGi.reflections)).toBe(true);
+    }
+    const custom = { maxRoughnessToTrace: 0.5, roughnessFadeLength: 0.15 } as const;
+    const withCustom = resolveDiffuseGiTier(
+      'medium',
+      { ...scene, reflections: custom },
+      gpu,
+    ).unwrap();
+    if (withCustom.profile.diffuseGi?.gather === 'irradiance-field') {
+      expect(withCustom.profile.diffuseGi.reflections).toEqual(custom);
+    }
+    const invalid = resolveDiffuseGiTier(
+      'high',
+      { ...scene, reflections: { maxRoughnessToTrace: 1.5, roughnessFadeLength: 0.1 } },
+      gpu,
+    );
+    expect(invalid.ok).toBe(false);
+  });
+
+  it('derives Rayleigh-tinted hemisphere sky radiance from directional sun elevation', () => {
+    const overhead = skyEnvironmentFromSun([0, -1, 0], [1, 1, 1], 4);
+    expect(overhead[2]).toBeGreaterThan(overhead[0]);
+    expect(overhead[1]).toBeGreaterThan(overhead[0]);
+    const horizon = skyEnvironmentFromSun([1, -0.05, 0], [1, 1, 1], 4);
+    expect(overhead[2]).toBeGreaterThan(horizon[2]);
+    expect(skyEnvironmentFromSun([0, 1, 0], [1, 1, 1], 0)).toEqual([0, 0, 0]);
   });
 });

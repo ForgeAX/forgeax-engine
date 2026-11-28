@@ -10,8 +10,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ATMOSPHERE_SHADER_STAGES,
   DEPTH_PYRAMID_SHADER_STAGES,
-  prewarmSsrWithDepthPyramid,
-  prewarmUtilityShaders,
+  prepareSsrWithDepthPyramid,
+  prepareUtilityShaders,
   SSR_SHADER_STAGES,
   VOLUMETRIC_FOG_SHADER_STAGES,
 } from '../assembly/utility-shader-prewarm';
@@ -107,13 +107,111 @@ it('leaves all Deferred source variants cold at boot and prepares only the selec
 const pyramidEntries = ['depth_pyramid_seed', 'depth_pyramid_reduce'].map(
   (entry) => ({ wgsl: `fn ${entry}() {}` }) as ManifestEntry,
 );
+
+it('keeps optional Standard companion sources out of native device preparation', async () => {
+  const id = 'forgeax::engine-decal-project';
+  const source = 'fn vs_main() {}';
+  const readSource = vi.fn(() => source);
+  const catalog = {
+    entries: () => [],
+    materialShaderManifestEntries: () => [
+      {
+        identifier: id,
+        hash: 'decal',
+        get composedWgsl() {
+          return readSource();
+        },
+        paramSchema: '[]',
+        variants: [],
+      },
+    ],
+  } as unknown as ShaderCatalog;
+  const compile = vi.fn(async () => ({}) as ShaderModule);
+  const seed = vi.fn();
+  const caps = {
+    storageBuffer: true,
+    webgl2Downlevel: false,
+    extendedLighting: false,
+    atmosphere: false,
+    directionalPcss: false,
+    projector: false,
+  };
+  const native = await prepareStandardSceneSources(catalog, undefined, seed, caps);
+  expect(native).toBeDefined();
+  expect(native !== undefined && 'decalProject' in native).toBe(true);
+  expect(readSource).not.toHaveBeenCalled();
+  const selected = native?.decalProject;
+  expect(ShaderSource.is(selected) && selected.read()).toBe(source);
+  expect(native?.decalProject).toBe(selected);
+  expect(readSource).toHaveBeenCalledOnce();
+  expect(compile).not.toHaveBeenCalled();
+  expect(seed).not.toHaveBeenCalled();
+  const fallback = await prepareStandardSceneSources(catalog, compile, seed, caps);
+  expect(readSource).toHaveBeenCalledTimes(2);
+  expect(ShaderSource.is(fallback?.decalProject) && fallback.decalProject.read()).toBe(source);
+  expect(compile).toHaveBeenCalledExactlyOnceWith(id, expect.any(ShaderSource), 'Decal');
+  expect(seed).toHaveBeenCalledOnce();
+});
 const prewarmSsr = (
   entries: readonly ManifestEntry[],
   compile: (label: string, source: string | ShaderSource) => Promise<ShaderModule>,
   seed: (label: string, module: ShaderModule) => void,
-) => prewarmUtilityShaders('SSR', SSR_SHADER_STAGES, entries, compile, seed);
+) => prepareUtilityShaders('SSR', SSR_SHADER_STAGES, entries, compile, seed);
 
 describe('utility shader bundle preparation', () => {
+  it('admits SSR metadata without opening its native or depth program sources', async () => {
+    const readTrace = vi.fn(() => 'fn ssr_trace() {}');
+    const readCompose = vi.fn(() => 'fn vs_ssr_compose() {}');
+    const sourceRows = SSR_SHADER_STAGES.map(([, label, name], index) => ({
+      hash: label,
+      get wgsl() {
+        return (index === 0 ? readTrace : readCompose)();
+      },
+      glsl: undefined,
+      bindings: '',
+      entryPoints: [{ name, stage: 'compute' as const, bindings: [] }],
+      programContract: {
+        schemaVersion: 'shader-program-contract/1' as const,
+        gbuffer: 'standard-gbuffer/2' as const,
+        compactGbuffer: 'standard-gbuffer/4' as const,
+      },
+    }));
+    const readSeed = vi.fn(() => 'fn depth_pyramid_seed() {}');
+    const readReduce = vi.fn(() => 'fn depth_pyramid_reduce() {}');
+    const depthRows = DEPTH_PYRAMID_SHADER_STAGES.map(([, label, name], index) => ({
+      hash: label,
+      get wgsl() {
+        return (index === 0 ? readSeed : readReduce)();
+      },
+      glsl: undefined,
+      bindings: '',
+      entryPoints: [{ name, stage: 'compute' as const, bindings: [] }],
+    }));
+    const seed = vi.fn();
+    const admitted = await prepareSsrWithDepthPyramid(
+      [...depthRows, ...sourceRows],
+      undefined,
+      seed,
+    );
+    expect(admitted?.ssr?.compactGbuffer).toBe('standard-gbuffer/4');
+    expect(seed).not.toHaveBeenCalled();
+    expect(readTrace).not.toHaveBeenCalled();
+    expect(readCompose).not.toHaveBeenCalled();
+    expect(readSeed).not.toHaveBeenCalled();
+    expect(readReduce).not.toHaveBeenCalled();
+    expect(admitted?.pyramid !== undefined && 'seed' in admitted.pyramid).toBe(true);
+    const seedSource = admitted?.pyramid.seed;
+    expect(ShaderSource.is(seedSource) && seedSource.read()).toBe('fn depth_pyramid_seed() {}');
+    expect(admitted?.pyramid.seed).toBe(seedSource);
+    expect(readSeed).toHaveBeenCalledOnce();
+    expect(readReduce).not.toHaveBeenCalled();
+    const trace = admitted?.ssr?.trace;
+    expect(ShaderSource.is(trace) && trace.read()).toBe('fn ssr_trace() {}');
+    expect(admitted?.ssr?.trace).toBe(trace);
+    expect(readTrace).toHaveBeenCalledOnce();
+    expect(readCompose).not.toHaveBeenCalled();
+  });
+
   it('admits G-buffer metadata from the selected compiled SSR entries without identifiers', async () => {
     const entries = ssrEntries.map((entry) => ({
       ...entry,
@@ -124,7 +222,7 @@ describe('utility shader bundle preparation', () => {
       },
     }));
     const prepare = (rows: readonly ManifestEntry[]) =>
-      prewarmSsrWithDepthPyramid(
+      prepareSsrWithDepthPyramid(
         [...pyramidEntries, ...rows],
         async () => ({}) as ShaderModule,
         vi.fn(),
@@ -214,7 +312,7 @@ describe('utility shader bundle preparation', () => {
 
   it('seeds depth pyramid modules under their manifest stage labels', async () => {
     const seed = vi.fn();
-    const sources = await prewarmUtilityShaders(
+    const sources = await prepareUtilityShaders(
       'depth pyramid',
       DEPTH_PYRAMID_SHADER_STAGES,
       [...pyramidEntries, ...ssrEntries],
@@ -235,15 +333,46 @@ describe('utility shader bundle preparation', () => {
     ]);
   });
 
+  it('keeps native fragment aliases lazy and shares exact source identity', async () => {
+    const readSeed = vi.fn(() => 'fn depth_pyramid_seed_fragment() {}');
+    const entry = (name: string, read: () => string): ManifestEntry => ({
+      hash: name,
+      get wgsl() {
+        return read();
+      },
+      glsl: undefined,
+      bindings: '',
+      entryPoints: [{ name, stage: 'fragment', bindings: [] }],
+    });
+    const rows = [
+      entry('depth_pyramid_seed_fragment', readSeed),
+      entry('depth_pyramid_reduce_fragment', () => 'fn depth_pyramid_reduce_fragment() {}'),
+      entry('ssr_trace_fragment', () => 'fn ssr_trace_fragment() {}'),
+      entry('vs_ssr_compose_fragment', () => 'fn vs_ssr_compose_fragment() {}'),
+    ];
+    const seed = vi.fn();
+    const prepared = await prepareSsrWithDepthPyramid(rows, undefined, seed, 'fragment');
+    expect(readSeed).not.toHaveBeenCalled();
+    expect(seed).not.toHaveBeenCalled();
+    const source = prepared?.pyramid.seedFragment;
+    expect(ShaderSource.is(source) && source.read()).toBe('fn depth_pyramid_seed_fragment() {}');
+    expect(source).toBe(prepared?.pyramid.seed);
+    expect(prepared?.ssr?.traceFragment).toBe(prepared?.ssr?.trace);
+    expect(readSeed).toHaveBeenCalledOnce();
+    await expect(
+      prepareSsrWithDepthPyramid(rows.slice(0, -1), undefined, seed, 'fragment'),
+    ).rejects.toMatchObject({ code: 'shader-compile-failed' });
+  });
+
   it('installs SSR only together with the depth pyramid it traces', async () => {
     const compile = async () => ({}) as ShaderModule;
-    await expect(prewarmSsrWithDepthPyramid(ssrEntries, compile, vi.fn())).rejects.toMatchObject({
+    await expect(prepareSsrWithDepthPyramid(ssrEntries, compile, vi.fn())).rejects.toMatchObject({
       code: 'shader-compile-failed',
     });
-    expect(await prewarmSsrWithDepthPyramid(pyramidEntries, compile, vi.fn())).toEqual({
+    expect(await prepareSsrWithDepthPyramid(pyramidEntries, compile, vi.fn())).toEqual({
       pyramid: { seed: expect.any(Object), reduce: expect.any(Object) },
     });
-    const both = await prewarmSsrWithDepthPyramid(
+    const both = await prepareSsrWithDepthPyramid(
       [...pyramidEntries, ...ssrEntries],
       compile,
       vi.fn(),
@@ -263,11 +392,22 @@ describe.each([
     glsl: undefined,
     bindings: '[]',
   }));
+  it('publishes the whole source bundle without device work when native creation is deferred', async () => {
+    const seed = vi.fn();
+    const resolved = await prepareUtilityShaders<string>(bundle, stages, entries, undefined, seed);
+    expect(Object.keys(resolved ?? {})).toEqual(stages.map(([stage]) => stage));
+    for (const [stage, , entry] of stages)
+      expect(resolved?.[stage]?.read()).toBe(`fn ${entry}() {}`);
+    expect(seed).not.toHaveBeenCalled();
+    await expect(
+      prepareUtilityShaders<string>(bundle, stages, entries.slice(1), undefined, seed),
+    ).rejects.toMatchObject({ code: 'shader-compile-failed' });
+  });
   const prewarm = (
     inputs: readonly ManifestEntry[],
     compile: (label: string, source: string | ShaderSource) => Promise<ShaderModule>,
     seed: (label: string, module: ShaderModule) => void,
-  ) => prewarmUtilityShaders<string>(bundle, stages, inputs, compile, seed);
+  ) => prepareUtilityShaders<string>(bundle, stages, inputs, compile, seed);
 
   it('admits absence and rejects every partial bundle before compilation', async () => {
     const compile = vi.fn(),

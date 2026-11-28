@@ -3,6 +3,7 @@ import { createRuntimeAssetImportTransport, runtimeBinding } from 'virtual:forge
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
+import physics3d from '@forgeax/engine-physics-rapier3d';
 import {
   ANTIALIAS_MSAA,
   ANTIALIAS_TAA,
@@ -86,8 +87,9 @@ function expectWaterTopology(
     );
   }
   const key = inspection.featureGraph?.last.topologyKey;
-  const topology = key === undefined ? undefined : JSON.parse(key).topology;
-  expect(topology?.opaque?.lane).toBe(lane);
+  const binding = key === undefined ? undefined : JSON.parse(key);
+  expect(binding?.[`${lane}Display`]?.water, key).toBeDefined();
+  const topology = binding?.topology;
   if (compact) {
     expect(topology?.compactGbuffer).toBe('standard-gbuffer/4');
     expect(waterPasses.includes('water-ssr-trace')).toBe(ssr);
@@ -149,7 +151,7 @@ function visibilityScenario(label: string, lane: 'forward' | 'deferred') {
   const motion = label === 'forward-motion' || label === 'forward-msaa-motion';
   const msaa = label === 'forward-msaa' || label === 'forward-msaa-motion';
   const forwardSsr = label === 'forward-ssr';
-  const taa = label === 'compact-deferred-taa';
+  const taa = label === 'compact-deferred-taa' || label === 'compact-deferred-gpu-taa';
   const ssr = label === 'compact-deferred-ssr' || forwardSsr;
   return {
     compact,
@@ -158,7 +160,7 @@ function visibilityScenario(label: string, lane: 'forward' | 'deferred') {
     forwardSsr,
     taa,
     ssr,
-    needsOpaqueBackdrop: ssr || msaa || motion || taa,
+    needsOpaqueBackdrop: ssr || msaa || motion || taa || label === 'cpu',
   };
 }
 
@@ -176,6 +178,133 @@ function countWaterColorChanges(visible: Uint8Array, absent: Uint8Array): number
   return changedPixels;
 }
 
+async function mountWaterVisibility(
+  world: World,
+  assets: RendererHostAssembly['assets'],
+  mode: 'cpu' | 'gpu',
+  needsImmersion: boolean,
+  needsOpaqueBackdrop: boolean,
+) {
+  const zone = (await assets.load(waterVisibilityGuid(`zone/${mode}`), 'water-zone')).unwrap();
+  const body = (await assets.load(waterVisibilityGuid(`body/${mode}`), 'water-body')).unwrap();
+  const cooked = assets.read(body).unwrap();
+  if (needsImmersion && cooked.underwaterPostProcessMaterialGuid !== undefined)
+    (await assets.load(cooked.underwaterPostProcessMaterialGuid, 'material')).unwrap();
+  if (cooked.waterInfoMeshGuid === undefined) throw new Error('WaterInfo mesh GUID missing');
+  const mesh = assets.read((await assets.load(cooked.waterInfoMeshGuid, 'mesh')).unwrap()).unwrap();
+  if (needsOpaqueBackdrop)
+    await Promise.all(
+      [cooked.visibleMeshGuid, cooked.dilatedWaterInfoMeshGuid].map(async (guid) => {
+        if (guid !== undefined) (await assets.load(guid, 'mesh')).unwrap();
+      }),
+    );
+  // Layout declarations must stay empty: the real decoder owns interleaved vertex bytes.
+  expect(mesh.attributeStorage).toBe('interleaved');
+  expect(mesh.attributes.position?.byteLength).toBe(0);
+  expect(mesh.vertices.length).toBeGreaterThan(0);
+  world
+    .spawn({ component: Transform, data: {} }, { component: WaterZoneInstance, data: { zone } })
+    .unwrap();
+  return world
+    .spawn({ component: Transform, data: {} }, { component: WaterBodyInstance, data: { body } })
+    .unwrap();
+}
+
+type WaterVisibilityRenderer = RendererHostAssembly['renderer'];
+type MoveWaterCamera = (pos: [number, number, number], target: [number, number, number]) => void;
+type WaterVisibilityPhase = 'water' | 'without-water' | 'underwater' | 'without-underwater';
+type WaterRecorder = Extract<ReturnType<typeof attachRecorder>, { ok: true }>['value'];
+
+function useWaterRecorder(taa: boolean, label: string): WaterRecorder | undefined {
+  return taa || label === 'cpu' ? value(attachRecorder(webgpu)) : undefined;
+}
+
+function waterRecorderOptions(recorder: WaterRecorder | undefined) {
+  if (recorder === undefined) return {};
+  return {
+    rhi: recorder.backend.rhi,
+    rhiInstrumentation: {
+      resolveSurfaceDevice: (
+        device: Parameters<typeof recorder.backend.unwrapDeviceForSurface>[0],
+      ) => ok(value(recorder.backend.unwrapDeviceForSurface(device))),
+    },
+  };
+}
+
+async function drawVisibilityWindow(
+  renderer: WaterVisibilityRenderer,
+  draw: () => Promise<FrameReceipt>,
+  moveCamera: MoveWaterCamera | undefined,
+): Promise<readonly (number | undefined)[]> {
+  for (let frame = 0; frame < 20; frame++) await draw();
+  const compileCount = () =>
+    renderer.inspect({ fields: ['featureGraph'] }).featureGraph?.compileSuccesses;
+  const settledCompileCount = moveCamera === undefined ? undefined : compileCount();
+  const generations = new Set<number | undefined>();
+  for (let frame = 20; frame < 60; frame++) {
+    moveCamera?.([(frame - 40) / 40, 8, 8], [0, 0, 0]);
+    const receipt = await draw();
+    if (moveCamera !== undefined) generations.add(receipt.graphGeneration);
+  }
+  if (moveCamera !== undefined) {
+    expect(settledCompileCount).toBeDefined();
+    expect(compileCount()).toBe(settledCompileCount);
+    expect(generations.has(undefined)).toBe(false);
+    expect(generations.size).toBe(1);
+  }
+  return [...generations];
+}
+
+async function exerciseOrderedImmersion(
+  renderer: WaterVisibilityRenderer,
+  draw: () => Promise<FrameReceipt>,
+  readPixels: (phase: WaterVisibilityPhase) => Promise<Uint8Array>,
+  moveCamera: MoveWaterCamera,
+  setPostProcessing: (enabled: boolean) => void,
+  errors: readonly unknown[],
+  deadline: number,
+  recorder: WaterRecorder | undefined,
+): Promise<number> {
+  const inspect = () =>
+    renderer.inspect({ fields: ['featureGraph', 'waterView', 'perFramePassNames'] });
+  const hasUnderwaterPass = () =>
+    inspect().perFramePassNames?.some((name) => name.endsWith('underwater-cooked-post-process'));
+
+  moveCamera([0, -1, 0], [0, -1.5, -3]);
+  do {
+    await draw();
+  } while (!hasUnderwaterPass() && Date.now() < deadline - 5_000);
+  expect(hasUnderwaterPass(), JSON.stringify(errors.slice(-3))).toBe(true);
+  const submerged = await readPixels('underwater');
+  const key = inspect().featureGraph?.last.topologyKey;
+  expect(key === undefined ? undefined : JSON.parse(key)?.forwardDisplay?.water?.immersion).toBe(
+    'underwater',
+  );
+
+  if (recorder !== undefined) {
+    const pending = recorder.captureFrame();
+    value(await recorder.frameBoundary());
+    await draw();
+    value(await recorder.frameBoundary());
+    const frame = buildFrameModel(value(decodeTape(value(await pending).bytes)));
+    const passes = summarizePasses(frame);
+    const composite = passes.find((pass) => pass.label === 'underwater-cooked-post-process');
+    const present = passes.find((pass) => pass.label === 'standard-current-output-present');
+    expect(composite?.workCounts.draw).toBe(1);
+    expect(composite?.passIndex).toBeLessThan(present?.passIndex ?? -1);
+  }
+
+  setPostProcessing(false);
+  await draw();
+  const changedPixels = countWaterColorChanges(submerged, await readPixels('without-underwater'));
+  expect(changedPixels).toBeGreaterThan(64);
+  setPostProcessing(true);
+  moveCamera([19 / 40, 8, 8], [0, 0, 0]);
+  await draw();
+  expect(hasUnderwaterPass()).toBe(false);
+  return changedPixels;
+}
+
 it.each([
   { mode: 'cpu', lane: 'forward', label: 'cpu' },
   { mode: 'gpu', lane: 'forward', label: 'gpu' },
@@ -185,6 +314,7 @@ it.each([
   { mode: 'cpu', lane: 'forward', label: 'forward-ssr' },
   { mode: 'cpu', lane: 'deferred', label: 'compact-deferred-ssr' },
   { mode: 'cpu', lane: 'deferred', label: 'compact-deferred-taa' },
+  { mode: 'gpu', lane: 'deferred', label: 'compact-deferred-gpu-taa' },
 ] as const)('renders visible WaterMesh for 60 completed frames ($label)', {
   timeout: 60_000,
 }, async ({ mode, lane, label }) => {
@@ -200,24 +330,13 @@ it.each([
   let host: RendererHostAssembly | undefined;
   let context: Awaited<ReturnType<typeof createWorldContext>> | undefined;
   let unsubscribe: (() => void) | undefined;
-  const recorder = taa ? value(attachRecorder(webgpu)) : undefined;
+  const recorder = useWaterRecorder(taa, label);
   const options = waterVisibilitySetup(ssr);
   try {
     host = value(
       await constructRuntimeRendererHost(
         canvas,
-        {
-          ...options,
-          ...(recorder === undefined
-            ? {}
-            : {
-                rhi: recorder.backend.rhi,
-                rhiInstrumentation: {
-                  resolveSurfaceDevice: (device) =>
-                    ok(value(recorder.backend.unwrapDeviceForSurface(device))),
-                },
-              }),
-        },
+        { ...options, ...waterRecorderOptions(recorder) },
         {
           ...forgeaxBundlerAdapter(),
           importTransport: createRuntimeAssetImportTransport(runtimeBinding),
@@ -234,7 +353,8 @@ it.each([
         apply: (ctx) => ctx.provide('assets', assets),
       },
       scenePlugin(),
-      waterScenePlugin(),
+      ...(label === 'cpu' ? [physics3d] : []),
+      waterScenePlugin(label === 'cpu' ? { underwaterTraceFilterMask: 0x0002_0002 } : {}),
     ]);
     const errors: unknown[] = [];
     unsubscribe = renderer.subscribe((event) => {
@@ -256,29 +376,13 @@ it.each([
           : {}),
       }),
     );
-    const zone = (await assets.load(waterVisibilityGuid(`zone/${mode}`), 'water-zone')).unwrap();
-    const body = (await assets.load(waterVisibilityGuid(`body/${mode}`), 'water-body')).unwrap();
-    const cooked = assets.read(body).unwrap();
-    if (cooked.waterInfoMeshGuid === undefined) throw new Error('WaterInfo mesh GUID missing');
-    const mesh = assets
-      .read((await assets.load(cooked.waterInfoMeshGuid, 'mesh')).unwrap())
-      .unwrap();
-    if (needsOpaqueBackdrop)
-      await Promise.all(
-        [cooked.visibleMeshGuid, cooked.dilatedWaterInfoMeshGuid].map(async (guid) => {
-          if (guid !== undefined) (await assets.load(guid, 'mesh')).unwrap();
-        }),
-      );
-    // Layout declarations must stay empty: the real decoder owns interleaved vertex bytes.
-    expect(mesh.attributeStorage).toBe('interleaved');
-    expect(mesh.attributes.position?.byteLength).toBe(0);
-    expect(mesh.vertices.length).toBeGreaterThan(0);
-    world
-      .spawn({ component: Transform, data: {} }, { component: WaterZoneInstance, data: { zone } })
-      .unwrap();
-    const water = world
-      .spawn({ component: Transform, data: {} }, { component: WaterBodyInstance, data: { body } })
-      .unwrap();
+    const water = await mountWaterVisibility(
+      world,
+      assets,
+      mode,
+      label === 'cpu',
+      needsOpaqueBackdrop,
+    );
     world
       .spawn({
         component: DirectionalLight,
@@ -347,7 +451,7 @@ it.each([
       completedFrames++;
       return receipt;
     };
-    const readPixels = async (phase: 'water' | 'without-water'): Promise<Uint8Array> => {
+    const readPixels = async (phase: WaterVisibilityPhase): Promise<Uint8Array> => {
       const armed = renderer.requestObservation?.(['final-display']);
       if (armed === undefined) throw new Error('Water surface observation unavailable');
       value(armed);
@@ -370,7 +474,19 @@ it.each([
       );
       return pixels;
     };
-    for (let frame = 0; frame < 60; frame++) await draw();
+    const moveCamera = (pos: [number, number, number], target: [number, number, number]) => {
+      world
+        .set(camera, Transform, {
+          pos,
+          quat: quat.fromLookAt(quat.create(), pos, target, [0, 1, 0]),
+        })
+        .unwrap();
+    };
+    const movingGraphGenerations = await drawVisibilityWindow(
+      renderer,
+      draw,
+      label === 'cpu' ? moveCamera : undefined,
+    );
     const visible = await readPixels('water');
     const inspection = renderer.inspect({
       fields: [
@@ -385,7 +501,20 @@ it.each([
     });
     expectWaterTopology(inspection, { lane, compact, ssr, forwardSsr, msaa, motion });
     const state = waterSceneSnapshot(world, water);
-    if (recorder !== undefined) {
+    const underwaterChangedPixels =
+      label === 'cpu'
+        ? await exerciseOrderedImmersion(
+            renderer,
+            draw,
+            readPixels,
+            moveCamera,
+            (postProcessing) => world.set(camera, Camera, { postProcessing }).unwrap(),
+            errors,
+            deadline,
+            recorder,
+          )
+        : undefined;
+    if (taa && recorder !== undefined) {
       world.addComponent(camera, { component: DepthOfField, data: { focusDistance: 4 } }).unwrap();
       await draw();
       const pending = recorder.captureFrame();
@@ -420,6 +549,8 @@ it.each([
         {
           completedFrames,
           changedPixels,
+          movingGraphGenerations: [...movingGraphGenerations],
+          underwaterChangedPixels,
           geometry: state?.outputs.geometry,
           frame: inspection.frame,
           waterInfo: inspection.waterGraph?.waterInfo,

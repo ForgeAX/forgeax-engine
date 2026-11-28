@@ -1,0 +1,115 @@
+{
+ "tests": [
+  "src/__tests__/edge-kinds.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "459-split-ignored",
+   "file": "src/finish.ts",
+   "old": "return normals.split === 'seams' && uvContinuous(mesh, e);",
+   "new": "return false;"
+  },
+  {
+   "id": "459-split-always",
+   "file": "src/finish.ts",
+   "old": "return normals.split === 'seams' && uvContinuous(mesh, e);",
+   "new": "return normals.split === 'seams';"
+  },
+  {
+   "id": "459-uvcont-and-or",
+   "file": "src/finish.ts",
+   "old": "    sameUv(mesh.corner('uv0', h), mesh.corner('uv0', mesh.hNext[t] as number)) &&\n    sameUv(mesh.corner('uv0', mesh.hNext[h] as number), mesh.corner('uv0', t))",
+   "new": "    sameUv(mesh.corner('uv0', h), mesh.corner('uv0', mesh.hNext[t] as number)) ||\n    sameUv(mesh.corner('uv0', mesh.hNext[h] as number), mesh.corner('uv0', t))"
+  },
+  {
+   "id": "459-uvcont-first-only",
+   "file": "src/finish.ts",
+   "old": "    sameUv(mesh.corner('uv0', h), mesh.corner('uv0', mesh.hNext[t] as number)) &&\n    sameUv(mesh.corner('uv0', mesh.hNext[h] as number), mesh.corner('uv0', t))",
+   "new": "    sameUv(mesh.corner('uv0', h), mesh.corner('uv0', mesh.hNext[t] as number))"
+  },
+  {
+   "id": "459-uv-eps-huge",
+   "file": "src/finish.ts",
+   "old": "const UV_EPSILON = 1e-6;",
+   "new": "const UV_EPSILON = 1;"
+  },
+  {
+   "id": "459-kind-boundary",
+   "file": "src/finish.ts",
+   "old": "kind |= EDGE_KIND.boundary;",
+   "new": ""
+  },
+  {
+   "id": "459-kind-seam-inv",
+   "file": "src/finish.ts",
+   "old": "if (!uvContinuous(mesh, e)) kind |= EDGE_KIND.seam;",
+   "new": "if (uvContinuous(mesh, e)) kind |= EDGE_KIND.seam;"
+  },
+  {
+   "id": "459-kind-crease-inf",
+   "file": "src/finish.ts",
+   "old": "let kind = level > 0 && level !== Infinity ? EDGE_KIND.crease : 0;",
+   "new": "let kind = level > 0 ? EDGE_KIND.crease : 0;"
+  },
+  {
+   "id": "459-kind-crease-none",
+   "file": "src/finish.ts",
+   "old": "let kind = level > 0 && level !== Infinity ? EDGE_KIND.crease : 0;",
+   "new": "let kind = 0;"
+  },
+  {
+   "id": "459-kind-smooth-swap",
+   "file": "src/finish.ts",
+   "old": "kind |= smoothAcross(mesh, e, normals) ? EDGE_KIND.smooth : EDGE_KIND.hard;",
+   "new": "kind |= smoothAcross(mesh, e, normals) ? EDGE_KIND.hard : EDGE_KIND.smooth;"
+  },
+  {
+   "id": "459-split-validate",
+   "file": "src/finish.ts",
+   "old": "if (normals.split !== undefined && (normals.split !== 'seams' || normals.mode === 'flat')) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "459-shadinghard-smooth",
+   "file": "src/finish.ts",
+   "old": "return a !== NONE && b !== NONE && !shadedSmooth(mesh, e, a, b, normals);",
+   "new": "return a !== NONE && b !== NONE && !smoothAcross(mesh, e, normals);"
+  },
+  {
+   "id": "459-planseams-object",
+   "file": "src/seams.ts",
+   "old": "(typeof options.respectSharp === 'object' && shadingHard(mesh, e, options.respectSharp)) ||",
+   "new": ""
+  },
+  {
+   "id": "459-auto-cuts",
+   "file": "src/uv.ts",
+   "old": "if (inside.has(mesh.hFace[h ^ 1] as number) && shadingHard(mesh, e, hardMode)) cuts.add(e);",
+   "new": ""
+  },
+  {
+   "id": "459-bakecheck-uvcont",
+   "file": "src/bake-checks.ts",
+   "old": "if (!uvContinuous(mesh, e)) continue;",
+   "new": ""
+  },
+  {
+   "id": "459-auto-validate",
+   "file": "src/finish.ts",
+   "old": "typeof (value as { mode?: unknown }).mode === 'string'",
+   "new": "true"
+  },
+  {
+   "id": "459-plan-validate",
+   "file": "src/seams.ts",
+   "old": "options.respectSharp !== undefined && !isRespectSharp(options.respectSharp)",
+   "new": "false"
+  },
+  {
+   "id": "459-flat-split",
+   "file": "src/finish.ts",
+   "old": "(normals.split !== 'seams' || normals.mode === 'flat')",
+   "new": "normals.split !== 'seams'"
+  }
+ ]
+}

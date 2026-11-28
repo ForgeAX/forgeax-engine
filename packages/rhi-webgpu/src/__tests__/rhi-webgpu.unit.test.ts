@@ -26,6 +26,7 @@ import {
   acquireCanvasContext,
   createShaderModule,
   createShaderModuleImmediate,
+  prepareShaderModule,
   requestAdapter,
   requestAdapterFrom,
 } from '../index';
@@ -1659,6 +1660,31 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
             entry.kind === 'createShaderModule' && entry.descriptor.label === 'render-fast-path',
         ),
       ).toBe(true);
+    });
+
+    it('prepares the module once and reports its labeled validation through the completion', async () => {
+      const gpu = createMockGpu({
+        shaderCompileMessages: [makeShaderError({ message: 'invalid expression', type: 'error' })],
+      });
+      const device = (await (await requestAdapterFrom(gpu)).unwrap().requestDevice()).unwrap();
+      const label = 'boot-shader';
+      const prepared = prepareShaderModule(device, { label, code: 'fn invalid() {}' }).unwrap();
+
+      expect(prepared.module).toBeDefined();
+      expect(
+        gpu.__captured.filter(
+          (entry) => entry.kind === 'createShaderModule' && entry.descriptor.label === label,
+        ),
+      ).toHaveLength(1);
+      const failure = unwrapErr(await prepared.completion);
+      expect(failure).toMatchObject({
+        code: 'shader-compile-failed',
+        detail: {
+          compilerMessages: [
+            expect.objectContaining({ message: expect.stringContaining('[boot-shader]') }),
+          ],
+        },
+      });
     });
   });
 }

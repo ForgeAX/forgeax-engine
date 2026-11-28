@@ -144,28 +144,28 @@ export function frameGraphTopologyIdentity(
   };
 }
 
-/** Diagnostic facts may retain only values, never a graph, texture owner, scene, or frame. */
-interface DisplayGraphFields {
-  readonly [name: string]: string | number | boolean | undefined | DisplayGraphFields;
-}
+/** Display ports contain only attachment and shader layout facts. GPU owners stay with the binding. */
+type DisplayGraphIdentity =
+  | { readonly forwardDisplay: DisplayPorts }
+  | {
+      readonly deferredDisplay: DisplayPorts;
+      readonly topology: {
+        readonly compactGbuffer: RenderPipelineTopology['compactGbuffer'];
+        readonly compactReceiver: RenderPipelineTopology['compactReceiver'];
+        readonly deferredPcfLighting: RenderPipelineTopology['deferredPcfLighting'];
+      };
+    };
 
-export type FrameGraphIdentity = string | DisplayGraphFields;
+export type FrameGraphIdentity = string | DisplayGraphIdentity;
 
 export function displayGraphIdentity(
   ports: DisplayPorts,
   topology: RenderPipelineTopology,
-): DisplayGraphFields {
-  const fields = {
-    ...ports,
-    clusterTextureExtent:
-      ports.clusterTextureExtent === undefined ? undefined : { ...ports.clusterTextureExtent },
-    deferred: ports.deferred === undefined ? undefined : { ...ports.deferred },
-    standardPost: ports.standardPost === undefined ? undefined : { ...ports.standardPost },
-  } satisfies DisplayGraphFields;
+): DisplayGraphIdentity {
   return ports.lane === 'forward'
-    ? { forwardDisplay: fields }
+    ? { forwardDisplay: ports }
     : {
-        deferredDisplay: fields,
+        deferredDisplay: ports,
         topology: {
           compactGbuffer: topology.compactGbuffer,
           compactReceiver: topology.compactReceiver,
@@ -182,8 +182,8 @@ export function frameGraphKeyText(key: FrameGraphIdentity): string {
 function sameDisplayValue(left: unknown, right: unknown): boolean {
   if (left === right) return true;
   if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
-  const a = left as DisplayGraphFields;
-  const b = right as DisplayGraphFields;
+  const a = left as Record<string, unknown>;
+  const b = right as Record<string, unknown>;
   for (const name in a) if (!sameDisplayValue(a[name], b[name])) return false;
   for (const name in b) if (b[name] !== undefined && !Object.hasOwn(a, name)) return false;
   return true;

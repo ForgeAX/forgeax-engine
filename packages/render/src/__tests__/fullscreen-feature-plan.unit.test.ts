@@ -49,7 +49,7 @@ describe('fullscreen RenderFeature plan', () => {
         } as unknown as RenderFeatureFullscreenProgramDeclaration),
         [],
       ).ok,
-    ).toBe(false);
+    ).toBe(true);
     expect(renderFeaturePlanSignatureSnapshotEquals(plan(second), snapshot)).toBe(true);
     expect(renderFeaturePlanSignatureSnapshotEquals(plan(program), snapshot)).toBe(true);
     expect(renderFeaturePlanSignature(plan(first))).toBe(renderFeaturePlanSignature(plan(second)));

@@ -1,0 +1,4 @@
+s-bend-mid-plane: faces 48, faces without partials 48, branches 48, closed 0, partials 0, max bound 9.88e-8
+s-bend-bore: faces 48, faces without partials 48, branches 72, closed 0, partials 0, max bound 9.64e-8
+transition-mid-plane: faces 80, faces without partials 80, branches 80, closed 0, partials 0, max bound 7.77e-15
+transition-bore: faces 80, faces without partials 80, branches 68, closed 0, partials 0, max bound 2.27e-8

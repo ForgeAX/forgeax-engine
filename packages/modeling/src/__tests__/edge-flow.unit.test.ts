@@ -178,3 +178,52 @@ describe('isoparm export with support loops', () => {
     expect(far.error?.code).toBe('model-precondition');
   });
 });
+
+describe('edge flow on a closed feature line', () => {
+  const ring: Tuple3[] = [
+    [-0.25, -0.25, 0],
+    [0.25, -0.25, 0],
+    [0.25, 0.25, 0],
+    [-0.25, 0.25, 0],
+    [-0.25, -0.25, 0],
+  ];
+
+  it('covers a closed loop whose seam vertex is the curve start and end', () => {
+    const m = model();
+    m.plane({ width: 1, height: 1, widthSegments: 8, heightSegments: 8 });
+    const flow = checkEdgeFlow(m.editMesh, [{ name: 'window', curve: line(ring) }]);
+    if (!flow.ok) throw flow.error;
+    expect(flow.value.featureLoops[0]).toMatchObject({
+      coverage: 1,
+      chains: 1,
+      edges: 16,
+      pass: true,
+    });
+  });
+});
+
+describe('validate edgeFlow lines', () => {
+  it('checks feature lines passed in the options as well as the session ones', () => {
+    const m = model();
+    m.plane({ width: 1, height: 1, widthSegments: 8, heightSegments: 8 });
+    const off = line([
+      [-0.5, 0.18, 0],
+      [0.5, 0.18, 0],
+    ]);
+    const report = m.validate({ edgeFlow: { lines: [{ name: 'shoulder', curve: off }] } });
+    const loop = report.issues.find(
+      (i) => i.code === 'edge-flow' && i.detail.check === 'feature-loop',
+    );
+    expect(loop?.detail.line).toBe('shoulder');
+    expect(
+      m.validate({
+        edgeFlow: {
+          lines: [
+            { name: 'a', curve: off },
+            { name: 'a', curve: off },
+          ],
+        },
+      }).pass,
+    ).toBe(false);
+  });
+});

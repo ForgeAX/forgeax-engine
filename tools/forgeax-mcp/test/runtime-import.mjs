@@ -63,7 +63,10 @@ try {
   service = createViewService({ root: '/native-import-fixture', request: async () => ({ ok: true, value: { url: base, presentationId: 'native-import-fixture' } }) });
   const reference = await loadDocumentReference(args => service.invoke(args), base + '/index.html');
   documentHtml = new TextDecoder().decode(await readResourceBytes(reference, args => service.invoke(args)));
-  browser = await chromium.launch({ executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE,
+  browser = await chromium.launch({
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE
+      ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
+      : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: true, args: ['--disable-gpu'], chromiumSandbox: true });
   const page = await browser.newPage();
   const errors = []; page.on('pageerror', error => errors.push(error.message));

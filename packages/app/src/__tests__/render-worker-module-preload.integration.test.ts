@@ -4,6 +4,7 @@ import { defineResource, type World } from '@forgeax/engine-ecs';
 import type { Context } from '@forgeax/engine-plugin';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { resolveEngineStartup } from '../configuration';
 import type { ExecutionBootstrapHost } from '../execution/bootstrap-entry';
 import type {
   EngineToHostMessage,
@@ -30,6 +31,10 @@ const fixtureShaderManifest = `data:application/json,${encodeURIComponent(
 )}`;
 const state = vi.hoisted(() => ({
   assetGate: undefined as ReturnType<typeof deferred<void>> | undefined,
+  bootstrapGate: undefined as ReturnType<typeof deferred<void>> | undefined,
+  stagedShaders: undefined as ShaderRegistry | undefined,
+  assets: undefined as AssetRegistry | undefined,
+  runtimePacks: false,
   rootGate: undefined as ReturnType<typeof deferred<void>> | undefined,
   rootEntered: undefined as ReturnType<typeof deferred<void>> | undefined,
   terminal: undefined as ReturnType<typeof deferred<EngineToHostMessage>> | undefined,
@@ -37,6 +42,7 @@ const state = vi.hoisted(() => ({
     | ReturnType<typeof deferred<Extract<EngineToHostMessage, { kind: 'disposed' }>>>
     | undefined,
   rootFailure: undefined as Error | undefined,
+  bootstrapImportFailed: false,
   kernelFailure: undefined as Error | undefined,
   world: undefined as World | undefined,
   terrain: undefined as ExecutionBootstrapHost | undefined,
@@ -50,21 +56,65 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', async (original) => {
   const real = await original<typeof import('@forgeax/engine-runtime/internal/renderer-host')>();
   return {
     ...real,
-    stagePublicationAssets: () => {
-      const catalog = new ShaderRegistry({ manifestUrl: undefined });
+    stagePublicationAssets: (_bundler, options) => {
+      const catalog =
+        options?.shaderPublication?.catalog ?? new ShaderRegistry({ manifestUrl: undefined });
+      const assets = new AssetRegistry({ shaderRegistry: catalog });
+      state.assets = assets;
       return {
-        assets: new AssetRegistry({ shaderRegistry: catalog }),
+        assets,
         ready: Promise.resolve(state.assetGate?.promise).then(() => catalog),
       };
     },
   };
 });
+vi.mock('@forgeax/engine-runtime/internal/shader-publication', () => ({
+  stagePublicationShaders: () => {
+    const catalog = new ShaderRegistry({ manifestUrl: undefined });
+    state.stagedShaders = catalog;
+    state.order.push('source-shaders');
+    return { catalog, ready: Promise.resolve(catalog) };
+  },
+}));
 vi.mock('../execution/bootstrap-entry', async (original) => {
   const real = await original<typeof import('../execution/bootstrap-entry')>();
   const { startNativePlugin } = await import('@forgeax/engine-plugin');
   return {
     ...real,
-    prepareBootstrapEntry: async () => ({ ok: true, value: { root: { guid: 'fixture-root' } } }),
+    prepareBootstrapEntry: async () => {
+      state.order.push('bootstrap-prepare');
+      if (state.bootstrapGate !== undefined) await state.bootstrapGate.promise;
+      return state.bootstrapImportFailed
+        ? {
+            ok: false,
+            error: {
+              code: 'app-execution-bootstrap-failed',
+              expected: 'project startup module',
+              hint: 'fixture bootstrap import failed',
+              detail: { phase: 'import' },
+            },
+          }
+        : {
+            ok: true,
+            value: {
+              root: { guid: 'fixture-root' },
+              ...(state.runtimePacks
+                ? {
+                    pluginPrograms: {
+                      sessionId: 'fixture',
+                      contextId: 'fixture',
+                      sessionGeneration: 1,
+                      target: 'engine',
+                      tools: new Map(),
+                      definitions: new Map(),
+                      programs: new Map(),
+                    },
+                    runtimePacks: { scopeId: 'fixture' },
+                  }
+                : {}),
+            },
+          };
+    },
     activateExecutionRoot: async (context: Context) => {
       const result = await startNativePlugin(context, {
         name: 'fixture-root',
@@ -137,6 +187,7 @@ class CpuModuleWorker {
     readonly options: WorkerOptions,
   ) {
     CpuModuleWorker.ctorAttempts++;
+    state.order.push('child-construct');
     if (CpuModuleWorker.ctorFailure !== undefined) throw CpuModuleWorker.ctorFailure;
     const moduleUrl = new URL('../../dist/render-worker-runtime.mjs', import.meta.url).href;
     this.thread = new NodeWorker(
@@ -226,11 +277,16 @@ beforeEach(async () => {
   vi.resetModules();
   ecs = await import('@forgeax/engine-ecs');
   state.assetGate = undefined;
+  state.bootstrapGate = undefined;
+  state.stagedShaders = undefined;
+  state.assets = undefined;
+  state.runtimePacks = false;
   state.rootGate = deferred<void>();
   state.rootEntered = deferred<void>();
   state.terminal = deferred<EngineToHostMessage>();
   state.disposed = deferred<Extract<EngineToHostMessage, { kind: 'disposed' }>>();
   state.rootFailure = undefined;
+  state.bootstrapImportFailed = false;
   state.kernelFailure = undefined;
   state.world = undefined;
   state.terrain = undefined;
@@ -253,6 +309,7 @@ beforeEach(async () => {
 afterEach(async () => {
   // Preserve failing assertions while settling only this fixture's owned workers.
   state.assetGate?.resolve();
+  state.bootstrapGate?.resolve();
   state.rootGate?.resolve();
   if (receive !== null && receive !== undefined) {
     await state.terminal?.promise;
@@ -267,10 +324,15 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   receive = null;
 });
-async function launch(kernels = false, diagnostics?: ExecutionDiagnosticsOptions): Promise<void> {
-  await import('../execution/engine-worker-runtime');
-  receive = globalThis.onmessage as typeof receive;
-  receive?.({
+async function launch(
+  kernels = false,
+  diagnostics?: ExecutionDiagnosticsOptions,
+  assetCatalog?: Extract<HostToEngineMessage, { kind: 'init' }>['assetCatalog'],
+  managed = true,
+): Promise<void> {
+  await import('../execution/engine-worker-entry');
+  receive = (event) => (globalThis.onmessage as typeof receive)?.(event);
+  receive({
     data: {
       kind: 'init',
       startupTimeoutMs: 30_000,
@@ -278,11 +340,49 @@ async function launch(kernels = false, diagnostics?: ExecutionDiagnosticsOptions
       bootstrapUrl: 'fixture://root',
       shaderManifestUrl: fixtureShaderManifest,
       workers: workerSelection({ engine: true, render: true, kernels }),
+      ...(managed ? { startup: resolveEngineStartup({}, { platform: 'unknown' }).unwrap() } : {}),
       ...(diagnostics === undefined ? {} : { diagnostics }),
+      ...(managed ? { assetCatalog: assetCatalog ?? { url: 'data:application/json,%5B%5D' } } : {}),
     },
   } as MessageEvent<HostToEngineMessage>);
-  await state.rootEntered?.promise;
+  // Project launch starts the child synchronously, before importing the Engine runtime.
+  expect(CpuModuleWorker.ctorAttempts).toBe(managed ? 1 : 0);
+  await (state.bootstrapImportFailed ? state.terminal?.promise : state.rootEntered?.promise);
 }
+
+it('lets an unmanaged bootstrap prepare before opening the child Worker', async () => {
+  await launch(false, undefined, undefined, false);
+  const child = worker();
+  expect(state.order).toContain('bootstrap-prepare');
+  expect(state.order.indexOf('bootstrap-prepare')).toBeLessThan(
+    state.order.indexOf('child-construct'),
+  );
+  child.openModuleGate();
+  await child.loaded.promise;
+  state.rootGate?.resolve();
+  expect(await state.terminal?.promise).toMatchObject({ kind: 'ready' });
+});
+
+it('starts source shader admission during project bootstrap and adopts the same catalog', async () => {
+  const gate = deferred<void>();
+  state.bootstrapGate = gate;
+  const launched = launch();
+  await vi.waitFor(() => {
+    expect(state.order).toContain('bootstrap-prepare');
+    expect(state.order).toContain('source-shaders');
+  });
+  expect(state.assets).toBeUndefined();
+  gate.resolve();
+  await launched;
+  expect(state.stagedShaders).toBeDefined();
+  expect(state.assets?.shaderRegistry).toBe(state.stagedShaders);
+  const child = worker();
+  child.openModuleGate();
+  await child.loaded.promise;
+  state.rootGate?.resolve();
+  expect(await state.terminal?.promise).toMatchObject({ kind: 'ready' });
+});
+
 function worker(): CpuModuleWorker {
   expect(CpuModuleWorker.instances).toHaveLength(1);
   expect(CpuModuleWorker.ctorAttempts).toBe(1);
@@ -430,6 +530,30 @@ it('bounds World updates by sealed publications, including pictures not yet subm
   expect(world.execution.health).toBe('healthy');
 });
 
+it.each([
+  false,
+  true,
+])('reads the initial Catalog once while starting the Engine Worker (Runtime Packs=%s)', async (runtimePacks) => {
+  const assetGate = deferred<void>();
+  const catalogUrl = 'https://fixture.invalid/pack-index.json';
+  const fetchCatalog = vi.fn(async () => Response.json([]));
+  vi.stubGlobal('fetch', fetchCatalog);
+  state.assetGate = assetGate;
+  state.runtimePacks = runtimePacks;
+  const launched = launch(false, undefined, { url: catalogUrl });
+  await vi.waitFor(() => expect(CpuModuleWorker.instances).toHaveLength(1));
+  const child = worker();
+  child.openModuleGate();
+  await child.loaded.promise;
+  assetGate.resolve();
+  await launched;
+
+  const assets = state.assets;
+  if (assets === undefined) throw new Error('Missing Engine Worker asset owner');
+  expect((await assets.enumerateCatalog()).unwrap()).toEqual([]);
+  expect(fetchCatalog.mock.calls).toEqual([[catalogUrl]]);
+});
+
 it('stages the actual child while source assets are pending and waits for the Native root before init', async () => {
   const assetGate = deferred<void>();
   state.assetGate = assetGate;
@@ -524,6 +648,19 @@ it('cleans a still-uninitialized real module worker on root failure without fake
   expect(await state.terminal?.promise).toMatchObject({ kind: 'fault' });
   await child.exited.promise;
   expect(child.thread.threadId).toBe(-1);
+  expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
+});
+
+it('terminates the staged child when project bootstrap fails before the source service exists', async () => {
+  state.bootstrapImportFailed = true;
+  await launch();
+  const child = worker();
+  expect(await state.terminal?.promise).toMatchObject({
+    kind: 'fault',
+    code: 'app-execution-bootstrap-failed',
+    detail: { phase: 'import' },
+  });
+  await child.exited.promise;
   expect(child.posts).toEqual([{ kind: 'stage-shader-manifest', url: fixtureShaderManifest }]);
 });
 

@@ -4,13 +4,14 @@ import { PassMeshVertexBindings } from '../device/mesh-vertex-streams';
 import { viewForPipeline } from '../environment/bindings';
 import type { MaterialResource } from '../material-resource';
 import type { FrameList } from '../scene/frame-list';
+import { drawPoseStorage } from '../scene/mesh-draw';
 import { meshBufferBindGroup } from './frame-lighting';
 import type { ValidatedRenderable } from './frame-snapshot';
 import { bindRasterOffset } from './geometry-bind-offsets';
 import {
   detectNineSliceScaleTooSmall,
   type MainPassMaterialBindingResolver,
-  type RasterMaterialAddress,
+  type MaterialBindingAddress,
 } from './main-pass-material';
 import { materialFromSubmittedSlots } from './material-pass-selection';
 // @forgeax/engine-runtime - RendererState record stage: main-pass sprite draws.
@@ -37,7 +38,7 @@ import {
   resolveGeometryInstanceBuffer,
   resolveGeometryInstancesBindGroup,
 } from './main-pass-geometry';
-import { MESH_PER_ENTITY_STRIDE, prepareMeshDraw } from './mesh-ssbo';
+import { MESH_PER_ENTITY_STRIDE, MeshDrawUploads } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
 
 /**
@@ -326,9 +327,14 @@ function recordSpriteEntityDraws(
 ): void {
   const { runtime, world, pipelineState, validatedOrdered, foldDispatchPlan, materialSlotIndices } =
     c;
-  const materialAddress: RasterMaterialAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
+  const materialAddress: MaterialBindingAddress = {
+    byteOffset: 0,
+    dynamicOffsetCount: 1,
+    reflection: undefined,
+  };
   const offsetWord = new Uint32Array(1);
   let meshAddress: ReturnType<typeof meshSsboBufferBinding> | undefined;
+  const meshUploads = MeshDrawUploads.forPass(c);
   const recordPresented = createFoldedDrawRecorder(c);
   let lastSpritePipelineHandle: RenderPipeline | null = null;
   const vertices = new PassMeshVertexBindings(pass);
@@ -390,7 +396,7 @@ function recordSpriteEntityDraws(
     const slices = material.paramSnapshot?.slicesAndMode as readonly number[] | undefined;
     if (slices !== undefined)
       detectNineSliceScaleTooSmall(
-        spriteEntry.source.transform.world,
+        drawPoseStorage(spriteEntry.source),
         [slices[0] ?? 0, slices[1] ?? 0, slices[2] ?? 0, slices[3] ?? 0],
         spriteEntry.renderableIndex,
         c.frameState.warnedNineSliceScaleEntities,
@@ -439,7 +445,7 @@ function recordSpriteEntityDraws(
     const instanceDraws = spriteEntityInstanceDraws(c, spriteEntry, foldHeadBucket);
     if (instanceDraws === null || instanceDraws.length === 0) continue;
 
-    const meshSlot = prepareMeshDraw(c, spriteEntry, foldDispatchPlan?.headBuckets.has(i) === true);
+    const meshSlot = meshUploads.stage(spriteEntry, foldDispatchPlan?.headBuckets.has(i) === true);
     meshAddress = meshSsboBufferBinding(
       pipelineState.meshStorageBuffer,
       meshSlot * MESH_PER_ENTITY_STRIDE,
@@ -494,7 +500,7 @@ function recordSpriteEntityDraws(
 function spriteEntityInstanceDraws(
   c: _InternalRenderPipelineContext,
   spriteEntry: ValidatedRenderable,
-  foldHeadBucket: import('./mesh-ssbo').FoldBucket | undefined,
+  foldHeadBucket: import('./mesh-ssbo').FoldDraw | undefined,
 ): ReturnType<typeof resolveGeometryInstanceBuffer> {
   const { pipelineState } = c;
   const spriteInst = spriteEntry.source.instances;

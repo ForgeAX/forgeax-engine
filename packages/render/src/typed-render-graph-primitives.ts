@@ -23,7 +23,11 @@ import {
   SINGLE_LAYER_WATER_PASS_OUTPUTS,
 } from '@forgeax/engine-types';
 import {
-  atmosphereTextures,
+  deferredPostProcessEntry,
+  postProcessFragmentEntry,
+} from './assembly/deferred-post-process-entry';
+import {
+  atmosphereAccesses,
   atmosphereVolumeViews,
   type RasterAtmosphereReads,
 } from './environment/luts';
@@ -46,6 +50,7 @@ import {
   encodeMainPass,
   type MainPassOptions,
   prepareMainPassGeometryPipelines,
+  requestVisibleForwardPipelines,
 } from './record/main-pass';
 import { prepareMaterialSkylight } from './record/main-pass-material';
 import {
@@ -109,14 +114,11 @@ import { projectedProbeCount } from './scene/probe-blend';
 import type { DeferredAoNormalLayout } from './ssao-config';
 import type { SceneVelocityInputs } from './temporal/default-gbuffer-velocity';
 import {
+  flickerTerms,
   getTemporalBindGroupResources,
   getTemporalGpuState,
   getTemporalParamsBuffer,
   stageTemporalGpuWrite,
-  TAA_FLICKER_FRAME_RATE_CAP,
-  TAA_FLICKER_MAX_PARALLAX_VELOCITY,
-  TAA_FLICKER_MIN_BLEND,
-  TAA_FLICKER_PERIOD,
   TEMPORAL_PARAMS_BYTES,
 } from './temporal/gpu';
 import { recordContext } from './world/view-record-context';
@@ -386,6 +388,16 @@ function scenePassFragmentEntryPoint(options: TypedScenePassOptions): string | u
   );
 }
 
+function addSceneEnvironmentAccesses(accesses: GraphAccess[], options: TypedScenePassOptions) {
+  const { environment, atmosphereReads } = options;
+  if (environment === undefined) return;
+  if (environment.prefilter !== undefined)
+    accesses.push({ resource: environment.prefilter, usage: 'sampled-read' });
+  if (environment.atmosphere !== undefined)
+    accesses.push(...atmosphereAccesses(environment.atmosphere, atmosphereReads));
+  accesses.push({ resource: environment.skySh, usage: 'uniform-read' });
+}
+
 function typedScenePassAccesses(
   options: TypedScenePassOptions,
   colorTargets: readonly RenderPipelineTarget[],
@@ -419,16 +431,7 @@ function typedScenePassAccesses(
     sampled(options.surfaceFluidSimulation.fields);
     accesses.push({ resource: options.surfaceFluidSimulation.descriptors, usage: 'storage-read' });
   }
-  if (options.environment !== undefined) {
-    sampled(options.environment.prefilter);
-    if (options.environment.atmosphere !== undefined)
-      for (const view of atmosphereTextures(
-        options.environment.atmosphere,
-        options.atmosphereReads,
-      ))
-        sampled(view);
-    accesses.push({ resource: options.environment.skySh, usage: 'uniform-read' });
-  }
+  addSceneEnvironmentAccesses(accesses, options);
   // These declarations belong to contributors. Capture them before transferring our pass.
   if (options.extraAccesses !== undefined)
     for (const access of options.extraAccesses) accesses.push({ ...access });
@@ -460,8 +463,9 @@ function materialGraphViewsForPass(
     surfaceNearestDepth === null
   )
     return undefined;
-  const compiled = (frame as _InternalRenderPipelineContext).frameState.compiledFrameGraph?.graph;
-  if (compiled !== undefined) {
+  const resources = (frame as _InternalRenderPipelineContext).frameState.compiledFrameGraph
+    ?.nativeResources;
+  if (resources !== undefined) {
     const views: GraphBindingViews['views'][number][] = [];
     const backdrop = nativeBackdrop ?? options.transmissionBackdrop;
     if (backdrop !== undefined && transmissionBackdrop !== null)
@@ -472,7 +476,7 @@ function materialGraphViewsForPass(
       views.push(['nearest-layer', options.surfaceNearestLayer, surfaceNearestLayer]);
     if (options.surfaceNearestDepth !== undefined && surfaceNearestDepth !== null)
       views.push(['nearest-depth', options.surfaceNearestDepth, surfaceNearestDepth]);
-    const facts = { graph: compiled, views };
+    const facts = { resources, views };
     if (views.length > 0 && graphBindingViewsCurrent(facts)) return facts;
   }
   return undefined;
@@ -541,6 +545,13 @@ function prepareScenePassSkylight(
       prefilter: resolvedView(resources, environment.prefilter),
     };
   return forward && colorCount > 0 && hasValidated ? prepareMaterialSkylight(internal) : undefined;
+}
+
+function sceneUsesCurrentSkybox(
+  options: TypedScenePassOptions,
+  firstColorWriter: boolean,
+): boolean {
+  return firstColorWriter && options.environment === undefined;
 }
 
 export function addTypedScenePass(
@@ -657,6 +668,28 @@ export function addTypedScenePass(
     viewOffset: 0,
     atmosphereCapture: false,
   });
+  const prepareVisible = (context: _InternalRenderPipelineContext) => {
+    if (!enabled(context)) return;
+    const selected = detachedScenePassContext(context, request);
+    selected.transparentColorFormat = formats[0] as GPUTextureFormat;
+    if (formats[1] === 'rgba16float') selected.reflectionFallbackColorFormat = 'rgba16float';
+    if (options.rasterProjection === 'unjittered')
+      selected.viewBindGroupDynamicOffset = POST_PROCESS_VIEW_UNIFORM_OFFSET;
+    requestVisibleForwardPipelines(selected, request.selector, {
+      formats,
+      sampleCount,
+      ...(request.recordMode === undefined ? {} : { recordMode: request.recordMode }),
+      ...(request.excludeSelector === undefined
+        ? {}
+        : { excludeSelector: request.excludeSelector }),
+      coverageOnly: options.coverageOnly ?? false,
+      opaqueDepthPrimed: options.opaqueDepthPrimed ?? false,
+      seededDepth:
+        options.seededDepth === true &&
+        (options.forwardDisplayDepth !== 'color' || loadForwardDepth(context) === 'load'),
+      ...(fragmentEntryPoint === undefined ? {} : { fragmentEntryPoint }),
+    });
+  };
   const registerDepthVariant = (seededDepth: boolean) =>
     registerScenePipelinePreparation(
       graph,
@@ -731,6 +764,13 @@ export function addTypedScenePass(
             opaqueDepthPrimed: options.opaqueDepthPrimed === true,
             ...(options.selection === undefined ? {} : { selection: options.selection }),
           }
+        : undefined,
+      (options.standardOpaqueRows === true || request.recordMode === 'opaque-depth') &&
+        request.passKind === 'forward' &&
+        options.selectEntities === undefined &&
+        options.selection === undefined &&
+        seededDepth === (options.seededDepth === true)
+        ? prepareVisible
         : undefined,
     );
   registerDepthVariant(options.seededDepth === true);
@@ -822,6 +862,7 @@ export function addTypedScenePass(
   // depth the opaque raster loads. Resource declarations still cover both outcomes.
   const firstColorWriter =
     options.forwardDisplayDepth === 'color' || options.forwardDisplayDepth === 'primed-color';
+  const writesSkybox = sceneUsesCurrentSkybox(options, firstColorWriter);
   const loadForwardDepth = (frame: RenderPipelineFrame): GPULoadOp =>
     (frame as _InternalRenderPipelineContext).forwardColorWritesDepth === true &&
     !(options.gpuDriven?.currentCameraWork?.() ?? options.gpuDriven !== undefined)
@@ -835,7 +876,7 @@ export function addTypedScenePass(
   const encode: EncodeSceneRaster = (pass, frame, resources, nativeBackdrop) => {
     const gpu = options.gpuDriven?.currentCameraWork?.() === false ? undefined : options.gpuDriven;
     const internal = detachedScenePassContext(frame, request);
-    if (firstColorWriter && internal.skyboxActive)
+    if (writesSkybox && internal.skyboxActive)
       encodeSkyboxPass(internal, pass, options.depth.format, colorTargets[0]?.format);
     const directionalShadow =
       options.directionalShadow === undefined
@@ -1477,7 +1518,7 @@ function addTemporalSecondaryReactivityRows(
       const resolve = frame.runtime.lookupPostProcess?.('forgeax.taa-resolve');
       let entry = resolve === undefined ? undefined : reactivityRowsEntries.get(resolve);
       if (resolve !== undefined && entry === undefined) {
-        entry = { ...resolve, fragmentEntryPoint: TAA_REACTIVITY_ROWS_ENTRY };
+        entry = postProcessFragmentEntry(resolve, TAA_REACTIVITY_ROWS_ENTRY);
         reactivityRowsEntries.set(resolve, entry);
       }
       const pipeline =
@@ -1516,15 +1557,7 @@ export function flickerParams(
     previous !== undefined && sampleTimeSeconds !== undefined && sampleTimeSeconds > previous
       ? sampleTimeSeconds - previous
       : 0;
-  // AdjustToFrameRate: below FrameRateCap (60 Hz) the period shrinks so that a
-  // slower frame rate does not stretch the tolerated flicker window.
-  const refreshToCap = dt > 0 ? dt * TAA_FLICKER_FRAME_RATE_CAP : 1;
-  const period = TAA_FLICKER_PERIOD / Math.max(refreshToCap, 1);
-  return {
-    enabled,
-    invThreshold: 1 - (1 - TAA_FLICKER_MIN_BLEND) ** period,
-    invMaxParallax: 1 / (refreshToCap * TAA_FLICKER_MAX_PARALLAX_VELOCITY * (width / 1920)),
-  };
+  return { enabled, ...flickerTerms(dt, width) };
 }
 
 /** Packs and uploads the TAA resolve params block (jitter, history, flicker terms). */
@@ -1577,6 +1610,8 @@ export interface TypedTemporalResolveTargets {
   readonly writeStability: RenderPipelineTarget;
 }
 
+const sceneVelocityTaaEntry = deferredPostProcessEntry({}, () => TAA_SCENE_VELOCITY_WGSL);
+
 /** TAA resolve also carries the UE TSR flickering analysis history (rgba8unorm). */
 export interface TypedTaaResolveTargets extends TypedTemporalResolveTargets {
   readonly historyFlicker: RenderPipelineTarget;
@@ -1597,7 +1632,7 @@ export function addTypedTemporalResolvePass(
     secondaryReactivity = rows.value;
   }
   const { sceneVelocity } = targets;
-  const entry = sceneVelocity === undefined ? undefined : { source: TAA_SCENE_VELOCITY_WGSL };
+  const entry = sceneVelocity === undefined ? undefined : sceneVelocityTaaEntry;
   const formats = [
     targets.writeColor.format,
     targets.writeTemporal.format,

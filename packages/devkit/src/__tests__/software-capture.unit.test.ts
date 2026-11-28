@@ -23,13 +23,13 @@ describe('browserCaptureCommand', () => {
     const result = await browserCaptureCommand({
       root,
       backend: 'software',
-      browser: resolve(root, 'missing-chrome-beta'),
+      browser: resolve(root, 'missing-chrome'),
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toMatchObject({
         code: 'browser-capture-browser-missing',
-        detail: { browser: resolve(root, 'missing-chrome-beta') },
+        detail: { browser: resolve(root, 'missing-chrome') },
       });
     }
   });
@@ -60,6 +60,30 @@ describe('installed browser discovery', () => {
       expect(await resolveBrowserExecutable(undefined)).toBe(chrome);
       expect(await resolveBrowserExecutable(requested)).toBe(requested);
       expect(await resolveBrowserExecutable(resolve(root, 'missing'))).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers Chrome over Chrome Beta when both exist', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-browser-priority-'));
+    const chrome = resolve(root, 'Google', 'Chrome', 'Application', 'chrome.exe');
+    const chromeBeta = resolve(root, 'Google', 'Chrome Beta', 'Application', 'chrome.exe');
+    try {
+      await mkdir(dirname(chrome), { recursive: true });
+      await mkdir(dirname(chromeBeta), { recursive: true });
+      await writeFile(chrome, 'fixture');
+      await writeFile(chromeBeta, 'fixture');
+      for (const key of [
+        'PROGRAMFILES',
+        'PROGRAMFILES(X86)',
+        'LOCALAPPDATA',
+        'FORGEAX_BROWSER_EXECUTABLE',
+      ])
+        vi.stubEnv(key, '');
+      vi.stubEnv('PROGRAMFILES', root);
+      expect(await resolveBrowserExecutable(undefined)).toBe(chrome);
     } finally {
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });

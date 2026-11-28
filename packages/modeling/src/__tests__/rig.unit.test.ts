@@ -629,6 +629,9 @@ describe('rig: export for the Engine', () => {
     ];
     const out = r.finish({ key: 'limb', packageId: packageId.value, clips });
     if (!out.ok) throw out.error;
+    expect(r.path).toBe(path);
+    const inspected = r.sample(r.path ?? { keys: [] }, 0.5);
+    expect(inspected.ok && inspected.value.hinge).toBe(30);
     expect(Object.keys(out.value).sort()).toEqual([
       'animation-clip/limb/close',
       'animation-clip/limb/open',

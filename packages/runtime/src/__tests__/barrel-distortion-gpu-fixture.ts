@@ -21,6 +21,7 @@ export interface BarrelRendererFixtureOptions extends BarrelGpuExtent {
   readonly rhi?: RendererOptions['rhi'];
   readonly gpuPassTiming?: RendererOptions['gpuPassTiming'];
   readonly standardProfile?: RendererOptions['standardProfile'];
+  readonly ssrIdentity?: RendererOptions['ssrIdentity'];
   readonly shaderManifestUrl?: string;
   readonly rhiInstrumentation?: RendererOptions['rhiInstrumentation'];
 }
@@ -130,6 +131,7 @@ export async function createBarrelRendererFixture(
       {
         ...(options.rhi === undefined ? {} : { rhi: options.rhi }),
         ...(options.gpuPassTiming === undefined ? {} : { gpuPassTiming: options.gpuPassTiming }),
+        ...(options.ssrIdentity === undefined ? {} : { ssrIdentity: options.ssrIdentity }),
         ...(options.standardProfile === undefined
           ? {}
           : { standardProfile: options.standardProfile }),

@@ -1,6 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
+  AmbientOcclusion,
   ANTIALIAS_TAA,
   Camera,
   DirectionalLight,
@@ -10,8 +11,9 @@ import {
   Skylight,
   TONEMAP_LINEAR,
 } from '@forgeax/engine-render';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { Transform } from '@forgeax/engine-scene';
+import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -169,3 +171,77 @@ it.each(CASES)(
   },
   120_000,
 );
+
+it('keeps Deferred GTAO history textures across live camera edits', async () => {
+  const surface = offscreenCanvas(RESPONSE_SIZE);
+  const getContext = surface.canvas.getContext;
+  const observedDevices = new WeakSet<GPUDevice>();
+  let historyTextures = 0;
+  surface.canvas.getContext = () => {
+    const context = getContext();
+    const configure = context.configure;
+    context.configure = (options) => {
+      const device = options.device;
+      if (!observedDevices.has(device)) {
+        observedDevices.add(device);
+        const createTexture = device.createTexture.bind(device);
+        device.createTexture = (descriptor) => {
+          if (descriptor.label?.startsWith('gtao-history-')) historyTextures++;
+          return createTexture(descriptor);
+        };
+      }
+      configure(options);
+    };
+    return context;
+  };
+  const { renderer } = unwrap(
+    await constructRuntimeRendererHost(
+      surface.canvas as unknown as HTMLCanvasElement,
+      { rhi: webgpu.rhi },
+      { shaderManifestUrl: shaderPublicationUrl(await buildEngineShaderTemplateManifest()) },
+    ),
+  );
+  try {
+    unwrap(
+      renderer.setProfile({
+        ...renderer.inspect().profile,
+        renderPath: 'deferred',
+        gbufferFormat: 'default',
+        ambientOcclusion: { enabled: true, method: 'gtao', intensity: 1, quality: 80 },
+      }),
+    );
+    const world = contactWorld(true, false);
+    const camera = [...world.query({ with: [Camera] }).unwrap()][0]?.entity;
+    if (camera === undefined) throw new Error('The contact scene has no camera');
+    world.addComponent(camera, { component: AmbientOcclusion, data: {} }).unwrap();
+    await renderWorldResponse(renderer, world, 'deferred', async (draw) => {
+      const update = async (intensity: number, quality: number) => {
+        world.set(camera, AmbientOcclusion, { intensity, quality }).unwrap();
+        world.update(1 / 60).unwrap();
+        propagateTransforms(world).unwrap();
+        await draw();
+        const ao = renderer.inspect().standardLighting?.ambientOcclusion;
+        expect(ao?.status).toBe('active');
+        expect(ao?.numerical.intensity).toBeCloseTo(intensity);
+        expect(ao?.numerical.quality).toBe(quality);
+        return ao?.historyFrames;
+      };
+      const bindings = renderOrderedViewBindCount();
+      const graphBuilds = renderGraphCompileCount();
+      expect(historyTextures).toBe(2);
+      for (let frame = 0; frame < 8; frame++) {
+        expect(await update(0.2 + frame / 10, 80)).toBe(1);
+      }
+      expect(await update(0.9, 80)).toBe(2);
+      expect(renderOrderedViewBindCount()).toBe(bindings);
+      expect(await update(0.9, 15)).toBe(1);
+      expect(await update(0.9, 15)).toBe(2);
+      expect(renderOrderedViewBindCount() - bindings).toBe(1);
+      expect(renderGraphCompileCount() - graphBuilds).toBe(1);
+      expect(historyTextures).toBe(2);
+    });
+  } finally {
+    unwrap(await renderer.dispose());
+    surface.destroy();
+  }
+}, 60_000);

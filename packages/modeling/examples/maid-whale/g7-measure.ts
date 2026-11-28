@@ -30,7 +30,7 @@ export function exportWithFaces(m: Model, options: ExportOptions = {}): Exported
   if (!edit.ok) throw edit.error;
   const out = exportMesh(edit.value.compact().mesh, options);
   if (!out.ok) throw out.error;
-  return { mesh: out.value.mesh, triangleFace: out.value.triangleFace };
+  return { mesh: out.value.mesh, triangleFace: out.value.sidecar.triangleFace };
 }
 
 interface Tri {

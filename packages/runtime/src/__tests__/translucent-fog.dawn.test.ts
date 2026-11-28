@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
 import {
   attachRecorder,
   buildFrameModel,
@@ -33,7 +34,7 @@ import {
 } from './translucent-fog.fixture';
 
 const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
-const directory = 'artifacts/translucent-fog/dawn';
+const directory = process.env.FORGEAX_TRANSLUCENT_FOG_DIR ?? 'artifacts/translucent-fog/dawn';
 const REPLAY_TOLERANCE = 0.03;
 
 function fragmentSource(work: FrameModel['works'][number]): string {
@@ -181,6 +182,8 @@ it.each([
     const { recorder, host } = await sharedHost;
     mkdirSync(directory, { recursive: true });
     let tape: EncodedTape | undefined;
+    const compileCount = renderGraphCompileCount();
+    const bindCount = renderOrderedViewBindCount();
     const sample = await sampleTranslucentFog(host.value.renderer, {
       path,
       material,
@@ -197,6 +200,9 @@ it.each([
       JSON.stringify({ digest: tape.digest, ...summarizeFrame(model) }, null, 2),
     );
     assertTranslucentFog(sample);
+    const ordered = renderOrderedViewBindCount() - bindCount;
+    expect(ordered).toBeGreaterThan(0);
+    expect(renderGraphCompileCount() - compileCount).toBe(ordered);
     const replay = await verifyReplay(tape.bytes, model, path);
     writeFileSync(
       `${directory}/${path}-${material}-evidence.json`,

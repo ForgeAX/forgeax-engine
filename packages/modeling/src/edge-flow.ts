@@ -179,6 +179,7 @@ function featureLoop(
     points.push(p);
   }
   const length = arc[count] as number;
+  const closed = len(sub(points[0] as Tuple3, points[count] as Tuple3)) <= tolerance;
   // Segments hashed on a grid of cells at least as large as a segment and the tolerance.
   const cell = Math.max(length / count, tolerance) * 2;
   const key = (p: Tuple3) =>
@@ -228,9 +229,21 @@ function featureLoop(
     if (sb === undefined) continue;
     // The edge runs along the line: its length matches the arc it spans.
     const l = len(sub(mesh.position(b), mesh.position(a)));
-    if (Math.abs(sb - sa) < 0.9 * l - tolerance) continue;
+    // A closed line's seam vertex is arc 0 and arc `length` at once: take the end that
+    // lets the edge span its own length.
+    const ends = (s: number): number[] =>
+      closed && s <= tolerance ? [s, length] : closed && length - s <= tolerance ? [s, 0] : [s];
+    let span: [number, number] | undefined;
+    for (const x of ends(sa))
+      for (const y of ends(sb))
+        if (
+          Math.abs(y - x) >= 0.9 * l - tolerance &&
+          (span === undefined || Math.abs(y - x - l) < Math.abs(span[1] - span[0] - l))
+        )
+          span = [Math.min(x, y), Math.max(x, y)];
+    if (span === undefined) continue;
     on.push(e);
-    intervals.push([Math.min(sa, sb), Math.max(sa, sb)]);
+    intervals.push(span);
   }
   intervals.sort((x, y) => x[0] - y[0]);
   const gaps: FeatureLoop['gaps'][number][] = [];

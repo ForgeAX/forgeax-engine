@@ -42,7 +42,7 @@ import {
   RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM,
   RENDER_GRAPH_SUBMISSION_COMMIT_SYSTEM,
 } from '../graph-submission-systems';
-import { RENDER_GRAPH_COMPILE_RELEASE_SYSTEM, RENDER_GRAPH_SETTLE_SYSTEM } from '../graph-systems';
+import { RENDER_GRAPH_SETTLE_SYSTEM } from '../graph-systems';
 import { RENDER_CASCADE_FIT_SYSTEM } from '../light-systems';
 import { RENDER_POST_CLEANUP_SYSTEM, RENDER_POST_COMMIT_SYSTEM } from '../post-systems';
 import { VIEW_REFLECTION_PROBES_SYSTEM } from '../reflection-systems';
@@ -226,7 +226,6 @@ describe('GI submission systems', () => {
       RENDER_POST_CLEANUP_SYSTEM,
       RENDER_TEMPORAL_DISCARD_SYSTEM,
       ...RENDER_SETTLEMENT_CLEANUP_SYSTEMS,
-      RENDER_GRAPH_COMPILE_RELEASE_SYSTEM,
       RENDER_CAPTURE_GRAPH_RETIRE_SYSTEM,
       RENDER_GRAPH_SEAL_RELEASE_SYSTEM,
       RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM,
@@ -490,12 +489,15 @@ describe('view-diffuse-gi system', () => {
     endRenderFrame(world);
   });
 
-  it('rejects recording a GI profile the system did not prepare', () => {
+  it.each([
+    undefined,
+    { diffuseGi: { gather: 'baked' } },
+  ])('rejects a view without its prepared resolution and GI product (%j)', (standardProfile) => {
     const world = createRenderWorld();
     const internals = {
       renderWorld: world,
       viewEntity: world.spawn().unwrap(),
-      standardProfile: { diffuseGi: { gather: 'baked' } },
+      standardProfile,
     } as unknown as RenderSystemInternals;
     beginRenderFrame(world, 1);
     expect(() =>

@@ -10,7 +10,11 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
-import { type AssetHandle, textureFormatBlock } from '@forgeax/engine-types';
+import {
+  type AssetHandle,
+  shaderSourceForDescriptor,
+  textureFormatBlock,
+} from '@forgeax/engine-types';
 import { buildCubeCameraFaceViews } from '../capture/cube-views';
 import { createPrefilterUniformsBuffer, writeAllPrefilterUniforms } from '../device/gpu-residency';
 import type { SelectedEnvironmentFrame } from '../environment/frame';
@@ -403,9 +407,10 @@ export class ReflectionProbeRecordOwner {
       recordContext(this.internals).deviceScope,
       this.internals.device,
       (device, descriptor) => {
-        const labeled = {
-          ...descriptor,
-          label: `${descriptor.label ?? 'ibl'}-reflection-probe-${attempt}`,
+        const label = `${descriptor.label ?? 'ibl'}-reflection-probe-${attempt}`;
+        const labeled = shaderSourceForDescriptor(descriptor)?.descriptor(label) ?? {
+          code: descriptor.code,
+          label,
         };
         return this.internals.createShaderModule === undefined
           ? Promise.resolve(factory.createShaderModule(labeled))

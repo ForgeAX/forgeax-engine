@@ -1,5 +1,5 @@
 import { World } from '@forgeax/engine-ecs';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import { type InstanceCollectionSnapshot, InstanceProjectionStore } from '../instances';
 import { MaterialResource } from '../material-resource';
 import {
@@ -82,6 +82,69 @@ function submit(scene: RenderScene, entityKey: number): void {
 }
 
 describe('RenderScene temporal retry boundary', () => {
+  it('keeps pose history in the submitted root across dense pose publications', () => {
+    const scene = new RenderScene();
+    scene.setTemporalTracking(true);
+    const count = 128;
+    const entities = Uint32Array.from({ length: count }, (_, index) => index + 1);
+    scene.apply(Array.from(entities, (entity) => updateSnapshot(snapshot(entity, entity))));
+    const initial = scene.slotsSnapshot();
+    scene.commitSubmission(scene.captureSubmission([], initial));
+    const poses = new Float32Array(count * 16);
+    const previous = scene.applyPresentationSpans([]).previous;
+    for (let frame = 1; frame <= 32; frame++) {
+      for (let i = 0; i < count; i++) poses.set(world(frame * count + i), 16 * i);
+      const before = scene.slotsSnapshot();
+      const delta = scene.applyPresentationSpans([{ entities, worlds: poses }]);
+      expect(delta.updated).toBe(count);
+      expect(scene.lastSubmittedSlotByIndex(count - 1)).toBe(initial.slotAt(count - 1));
+      const old = before.slotAt(count - 1);
+      assert(old);
+      expect(old.snapshot.transform.world[12]).toBe(frame === 1 ? count : frame * count - 1);
+      expect(delta.previous.size).toBe(0);
+      expect(delta.previous).toBe(previous);
+    }
+  });
+
+  it('compares distant submitted roots while their Scene journal still covers the writes', () => {
+    const scene = new RenderScene();
+    scene.setTemporalTracking(true);
+    scene.apply([updateSnapshot(snapshot(7, 1)), updateSnapshot(snapshot(8, -1))]);
+    const move = (x: number) => scene.apply([{ kind: 'update', entityKey: 7, world: world(x) }]);
+    const commit = () => {
+      scene.commitSubmission(scene.captureSubmission([], scene.slotsSnapshot()));
+      const history = scene.temporalDrawInputs();
+      assert(history);
+      return history;
+    };
+    const old = commit();
+    for (let x = 2; x < 9; x++) {
+      move(x);
+      commit();
+    }
+    const changed = new Set<number>();
+    expect(commit().changesSince(old, (slot) => changed.add(slot))).toBe(true);
+    expect(changed).toEqual(new Set([0]));
+    for (let x = 9; x < 1_050; x++) move(x);
+    const visit = vi.fn();
+    expect(commit().changesSince(old, visit)).toBe(false);
+    expect(visit).not.toHaveBeenCalled();
+    expect(old.at(0)?.snapshot.transform.world[12]).toBe(1);
+    expect(old.at(1)?.snapshot.transform.world[12]).toBe(-1);
+  });
+
+  it('rejects a submission from another Scene root at the same revision', () => {
+    const submitted = new RenderScene();
+    const other = new RenderScene();
+    submitted.apply([updateSnapshot(snapshot(7, 1))]);
+    other.apply([updateSnapshot(snapshot(7, 2))]);
+    submit(submitted, 7);
+    const capture = other.captureSubmission([{ entityKey: 7 }]);
+    expect(capture.revision).toBe(submitted.captureSubmission([{ entityKey: 7 }]).revision);
+    expect(() => submitted.commitSubmission(capture)).toThrow(RangeError);
+    expect(submitted.lastSubmittedSlotByIndex(0)?.snapshot.transform.world[12]).toBe(1);
+  });
+
   it('owns visibility captures across hidden submissions, slot reuse and reset', () => {
     const scene = new RenderScene();
     scene.setTemporalTracking(true);

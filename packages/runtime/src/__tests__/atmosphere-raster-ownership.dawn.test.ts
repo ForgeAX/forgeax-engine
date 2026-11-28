@@ -13,6 +13,7 @@ import {
   MeshRenderer,
   Skylight,
 } from '@forgeax/engine-render';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -65,7 +66,7 @@ it('binds the View textures read by native Forward, GBuffer and Deferred Lightin
         },
       )
       .unwrap();
-    world.spawn({ component: Atmosphere, data: {} }).unwrap();
+    const atmosphere = world.spawn({ component: Atmosphere, data: {} }).unwrap();
     world.spawn({ component: Fog, data: { density: 0.000025 } }).unwrap();
     world.spawn({ component: Skylight, data: {} }).unwrap();
     const sun = world
@@ -84,6 +85,8 @@ it('binds the View textures read by native Forward, GBuffer and Deferred Lightin
       perPixel: boolean,
       shadow?: 'pcf' | 'screen',
     ) {
+      const compileCount = renderGraphCompileCount();
+      const bindCount = renderOrderedViewBindCount();
       renderer
         .setProfile({
           ...original,
@@ -113,6 +116,10 @@ it('binds the View textures read by native Forward, GBuffer and Deferred Lightin
         (await recorder.frameBoundary()).unwrap();
       }
       const tape = compactTape((await recording).unwrap());
+      if (shadow === undefined) {
+        const ordered = renderOrderedViewBindCount() - bindCount;
+        expect(renderGraphCompileCount() - compileCount).toBe(ordered);
+      }
       if (out !== undefined)
         writeFileSync(
           join(
@@ -183,6 +190,103 @@ it('binds the View textures read by native Forward, GBuffer and Deferred Lightin
       }
     }
 
+    async function verifyChangingAtmosphere(renderPath: 'forward' | 'deferred') {
+      const draw = async () => {
+        world.update(1 / 60).unwrap();
+        propagateTransforms(world).unwrap();
+        return drawReadyFrame(renderer, { source }, ['linear-hdr']);
+      };
+      renderer
+        .setProfile({
+          ...original,
+          renderPath,
+          atmosphere: { aerialPerspectiveQuality: 'fast' },
+          ambientOcclusion: { enabled: false },
+        })
+        .unwrap();
+      world
+        .set(sun, DirectionalLight, {
+          direction: [0, -0.48, -0.87],
+          castShadow: false,
+          perPixelAtmosphereTransmittance: true,
+        })
+        .unwrap();
+      const first = await draw();
+      const read = async (receipt: typeof first) => {
+        const sampled = (await renderer.observe(receipt, { include: ['linear-hdr'] })).unwrap();
+        const hdr = sampled.observations?.find((item) => item.domain === 'linear-hdr');
+        if (hdr === undefined) throw new Error('Missing submitted atmosphere color');
+        return new Uint16Array(hdr.bytes.buffer, hdr.bytes.byteOffset, hdr.bytes.byteLength / 2);
+      };
+      const baseline = await read(first);
+      const bindCount = renderOrderedViewBindCount();
+      const compileCount = renderGraphCompileCount();
+      let previous = baseline;
+      let changedPixels = 0;
+      for (const direction of [
+        [0.1, -0.55, -0.83],
+        [0.2, -0.66, -0.72],
+        [0.24, -0.78, -0.58],
+      ]) {
+        world.set(sun, DirectionalLight, { direction }).unwrap();
+        const changed = await draw();
+        expect(changed.graphGeneration).toBe(first.graphGeneration);
+        const pixels = await read(changed);
+        let currentChanges = 0;
+        for (let i = 0; i < pixels.length; i += 4) {
+          if (
+            pixels[i] !== previous[i] ||
+            pixels[i + 1] !== previous[i + 1] ||
+            pixels[i + 2] !== previous[i + 2]
+          )
+            currentChanges++;
+        }
+        expect(
+          currentChanges,
+          JSON.stringify({
+            renderPath,
+            direction,
+            passNames: renderer.inspect().perFramePassNames,
+            signature: renderer.inspect({ fields: ['environment'] }).environment?.activeSignature,
+          }),
+        ).toBeGreaterThan(0);
+        changedPixels += currentChanges;
+        previous = pixels;
+      }
+      world.set(atmosphere, Atmosphere, { mieScattering: 8e-6 }).unwrap();
+      const mediumEdit = await draw();
+      expect(mediumEdit.graphGeneration).toBe(first.graphGeneration);
+      const mediumPixels = await read(mediumEdit);
+      expect(mediumPixels.some((word, index) => index % 4 !== 3 && word !== previous[index])).toBe(
+        true,
+      );
+      world.set(atmosphere, Atmosphere, { mieScattering: 3.996e-6 }).unwrap();
+      expect(renderOrderedViewBindCount()).toBe(bindCount);
+      expect(renderGraphCompileCount()).toBe(compileCount);
+      world.set(atmosphere, Atmosphere, { backgroundOnly: true }).unwrap();
+      const sky = await draw();
+      await read(sky);
+      expect(sky.graphGeneration).not.toBe(first.graphGeneration);
+      expect(renderer.inspect({ fields: ['environment'] }).environment?.transport).toEqual({
+        solar: 'none',
+        aerial: 'none',
+        carrier: 'none',
+        opaqueApplication: 'none',
+      });
+      world.set(atmosphere, Atmosphere, { backgroundOnly: false }).unwrap();
+      const restored = await draw();
+      await read(restored);
+      expect(restored.graphGeneration).not.toBe(sky.graphGeneration);
+      expect(renderOrderedViewBindCount() - bindCount).toBe(2);
+      expect(renderGraphCompileCount() - compileCount).toBe(2);
+      if (out !== undefined) {
+        writeFileSync(
+          join(out, `${renderPath}-edits.json`),
+          JSON.stringify({ changedPixels, numericRebinds: 0, modeRebinds: 2 }),
+        );
+      }
+    }
+
     await capture('forward', true, true);
     await capture('forward', false, true);
     await capture('forward', false, false);
@@ -192,6 +296,8 @@ it('binds the View textures read by native Forward, GBuffer and Deferred Lightin
     await capture('forward', false, false, 'screen');
     await capture('forward', false, true, 'screen');
     await capture('forward', false, false, 'pcf');
+    await verifyChangingAtmosphere('forward');
+    await verifyChangingAtmosphere('deferred');
     source.dispose();
   } catch (error) {
     console.error(

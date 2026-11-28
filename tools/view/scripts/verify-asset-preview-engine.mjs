@@ -42,7 +42,7 @@ try {
   await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'asset-preview-proof', type: 'module', dependencies: { '@forgeax/engine': '*', '@forgeax/view': '*' } }));
   await writeFile(join(root, 'forge.json'), JSON.stringify({ id: 'asset-preview-proof', name: 'Asset Preview Proof', schemaVersion: '3.0.0', roots: {} }));
   browser = await chromium.launch({ headless: true,
-    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'],
     chromiumSandbox: true,
   });

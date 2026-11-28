@@ -43,9 +43,15 @@ it('embeds an Engine document across ports without losing cross-origin isolation
     const parentUrl = await listen(
       `<iframe allow="cross-origin-isolated" src="${childUrl}"></iframe>`,
     );
-    const executablePath = ['/opt/google/chrome-beta/chrome', chromium.executablePath()].find(
-      existsSync,
-    );
+    const executablePath = [
+      process.env.FORGEAX_BROWSER_EXECUTABLE,
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/opt/google/chrome/chrome',
+      '/usr/bin/google-chrome',
+      chromium.executablePath(),
+    ]
+      .filter((p): p is string => Boolean(p))
+      .find(existsSync);
     browser = await chromium.launch({
       headless: true,
       ...(executablePath ? { executablePath } : {}),

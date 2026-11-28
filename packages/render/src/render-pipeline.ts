@@ -1,3 +1,4 @@
+import type { CloudShadowSpatialLayout } from './cloud/lighting/shadow-spatial-layout';
 import { surfaceTextureView } from './record/surface-views';
 // @forgeax/engine-render - typed render-pipeline topology contract.
 //
@@ -40,6 +41,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
+import type { CloudShadowFormat } from './cloud/lighting/shadow-format';
 import type { Tonemap } from './components/camera';
 import type { DepthOfFieldSide } from './components/depth-of-field';
 import type { DirectionalShadowFilterLabel } from './components/directional-shadow-filter';
@@ -203,6 +205,10 @@ export function resolveToneOutputContract(tonemap: Tonemap): ToneOutputContract 
 
 /** Stable facts that may change graph topology and therefore its compiled identity. */
 export interface RenderPipelineTopology {
+  /** Optional debug visualization topology bucket; absent in normal lit mode. */
+  readonly viewportOutput?:
+    | import('./viewport-output-contract').ViewportOutputTopologyBucket
+    | undefined;
   /** Renderer-derived ordinary material depth bindings; changes rebuild the view graph. */
   readonly materialSceneDepth?: boolean | undefined;
   /** Derived from the active fullscreen declarations, never authored twice in pipeline config. */
@@ -773,7 +779,11 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
   readonly capabilities?: Pick<RhiCaps, 'rgba16floatRenderable' | 'rg16floatRenderable'> &
     Partial<Pick<RhiCaps, 'rg11b10ufloatRenderable'>>;
   /** Renderer-derived cloud shadow size shared by graph allocation and projection. */
+  readonly cloudShadowLayout?: CloudShadowSpatialLayout;
+  /** Raw size for callers that use the default one-pass ForgeaX filter. */
   readonly cloudShadowResolution?: number;
+  /** Device-admitted format shared by both cloud shadow color attachments. */
+  readonly cloudShadowFormat?: CloudShadowFormat;
   /** Prepared typed graph resources owned by RenderSystem/RenderFrameState. */
   readonly standardOutput?: {
     readonly autoExposure?: import('./pipeline/standard-output/auto-exposure/gpu').AutoExposureGraphResources;
@@ -903,6 +913,7 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
     identity: string,
     placement?: RenderFeaturePlacement,
     passName?: string,
+    sampledTarget?: string,
   ): boolean;
 }
 

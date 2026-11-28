@@ -195,11 +195,14 @@ describe('Three material projection', () => {
     const assets = new AssetRegistry();
     owners.push(assets);
     const install = vi.spyOn(assets.materialArtifactRegistry, 'register');
+    const admit = vi.spyOn(assets.shaderRegistry, 'prepareMaterialTemplateFromInitializedCompiler');
     const project = await prepareMaterialPrograms(assets);
     const basic = projectMaterial(new MeshBasicMaterial(), {}).unwrap();
     expect(project(basic)).toBe(basic);
+    expect(admit).not.toHaveBeenCalled();
     const source = new MeshPhysicalMaterial({ clearcoat: 0.5 });
     const plain = project(projectMaterial(source, {}).unwrap());
+    expect(admit).toHaveBeenCalledOnce();
     const texture = assets
       .create(projectTexture(new DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1)).unwrap())
       .unwrap();
@@ -208,6 +211,7 @@ describe('Three material projection', () => {
     const mappedProgram = assets.materialPayloadProjections.get(mapped);
     if (!plainProgram || !mappedProgram) throw new Error('Missing stock Physical projection');
     expect(plainProgram.sourceTemplate?.sources).toBe(mappedProgram.sourceTemplate?.sources);
+    expect(admit).toHaveBeenCalledTimes(2);
     expect(mapped.values?.baseColorTexture).toEqual({ texture });
     expect(plain.values?.baseColorTexture).toBeUndefined();
     expect(install).not.toHaveBeenCalled();
@@ -224,9 +228,11 @@ describe('Three material projection', () => {
     const program = findMaterialPassProgram(mappedProgram, 'forward', context);
     expect(program).toBeDefined();
     expect(install).toHaveBeenCalledTimes(1);
+    const admittedBeforeProjection = admit.mock.calls.length;
     const next = (await prepareMaterialPrograms(assets))(
       projectMaterial(source, { baseColorTexture: { texture } }).unwrap(),
     );
+    expect(admit).toHaveBeenCalledTimes(admittedBeforeProjection);
     const nextProgram = assets.materialPayloadProjections.get(next);
     if (!nextProgram) throw new Error('Missing stock Physical projection');
     expect(findMaterialPassProgram(nextProgram, 'forward', context)).toBe(program);

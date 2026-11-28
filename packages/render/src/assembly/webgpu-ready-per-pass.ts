@@ -1,6 +1,10 @@
 import type { PerPassResources } from '../record/render-context';
 
 interface ReadyPerPassResourceInputs {
+  readonly getFxaaResources?: PerPassResources['getFxaaResources'];
+  readonly getSkyboxResources?: PerPassResources['getSkyboxResources'];
+  readonly getLegacySsaoResources?: PerPassResources['getLegacySsaoResources'];
+  readonly getLegacyGtaoResources?: PerPassResources['getLegacyGtaoResources'];
   readonly fxaaPipeline: PerPassResources['fxaaPipeline'];
   readonly fxaaBindGroupLayout: PerPassResources['fxaaBindGroupLayout'];
   readonly fxaaSampler: PerPassResources['fxaaSampler'];
@@ -47,6 +51,10 @@ interface ReadyPerPassResourceInputs {
 export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): PerPassResources {
   return {
     configured: false,
+    getFxaaResources: input.getFxaaResources,
+    getSkyboxResources: input.getSkyboxResources,
+    getLegacySsaoResources: input.getLegacySsaoResources,
+    getLegacyGtaoResources: input.getLegacyGtaoResources,
     fxaaPipeline: input.fxaaPipeline,
     fxaaBindGroupLayout: input.fxaaBindGroupLayout,
     fxaaSampler: input.fxaaSampler,

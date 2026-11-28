@@ -26,6 +26,7 @@ import {
   detectPnpmStoreFormat,
   fetchWithRetry,
   filesUnder,
+  isBundledEngineMemberName,
   localSdkDiscoveryLinks,
   mapConcurrent,
   normalizeLicenseReport,
@@ -295,6 +296,8 @@ await run('pnpm', engineBuildArgs, {
     FORGEAX_CANONICAL_KIT_OUTPUT: canonicalKitRoot,
   },
 });
+await run(process.execPath, ['packages/modeling-kernel-wasm/scripts/ensure-dist-wasm.mjs']);
+await run(process.execPath, ['packages/render-kernel/scripts/ensure-wasm.mjs']);
 // A present WASM can still predate the source's animation contract. Exercise
 // the owner's tracked source curves through the rebuilt Cook/playback chain.
 await run('node', [
@@ -321,7 +324,7 @@ for (const entry of await readdir(resolve(root, 'packages'), { withFileTypes: tr
   if (
     manifest.private === true ||
     typeof manifest.name !== 'string' ||
-    (manifest.name !== '@forgeax/engine' && !manifest.name.startsWith('@forgeax/engine-'))
+    (manifest.name !== '@forgeax/engine' && !isBundledEngineMemberName(manifest.name))
   )
     continue;
   publicPackages.push({
@@ -440,7 +443,7 @@ const engineBundle = await sdkStage('bundle complete npm Engine', () =>
   bundleEngineArchive({
     engineArchive: tarballs.get('@forgeax/engine').path,
     members: publicPackages
-      .filter((entry) => entry.name.startsWith('@forgeax/engine-'))
+      .filter((entry) => isBundledEngineMemberName(entry.name))
       .map((entry) => ({ ...entry, archive: tarballs.get(entry.name).path })),
     version,
   }),
@@ -448,7 +451,7 @@ const engineBundle = await sdkStage('bundle complete npm Engine', () =>
 // Bare SDK package contracts remain inspectable. Only complete delivery units
 // enter the public npm roster and template lockfiles.
 for (const [name, item] of tarballs) {
-  if (name.startsWith('@forgeax/engine-')) {
+  if (isBundledEngineMemberName(name)) {
     await rm(item.path);
     tarballs.delete(name);
   }

@@ -216,7 +216,6 @@ it('prepares the real builtin Mode0 resource namespace with shadow and every rec
       expect.arrayContaining([
         'cloud-layer-shadow',
         'cloud-sampled-trace',
-        'cloud-mode0-history-clear',
         'cloud-layer-transport',
         'cloud-layer-resolve',
       ]),

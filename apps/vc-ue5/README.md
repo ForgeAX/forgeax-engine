@@ -10,11 +10,16 @@ controls. This is an authoring project for ForgeAX Engine and View.
 | `@forgeax-assets/volumetric-clouds` | `forgeax-engine-assets/demo-assets/volumetric-clouds` | Procedural textures, cloud materials, material instances and cloud cookers |
 | `@forgeax-assets/ue-volumetric-clouds` | `forgeax-engine-assets/demo-assets/volumetric-clouds/sample-ue` | Converted UE textures and the comparison material |
 
-Both packages are mounted through `forge.json#assetLibraries` and referenced by
-their original GUIDs. The app contains no copies of their generators, WGSL,
-textures or asset Packs. The Engine's pnpm workspace links the libraries to
-the pinned asset checkout. Initialize the checkout before running the demo.
-Production output includes the cooked assets required to run the game.
+The UE asset library is mounted through `forge.json#assetLibraries`. The app's
+Generated Clouds Pack reuses the shared package's GUIDs, parameters and cloud
+cookers. Initialize the pinned asset checkout before running the demo.
+
+Generated Clouds, the three Nubis sets and Alpine Valley generate their four
+textures during Pack cooking with hardware WebGPU. The CPU seeds the noise
+inputs and saves the resulting bytes. A fresh cook needs a hardware WebGPU
+adapter on the build host. The browser loads the cooked textures at their
+original GUIDs and does not run the generators. The UE set uses its imported
+textures.
 
 `assets/build.ts` supplies the app's loading labels and rendering profile while
 using the shared cloud cookers. The app retains its ground scene, UI, live

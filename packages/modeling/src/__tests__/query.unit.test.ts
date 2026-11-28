@@ -71,6 +71,21 @@ describe('feature selectors', () => {
     expect(m.count(sel.thin(0.1).and(sel.facing('+z')))).toBe(4);
     expect(m.count(sel.thin(0.01))).toBe(0);
   });
+
+  it('hidden finds faces buried inside or pressed against another part', () => {
+    const lone = model();
+    lone.box({ size: [1, 1, 1] });
+    expect(lone.count(sel.hidden())).toBe(0);
+    const nested = model();
+    nested.box({ size: [4, 4, 4] });
+    nested.box({ size: [1, 1, 1] });
+    expect(nested.count(sel.hidden())).toBe(6);
+    const pair = model();
+    pair.box({ size: [1, 1, 1], center: [-0.5, 0, 0] });
+    pair.box({ size: [1, 1, 1], center: [0.5, 0, 0] });
+    expect(pair.count(sel.hidden())).toBe(2);
+    expect(pair.count(sel.hidden().and(sel.facing('+x')))).toBe(1);
+  });
 });
 
 describe('session queries, cancellation and budget', () => {
@@ -133,5 +148,18 @@ describe('session queries, cancellation and budget', () => {
     const op = m.tag(sel.near([0, 0, 0], 0), 'x');
     expect(op.error?.code).toBe('model-invalid-argument');
     expect(op.error?.detail?.count).toBe(0);
+  });
+
+  it('smallGroupBorder finds sharp edges around small smooth groups', () => {
+    const m = grid(4);
+    const block = sel.inBox([-1.01, -1.01, -1], [1.01, 1.01, 1]);
+    expect(m.count(block)).toBe(4);
+    m.markSharp(block.toEdges('touching').minus(block.toEdges('contained')));
+    const ring = sel.edges.sharp();
+    const fence = m.count(ring);
+    expect(fence).toBe(8);
+    expect(m.count(sel.edges.smallGroupBorder(3))).toBe(0);
+    expect(m.count(sel.edges.smallGroupBorder(4))).toBe(fence);
+    expect(m.count(sel.edges.smallGroupBorder(4).minus(ring))).toBe(0);
   });
 });

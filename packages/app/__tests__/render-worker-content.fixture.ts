@@ -18,15 +18,25 @@ async function pixels(canvas: HTMLCanvasElement, name: string): Promise<ImageDat
   bitmap.close();
   return context.getImageData(0, 0, target.width, target.height);
 }
-function difference(a: ImageData, b: ImageData): number {
+function differences(a: ImageData, b: ImageData, split: boolean): number[] {
   expect([a.width, a.height]).toEqual([b.width, b.height]);
-  let sum = 0;
-  for (let i = 0; i < a.data.length; i++) sum += Math.abs((a.data[i] ?? 0) - (b.data[i] ?? 0));
-  return sum / (a.data.length * 255);
+  const edge = split ? Math.floor(a.width / 2) : a.width;
+  let left = 0;
+  let right = 0;
+  for (let i = 0; i < a.data.length; i++) {
+    const delta = Math.abs((a.data[i] ?? 0) - (b.data[i] ?? 0));
+    if ((Math.floor(i / 4) % a.width) < edge) left += delta;
+    else right += delta;
+  }
+  const scale = a.height * 4 * 255;
+  return split
+    ? [left / (edge * scale), right / ((a.width - edge) * scale)]
+    : [left / (edge * scale)];
 }
 export async function verifyRenderWorkerContent(mode: string): Promise<void> {
   await page.viewport(800, 600);
   const images: ImageData[][] = [];
+  const split = mode === 'deformation';
   for (const tier of ['engine-worker', 'render-worker'] as const) {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = (import.meta as { env: { FORGEAX_BROWSER_CI_LIGHTWEIGHT?: string } }).env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? 64 : 128;
@@ -42,7 +52,7 @@ export async function verifyRenderWorkerContent(mode: string): Promise<void> {
         {
           execution: {
             workers: { engine: true, render: tier === 'render-worker', kernels: false },
-            bootstrap: ['skin', 'morph', 'instances', 'points', 'lines'].includes(mode)
+            bootstrap: ['deformation', 'skin', 'morph', 'instances', 'points', 'lines'].includes(mode)
               ? new URL('./render-worker-geometry-bootstrap.ts', import.meta.url)
               : new URL('./render-worker-content-bootstrap.ts', import.meta.url),
             bootstrapData: mode,
@@ -87,12 +97,25 @@ export async function verifyRenderWorkerContent(mode: string): Promise<void> {
       expect(canvas.width).toBeLessThanOrEqual(128);
       expect(canvas.height).toBeLessThanOrEqual(128);
       const before = await pixels(canvas, `${tier}-${mode}-before`);
-      const initial = completed();
-      await request('update');
-      await expect.poll(completed, { timeout: 60_000 }).toBeGreaterThan(initial + 5);
-      const after = await pixels(canvas, `${tier}-${mode}-after`);
+      const updatePicture = async (command: string, stage: string) => {
+        const initial = completed();
+        await request(command);
+        await expect.poll(completed, { timeout: 60_000 }).toBeGreaterThan(initial + 5);
+        return pixels(canvas, `${tier}-${mode}-${stage}`);
+      };
+      const afterSkin = split ? await updatePicture('update-skin', 'skin-updated') : before;
+      const after = await updatePicture(split ? 'update-morph' : 'update', 'after');
       expect((await request('inspect')).errors, `${tier}:${mode}`).toEqual([]);
-      expect(difference(before, after), `${tier}:${mode}`).toBeGreaterThan(0.003);
+      if (split) {
+        const [skinDelta, unchangedMorph] = differences(before, afterSkin, true);
+        const [unchangedSkin, morphDelta] = differences(afterSkin, after, true);
+        expect(skinDelta, `${tier}:skin`).toBeGreaterThan(0.003);
+        expect(morphDelta, `${tier}:morph`).toBeGreaterThan(0.003);
+        expect(unchangedMorph, `${tier}:morph before its update`).toBeLessThanOrEqual(0.005);
+        expect(unchangedSkin, `${tier}:skin after morph update`).toBeLessThanOrEqual(0.005);
+      } else {
+        expect(differences(before, after, false)[0], `${tier}:${mode}`).toBeGreaterThan(0.003);
+      }
       if (mode === 'target') {
         // The blue cube is outside the display camera; only the target camera can see it.
         // Headed Vitest can scale its iframe; read the actual screenshot extent.
@@ -122,7 +145,11 @@ export async function verifyRenderWorkerContent(mode: string): Promise<void> {
         if (currentCanvas === undefined) throw new Error('Recovered canvas is missing');
         await expect
           .poll(
-            async () => difference(after, await pixels(currentCanvas, `${tier}-${mode}-recovered`)),
+            async () => Math.max(...differences(
+              after,
+              await pixels(currentCanvas, `${tier}-${mode}-recovered`),
+              split,
+            )),
             { timeout: 60_000, interval: 500, message: `${mode} recovery` },
           )
           .toBeLessThanOrEqual(0.005);
@@ -140,5 +167,6 @@ export async function verifyRenderWorkerContent(mode: string): Promise<void> {
     }
   }
   for (const index of [0, 1])
-    expect(difference(images[0]![index]!, images[1]![index]!)).toBeLessThanOrEqual(0.005);
+    for (const delta of differences(images[0]![index]!, images[1]![index]!, split))
+      expect(delta).toBeLessThanOrEqual(0.005);
 }

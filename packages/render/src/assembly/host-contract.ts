@@ -75,6 +75,8 @@ export interface RendererHostImplementation
     | 'nativeDevice'
     | 'setProfile'
     | 'setOutputColorSpace'
+    | 'setViewportOutput'
+    | 'getViewportOutput'
     | 'bounds'
     | 'currentDeviceGeneration'
     | 'inspect'

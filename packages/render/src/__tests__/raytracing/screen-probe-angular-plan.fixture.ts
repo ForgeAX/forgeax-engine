@@ -174,7 +174,7 @@ export function carryPolicyCull(stage: 'temporal' | 'filter') {
   const anchor =
     stage === 'temporal'
       ? 'if(distributionIsPolicyCull(currentRecord,texel))'
-      : 'if (probe >= probeFrame.probes.x ||';
+      : 'if (!probeLive(probe) ||';
   const at = text.indexOf(anchor);
   if (at < 0) return { packet, radiance: undefined, history: undefined };
   const end = text.indexOf('}', at) + 1;

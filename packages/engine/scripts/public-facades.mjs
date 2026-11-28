@@ -126,6 +126,42 @@ export function publicEngineFacades(members) {
   return facades;
 }
 
+/**
+ * Closed API tier union. `game` and `addon` form the game-facing API that the
+ * API index, templates and training examples use; `compat` is published and
+ * snapshot-gated but stays out of training examples; `tools` serves the CLI,
+ * editor and build steps; `internal` is engine implementation.
+ */
+export const ENGINE_API_TIERS = Object.freeze(['game', 'addon', 'compat', 'tools', 'internal']);
+/** Tiers whose exports the public API baseline records and gates. */
+export const SNAPSHOT_API_TIERS = Object.freeze(['game', 'addon', 'compat']);
+
+/**
+ * Reads `packages/engine/api-tiers.json` and checks it against the public
+ * members: every member has exactly one tier and every listed package exists.
+ */
+export async function engineApiTiers(repositoryRoot, members) {
+  const source = JSON.parse(
+    await readFile(resolve(repositoryRoot, 'packages/engine/api-tiers.json'), 'utf8'),
+  );
+  const tiers = new Map();
+  for (const [tier, directories] of Object.entries(source)) {
+    if (!ENGINE_API_TIERS.includes(tier)) throw new Error(`engine-api-tier-unknown: ${tier}`);
+    for (const directory of directories) {
+      if (tiers.has(directory)) throw new Error(`engine-api-tier-duplicate: ${directory}`);
+      tiers.set(directory, tier);
+    }
+  }
+  const memberDirectories = new Set(members.map(({ directory }) => directory));
+  for (const directory of memberDirectories) {
+    if (!tiers.has(directory)) throw new Error(`engine-api-tier-missing: ${directory}`);
+  }
+  for (const directory of tiers.keys()) {
+    if (!memberDirectories.has(directory)) throw new Error(`engine-api-tier-stale: ${directory}`);
+  }
+  return tiers;
+}
+
 export function publicEngineFacadeSubpaths(members) {
   return new Set(publicEngineFacades(members).map(({ subpath }) => subpath));
 }

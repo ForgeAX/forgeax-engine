@@ -1,3 +1,4 @@
+import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import { expect, it, vi } from 'vitest';
@@ -6,14 +7,21 @@ import { BatchSources } from '../../gpu-driven/batch-members';
 import { BatchTopology } from '../../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../../gpu-driven/draw-selection';
 import { MaterialResource } from '../../material-resource';
+import { worldRenderResources } from '../../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot } from '../../record/frame-snapshot';
+import type { RenderSystemInternals } from '../../record/render-context';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-system-extract';
+import {
+  createPresentationDraws,
+  projectFramePresentation,
+} from '../../render-system-presentation';
 import { FrameSet } from '../frame-set';
 import { MaterialDispatch } from '../material-dispatch';
 import { MeshFrame } from '../mesh-frame';
 import { RenderScene } from '../render-scene';
 import { ResidualRoster } from '../residual-roster';
-import { ViewCull, type ViewCullInput } from '../view-cull';
+import { RowChangeLog } from '../row-change-log';
+import { isResidualDrawRows, ViewCull, type ViewCullInput } from '../view-cull';
 
 // Accepted native values for incremental-cull tests; borrowed cases supply raw snapshots explicitly.
 const covered = new MaterialResource({ ...defaultMaterialSnapshot(1), immutableValues: true });
@@ -670,6 +678,52 @@ it('keeps residual read membership persistent and resolves only rows a consumer 
   expect(recovered?.residualSlots(input.gpuSelection).length).toBe(records.length);
 });
 
+it('replays only admitted residual ranks for live material reads after draw verification', () => {
+  const f = cullFixture(64, covered, new MaterialResource(defaultMaterialSnapshot()));
+  const read = vi.fn(f.scene.drawFrame(f.dispatch.materials()));
+  const input = f.current({ slotDraws: () => read });
+  const frame = f.view.cull(input).frame.gpuOwned;
+  if (frame === undefined || input.gpuSelection === undefined) throw Error('Missing GPU frame');
+  const rows = frame.residual(input.gpuSelection);
+  const records = frame.residualSlots(input.gpuSelection);
+  const target = records.at(-1);
+  if (target === undefined) throw Error('Missing residual row');
+  const draws = createPresentationDraws();
+  const readMesh = vi.fn(() => ({ submeshes: [{}] }));
+  const admitted = vi.fn((row: RenderableSnapshot) => row.entityKey === target.entityKey);
+  const internals = {
+    gpuStore: { meshResidencyReader: () => readMesh },
+  } as unknown as RenderSystemInternals;
+  const onPending = vi.fn();
+  const scope = worldRenderResources(new World());
+  const settle = () =>
+    projectFramePresentation({
+      renderables: rows,
+      draws,
+      rowAdmits: admitted,
+      preparedSourceScope: scope,
+      onPending,
+      internals,
+    });
+  expect(isResidualDrawRows(rows)).toBe(true);
+  read.mockClear();
+  expect(settle()).toBe('pending');
+  expect(onPending).toHaveBeenCalledExactlyOnceWith({
+    code: 'draw-entity-missing',
+    entity: target.entityKey,
+  });
+  expect(read).toHaveBeenCalledTimes(rows.length);
+  expect(readMesh).not.toHaveBeenCalled();
+  draws.record(target.entityKey, 0);
+  read.mockClear();
+  admitted.mockClear();
+  expect(settle()).toBe('ready');
+  expect(admitted).toHaveBeenCalledTimes(rows.length);
+  expect(read).toHaveBeenCalledTimes(rows.length + 1);
+  expect(read).toHaveBeenLastCalledWith(target.slot);
+  expect(readMesh).toHaveBeenCalledOnce();
+});
+
 it('keeps nested residual walks independent when an inner walk returns early', () => {
   const f = cullFixture(64);
   const input = f.current();
@@ -690,7 +744,7 @@ it('keeps nested residual walks independent when an inner walk returns early', (
   expect([...rows].map((row) => row.slot)).toEqual(rows.map((row) => row.slot));
 });
 
-it('does not submit membership edits for published rows whose readable membership is unchanged', () => {
+it('reads updated poses without replaying readable membership for pose-only publications', () => {
   const f = cullFixture(1000);
   const current = (beforeRead?: () => void) => {
     const input = f.current();
@@ -700,24 +754,35 @@ it('does not submit membership edits for published rows whose readable membershi
     return frame.residualSlots(input.gpuSelection);
   };
   const before = current();
-  const entity = before.at(0)?.entityKey;
-  if (entity === undefined) throw Error('Missing residual row');
+  const first = before.at(0);
+  if (first === undefined) throw Error('Missing residual row');
+  const retainedPosition = first.snapshot.transform.world[12];
+  const world = first.snapshot.transform.world.slice();
   const edit = vi.spyOn(FrameSet.prototype, 'edit');
+  const journal = vi.spyOn(RowChangeLog.prototype, 'visit');
+  const publication = vi.spyOn(RowChangeLog.prototype, 'visitPublication');
   try {
-    // A real row publication can change pose without changing whether it is readable.
-    const snapshot = source(entity, residual);
-    const world = new Float32Array(snapshot.transform.world);
-    world[12] = 17;
-    f.write([{ ...snapshot, transform: { world } }]);
-    // Cull also updates other legitimate memberships; observe only the lazy read owner.
-    const after = current(() => edit.mockClear());
-    expect(after.length).toBe(before.length);
-    expect(after.at(0)?.entityKey).toBe(before.at(0)?.entityKey);
-    expect(after.at(0)?.snapshot.transform.world[12]).toBe(17);
-    expect(before.at(0)?.snapshot.transform.world[12]).not.toBe(17);
-    expect(edit.mock.calls.filter(([edits]) => edits.size > 0)).toEqual([]);
+    for (let frame = 1; frame <= 60; frame++) {
+      world[12] = 17 + frame;
+      f.scene.apply([{ kind: 'update', entityKey: first.entityKey, world }]);
+      // Cull can consume row versions. Only this residual roster reads membership here.
+      const after = current(() => {
+        edit.mockClear();
+        journal.mockClear();
+        publication.mockClear();
+      });
+      expect(after.length).toBe(before.length);
+      expect(after.at(0)?.entityKey).toBe(first.entityKey);
+      expect(after.at(0)?.snapshot.transform.world[12]).toBe(17 + frame);
+      expect(before.at(0)?.snapshot.transform.world[12]).toBe(retainedPosition);
+      expect(edit.mock.calls.filter(([edits]) => edits.size > 0)).toEqual([]);
+      expect(journal).not.toHaveBeenCalled();
+      expect(publication).not.toHaveBeenCalled();
+    }
   } finally {
     edit.mockRestore();
+    journal.mockRestore();
+    publication.mockRestore();
   }
 });
 

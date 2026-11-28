@@ -44,6 +44,8 @@ struct CloudDensityControls {
     erosionWeight: f32,
 };
 
+const REFERENCE_MASK_STRENGTH: f32 = 0.01;
+
 fn cloud_max3(value: vec3f) -> f32 {
     return max(max(value.x, value.y), value.z);
 }
@@ -82,8 +84,6 @@ fn evaluate_reference_conservative(
     let layoutValues = mix(vec3f(0.58), layoutTexel.rgb, controls.layoutWeight);
     let carrier = cloud_max3(layoutValues);
     let maskTexel = textureSampleLevel(mask, wrapSampler, coord.xy, 0.0);
-    let maskContribution = 0.01 * controls.maskWeight
-        * dot(maskTexel.rgb, vec3f(0.40, 0.35, 0.25));
     // AppendVector_8/7/4 put normalized height first, then the respective pattern value.
     let profiled = vec3f(
         cloud_profile_lookup(profile, wrapSampler, h, layoutValues.x).r,
@@ -91,6 +91,10 @@ fn evaluate_reference_conservative(
         cloud_profile_lookup(profile, wrapSampler, h, layoutValues.z).b,
     );
     let vertical = mix(0.8, cloud_max3(profiled), controls.profileWeight) - 0.5;
+    // The XY mask adds density only within the local profile's vertical support.
+    let maskSupport = smoothstep(0.0, REFERENCE_MASK_STRENGTH, vertical);
+    let maskContribution = REFERENCE_MASK_STRENGTH * controls.maskWeight * maskSupport
+        * dot(maskTexel.rgb, vec3f(0.40, 0.35, 0.25));
 
     // Add_13 / Sample_12.R warp Add_24 / Sample_9.G. Wind displacement is already
     // integrated by the owner, so this evaluation applies each graph multiplier once.
@@ -112,8 +116,7 @@ fn evaluate_reference_conservative(
         detail = mix(detail, third, controls.erosionWeight);
     }
 
-    // R3's exposed mask is allowed to create density even where layout is zero.
-    // Fold it into the gate so switching sample rejection off cannot change output.
+    // Include the supported mask in the occupancy test so skip-on and skip-off agree.
     let occupied = carrier + maskContribution;
     return vec4f(occupied, carrier, vertical, detail);
 }

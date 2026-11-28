@@ -211,6 +211,73 @@ it('rejects a pending stale dependency without invalidating its parents', async 
 });
 
 describe('asset dependency closure promotion', () => {
+  it('overlaps direct scene dependencies and publishes the complete closure together', async () => {
+    const ground = deferred<Result<Value, AssetLoadError>>();
+    const character = deferred<Result<Value, AssetLoadError>>();
+    const read = vi.fn(async (guid: string) => {
+      if (guid === 'scene') return value(1, ['ground', 'character', 'static']);
+      if (guid === 'static') return value(4);
+      return guid === 'ground' ? ground.promise : character.promise;
+    });
+    const graph = new AssetGraph({ read, maxConcurrentReads: 2 });
+    const load = graph.load('scene', undefined, undefined, true);
+    try {
+      await vi.waitFor(() =>
+        expect(read.mock.calls.map(([guid]) => guid)).toEqual(['scene', 'ground', 'character']),
+      );
+      character.resolve(value(2, ['scene']));
+      await vi.waitFor(() => expect(read.mock.calls.at(-1)?.[0]).toBe('static'));
+      expect(graph.snapshot().ready).toEqual([]);
+      ground.resolve(value(3, ['character']));
+      expect(await load).toMatchObject({ ok: true });
+      expect(graph.snapshot().ready).toEqual(['character', 'ground', 'scene', 'static']);
+      expect(read).toHaveBeenCalledTimes(4);
+    } finally {
+      ground.resolve(value(3));
+      character.resolve(value(2));
+      await load;
+      graph.dispose();
+    }
+  });
+
+  it('reads nested scene dependencies within the same concurrency limit', async () => {
+    const first = deferred<Result<Value, AssetLoadError>>();
+    const second = deferred<Result<Value, AssetLoadError>>();
+    const read = vi.fn(async (guid: string) => {
+      if (guid === 'scene') return value(1, ['character']);
+      if (guid === 'character') return value(1, ['texture-a', 'texture-b', 'texture-c']);
+      if (guid === 'texture-a') return first.promise;
+      if (guid === 'texture-b') return second.promise;
+      return value();
+    });
+    const graph = new AssetGraph({ read, maxConcurrentReads: 2 });
+    const loading = graph.load('scene', undefined, undefined, true);
+    try {
+      const reads = () => read.mock.calls.map(([guid]) => guid);
+      await vi.waitFor(() =>
+        expect(reads()).toEqual(['scene', 'character', 'texture-a', 'texture-b']),
+      );
+      expect(graph.snapshot().ready).toEqual([]);
+      first.resolve(value());
+      await vi.waitFor(() => expect(reads().at(-1)).toBe('texture-c'));
+      expect(graph.snapshot().ready).toEqual([]);
+      second.resolve(value());
+      expect(await loading).toMatchObject({ ok: true });
+      expect(graph.snapshot().ready).toEqual([
+        'character',
+        'scene',
+        'texture-a',
+        'texture-b',
+        'texture-c',
+      ]);
+    } finally {
+      first.resolve(value());
+      second.resolve(value());
+      await loading;
+      graph.dispose();
+    }
+  });
+
   it('keeps a shared decoded dependency until both root adoptions settle', async () => {
     const graph = new AssetGraph({
       read: async (guid) => value(1, guid === 'mesh' ? [] : ['mesh']),
@@ -328,7 +395,10 @@ describe('asset dependency closure promotion', () => {
     graph.dispose();
   });
 
-  it('publishes no provisional member when a later dependency fails, then retries the closure', async () => {
+  it.each([
+    false,
+    true,
+  ])('publishes no provisional member on failure with parallel roots %s', async (parallel) => {
     let fails = true;
     const read = vi.fn(async (guid: string): Promise<Result<Value, AssetLoadError>> => {
       if (guid === 'missing' && fails)
@@ -341,7 +411,8 @@ describe('asset dependency closure promotion', () => {
       return value(1, guid === 'root' ? ['cycle', 'missing'] : guid === 'cycle' ? ['root'] : []);
     });
     const graph = new AssetGraph({ read });
-    expect(await graph.load('root')).toMatchObject({
+    const load = () => graph.load('root', undefined, undefined, parallel);
+    expect(await load()).toMatchObject({
       ok: false,
       error: {
         code: 'asset-dependency-failed',
@@ -351,7 +422,7 @@ describe('asset dependency closure promotion', () => {
     expect(graph.snapshot()).toMatchObject({ ready: [], resources: 0, sccs: [] });
     expect(graph.lookup('cycle')).toBeUndefined();
     fails = false;
-    expect(await graph.load('root')).toMatchObject({ ok: true });
+    expect(await load()).toMatchObject({ ok: true });
     expect(graph.snapshot()).toMatchObject({
       ready: ['cycle', 'missing', 'root'],
       sccs: [['cycle', 'root']],

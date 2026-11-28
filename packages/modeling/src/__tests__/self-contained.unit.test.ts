@@ -12,6 +12,8 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.scratch', 'golden']);
 const TEXT = new Set(['.md', '.ts', '.mts', '.mjs', '.json']);
 const SELF = 'src/__tests__/self-contained.unit.test.ts';
+/** Process and research notes that legitimately cite literature and dated design files; not shipped (absent from package.json files). */
+const EXEMPT_PREFIXES = ['knowledge/notes/'];
 
 const FORBIDDEN: readonly [string, RegExp][] = [
   ['outside workspace path', /modeling-studio|modeling studio/i],
@@ -31,6 +33,16 @@ const FORBIDDEN: readonly [string, RegExp][] = [
 const FUNCTIONAL_URL =
   /xmlns="http:\/\/www\.w3\.org\/2000\/svg"|\^https\?:\\\/\\\/|sources\[\$\{i\}\]\.url is an http|https:\/\/example\.com\/spec|LICENSE-2\.0/;
 
+function functionalUrl(file: string, line: string): boolean {
+  if (FUNCTIONAL_URL.test(line)) return true;
+  return (
+    ['scripts/ci/reuse-owner.mjs', 'scripts/ci/__tests__/reuse-owner.test.mjs'].includes(file) &&
+    /^\s*sourceUrl:\s*`https:\/\/github\.com\/\$\{repository\}\/actions\/runs\/(?:\$\{run\.id\}|\d+)\/job\/(?:\$\{job\.id\}|\d+)`,?\s*$/.test(
+      line,
+    )
+  );
+}
+
 function walk(dir: string, out: string[]): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
@@ -42,6 +54,22 @@ function walk(dir: string, out: string[]): void {
 }
 
 describe('self-contained package text', () => {
+  it('admits qualified CI receipt data while retaining the documentation URL boundary', () => {
+    const receipt =
+      'sourceUrl: `https://github.com/${repository}/actions/runs/${run.id}/job/${job.id}`,';
+    const fixture = 'sourceUrl: `https://github.com/${repository}/actions/runs/1/job/2`,';
+    expect(functionalUrl('scripts/ci/reuse-owner.mjs', receipt)).toBe(true);
+    expect(functionalUrl('scripts/ci/__tests__/reuse-owner.test.mjs', fixture)).toBe(true);
+    expect(functionalUrl('README.md', receipt)).toBe(false);
+    expect(functionalUrl('src/model.ts', receipt)).toBe(false);
+    expect(functionalUrl('scripts/ci/reuse-owner.mjs', 'See https://github.com/owner/repo')).toBe(
+      false,
+    );
+    expect(
+      functionalUrl('scripts/ci/reuse-owner.mjs', receipt.replace('actions/runs', 'issues')),
+    ).toBe(false);
+  });
+
   it('has no reference that leaves the package', () => {
     const files: string[] = [];
     walk(ROOT, files);
@@ -49,12 +77,13 @@ describe('self-contained package text', () => {
     for (const file of files) {
       const rel = relative(ROOT, file).replaceAll('\\', '/');
       if (rel === SELF) continue;
+      if (EXEMPT_PREFIXES.some((prefix) => rel.startsWith(prefix))) continue;
       readFileSync(file, 'utf8')
         .split('\n')
         .forEach((line, i) => {
           for (const [why, pattern] of FORBIDDEN) {
             if (!pattern.test(line)) continue;
-            if (why === 'web link' && FUNCTIONAL_URL.test(line)) continue;
+            if (why === 'web link' && functionalUrl(rel, line)) continue;
             hits.push(`${rel}:${i + 1} ${why}: ${line.trim().slice(0, 100)}`);
           }
         });

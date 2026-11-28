@@ -13,10 +13,11 @@ import {
   type ResidualCullMemo,
   type ViewCullStorage,
 } from './persistent-cull';
-import { writeBounds, writeTransformedWorldBounds } from './render-scene-snapshots';
+import { writeBounds, writeSnapshotWorldBounds } from './render-scene-snapshots';
 import type { RenderSceneSlot } from './render-scene-types';
 import { type RenderScene, sceneDrawContentOf, sceneRow } from './render-scene-view';
 import { ResidualRoster } from './residual-roster';
+import type { RowChangeLog } from './row-change-log';
 import type { CompositionEntry } from './scene-composition';
 import { type SceneSlotFrame, SlotIdentityKeys } from './scene-slots';
 import { SelectedSceneDrawRows } from './selected-draw-rows';
@@ -47,44 +48,61 @@ class ResidualSlotRows extends FrameListBase<RenderSceneSlot> {
   }
 }
 
+/** Only the issued fixed residual row address space supports replay by rank. */
+export function isResidualDrawRows(rows: FrameList<RenderableSnapshot>): boolean {
+  const roster = FrameProjection.iterationReaderOf(rows);
+  return (
+    roster instanceof ResidualSlotRows && FrameProjection.rowReaderOf(rows, rows.at) === roster
+  );
+}
+
 /** Publication/removal and availability changes update the existing residual read roster. */
 class ResidualReadRoster {
-  private before:
-    | { slots: SceneSlotFrame; residual: FrameSet; unavailable: FrameSet; value: FrameSet }
-    | undefined;
+  private journal: RowChangeLog | undefined;
+  private position = 0;
+  private epoch: object | undefined;
+  private residual = new FrameSet();
+  private unavailable = new FrameSet();
+  private value = new FrameSet();
+
   sync(slots: SceneSlotFrame, residual: FrameSet, unavailable: FrameSet): FrameSet {
-    const before = this.before;
-    if (
-      before !== undefined &&
-      before.slots.root === slots.root &&
-      before.residual === residual &&
-      before.unavailable === unavailable
-    )
-      return before.value;
-    const previous = before?.value ?? new FrameSet();
-    const edits = new Map<number, boolean>();
-    const changed = (slot: number, version?: number) => {
+    const journal = slots.journal;
+    const epoch = slots.contentEpoch;
+    const sameRows = epoch !== undefined && epoch === this.epoch && journal === this.journal;
+    if (sameRows && residual === this.residual && unavailable === this.unavailable) {
+      this.position = Math.max(this.position, slots.position);
+      return this.value;
+    }
+    const previous = this.value;
+    let edits: Map<number, boolean> | undefined;
+    const read = (slot: number): void => {
       const present =
-        residual.has(slot) && !unavailable.has(slot) && (version ?? slots.versionAt(slot)) !== 0;
-      if (previous.has(slot) !== present) edits.set(slot, present);
+        residual.has(slot) && !unavailable.has(slot) && slots.contentAt(slot) !== undefined;
+      if (previous.has(slot) === present) return;
+      edits ??= new Map();
+      edits.set(slot, present);
     };
-    // Membership publications report presence, while Scene publications supply row versions.
-    const read = (slot: number) => changed(slot);
     if (
-      before === undefined ||
-      (slots !== before.slots && !slots.visitChangedVersions(before.slots, changed))
+      !sameRows &&
+      (journal === undefined ||
+        journal !== this.journal ||
+        !journal.visit(this.position, slots.position, (slot, kind) => {
+          if (kind !== 'update') read(slot);
+        }))
     ) {
       for (const slot of residual.borrowKeys()) read(slot);
-      if (before !== undefined)
-        for (const slot of before.value.borrowKeys())
-          if (!residual.has(slot)) edits.set(slot, false);
+      for (const slot of previous.borrowKeys()) if (!residual.has(slot)) read(slot);
     } else {
-      residual.changesSince(before.residual, read);
-      unavailable.changesSince(before.unavailable, read);
+      residual.changesSince(this.residual, read);
+      unavailable.changesSince(this.unavailable, read);
     }
-    const value = edits.size === 0 ? previous : previous.edit(edits);
-    this.before = { slots, residual, unavailable, value };
-    return value;
+    this.journal = journal;
+    this.position = slots.position;
+    this.epoch = epoch;
+    this.residual = residual;
+    this.unavailable = unavailable;
+    if (edits !== undefined) this.value = previous.edit(edits);
+    return this.value;
   }
 }
 
@@ -105,6 +123,8 @@ export interface ViewCullInput {
   readonly plan: () => SubmissionPlan;
   /** Draw snapshots by slot address, resolved only for the GPU lane's residual rows. */
   readonly slotDraws: () => (slot: number) => RenderableSnapshot | undefined;
+  /** Optional switchable TS / Rust-WASM RenderKernel bridge for bulk frustum culling. */
+  readonly renderKernel?: import('../record/render-kernel-bridge').RenderKernelBridge | undefined;
 }
 
 export type ViewCullResult = ReturnType<typeof cullPersistentFrame>;
@@ -156,13 +176,11 @@ export class ViewCull {
         sceneRow(row ?? (index >= 0 ? roster.at(index) : undefined), snapshot) ??
         projection.slotOf(snapshot);
       if (snapshot.terrainSection !== undefined || snapshot.generatedMesh !== undefined)
-        return writeTransformedWorldBounds(out, snapshot.localAabb, snapshot.transform.world);
+        return writeSnapshotWorldBounds(out, snapshot);
       return slot === undefined
         ? writeBounds(projection.cullingWorldBounds(snapshot), out)
         : projection.writeCullingWorldBoundsAt(slot, out, meshes, materials, skin);
     };
-    const boundsOfSlot = (row: RenderSceneSlot, out: box3.Box3): boolean =>
-      projection.writeCullingWorldBoundsAt(row, out, meshes, materials, skin);
     const selection = input.gpuSelection;
     if (selection !== undefined && !input.hasGeneratedDraws) {
       this.memo.value = undefined;
@@ -175,7 +193,14 @@ export class ViewCull {
         this.gpuOwnedFrame(input, selection),
         selection,
         this.residualMemo,
-        { meshes, skin, unavailable: shared.unavailableSlots, residencySelection, boundsOfSlot },
+        {
+          meshes,
+          skin,
+          unavailable: shared.unavailableSlots,
+          residencySelection,
+          boundsOfSlot: (row, out) =>
+            projection.writeCullingWorldBoundsAt(row, out, meshes, materials, skin),
+        },
       );
     }
     this.residualMemo.value = undefined;
@@ -191,7 +216,19 @@ export class ViewCull {
         : shared.materialDispatch,
       shared.materialDispatch.revisionValue(),
       residencySelection,
-      boundsOfSlot,
+      (slot, version, content, column, offset, out) =>
+        projection.writeCullingPoseBounds(
+          slot,
+          version,
+          content,
+          column,
+          offset,
+          out,
+          meshes,
+          materials,
+          skin,
+        ),
+      input.renderKernel,
     );
   }
 
@@ -239,12 +276,19 @@ export class ViewCull {
     return {
       residual(selection) {
         const residual = residualOf(selection);
-        residual.rows ??= new FrameProjection(recordsOf(selection), (record) => {
-          const row = rowAt(record.slot);
-          if (row === undefined)
-            throw new Error('Accepted residual Scene rows must resolve their draw frame');
-          return row;
-        });
+        if (residual.rows === undefined) {
+          const records = recordsOf(selection);
+          residual.rows = new FrameProjection(
+            records,
+            (record) => {
+              const row = rowAt(record.slot);
+              if (row === undefined)
+                throw new Error('Accepted residual Scene rows must resolve their draw frame');
+              return row;
+            },
+            records,
+          );
+        }
         return residual.rows;
       },
       *residualSkin() {

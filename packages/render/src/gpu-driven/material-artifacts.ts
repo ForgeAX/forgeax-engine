@@ -4,7 +4,7 @@ import { findMaterialShaderEntry } from '@forgeax/engine-shader';
 import { isTriangleTopology, type MaterialRenderState } from '@forgeax/engine-types';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { artifactAlphaMask, maskedInEarlyPassVariantSet } from '../material-alpha-mask';
-import { seededDepthRenderState, transformRenderState } from '../material-render-state';
+import { reflectedRenderState, seededDepthRenderState } from '../material-render-state';
 import type { MaterialResource } from '../material-resource';
 import { rasterColorFormat, standardSurfaceDiscardMask } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
@@ -23,6 +23,7 @@ import {
 import type { FramePresentationPendingReason } from '../render-contract';
 import type { RenderPipelineGpuDrivenFilter } from '../render-pipeline';
 import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
+import { CapturedSceneTransform } from '../scene/captured-transform';
 import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-dispatch';
 import { MaterialFrame, selectMaterialPrograms } from '../scene/material-dispatch';
@@ -1075,7 +1076,7 @@ function hiddenRenderState(
     readonly seededDepth?: boolean;
     readonly opaqueDepthPrimed?: boolean;
   },
-  world: Float32Array,
+  transform: RenderableSnapshot['transform'],
 ): MaterialRenderState | undefined {
   const passState =
     pass.seededDepth === true && predepthCoversMaterial(selected, state)
@@ -1088,7 +1089,7 @@ function hiddenRenderState(
           selected.fragmentEntry,
           pass.opaqueDepthPrimed ?? false,
         );
-  return transformRenderState(passState, world);
+  return reflectedRenderState(passState, CapturedSceneTransform.reflected(transform));
 }
 
 /** A seeded masked row selects the program without its alpha discard (maskedInEarlyPassVariantSet). */
@@ -1207,7 +1208,7 @@ export function prepareHiddenGpuDrivenPipelines(input: {
         material.renderState,
         passArtifact,
         input,
-        entry.source.transform.world,
+        entry.source.transform,
       );
       // Same program as the raster class (production-raster-classes
       // maskedInEarlyPassArtifact): a seeded masked row drops its alpha discard.

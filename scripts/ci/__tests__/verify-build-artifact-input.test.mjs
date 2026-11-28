@@ -140,7 +140,7 @@ test('shared Browser source recovery needs no app Pack before its own executable
   const root = tmpExtraction(
     {
       'packages/runtime/dist/index.mjs': 'export {}',
-      'packages/dsh/lib/client.js': 'browser export',
+      'packages/render-kernel/dist/forgeax_render_kernel_wasm_bg.wasm': 'RenderKernel payload',
       'packages/preview/assets/canonical-kit/present': 'source kit',
       'packages/ui-blitz/pkg/ui_blitz_bg.wasm': 'UI payload',
       'packages/physics-rapier2d/pkg/rapier.wasm': '2D payload',
@@ -277,7 +277,7 @@ test('t3: consumer with no files produces error if required classes exist', asyn
 test('t3: consumer with only engine-dist but needs wasm-runtime fails', async () => {
   const root = tmpExtraction({
     'packages/runtime/dist/index.mjs': 'export {}',
-    'packages/dsh/lib/client.js': 'browser export',
+    'packages/render-kernel/dist/forgeax_render_kernel_wasm_bg.wasm': 'RenderKernel payload',
     'packages/preview/assets/canonical-kit/example.json': '{}',
     'packages/ui-blitz/pkg/ui_blitz_bg.wasm': 'UI payload',
     'packages/physics-rapier2d/pkg/rapier.wasm': '2D payload',
@@ -812,11 +812,11 @@ test('w9 revision: app shard rejects a manifest whose serialized payload is inco
   }
 });
 
-test('real core admission rejects a missing Rapier payload even when package dist is present', () => {
+test('real core admission rejects missing native and browser outputs even when package dist is present', () => {
   const contract = join(repoRoot, 'scripts/ci/build-artifact-contract.json');
   const root = tmpExtraction({
     'packages/runtime/dist/index.mjs': 'export {}',
-    'packages/dsh/lib/client.js': 'browser export',
+    'packages/render-kernel/dist/index.mjs': 'RenderKernel JavaScript',
     'packages/preview/assets/canonical-kit/present': 'source kit',
     'packages/ui-blitz/pkg/ui_blitz_bg.wasm': 'UI payload',
     'packages/physics-rapier2d/pkg/rapier.wasm': '2D payload',
@@ -824,7 +824,7 @@ test('real core admission rejects a missing Rapier payload even when package dis
   });
   const args = [
     '--consumer',
-    'primary-pnpm',
+    'vitest-dawn',
     '--root',
     root,
     '--contract',
@@ -838,12 +838,19 @@ test('real core admission rejects a missing Rapier payload even when package dis
     assert.match(JSON.parse(missing.stdout).expected, /physics-rapier3d\/pkg/);
     mkdirSync(join(root, 'packages/physics-rapier3d/pkg'), { recursive: true });
     writeFileSync(join(root, 'packages/physics-rapier3d/pkg/rapier.mjs'), 'WASM payload');
+    const missingKernel = runVerifier(args);
+    assert.notEqual(missingKernel.exitCode, 0);
+    assert.match(JSON.parse(missingKernel.stdout).expected, /forgeax_render_kernel_wasm_bg\.wasm/);
+    writeFileSync(
+      join(root, 'packages/render-kernel/dist/forgeax_render_kernel_wasm_bg.wasm'),
+      'WASM payload',
+    );
     const present = runVerifier(args);
     assert.equal(present.exitCode, 0, present.stdout || present.stderr);
-    rmSync(join(root, 'packages/dsh/lib/client.js'));
-    const missingClient = runVerifier(args);
-    assert.notEqual(missingClient.exitCode, 0);
-    assert.match(JSON.parse(missingClient.stdout).expected, /dsh\/lib\/client\.js/);
+    rmSync(join(root, 'packages/preview/assets/canonical-kit'), { recursive: true });
+    const missingKit = runVerifier(args);
+    assert.notEqual(missingKit.exitCode, 0);
+    assert.match(JSON.parse(missingKit.stdout).expected, /preview\/assets\/canonical-kit/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

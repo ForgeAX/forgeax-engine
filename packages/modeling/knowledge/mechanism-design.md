@@ -54,6 +54,15 @@ three flags:
 Read the count as a design check, not an alarm: a count of 1 with one driver is the common
 target; a count of 0 means the parts cannot move at all.
 
+### Four questions per joint
+
+For every joint, write the answers into the joint table before detailing either side:
+what carries it, what turns, what pushes it, and what must pass through it (cable, rod,
+skirt). A part that spans a joint is bound to one side on purpose, and the scan below
+covers it across the whole range. Run a named pose through `interference` before you
+show it. Scan range to the first contact and write the measured limit back into the
+joint spec; do not keep a limit that no pose has tested.
+
 ## 2. Closed loops
 
 A tree of joints cannot express a four-bar, a scissor or a strut that closes back on the body.
@@ -179,6 +188,10 @@ Static clearance of the moving part is not the same as the space it needs. `rig.
   Resolve a conflict by reordering phases (section 9), not by shrinking parts.
 - `draft(model, { direction, faces, warn: 85 })` reports pull directions for casting or
   moulding: safe, critical (near the warn angle) and undercut faces, plus `shadowed`.
+  `m.applyDraft(walls, { angle, direction, neutral })` then turns straight prism walls by
+  the angle. The neutral plane keeps its size, so pick the face whose outline is the
+  fitting dimension (a core foot on its plate, a boss on its mounting face); drafting about
+  the top grows the base. Draft before bevelling, since only planar walls qualify.
 - `rig.release(part, path, { u, near: 5 mm, warn })` looks at the part's faces that have a
   neighbour within `near`: moving away is `safe`, sliding along is `critical`, moving into
   the neighbour is an `undercut` (the part cannot leave that way: a pin that must withdraw,
@@ -200,6 +213,32 @@ check with `rig.stopReport({ pose, contact: 0.5 mm })`, which classifies each en
 `unstopped` lists limited ends with no stop declared; `pass` requires every limited end to
 have a stop and every stop to land. Design stops into the structure (a tab, a boss, a face of the frame) so the load of a
 stop goes into a frame, not into the hinge pin.
+
+A ratchet is a one-way stop: its pawl lands on a radial locking face and holds the turn the
+face opposes, while the ramp lifts it on the free turn. Check the pawl's reach against the
+next tooth before choosing the tooth count (`ratchet` refuses a count it cannot clear), and
+the pawl's pivot carries the load, so mount it on a frame boss, not on the wheel.
+
+An escapement releases a wheel one scoop at a time: a steelyard stop trips at a fixed angle per
+beat (`360 / scoops`), and the stop's trip mass balances the wheel's driving torque by
+`m * g * L = T`. Size the trip arm and the torque together; the mass follows, not the other way.
+It is a single-lever detent, not a verge or anchor escapement: the lever lifts, passes one tooth,
+and drops, so it locks and releases one tooth per lift. It has no pallets and does not time
+itself; the beat is set by the wheel pitch and the lever geometry alone.
+
+A sprocket meshes a chain by seating one roller per tooth on the pitch circle. Its radius
+follows from the pitch and tooth count alone, so a closed chain of N links wraps an N-tooth
+sprocket exactly; `chainPlacements` returns those link positions and `chainClosure` checks the
+pitch polygon closes. The tooth follows the ISO 606 closed-form layout: seat radius 0.505 roller
+diameters (minimum of the range), flank radius from the tooth count, and a tip diameter at the
+midpoint of the standard range. Treat it as a layout check, not a manufacturing drawing. `chainDrive`
+meshes two sprockets (for example 12 and 18 teeth) with an even link count and a closed-form
+centre distance; its runs are chords between pin pairs, and the pin pair is chosen by the rig.
+
+A cam converts rotation to a lift law, and two limits decide whether it runs. A roller that is
+too large for the pitch curve's tightest radius undercuts the profile; a pressure angle above
+about 30 degrees pushes the follower sideways against its guide. `cam` derives both from the
+cycloidal law and refuses a cam that breaks either, rather than measuring the mesh afterwards.
 
 ## 7. Sizing the actuator
 

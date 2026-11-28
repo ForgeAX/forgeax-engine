@@ -1,12 +1,10 @@
 import { resolve } from 'node:path';
-import * as naga from '@forgeax/engine-naga';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler';
-import { expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 import { forgeaxShader } from '../index.js';
 
-it('publishes native Engine sources through the Vite build without composing unused Engine or Pack materials', async () => {
-  const compose = vi.spyOn(naga, 'composeShader');
+it('publishes native Engine sources through Vite with one prepared Cluster layout', async () => {
   const emitted: { fileName: string; source: string | Uint8Array }[] = [];
   const plugin = forgeaxShader({
     publication: 'source',
@@ -38,9 +36,10 @@ it('publishes native Engine sources through the Vite build without composing unu
       ),
     ).toBe(false);
     expect(JSON.stringify(wire)).not.toContain('composedWgsl');
-    expect(compose).not.toHaveBeenCalled();
+    expect(
+      wire.entries.filter((entry: { preparedReflection?: unknown }) => entry.preparedReflection),
+    ).toHaveLength(1);
   } finally {
-    compose.mockRestore();
     await plugin.closeBundle?.();
   }
 }, 60_000);

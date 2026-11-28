@@ -92,12 +92,16 @@ export function assembleRuntimePacks(
           },
         ]
       : [];
+    // A scoped base and its merged projection name the same delivered
+    // publications. Use the active Registry transport so it can join the
+    // Scene loader's in-flight verification. Keep unscoped captures detached.
+    const sharesScope = base.expectedScope?.scopeId === expectedScope.scopeId;
     return retainAssetPublications(
       assembly.registry,
       requested,
       baseline.entries,
-      base,
-      baseFetcher,
+      sharesScope ? catalog : base,
+      sharesScope ? fetchContent : baseFetcher,
       { ...(signal ? { signal } : {}), executions },
     );
   };
@@ -397,6 +401,7 @@ export function assembleRuntimePacks(
   }
   const catalog: CatalogSource = {
     expectedScope,
+    ...(base.url === undefined ? {} : { url: base.url }),
     openPackage: (url) =>
       producer.catalog.openPackage(url) ?? base.openPackage?.(url) ?? baseFetcher,
     retainArtifact: (url, path) =>

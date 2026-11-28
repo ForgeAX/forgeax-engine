@@ -9,7 +9,7 @@
 //
 // AC-02 smoke deferral note (RK-4): A dawn-node smoke variant cannot exercise
 // the real WebGL2 rendering surface because CI's lavapipe driver provides
-// Vulkan, not GL. This browser test runs in Chrome Beta (real browser engine)
+// Vulkan, not GL. This browser test runs in Chrome (real browser engine)
 // and covers the createRenderer resolution path without navigator.gpu. A full
 // 60-frame navigator.gpu-absent smoke script is deferred-to-PR per
 // plan-strategy RK-4.

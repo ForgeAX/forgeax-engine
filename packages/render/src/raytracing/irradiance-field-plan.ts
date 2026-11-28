@@ -11,7 +11,7 @@ import { packGlobalSdfQuerySettings } from './global-sdf-query';
 import { splitProbeBudget } from './probe-budget';
 import { freezeLiteReflections, validateLiteReflections } from './reflections-plan';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
-import { validateSceneFieldBudget } from './scene-field-projection';
+import { validateSceneFieldBudget } from './scene-field-budget';
 import { validateScreenProbes } from './screen-probe-plan';
 
 export { splitProbeBudget } from './probe-budget';

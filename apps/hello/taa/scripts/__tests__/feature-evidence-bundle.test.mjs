@@ -178,7 +178,7 @@ test('Browser software capability blocks remain blocked and retain observation-o
     report.provenance.adapter.device = 'llvmpipe';
     report.provenance.adapter.architecture = 'swiftshader';
     report.provenance.adapter.description = 'SwiftShader software adapter';
-    report.provenance.runner.channel = 'chrome-beta';
+    report.provenance.runner.channel = 'chrome';
     report.provenance.runner.version = '152.0.0.0';
   }
   const result = validateFeatureEvidenceBundle(blocked);

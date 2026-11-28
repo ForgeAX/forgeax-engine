@@ -1,5 +1,6 @@
 import { maxOf, minOf, pushAll } from './arrays';
 import { type BakeValidateOptions, checkBake } from './bake-checks';
+import { islandParts, partList, validParts } from './compute/uv-parts';
 import { measureUv } from './compute/uv-ts';
 import type { DrawingCheckOptions } from './drawing-check';
 import type { EdgeFlowOptions } from './edge-flow';
@@ -28,43 +29,33 @@ import type { LayoutCheckOptions } from './layout';
 import { type EditMesh, NONE } from './mesh';
 import { type MeshQualityLimits, meshQuality } from './mesh-quality';
 import { regionGroups } from './ops';
-import { orient2d, trianglesOverlap2d } from './predicates';
 import { sliverFaces } from './repair';
 import { type Coverage, coverageOf, type Issue, type UncheckedReason } from './report';
 import type { ShutLineOptions } from './shut-lines';
-import type { SurfaceQualityOptions } from './surface-quality';
+import { checkSurface, type SurfaceContract } from './surface-contract';
+import type { FeatureLine, SurfaceQualityOptions } from './surface-quality';
 import { faceThickness } from './thickness';
+import { uvOverlapPairs } from './uv-overlap';
+import { VALIDATION_CODES, type ValidationCode } from './validation-code';
 import { checkWatertight, type WatertightOptions, type WatertightReport } from './watertight';
 
-export type ValidationCode =
-  | 'topology-twin'
-  | 'topology-loop'
-  | 'topology-dead-reference'
-  | 'face-degenerate'
-  | 'face-nonplanar'
-  | 'mesh-open'
-  | 'mesh-inverted'
-  | 'face-flipped'
-  | 'self-intersection'
-  | 'shell-overlap'
-  | 'designed-contact'
-  | 't-junction'
-  | 'thin-wall'
-  | 'isolated-vertex'
-  | 'uv-missing'
-  | 'uv-degenerate'
-  | 'uv-overlap'
-  | 'surface-quality'
-  | 'edge-flow'
-  | 'mesh-quality'
-  | 'patch-layout'
-  | 'shut-line'
-  | 'bake'
-  | 'texel-density'
-  | 'drawing';
+export type { ValidationCode };
+
+/** The warning families `strict: true` gates: findings about the shape of the surface, not declared intent. */
+export const STRICT_QUALITY_CODES: readonly ValidationCode[] = [
+  'surface-quality',
+  'edge-flow',
+  'patch-layout',
+  'drawing',
+];
 
 /** Opt-in checks whose threshold or intent depends on the asset. */
 export interface ValidateOptions {
+  /**
+   * Gate warnings: `true` makes a warning of `STRICT_QUALITY_CODES` fail `pass`; a code list
+   * names the gated codes. Issues, severities and coverage are unchanged.
+   */
+  readonly strict?: boolean | readonly ValidationCode[];
   /** Report faces whose wall (distance to the next surface behind them) is thinner (meters). */
   readonly minThickness?: number;
   /**
@@ -135,9 +126,10 @@ export interface ValidateOptions {
   /**
    * Check the edge flow (`checkEdgeFlow`) against the session's feature lines: `edge-flow`
    * warnings for feature lines without a continuous edge loop, stretched faces and size
-   * jumps, infos for triangles and poles; `detail.check` names the check.
+   * jumps, infos for triangles and poles; `detail.check` names the check. `lines` adds feature
+   * lines to check next to the session's (a name already in the session is rejected).
    */
-  readonly edgeFlow?: boolean | EdgeFlowOptions;
+  readonly edgeFlow?: boolean | (EdgeFlowOptions & { readonly lines?: readonly FeatureLine[] });
   /**
    * Triangle tiling gates (`meshQuality`): each part (a face tag, else a label) that exceeds
    * its limits (default the R5 faceting thresholds) is a `mesh-quality` warning with the
@@ -148,6 +140,11 @@ export interface ValidateOptions {
    * `detail.check` names the check; `true` runs every check with the default settings.
    */
   readonly bake?: true | BakeValidateOptions;
+  /**
+   * The P2-S1 surface contract: colour lanes in [0, 1], uv0 integer cell = material zone, uv1 in the
+   * unit square. Each finding is a `surface` issue whose `detail.check` names it.
+   */
+  readonly surface?: SurfaceContract;
   readonly quality?: readonly {
     readonly part: string;
     readonly limits?: Partial<MeshQualityLimits>;
@@ -164,6 +161,12 @@ export interface ValidateOptions {
     readonly target: number;
     readonly tolerance?: number;
     readonly channel?: 'uv0' | 'uv1';
+    /**
+     * Per face tag, the density multiplier of its islands (the `uv.pack` `density.parts` table):
+     * an island whose faces mostly carry the tag is checked against target x multiplier. The warning
+     * then adds `byPart`, one row per part with its target, islands, islands outside, min and max.
+     */
+    readonly parts?: Readonly<Record<string, number>>;
   };
 }
 
@@ -211,6 +214,12 @@ function checkShells(
 /** Self-intersection pairs reported in detail (the total is always reported). */
 const MAX_CONTACT_PAIRS = 32;
 
+/** Solid facts of a closed mesh; the mesh-side counterpart of the exact Shape report. */
+export interface MeshSolidReport {
+  readonly source: 'mesh';
+  readonly volume: number;
+}
+
 export interface ValidationReport {
   readonly pass: boolean;
   readonly faces: number;
@@ -220,6 +229,8 @@ export interface ValidationReport {
   readonly closed: boolean;
   /** Signed volume; meaningful only for closed meshes. */
   readonly volume: number;
+  /** Present only for a closed mesh; mirrors `volume` with its source. */
+  readonly solid?: MeshSolidReport;
   readonly issues: readonly Issue<ValidationCode>[];
   /**
    * What the run looked at, by issue code: faces, declared fits, quality gates, shut-line rows,
@@ -234,6 +245,9 @@ export interface ValidationReport {
 const MESH: readonly string[] = ['mesh'];
 
 type Skipped = { code: ValidationCode; subject: string; reason: UncheckedReason };
+
+/** Subject names of the `bake` code: its mesh-time run, and the cage-clip check that needs an outcome. */
+const CAGE_CLIP = 'cage-clip';
 
 /** Coverage of the codes one validation stage owns; its subjects are enumerated before it runs. */
 export class CoverageLedger {
@@ -377,20 +391,16 @@ export function validateMesh(
     if (faces.length > 0) ledger.run(code, MESH);
     else ledger.off(code, 'missing-input');
   }
-  let boundaryEdges = 0;
-  for (const e of mesh.edges()) {
-    const a = mesh.hFace[e * 2] as number;
-    const b = mesh.hFace[e * 2 + 1] as number;
-    if (a === NONE && b === NONE) {
-      issues.push({ code: 'topology-dead-reference', severity: 'error', detail: { edge: e } });
-    } else if (a === NONE || b === NONE) {
-      boundaryEdges++;
-    }
+  for (const e of boundaryScan(mesh).dead) {
+    issues.push({ code: 'topology-dead-reference', severity: 'error', detail: { edge: e } });
   }
-  const closed = boundaryEdges === 0 && faces.length > 0;
-  const volume = closed ? facesVolume(mesh, faces) : 0;
-  if (!closed && faces.length > 0) {
-    issues.push({ code: 'mesh-open', severity: 'info', detail: { boundaryEdges } });
+  const counts = meshCounts(mesh);
+  if (!counts.closed && faces.length > 0) {
+    issues.push({
+      code: 'mesh-open',
+      severity: 'info',
+      detail: { boundaryEdges: counts.boundaryEdges },
+    });
   }
   checkOrientation(mesh, faces, issues);
   const tJunctions = tJunctionVertices(mesh, tolerance);
@@ -450,8 +460,19 @@ export function validateMesh(
   } else ledger.off('uv-overlap', 'not-requested');
   if (options.bake !== undefined) {
     checkBake(mesh, options.bake, issues);
-    ledger.run('bake', MESH);
+    // The cage-clip check needs the outcome of a bake that ran; without one it is listed as not checked.
+    const outcome = options.bake === true ? undefined : options.bake.outcome;
+    ledger.run(
+      'bake',
+      ['mesh', CAGE_CLIP],
+      new Set(outcome === undefined ? ['mesh'] : ['mesh', CAGE_CLIP]),
+    );
+    if (outcome === undefined) ledger.skip('bake', CAGE_CLIP, 'missing-input');
   } else ledger.off('bake', 'not-requested');
+  if (options.surface !== undefined) {
+    checkSurface(mesh, options.surface, issues);
+    ledger.run('surface', MESH);
+  } else ledger.off('surface', 'not-requested');
   if (options.texelDensity !== undefined) {
     checkTexelDensity(mesh, options.texelDensity, issues);
     ledger.run('texel-density', MESH);
@@ -526,15 +547,76 @@ export function validateMesh(
   const coverage = ledger.coverage();
   return {
     pass: coverage.checked.length > 0 && issues.every((issue) => issue.severity !== 'error'),
+    ...counts,
+    ...(counts.closed ? { solid: { source: 'mesh' as const, volume: counts.volume } } : {}),
+    issues,
+    coverage,
+    ...(watertight === undefined ? {} : { watertight }),
+  };
+}
+
+/**
+ * The report of a poisoned session: the partial mesh's counts (from the same `validateMesh`
+ * count authority), one `session-poisoned` error first, and every code left out with that
+ * reason. No check runs on the partial mesh.
+ */
+export function poisonedReport(
+  mesh: EditMesh,
+  cause: { readonly code: string; readonly opIndex?: number },
+): ValidationReport {
+  const counts = meshCounts(mesh);
+  const ledger = new CoverageLedger();
+  for (const code of VALIDATION_CODES) ledger.off(code, 'session-poisoned');
+  return {
+    pass: false,
+    ...counts,
+    issues: [
+      {
+        code: 'session-poisoned',
+        severity: 'error',
+        detail: {
+          cause: cause.code,
+          ...(cause.opIndex === undefined ? {} : { opIndex: cause.opIndex }),
+        },
+      },
+    ],
+    coverage: ledger.coverage(),
+  };
+}
+
+/** The one boundary scan: one-sided edges are boundary; edges with no face on either side are dead references. */
+function boundaryScan(mesh: EditMesh): {
+  readonly boundaryEdges: number;
+  readonly dead: readonly number[];
+} {
+  let boundaryEdges = 0;
+  const dead: number[] = [];
+  for (const e of mesh.edges()) {
+    const a = mesh.hFace[e * 2] as number;
+    const b = mesh.hFace[e * 2 + 1] as number;
+    if (a === NONE && b === NONE) dead.push(e);
+    else if (a === NONE || b === NONE) boundaryEdges++;
+  }
+  return { boundaryEdges, dead };
+}
+
+/**
+ * The counts of a mesh that every validation report carries: one definition for the full
+ * report and the poisoned-session report, so the two cannot disagree.
+ */
+function meshCounts(
+  mesh: EditMesh,
+): Pick<ValidationReport, 'faces' | 'edges' | 'vertices' | 'boundaryEdges' | 'closed' | 'volume'> {
+  const faces = mesh.faces();
+  const { boundaryEdges } = boundaryScan(mesh);
+  const closed = boundaryEdges === 0 && faces.length > 0;
+  return {
     faces: faces.length,
     edges: mesh.edgeCount,
     vertices: mesh.vertexCount,
     boundaryEdges,
     closed,
-    volume,
-    issues,
-    coverage,
-    ...(watertight === undefined ? {} : { watertight }),
+    volume: closed ? facesVolume(mesh, faces) : 0,
   };
 }
 
@@ -896,51 +978,12 @@ function checkThickness(
 /** uv0 triangles of different faces whose interiors overlap (exact 2D predicates). */
 function checkUvOverlap(mesh: EditMesh, faces: readonly number[], issues: Issue<ValidationCode>[]) {
   if (!mesh.channels.has('uv0')) return;
-  type UvTriangle = { face: number; p: number[][]; lo: number; hi: number };
-  const tris: UvTriangle[] = [];
-  for (const f of faces) {
-    const halves = mesh.faceHalves(f);
-    const uvs = halves.map((h) => mesh.corner('uv0', h));
-    if (uvs.some((uv) => uv === undefined)) continue;
-    const indices = triangulateLoop(halves.map((h) => mesh.position(mesh.hVert[h] as number)));
-    if (indices === undefined) continue;
-    for (let i = 0; i < indices.length; i += 3) {
-      const p = [0, 1, 2].map((k) => Array.from(uvs[indices[i + k] as number] as Float32Array));
-      const turn = orient2d(
-        p[0]?.[0] as number,
-        p[0]?.[1] as number,
-        p[1]?.[0] as number,
-        p[1]?.[1] as number,
-        p[2]?.[0] as number,
-        p[2]?.[1] as number,
-      );
-      if (turn === 0) continue;
-      if (turn < 0) p.reverse();
-      const us = p.map((q) => q[0] as number);
-      tris.push({ face: f, p, lo: minOf(us), hi: maxOf(us) });
-    }
-  }
-  tris.sort((a, b) => a.lo - b.lo);
-  const pairs = new Set<string>();
-  for (let i = 0; i < tris.length; i++) {
-    const a = tris[i] as UvTriangle;
-    for (let j = i + 1; j < tris.length; j++) {
-      const b = tris[j] as UvTriangle;
-      if (b.lo >= a.hi) break;
-      if (a.face === b.face) continue;
-      const key = a.face < b.face ? `${a.face},${b.face}` : `${b.face},${a.face}`;
-      if (pairs.has(key) || !trianglesOverlap2d(a.p, b.p)) continue;
-      pairs.add(key);
-    }
-  }
-  if (pairs.size > 0) {
+  const pairs = uvOverlapPairs(mesh, faces);
+  if (pairs.length > 0) {
     issues.push({
       code: 'uv-overlap',
       severity: 'warn',
-      detail: {
-        pairs: pairs.size,
-        faces: [...pairs].slice(0, MAX_CONTACT_PAIRS).map((k) => k.split(',').map(Number)),
-      },
+      detail: { pairs: pairs.length, faces: pairs.slice(0, MAX_CONTACT_PAIRS) },
     });
   }
 }
@@ -966,15 +1009,52 @@ function checkTexelDensity(
   for (const [f, island] of measured.value.faceIsland.entries()) {
     if (island !== NONE && !firstFace.has(island)) firstFace.set(island, f);
   }
-  const islands = measured.value.islands.map((x, island) => ({
-    island,
-    face: firstFace.get(island) as number,
-    faces: x.faces,
-    density: x.area3d > 0 ? budget.resolution * Math.sqrt(x.areaUv / x.area3d) : 0,
-  }));
-  const outside = islands.filter((x) => Math.abs(x.density / budget.target - 1) > tolerance);
+  const parts = partList(budget.parts);
+  if (parts !== undefined && !validParts(parts)) {
+    issues.push({
+      code: 'texel-density',
+      severity: 'warn',
+      detail: { check: 'bad-parts', parts: budget.parts },
+    });
+    return;
+  }
+  const owner = parts === undefined ? undefined : islandParts(mesh, measured.value, parts);
+  const islands = measured.value.islands.map((x, island) => {
+    const part = owner === undefined ? undefined : (owner.part[island] as number);
+    const multiplier = parts === undefined || part === undefined ? 1 : (parts[part]?.[1] ?? 1);
+    return {
+      island,
+      face: firstFace.get(island) as number,
+      faces: x.faces,
+      part,
+      target: budget.target * multiplier,
+      density: x.area3d > 0 ? budget.resolution * Math.sqrt(x.areaUv / x.area3d) : 0,
+    };
+  });
+  const off = (x: { density: number; target: number }) => Math.abs(x.density / x.target - 1);
+  const outside = islands.filter((x) => off(x) > tolerance);
   if (outside.length === 0) return;
   const densities = islands.map((x) => x.density);
+  const rows =
+    parts === undefined
+      ? {}
+      : {
+          byPart: [...parts.map(([tag]) => tag), null].flatMap((tag, k) => {
+            const mine = islands.filter((x) => x.part === k);
+            if (mine.length === 0) return [];
+            const own = mine.map((x) => x.density);
+            return [
+              {
+                part: tag,
+                target: (mine[0] as { target: number }).target,
+                islands: mine.length,
+                outside: mine.filter((x) => off(x) > tolerance).length,
+                min: minOf(own),
+                max: maxOf(own),
+              },
+            ];
+          }),
+        };
   issues.push({
     code: 'texel-density',
     severity: 'warn',
@@ -985,12 +1065,11 @@ function checkTexelDensity(
       max: maxOf(densities),
       islands: islands.length,
       outside: outside.length,
+      ...rows,
       worst: [...outside]
-        .sort(
-          (a, b) =>
-            Math.abs(b.density / budget.target - 1) - Math.abs(a.density / budget.target - 1),
-        )
-        .slice(0, MAX_CONTACT_PAIRS),
+        .sort((a, b) => off(b) - off(a))
+        .slice(0, MAX_CONTACT_PAIRS)
+        .map(({ island, face, faces, density }) => ({ island, face, faces, density })),
     },
   });
 }

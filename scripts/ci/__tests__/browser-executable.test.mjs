@@ -4,7 +4,7 @@ import { browserGpuLaunchOptions, selectBrowserExecutable } from '../browser-exe
 import launch from '../browser-launch.json' with { type: 'json' };
 import { requireNativeBrowserAdapter } from '../browser-native-admission.mjs';
 
-const base = { channel: 'chrome-beta', chromiumSandbox: true, args: ['--enable-features=Vulkan'] };
+const base = { channel: 'chrome', chromiumSandbox: true, args: ['--enable-features=Vulkan'] };
 
 test('a pinned executable removes the ambient channel without disabling the sandbox', () => {
   assert.deepEqual(selectBrowserExecutable(base, { FORGEAX_BROWSER_EXECUTABLE: '/ci/chrome' }), {
@@ -12,7 +12,7 @@ test('a pinned executable removes the ambient channel without disabling the sand
     args: base.args,
     executablePath: '/ci/chrome',
   });
-  assert.equal(base.channel, 'chrome-beta');
+  assert.equal(base.channel, 'chrome');
 });
 
 test('unqualified callers retain their existing carrier', () => {

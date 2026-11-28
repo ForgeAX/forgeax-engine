@@ -154,6 +154,7 @@ describe('screen probe plan', () => {
       reprojection: {
         viewProjection: Array.from({ length: 16 }, (_, i) => i + 1),
         cameraPosition: [7, 8, 9],
+        jitterUv: [0.25, -0.125],
       },
     });
     expect(bytes.byteLength).toBe(SCREEN_PROBE_FRAME_BYTES);
@@ -175,6 +176,7 @@ describe('screen probe plan', () => {
       9,
       1,
     ]);
+    expect([...f.subarray(48, 50)]).toEqual([0.25, -0.125]);
   });
 
   it('keeps every kernel roster in the bindings the WGSL declares', () => {

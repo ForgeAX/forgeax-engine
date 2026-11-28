@@ -233,6 +233,12 @@ it('continues private Inputs construction while ordinary frames dirty its prepar
     expect((await f.draw()).presentation).toBe('ready');
     expect(task.isCurrent()).toBe(false);
     expect(task.isValid()).toBe(true);
+    // This mapping copies one page at each of the four radix levels.
+    // The first checkpoint preceded the ordinary frame.
+    for (let level = 1; level < 4; level++) {
+      expect(inputs.next().done).toBe(false);
+      expect(task.isValid()).toBe(true);
+    }
     expect(inputs.next().done).toBe(true);
     assert(input);
     for (let step = 0; step < 1000; step++) {

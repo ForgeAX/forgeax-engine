@@ -5,10 +5,10 @@
 // the SSOT lint matrix per the user's narrowed scope (todo-059 split):
 //
 //   (a) aligned: ci.yml + nightly.yml both `uses:
-//       ./.github/actions/install-playwright-chrome-beta` (>= 2 hits) and
-//       no inline `playwright install --with-deps chrome-beta` -> exit 0.
+//       ./.github/actions/install-playwright-chrome` (>= 2 hits) and
+//       no inline `playwright install --with-deps chrome` -> exit 0.
 //   (b) drift:   one yml replaced the composite `uses:` with an inline
-//       `pnpm exec playwright install --with-deps chrome-beta` -> exit 1
+//       `pnpm exec playwright install --with-deps chrome` -> exit 1
 //       + stderr names the offending file + line.
 //   (c) undercount: only 1 yml uses the composite action -> exit 1 + stderr
 //       names the >= 2 expectation.
@@ -49,13 +49,13 @@ function runLint(args: string[]): RunResult {
 }
 
 describe('check-workflow-ssot.mjs SSOT lint (w12)', () => {
-  it('(a) aligned fixture: >= 2 composite uses, no inline chrome-beta -> exit 0', () => {
+  it('(a) aligned fixture: >= 2 composite uses, no inline chrome -> exit 0', () => {
     const root = resolve(fixturesDir, 'workflow-ssot-aligned');
     const r = runLint(['--root', root]);
     expect(r.status, `stderr was:\n${r.stderr}`).toBe(0);
   });
 
-  it('(b1) drift fixture: inline chrome-beta install -> exit 1', () => {
+  it('(b1) drift fixture: inline chrome install -> exit 1', () => {
     const root = resolve(fixturesDir, 'workflow-ssot-drift');
     const r = runLint(['--root', root]);
     expect(r.status).toBe(1);
@@ -73,11 +73,11 @@ describe('check-workflow-ssot.mjs SSOT lint (w12)', () => {
     expect(r.stderr).toMatch(/nightly\.yml/);
   });
 
-  it('(b3) drift fixture: stderr surfaces the offending literal (chrome-beta inline)', () => {
+  it('(b3) drift fixture: stderr surfaces the offending literal (chrome inline)', () => {
     const root = resolve(fixturesDir, 'workflow-ssot-drift');
     const r = runLint(['--root', root]);
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/chrome-beta/);
+    expect(r.stderr).toMatch(/playwright install.*chrome/);
   });
 
   it('(c1) undercount fixture: only 1 composite use -> exit 1', () => {
@@ -94,6 +94,6 @@ describe('check-workflow-ssot.mjs SSOT lint (w12)', () => {
     const r = runLint(['--root', root]);
     expect(r.status).toBe(1);
     // stderr should make the composite-action reuse intent visible.
-    expect(r.stderr).toContain('install-playwright-chrome-beta');
+    expect(r.stderr).toContain('install-playwright-chrome');
   });
 });

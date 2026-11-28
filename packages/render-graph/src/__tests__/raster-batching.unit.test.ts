@@ -1,6 +1,7 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import { RenderGraphBuilder } from '../builder.js';
+import * as rasterBatching from '../raster-batching.js';
 import type { GraphTextureView, RenderGraphFrame } from '../types.js';
 
 function fixtureDepthAttachment(depth: GraphTextureView, i: number, boundary: string | undefined) {
@@ -22,10 +23,14 @@ async function fixture(
     | 'query'
     | 'storage'
     | 'depth-clear'
-    | 'depth-read-only',
+    | 'depth-read-only'
+    | 'auto-store',
+  ordered = false,
 ) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const graph = new RenderGraphBuilder<RenderGraphFrame>();
+  const options = { device, surfaceSize: { width: 4, height: 4 } };
+  const program = ordered ? RenderGraphBuilder.procedure<RenderGraphFrame>(options) : undefined;
+  const graph = program?.passes ?? new RenderGraphBuilder<RenderGraphFrame>();
   const texture = graph
     .createTexture('color', {
       size: { width: 4, height: 4 },
@@ -65,8 +70,9 @@ async function fixture(
       ? device.createQuerySet({ type: 'occlusion', count: 1 }).unwrap()
       : undefined;
   for (const [i, name] of ['sky', 'opaque', 'transparent'].entries()) {
-    const depthReadOnly = i === 1 && boundary === 'depth-read-only';
-    const storageWrite = i === 1 && boundary === 'storage';
+    const middle = i === 1 ? boundary : undefined;
+    const depthReadOnly = middle === 'depth-read-only';
+    const storageWrite = middle === 'storage';
     graph
       .addRasterPass(name, {
         accesses: [
@@ -83,13 +89,13 @@ async function fixture(
           {
             view,
             resolveTarget: resolve,
-            loadOp: i === 0 || (boundary === 'clear' && i === 1) ? 'clear' : 'load',
-            storeOp: 'store',
+            loadOp: i === 0 || middle === 'clear' ? 'clear' : 'load',
+            storeOp: boundary === 'auto-store' ? 'auto' : 'store',
           },
         ],
         depthStencilAttachment: fixtureDepthAttachment(depth, i, boundary),
-        ...(i === 1 && boundary === 'conditional' ? { executeIf: () => true } : {}),
-        ...(i === 1 && query !== undefined ? { occlusionQuerySet: query } : {}),
+        ...(middle === 'conditional' ? { executeIf: () => true } : {}),
+        ...(middle === 'query' ? { occlusionQuerySet: query } : {}),
         encodeDirect(pass, _frame, resources) {
           encoded.push(name);
           expect(resources.buffer(buffer).ok).toBe(i === 0 || storageWrite);
@@ -105,7 +111,7 @@ async function fixture(
         })
         .unwrap();
   }
-  const compiled = graph.compile({ device, surfaceSize: { width: 4, height: 4 } }).unwrap();
+  const compiled = (program?.bindResources() ?? graph.compile(options)).unwrap();
   const encoder = device.createCommandEncoder().unwrap();
   const nativeBegin = encoder.beginRenderPass.bind(encoder);
   const begin = vi.spyOn(encoder, 'beginRenderPass');
@@ -123,6 +129,43 @@ async function fixture(
 }
 
 describe('native raster batching', () => {
+  it('hands terminal grouping only consecutive compatible raster candidates', async () => {
+    const plan = vi.spyOn(rasterBatching, 'planRasterBatches');
+    try {
+      for (const ordered of [true, false]) {
+        const f = await fixture('copy', ordered);
+        try {
+          expect(plan.mock.lastCall?.[0]).toHaveLength(5);
+          expect(plan.mock.lastCall?.[1]).toEqual([{ first: 1, end: 3, checkPlacement: true }]);
+          f.compiled.execute({ encoder: f.encoder }).unwrap();
+          expect(f.begin.mock.calls.map(([descriptor]) => descriptor.label)).toEqual([
+            'sky + opaque',
+            'transparent',
+          ]);
+        } finally {
+          await f.dispose();
+        }
+      }
+    } finally {
+      plan.mockRestore();
+    }
+  });
+
+  it('uses the final auto store and resolve for the ordered physical batch', async () => {
+    const f = await fixture('auto-store', true);
+    try {
+      f.compiled.execute({ encoder: f.encoder }).unwrap();
+      expect(f.begin).toHaveBeenCalledOnce();
+      const [descriptor] = f.begin.mock.calls[0] ?? [];
+      expect(descriptor?.label).toBe('sky + opaque + transparent');
+      const color = Array.from(descriptor?.colorAttachments ?? [])[0];
+      expect(color?.resolveTarget).toBeDefined();
+      expect(color?.storeOp).toBe('discard');
+    } finally {
+      await f.dispose();
+    }
+  });
+
   it('shares one native pass, preserves logical callbacks and scopes resources per member', async () => {
     const f = await fixture();
     const logical: string[] = [],

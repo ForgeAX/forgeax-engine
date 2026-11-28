@@ -51,10 +51,7 @@ export function configureViewStandard(
   frameState.standardInstall.configured = resolvedConfig;
   frameState.installedPipelineConfig = resolvedConfig;
   frameState.cameraStandardProfile = undefined;
-  frameState.standardInstall.cameraSignature = JSON.stringify([
-    profileConfig?.renderPath,
-    resolvedConfig?.ambientOcclusion,
-  ]);
+  frameState.standardInstall.cameraConfigured = true;
 }
 
 /** Seed a new view from `source`: built-in post-processes, Standard configuration and SSR device facts. */

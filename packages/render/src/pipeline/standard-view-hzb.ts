@@ -3,7 +3,7 @@ import { ok, type Result } from '@forgeax/engine-types';
 import { addDepthPyramidPasses, type DepthPyramid } from '../depth-pyramid/graph';
 import type { DepthPyramidExtent } from '../depth-pyramid/plan';
 import type { RenderPipelineTopology } from '../render-pipeline';
-import { resolveSsaoQuality, ssaoUsesLighting } from '../ssao-config';
+import { ssaoQualityPermutation, ssaoUsesLighting } from '../ssao-config';
 import { sceneViewImport } from './gpu-occlusion';
 import type { StandardPipelineBuildContext } from './standard-build-context';
 
@@ -48,6 +48,6 @@ export function standardAoHzbLevels(topology: RenderPipelineTopology): number {
   return ssaoUsesLighting(ao) &&
     ao?.method === 'gtao' &&
     topology.standardProfile?.renderPath !== 'forward'
-    ? 3 + Math.max(0, 2 - resolveSsaoQuality(ao).permutation)
+    ? 3 + Math.max(0, 2 - ssaoQualityPermutation(ao))
     : 1;
 }

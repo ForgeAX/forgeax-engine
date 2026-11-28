@@ -284,4 +284,47 @@ describe('Framebuffer region snapshot', () => {
       'render-target-state-invalid',
     );
   });
+
+  it.each([
+    'loss',
+    'recovery',
+    'destroy',
+    'dispose',
+  ] as const)('settles a submitted HDR snapshot on %s before its old queue signals', async (boundary) => {
+    const f = await fixture();
+    const region = { x: 0, y: 0, width: 8, height: 8 };
+    const completed = Promise.withResolvers<RenderResult<void, RenderError>>();
+    const ticket = f.host.requestFramebufferSnapshot(f.target, { region });
+    if (!ticket.ok) throw ticket.error;
+    const receipt = f.frame([f.source()], completed.promise);
+    expect(f.copies).toHaveLength(1);
+    let verdict: RenderResult<unknown, RenderError> | undefined;
+    const observed = f.host.observeFramebufferSnapshots(receipt, [ticket.value]).then((value) => {
+      verdict = value;
+      return value;
+    });
+    const generationLost = boundary === 'loss' || boundary === 'recovery';
+    try {
+      if (boundary === 'loss') f.host.onDeviceLost();
+      if (boundary === 'recovery') {
+        f.setGeneration(2);
+        f.host.recover();
+      }
+      if (boundary === 'destroy') expect(f.host.destroyRenderTarget(f.target).ok).toBe(true);
+      if (boundary === 'dispose') f.host.dispose();
+      await expect
+        .poll(() => verdict)
+        .toMatchObject({
+          ok: false,
+          error: {
+            code: 'render-target-state-invalid',
+            detail: { reason: generationLost ? 'generation-mismatch' : 'destroyed' },
+          },
+        });
+    } finally {
+      completed.resolve(ok);
+    }
+    expect(await observed).toBe(verdict);
+    f.host.dispose();
+  });
 });

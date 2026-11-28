@@ -1857,8 +1857,10 @@ fn handoffObserveCardRadiance(index:u32,hit:Hit,margin:f32,point:bool,ray:Ray)->
         );
         command.copyBufferToBuffer(rays, 0, readback, rayBytes.byteLength, rayBytes.byteLength);
         command.copyBufferToBuffer(rays, 64 * 32 + 16, readback, rayBytes.byteLength * 2, 16);
+        mark(`${side}:${mode}:before-finish`);
+        const commands = command.finish();
         mark(`${side}:${mode}:before-submit`);
-        device.queue.submit([command.finish()]);
+        device.queue.submit([commands]);
         mark(`${side}:${mode}:submitted`);
         await readback.mapAsync(1);
         mark(`${side}:${mode}:world-readback`);

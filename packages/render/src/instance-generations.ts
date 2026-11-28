@@ -154,15 +154,17 @@ function ordinalOf(order: GenerationOrder, value: number): number | undefined {
   return undefined;
 }
 
-export const sameInstanceOrdinal = (ordinal: number): number => ordinal;
+export const SAME_INSTANCE_ORDINALS = Symbol('same instance ordinals');
+export type InstanceOrdinalOrder = GenerationOrder | typeof SAME_INSTANCE_ORDINALS;
 
-export function previousInstanceRows(
+/** Borrow the submitted column's order. Both generation columns must stay stable while read. */
+export function matchInstanceOrdinals(
   current: Uint32Array,
   previous: Uint32Array,
-): ((ordinal: number) => number | undefined) | undefined {
+): InstanceOrdinalOrder | undefined {
   const before = orderOf(previous);
   if (before === null) return undefined;
-  if (current === previous) return sameInstanceOrdinal;
+  if (current === previous) return SAME_INSTANCE_ORDINALS;
   const after = orderOf(current);
   if (after === null) return undefined;
   if (
@@ -171,26 +173,36 @@ export function previousInstanceRows(
     after.first === before.first &&
     after.length <= before.length
   )
-    return sameInstanceOrdinal;
+    return SAME_INSTANCE_ORDINALS;
   if (after.kind === 'sorted' && before.kind === 'sorted' && current.length <= previous.length) {
     let ordinal = 0;
     while (ordinal < current.length && current[ordinal] === previous[ordinal]) ordinal++;
-    if (ordinal === current.length) return sameInstanceOrdinal;
+    if (ordinal === current.length) return SAME_INSTANCE_ORDINALS;
   }
-  return (ordinal) => ordinalOf(before, current[ordinal] as number);
+  return before;
 }
 
-export function instanceRowsSurvived(
+export function previousInstanceOrdinal(
+  order: InstanceOrdinalOrder | undefined,
+  generation: number | undefined,
+  ordinal: number,
+): number | undefined {
+  if (order === SAME_INSTANCE_ORDINALS) return ordinal;
+  return order === undefined || generation === undefined ? undefined : ordinalOf(order, generation);
+}
+
+/** Temporal validity requires an exact prior identity for every current row. */
+export function survivingInstanceOrdinals(
   current: Uint32Array | undefined,
   previous: Uint32Array | undefined,
-): boolean {
+): InstanceOrdinalOrder | undefined {
   if (current === undefined || previous === undefined || current.length > previous.length)
-    return false;
-  const lookup = previousInstanceRows(current, previous);
-  if (lookup === undefined) return false;
-  if (lookup === sameInstanceOrdinal) return true;
-  for (let i = 0; i < current.length; i++) if (lookup(i) === undefined) return false;
-  return true;
+    return undefined;
+  const order = matchInstanceOrdinals(current, previous);
+  if (order === undefined || order === SAME_INSTANCE_ORDINALS) return order;
+  for (let i = 0; i < current.length; i++)
+    if (ordinalOf(order, current[i] as number) === undefined) return undefined;
+  return order;
 }
 
 export function uniqueInstanceIdentities(column: Uint32Array): boolean {

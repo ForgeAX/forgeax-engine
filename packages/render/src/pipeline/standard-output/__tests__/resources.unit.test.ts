@@ -24,7 +24,7 @@ describe('Standard output on devices without exposure metering', () => {
   ])('keeps the authored fallback without GPU allocation for %j', (caps) => {
     const createBuffer = vi.fn();
     const device = { caps, createBuffer } as unknown as RhiDevice;
-    const state = { compiledFrameGraphGeneration: 4 } as RenderFrameState;
+    const state = { graphGeneration: 4 } as RenderFrameState;
     const camera = {
       ...makeZeroCameraFallbackSnapshot(),
       output: {
@@ -93,7 +93,7 @@ describe('Standard output on devices without exposure metering', () => {
       },
     };
     const result = prepareStandardOutputResources(
-      { compiledFrameGraphGeneration: 4 } as RenderFrameState,
+      { graphGeneration: 4 } as RenderFrameState,
       { device } as RenderSystemInternals,
       camera,
       {} as RenderResourceScope,
@@ -115,7 +115,7 @@ describe('Standard output on devices without exposure metering', () => {
 it('retains metering history on a graph replacement and invalidates it on a camera cut', async () => {
   const device = (await new RhiNullAdapter().requestDevice()).unwrap();
   const state = {
-    compiledFrameGraphGeneration: 4,
+    graphGeneration: 4,
     frameNumber: 42,
     standardLutState: createStandardLutState(),
   } as RenderFrameState;
@@ -156,7 +156,7 @@ it('retains metering history on a graph replacement and invalidates it on a came
     commitStandardOutputSubmission(state, device.queue);
     await device.queue.onSubmittedWorkDone();
 
-    state.compiledFrameGraphGeneration++;
+    state.graphGeneration++;
     state.frameNumber++;
     stageStandardOutputStates(state, internals, camera, 1 / 60);
     expect(revision()).toBe(firstRevision);

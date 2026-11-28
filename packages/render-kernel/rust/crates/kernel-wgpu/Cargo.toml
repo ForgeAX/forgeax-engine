@@ -1,0 +1,27 @@
+[package]
+name = "forgeax-render-kernel-wgpu"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "Native Rust wgpu 30 backend and dedicated render thread for ForgeAX RenderKernel."
+
+[dependencies]
+forgeax-render-kernel-core = { path = "../kernel-core" }
+wgpu = { version = "=30.0.1", path = "../../../../../third_party/wgpu/wgpu", default-features = false, features = ["std", "wgsl"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4"
+wgpu = { version = "=30.0.1", path = "../../../../../third_party/wgpu/wgpu", default-features = false, features = ["parking_lot"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../../../../third_party/wgpu/wgpu", default-features = false, features = ["webgl", "wgsl"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../../../../third_party/wgpu/wgpu", default-features = false, features = ["metal"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../../../../third_party/wgpu/wgpu", default-features = false, features = ["dx12"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "=30.0.1", path = "../../../../../third_party/wgpu/wgpu", default-features = false, features = ["vulkan"] }

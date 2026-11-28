@@ -1,13 +1,15 @@
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { publicEngineFacades, publicEngineMembers } from './public-facades.mjs';
+import { engineApiTiers, publicEngineFacades, publicEngineMembers } from './public-facades.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = resolve(packageRoot, '../..');
 const dist = resolve(packageRoot, 'dist');
 const check = process.argv.includes('--check');
 const members = await publicEngineMembers(repositoryRoot);
+// Every public member declares its API tier; a new package cannot ship untiered.
+await engineApiTiers(repositoryRoot, members);
 
 const expectedDependencyNames = members.map(({ name }) => name).sort();
 const manifest = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8'));

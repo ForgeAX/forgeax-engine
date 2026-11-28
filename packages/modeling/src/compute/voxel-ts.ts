@@ -377,9 +377,8 @@ function bandDistances(
       }
     }
   }
-  const distance = new Float64Array(n);
-  for (let s = 0; s < n; s++) distance[s] = Math.sqrt(d2[s] as number);
-  return ok({ distance, nearest });
+  for (let s = 0; s < n; s++) d2[s] = Math.sqrt(d2[s] as number);
+  return ok({ distance: d2, nearest });
 }
 
 // ---- sign: ray crossings ----------------------------------------------------------------
@@ -795,6 +794,8 @@ export function buildField(
   const h = options.voxelSize;
   const grid = lattice(soup, h, (options.band + 2) * h + options.margin);
   if (!grid.ok) return grid;
+  const [gx, gy, gz] = grid.value.dims;
+  if (!work.spend((gx * gy * gz) >> 4)) return err(work.failure as ModelingError);
   const faceTris = new Map<number, number[]>();
   for (let t = 0; t < soup.face.length; t++) {
     const f = soup.face[t] as number;

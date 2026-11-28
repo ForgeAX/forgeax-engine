@@ -2,7 +2,12 @@ import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { RenderGraphBuilder } from '../builder';
-import type { CompiledRenderGraph, GraphTextureViewDescriptor, RenderGraphFrame } from '../types';
+import type {
+  CompiledRenderGraph,
+  GraphTextureDescriptor,
+  GraphTextureViewDescriptor,
+  RenderGraphFrame,
+} from '../types';
 
 function compile(
   device: RhiDevice,
@@ -340,6 +345,78 @@ it('retains same-descriptor targets across topology replacements until every gra
   expect(destroys).toHaveBeenCalledTimes(1);
 });
 
+it('matches ordered attachments by their physical declaration and original owning slot', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const creates = vi.spyOn(device, 'createTexture');
+  const base: GraphTextureDescriptor = { size: 'surface', format: 'rgba8unorm' };
+  const build = (
+    descriptor: GraphTextureDescriptor,
+    previous?: CompiledRenderGraph<RenderGraphFrame>,
+    label = 'color',
+  ) => {
+    const program = RenderGraphBuilder.procedure({
+      device,
+      surfaceSize: { width: 8, height: 8 },
+      reuseResourcesFrom: previous,
+    });
+    const texture = program.passes.createTexture(label, descriptor).unwrap();
+    const view = program.passes
+      .view(texture, { dimension: '2d', mipLevelCount: 1, arrayLayerCount: 1 })
+      .unwrap();
+    program.passes
+      .addRasterPass('clear', {
+        accesses: [{ resource: view, usage: 'color-attachment' }],
+        colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
+        encode() {},
+      })
+      .unwrap();
+    return program.bindResources().unwrap();
+  };
+
+  const first = build(base);
+  const original = first.getColorTargetTexture('color');
+  expect(original).toBeDefined();
+  try {
+    const equivalent = build(
+      {
+        size: { width: 8, height: 8, depthOrArrayLayers: 1 },
+        format: 'rgba8unorm',
+        lifetime: 'transient',
+        mipLevelCount: 1,
+        sampleCount: 1,
+        dimension: '2d',
+        viewFormats: [],
+        usage: 0x10,
+      },
+      first,
+    );
+    expect(equivalent.getColorTargetTexture('color')).toBe(original);
+    expect(creates).toHaveBeenCalledTimes(1);
+    await equivalent.retire();
+
+    const variants: readonly Partial<GraphTextureDescriptor>[] = [
+      { lifetime: 'persistent' },
+      { format: 'bgra8unorm' },
+      { mipLevelCount: 2 },
+      { sampleCount: 4 },
+      { usage: 0x04 },
+      { size: { width: 8, height: 8, depthOrArrayLayers: 2 } },
+      { viewFormats: ['rgba8unorm-srgb'] },
+    ];
+    for (const change of variants) {
+      const next = build({ ...base, ...change }, first);
+      expect(next.getColorTargetTexture('color')).not.toBe(original);
+      await next.retire();
+    }
+    const other = build(base, first, 'different-color');
+    expect(other.getColorTargetTexture('different-color')).not.toBe(original);
+    expect(creates).toHaveBeenCalledTimes(2 + variants.length);
+    await other.retire();
+  } finally {
+    await first.retire();
+  }
+});
+
 it('allocates a distinct resized target and retains the old graph for rollback', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const creates = vi.spyOn(device, 'createTexture');
@@ -410,6 +487,34 @@ it('never borrows from a retired graph or a different device', async () => {
   await other.retire();
 });
 
+it('publishes owned persistent writes without looking up their allocations during encoding or commit', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const graph = persistentGraph(device, undefined, 'write', 0, 8, 'store', 0, true).unwrap();
+  const { persistentTextures } = (
+    graph as unknown as {
+      resources: { persistentTextures: Map<object, unknown> };
+    }
+  ).resources;
+  const has = vi.spyOn(persistentTextures, 'has');
+  const get = vi.spyOn(persistentTextures, 'get');
+  try {
+    for (let index = 0; index < 2; index++) {
+      const encoder = device.createCommandEncoder().unwrap();
+      expect(graph.execute({ encoder }).ok).toBe(true);
+      expect(encoder.finish().ok).toBe(true);
+    }
+    graph.commitExecution();
+    expect(has).not.toHaveBeenCalled();
+    expect(get).not.toHaveBeenCalled();
+    const successor = persistentGraph(device, graph, 'read', 0).unwrap();
+    await successor.retire();
+  } finally {
+    has.mockRestore();
+    get.mockRestore();
+    await graph.retire();
+  }
+});
+
 it('inherits only submitted writes covering the exact persistent texture range', async () => {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
@@ -451,6 +556,74 @@ it('inherits only submitted writes covering the exact persistent texture range',
   if (!changedDevice.ok) expect(changedDevice.error.code).toBe('uninitialized-read');
 
   await first.retire();
+});
+
+it.each([
+  false,
+  true,
+])('rejects inherited content if a sibling allocation revokes its lender (ordered %s)', async (ordered) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const previous = persistentGraph(device, undefined, 'write', 0).unwrap();
+  await executeAndCommit(previous, device);
+  const options = { device, surfaceSize: { width: 8, height: 8 }, reuseResourcesFrom: previous };
+  const procedure = ordered ? RenderGraphBuilder.procedure<RenderGraphFrame>(options) : undefined;
+  const builder = procedure?.passes ?? new RenderGraphBuilder<RenderGraphFrame>();
+  const buffer = builder.createBuffer('candidate-scratch', { size: 16 }).unwrap();
+  const texture = builder
+    .createTexture('persistent-content', {
+      format: 'rgba8unorm',
+      size: { width: 8, height: 8, depthOrArrayLayers: 2 },
+      mipLevelCount: 2,
+      lifetime: 'persistent',
+      usage: 0x14,
+    })
+    .unwrap();
+  const view = builder
+    .view(texture, {
+      dimension: '2d',
+      mipLevelCount: 1,
+      arrayLayerCount: 1,
+    })
+    .unwrap();
+  builder
+    .addCopyPass('allocate-scratch', {
+      accesses: [{ resource: buffer, usage: 'copy-dst' }],
+      encode() {},
+    })
+    .unwrap();
+  builder
+    .addComputePass('read-inherited', {
+      accesses: [{ resource: view, usage: 'sampled-read' }],
+      encode() {},
+    })
+    .unwrap();
+  const createBuffer = device.createBuffer.bind(device);
+  let retirement: ReturnType<typeof previous.retire> | undefined;
+  const allocateSibling = vi.spyOn(device, 'createBuffer').mockImplementationOnce((descriptor) => {
+    retirement = previous.retire();
+    return createBuffer(descriptor);
+  });
+  const creates = vi.spyOn(device, 'createTexture');
+  const rollback = vi.spyOn(device, 'destroyBuffer');
+  const result = procedure?.bindResources() ?? builder.compile(options);
+  try {
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'uninitialized-read',
+        detail: { passName: 'read-inherited', resourceLabel: 'persistent-content' },
+      },
+    });
+    expect(allocateSibling).toHaveBeenCalledOnce();
+    expect(creates).not.toHaveBeenCalled();
+    expect(rollback).toHaveBeenCalledOnce();
+  } finally {
+    if (result.ok) await result.value.retire();
+    await (retirement ?? previous.retire());
+    allocateSibling.mockRestore();
+    creates.mockRestore();
+    rollback.mockRestore();
+  }
 });
 
 it('does not publish ranges whose raster attachment discards its store', async () => {
@@ -503,6 +676,69 @@ it('revalidates borrowed persistent content when another graph discards it after
   await delayed.retire();
   await discard.retire();
   await written.retire();
+});
+
+it('validates inherited content after a frame import discards the shared physical range', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const written = persistentGraph(device, undefined, 'write', 0).unwrap();
+  await executeAndCommit(written, device);
+  const discard = persistentGraph(device, written, 'read-discard', 0).unwrap();
+  const builder = new RenderGraphBuilder<RenderGraphFrame>();
+  const input = device.createBuffer({ size: 16, usage: 0x40 }).unwrap();
+  const trigger = builder
+    .importBuffer('trigger', { size: 16, usage: 0x40 }, () => {
+      const encoder = device.createCommandEncoder().unwrap();
+      discard.execute({ encoder }).unwrap();
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      discard.commitExecution();
+      return input;
+    })
+    .unwrap();
+  const texture = builder
+    .createTexture('persistent-content', {
+      format: 'rgba8unorm',
+      size: { width: 8, height: 8, depthOrArrayLayers: 2 },
+      mipLevelCount: 2,
+      lifetime: 'persistent',
+      usage: 0x14,
+    })
+    .unwrap();
+  const view = builder
+    .view(texture, {
+      dimension: '2d',
+      mipLevelCount: 1,
+      arrayLayerCount: 1,
+    })
+    .unwrap();
+  const encode = vi.fn();
+  builder
+    .addComputePass('protected-read', {
+      accesses: [
+        { resource: trigger, usage: 'uniform-read' },
+        { resource: view, usage: 'sampled-read' },
+      ],
+      encode,
+    })
+    .unwrap();
+  const candidate = builder
+    .compile({
+      device,
+      surfaceSize: { width: 8, height: 8 },
+      reuseResourcesFrom: written,
+    })
+    .unwrap();
+  try {
+    expect(candidate.execute({ encoder: device.createCommandEncoder().unwrap() })).toMatchObject({
+      ok: false,
+      error: { code: 'uninitialized-read', detail: { passName: 'protected-read' } },
+    });
+    expect(encode).not.toHaveBeenCalled();
+  } finally {
+    await candidate.retire();
+    await discard.retire();
+    await written.retire();
+    device.destroyBuffer(input).unwrap();
+  }
 });
 
 it.each([

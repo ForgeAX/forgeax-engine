@@ -85,7 +85,8 @@ it('keeps the accepted 64px pixels for their ticket while a 32px candidate is su
       .createCommandEncoder({ label: 'candidate-blue-32-with-accepted-readback' })
       .unwrap();
     clear(second, candidate, [0, 0, 1, 1]);
-    host.encodePendingReadbacks(second, [{ target, layer: 0 }]);
+    host.stageRenderTargetWrite({ target, physical: candidate, layer: 0 });
+    host.encodePendingReadbacks(second);
     await submitted(device, host, target, candidate, second, 2);
     const old = value(
       await host.observeTargetReadbacks({ frameId: 2, deviceGeneration: 0 }, [ticket]),
@@ -93,7 +94,7 @@ it('keeps the accepted 64px pixels for their ticket while a 32px candidate is su
     expect(Array.from(old[0]?.bytes.subarray(0, 4) ?? [])).toEqual([255, 0, 0, 255]);
     const fresh = value(host.requestTargetReadback(target, { mipLevel: 0, layer: 0 }));
     const third = device.createCommandEncoder({ label: 'accepted-blue-32-readback' }).unwrap();
-    host.encodePendingReadbacks(third, [{ target, layer: 0 }]);
+    host.encodePendingReadbacks(third);
     await submitted(device, host, target, candidate, third, 3);
     const current = value(
       await host.observeTargetReadbacks({ frameId: 3, deviceGeneration: 0 }, [fresh]),

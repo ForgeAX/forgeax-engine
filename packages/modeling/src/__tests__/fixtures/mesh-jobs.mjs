@@ -5,6 +5,9 @@ import { err, ok } from '@forgeax/engine-types';
 
 const module = import.meta.url;
 
+/** Per-Worker state, kept between this Worker's jobs: counts how often a Worker was reused. */
+let builds = 0;
+
 function lid(depth) {
   const m = model();
   m.box({ size: [0.2, depth, 0.2] });
@@ -62,5 +65,56 @@ export const FIXTURE_JOBS = [
         expected: 'the fixture job succeeds',
         detail: { stage: 'build' },
       }),
+  },
+  {
+    kind: 'assets',
+    name: 'fixture.hang',
+    module,
+    build: (p) => {
+      block(p.ms);
+      return lid(0.04);
+    },
+  },
+  {
+    kind: 'assets',
+    name: 'fixture.exit',
+    module,
+    build: () => process.exit(3),
+  },
+  {
+    kind: 'assets',
+    name: 'fixture.count',
+    module,
+    // Which build of this Worker it is: `mesh/n1` on a fresh Worker, `mesh/n2` on its reuse.
+    build: () => {
+      const built = lid(0.04);
+      if (!built.ok) return built;
+      return ok({ [`mesh/n${++builds}`]: built.value['mesh/lid'] });
+    },
+  },
+  {
+    kind: 'assets',
+    name: 'fixture.heap',
+    module,
+    // Holds `mb` MiB of live V8 heap, then builds: it completes only under a roomy heap limit.
+    build: (p) => {
+      const held = [];
+      for (let i = 0; i < p.mb / 8; i++) held.push(new Array(1_000_000).fill(1.5 + i));
+      const built = lid(0.04);
+      return held.length > 0 ? built : err({ code: 'fixture-failed', expected: 'unreachable' });
+    },
+  },
+  {
+    kind: 'assets',
+    name: 'fixture.late',
+    module,
+    // An exception thrown from a timer while the job is still running: uncaught in the Worker.
+    build: async () => {
+      setTimeout(() => {
+        throw new Error('late');
+      }, 20);
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      return lid(0.04);
+    },
   },
 ];

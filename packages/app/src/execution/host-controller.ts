@@ -561,8 +561,9 @@ export async function createWorkerExecutionApp(
     } as const;
     frameAdmission = admission;
     if (state !== 'running') return;
-    // Render-credit waits can include GPU loss detection and replacement startup.
-    // Source execution resumes its original steady deadline after admission.
+    // Render-credit waits can include GPU loss and replacement startup. An
+    // explicit material demand expansion also prepares a new render closure.
+    // Ordinary source execution retains its steady deadline.
     const timeoutMs =
       frameId === 1
         ? startupTimeoutMs

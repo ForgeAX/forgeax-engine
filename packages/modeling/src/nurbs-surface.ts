@@ -297,7 +297,7 @@ function extrapolate(bezier: readonly H[], lambda: number): H[] {
 /** Scale of the control net, for removal tolerances. */
 function netScale(s: NurbsSurface): number {
   let m = 1;
-  for (const row of s.points) for (const p of row) m = Math.max(m, ...p.map(Math.abs));
+  for (const row of s.points) for (const p of row) m = Math.max(m, maxOf(p.map(Math.abs)));
   return m;
 }
 
@@ -417,6 +417,9 @@ function reach(s: NurbsSurface, e: NurbsSurface, side: PatchSide): number {
   return sum / (SIDE_SAMPLES + 1);
 }
 
+/** Relative reach error above which `surfaceExtend` fails instead of returning a short patch. */
+const EXTEND_REACH_TOLERANCE = 1e-4;
+
 /**
  * Extend the patch past `side` by about `length` meters (the mean distance between the
  * old and the new side). The original domain keeps its shape; the new domain grows by
@@ -472,6 +475,22 @@ export function surfaceExtend(
     const d2 = d1 - (g1 * (d1 - d0)) / (g1 - g0);
     [d0, g0, d1] = [d1, g1, d2 > 0 ? d2 : d1 / 2];
   }
+  const valid = checked(extended);
+  const got = reach(base, extended, endSide);
+  if (!valid.ok || !(Math.abs(got - length) <= EXTEND_REACH_TOLERANCE * length))
+    return err(
+      modelingError(
+        'model-precondition',
+        'the extension cannot reach the requested length with a valid patch',
+        {
+          side,
+          requested: length,
+          reached: got,
+          valid: valid.ok,
+          hint: 'extend by a shorter length or extend in several steps',
+        },
+      ),
+    );
   if (!atStart) return ok(extended);
   // Reversing back maps [a, b + d] onto itself; shift so the original part keeps [a, b].
   const back = surfaceReverse(extended, dir);

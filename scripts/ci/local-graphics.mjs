@@ -14,6 +14,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runnerResources } from '../lib/runner-resources.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -159,7 +160,8 @@ function buildFromSource(staging) {
     `--libdir=${libraryDirectory.slice('root/usr/'.length)}`,
     ...lock.source.mesonOptions,
   ]);
-  run(['compile', '-C', build]);
+  // Ninja otherwise sees the host CPUs on quota-limited runners.
+  run(['compile', '-C', build, '--jobs', String(runnerResources().cpus)]);
   run(['install', '-C', build, '--no-rebuild', '--destdir', join(staging, 'root')]);
   rmSync(build, { recursive: true, force: true });
   rmSync(source, { recursive: true, force: true });

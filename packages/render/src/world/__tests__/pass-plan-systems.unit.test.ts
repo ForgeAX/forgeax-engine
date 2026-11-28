@@ -1,9 +1,11 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { defineSystem } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { type FrameRecording, submitFrameRecordings } from '../../__tests__/frame-recording-driver';
+import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import { MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchList } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
@@ -54,7 +56,7 @@ function stage(world: ReturnType<typeof createRenderWorld>, entity: EntityHandle
 }
 
 describe('pass-plan systems', () => {
-  it('register both families after render-phase-sort, reading the view pass plans', () => {
+  it('registers pass planning after render-phase-sort with its own staged inputs', () => {
     const world = createRenderWorld();
     registerPassPlanSystems(world);
     registerPassPlanSystems(world);
@@ -74,7 +76,7 @@ describe('pass-plan systems', () => {
     const transmission = queue?.systems.find((s) => s.name === RENDER_TRANSMISSION_PLAN_SYSTEM);
     expect(transparent?.after).toEqual([RENDER_PHASE_SORT_SYSTEM]);
     expect(transparent?.queries[0]?.read).toEqual(['ViewPassPlans']);
-    expect(transparent?.queries[0]?.optional).toEqual(['ViewPhases']);
+    expect(transparent?.queries[0]?.optional ?? []).toEqual([]);
     expect(transmission?.after).toEqual([RENDER_PHASE_SORT_SYSTEM]);
     expect(transmission?.queries[0]?.read).toEqual(['ViewPassPlans']);
     const opaque = queue?.systems.find((s) => s.name === RENDER_OPAQUE_PLAN_SYSTEM);
@@ -187,12 +189,32 @@ describe('pass-plan systems', () => {
     expect(() => viewPassPlanQueue(world, view).take()).toThrow(name);
   });
 
-  it('plans a phase-sorted view over the order render-phase-sort produced', () => {
+  it('plans transparency from culled membership without traversing its draw permutation', () => {
     const world = createRenderWorld();
     registerPassPlanSystems(world);
     const view = world.spawn().unwrap();
-    const culled: DispatchList = [];
-    const ordered: DispatchList = [];
+    const seed = receiptRow().source;
+    const material = new MaterialResource({ ...seed.material.snapshot, transparent: true });
+    const renderables = [{ ...seed, material, materials: [material] }];
+    const materials = new MaterialFrame(undefined).with(material);
+    const culled: DispatchList = [
+      {
+        entityIndex: seed.entityKey,
+        renderableIndex: 0,
+        materialHandle: material.snapshot.materialHandle ?? 0,
+        materialShaderId: 'forgeax::default-standard-pbr',
+        passIndex: 0,
+        queue: 3000,
+        layer: 0,
+        tags: { LightMode: 'Forward' },
+        renderState: undefined,
+        defines: undefined,
+        vertexEntry: undefined,
+        fragmentEntry: undefined,
+      },
+    ];
+    const ordered = [...culled];
+    const iterate = vi.spyOn(ordered, Symbol.iterator);
     const seen: DispatchList[] = [];
     const systemToken1 = defineSystem({
       name: 'trace-order',
@@ -213,12 +235,18 @@ describe('pass-plan systems', () => {
       rows: { at: () => undefined },
       profile: undefined,
     });
-    viewPassPlanQueue(world, view).stage(input({ dispatch: culled, phaseSorted: true }));
+    viewPassPlanQueue(world, view).stage(
+      input({ dispatch: culled, phaseSorted: true, renderables, materials }),
+    );
     expect(world.run(RenderQueue).ok).toBe(true);
-    // The phase sort ran first; the plan then read the order this view records.
+    // Recording can take the order. Planning uses the same membership directly.
     expect(seen).toHaveLength(1);
     expect(viewPhaseQueue(world, view).take()).toBe(ordered);
-    expect(viewPassPlanQueue(world, view).take().transparent.inspection.resolved).toBe('sorted');
+    expect(viewPassPlanQueue(world, view).take().transparent.inspection).toMatchObject({
+      resolved: 'sorted',
+      sortedDrawCount: 1,
+    });
+    expect(iterate).not.toHaveBeenCalled();
   });
 
   it('runs RenderQueue once after every view staged, before any view compiles', async () => {

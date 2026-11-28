@@ -7,7 +7,11 @@ import {
   producerBoundsInt32Length,
 } from '../../cluster-binner';
 import { GpuTableWrites } from '../../gpu-table-writes';
-import type { StandardClusterLayout } from './layout';
+import {
+  createStandardClusterLayout,
+  DEFAULT_CLUSTER_GRID,
+  type StandardClusterLayout,
+} from './layout';
 import type { StandardLightFrame } from './light-frame';
 import {
   projectStandardLightCells,
@@ -20,12 +24,11 @@ import {
   describeClusterWords,
   SubmittedClusterBounds,
 } from './membership-publication';
-import { StandardLightGraphLayout } from './topology';
 
 /** A view projects every current light. Its CPU runs and GPU producer bytes have
  * independent lifetimes: cone motion can change GPU intersections inside the same cell box. */
 export class StandardClusterMembershipOwner {
-  readonly graphLayout = new StandardLightGraphLayout();
+  private stockLayout: StandardClusterLayout | undefined;
   private defaultScratch: ClusterBinScratch | undefined;
   private runScratch: ClusterBinScratch | undefined;
   private runs: StandardClusterRuns | undefined;
@@ -35,6 +38,13 @@ export class StandardClusterMembershipOwner {
   private readonly editedPages = new GpuTableWrites();
   private published: SubmittedClusterBounds | undefined;
   private publication: ClusterMembershipPublication | undefined;
+
+  layout(slots: number, grid: StandardClusterLayout['grid']): StandardClusterLayout {
+    if (grid !== DEFAULT_CLUSTER_GRID) return createStandardClusterLayout(slots, grid);
+    if (this.stockLayout?.lightDataSlotCount !== slots)
+      this.stockLayout = createStandardClusterLayout(slots, grid);
+    return this.stockLayout;
+  }
 
   derive(frame: StandardLightFrame, layout: StandardClusterLayout, scratch?: ClusterBinScratch) {
     scratch ??= this.defaultScratch ??= createClusterBinScratch();
@@ -93,7 +103,7 @@ export class StandardClusterMembershipOwner {
   }
 
   clear(): void {
-    this.graphLayout.clear();
+    this.stockLayout = undefined;
     this.editedPages.release();
     this.runs = this.runScratch = this.defaultScratch = undefined;
     this.publication = undefined;

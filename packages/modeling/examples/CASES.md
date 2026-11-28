@@ -67,6 +67,14 @@ pin overhang and a trim cover with a rounded rim and panel lines (a U groove alo
 edge loop and a V seam cut by a plane); the door side then opens about the pin.
 `hinge.pack.ts` is `mesh/door-hinge` (parameter `openAngle`).
 
+`examples/hole-catalogue/` is the hole operator example (label SC-L3; no official case id yet): one
+plate with the four `m.hole` kinds twice, through and blind (simple, counterbore, countersink and
+a cosmetic M8 tap), and a second block with a modeled helical M8 thread holding a modeled
+`hexBolt` seated four pitches above the face, so the thread phases agree without turning the bolt.
+`hole-catalogue.pack.ts` is `mesh/hole-catalogue` (parameter `blindDepth`);
+`hole-catalogue.case.dawn.test.ts` writes the case output directory with sections of both rows,
+the bolt-in-hole section with a thread close-up and a chord-tolerance contact sheet.
+
 `examples/suspension/` is case **C-104**, the left front double-wishbone corner of
 `mech-gt`: upper and lower A-arms swept along bent polylines with bushings arrayed along
 their pivot axis, an upright lofted through 4/8/6/4-vertex sections with a swept,
@@ -364,3 +372,70 @@ is in `show-job.ts` (`c410.set1|2|3` bake with parallel Workers and compose thro
 outputs (5 ms). `show.ts` is the page metadata (`SHOW_META`), its stats read `show.stats.json`,
 written from the cooked outputs by `scifi-mech.show.integration.test.ts`
 (`FORGEAX_C410_COOK=1`, plus `FORGEAX_UPDATE_GOLDEN=1` to rewrite).
+
+`examples/c4carrier/` is case **C-600** (sci-fi armed carrier), starting with the heavy twin
+turret (`turret.ts`; kit, palette, proportions and rig beside it). Seven closed rigid parts on
+four joints: the barbette is fixed, the house turns on J1 (yaw), the cradle, mantlet and apron
+pitch on J2 about the trunnion, and each barrel slides on its own recoil joint (J3, J4). The
+house is a faceted `loft` minus an inner `loft` (wall), the gun window a `difference`
+with an extruded sector, bearing blocks `union`ed and bored, vision ports and a hatch recess
+`difference`, the hatch lid `union`ed, shut lines `panelLine`d; the cradle casting, mantlet and
+apron are lofted or extruded solids with boolean bores and barrel slots; the barrels are
+`revolve`d profiles with a `difference` of brake ports; every hard edge is `bevel`ed.
+`heavy-turret.unit.test.ts` is the gate: closed parts, 40k triangle budget, no rest-pose
+interference, and the whole yaw x pitch x recoil `scan` with a DMU `clearance` threshold.
+`heavy-turret.case.dawn.test.ts` renders four same-camera milestones (composite of the part
+sessions), five views including a posed one, history.json and validate.json.
+
+`examples/oracles/` is the test-infrastructure evidence, not a Pack: it draws what the kernel
+test suite measures. `gallery.ts` names eight two-primitive fuzz scenes (grid 0.25, so every
+contact is exact) whose operands meet in a flush coplanar face, a face-to-face contact, a sphere
+tangent to a box and a cylinder cap flush with a box face, each under the operation that survives;
+`gallery.unit.test.ts` checks that each pick still has the named contact, validates without an
+error and is not poisoned. `oracles.case.dawn.test.ts` renders every row of the analytic oracle
+table (`src/__tests__/oracles/oracles.ts`) and every gallery survivor on the real Renderer; with
+`FORGEAX_CASE_OUT=<dir>` it also writes `results.json` (relative error of measured volume and
+area against the faceted closed form per row, and the residuals of the boolean volume identities
+over the first 200 seeds). The suites it summarises are `oracles.unit.test.ts`,
+`boolean-identity.unit.test.ts` under `src/__tests__/` and `surface-seams-corpus.unit.test.ts` under `examples/oracles/__tests__/`.
+
+`examples/shaping/` (no case number) shows three shaping operators. `buildGradientPlate` bevels
+a saw plate in one `bevel` call whose width list grades the tooth edges from 4 mm to 34 mm;
+`buildMixedCorner` gives a box one width per edge direction; `buildInsert` drafts a plus-shaped
+mould core 8 degrees about its plate; `buildHood` fairs the rippled quality-body hood net.
+`shaping.unit.test.ts` checks closure, the tip-width gradient, draft analysis before (all
+critical) and after (90 - angle) and that fairing keeps the boundary and cuts roughness.
+`shaping.case.dawn.test.ts` renders the plate, tooth and corner close-ups (shaded and wire), the
+insert before and after (shaded and draft analysis) and the hood before and after (zebra and
+mean curvature), with a before/after sheet per pair, into `FORGEAX_CASE_OUT`.
+
+`examples/sheet-bracket/` is a sheet-metal U-bracket: the flat pattern (outline, a round hole, two
+slots, two bends) is the data and `m.sheet` derives the folded body. `bracketSpec(degrees)` keeps
+the flat outline fixed and derives the radius so the neutral-arc length stays equal for partial
+folds. `bracket.pack.ts` exposes a `fold` parameter; `sheet-bracket.unit.test.ts` checks the closed
+body, the fixed flat outline and the allowance; `sheet-bracket.case.dawn.test.ts` renders the
+0/30/60/90 degree folds, shaded and wire views, plus `flat-pattern.svg` and `flat-pattern.dxf`.
+
+`examples/sketch-bracket/` is the constraint-sketch example: a trapezoid bracket with a
+stadium slot (two tangent arcs and two lines) and a round bore, stated as 18 relations and
+dimensions and solved by `sketch.solve` from a rough start, then extruded with
+`extrudePolygon` into a 10 mm plate (`sketch-bracket.ts`). `sketch-bracket.pack.ts` is
+`mesh/bracket` (parameters `length`, `height`, `slantDegrees`, `thickness`).
+`sketch-bracket.unit.test.ts` checks the solved dimensions, `dof` 1 with the bore's
+rotation as the one free point, the outline and two holes with analytic area, the closed
+solid across the parameter range, the diverged failure of a contradicting distance and the
+Pack build; `sketch-bracket.case.dawn.test.ts` renders shaded, top, tags and a slant sweep
+views, the two build steps, history.json and validate.json.
+
+`examples/plate/` is case **C-700** (exact stage), steps 1 to 3. `plate.ts` builds a rectangular
+plate as an analytic Shape (`brep.box`), crosses into the mesh once with `fromShape` (six planar
+faces, one metric uv0 chart per face), and assigns two material slots (`plate-face` for the large
+faces, `plate-rim` for the four rim faces). `PLATE_JOB` runs the same build through the Pack mesh
+job path (`plate.pack.ts` is `meshJobSources`; the build plugin registers
+`createMeshJobCooker([PLATE_JOB])`); the exact stage is injected with `model({ exact })`.
+`plate.unit.test.ts` checks the topology, material slots and per-face uv boxes (non-overlap, one
+texel density on planar faces); `plate.pack.integration.test.ts` and
+`plate.import.integration.test.ts` run the job through the cooker and the Pack import;
+`plate.case.dawn.test.ts` renders step 2 and 3 (evidence starts at `fromShape`, step 1 has no
+mesh) with shaded, uv, tags and history views, `history.json` and `validate.json`.
+

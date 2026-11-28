@@ -1,34 +1,82 @@
 import type { NativeCookDraft, NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type { PackCookSource } from '@forgeax/engine-pack/source';
-import { type ByteCache, err, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
-import { maxOf, minOf } from './arrays';
-import type { BAKE_CHECKS, BakeCheck } from './bake-checks';
+import {
+  type ByteCache,
+  err,
+  type MeshAsset,
+  ok,
+  type Result,
+  type TextureAsset,
+} from '@forgeax/engine-types';
+import { getModelingKernelWasm } from '@forgeax/modeling-kernel';
+import { maxOf, minOf, pushAll } from './arrays';
+import { BAKE_CHECKS, type BakeCheck } from './bake-checks';
+import {
+  bakeCorrespondWithRustKernel,
+  dilateAtlasWithRustKernel,
+  evaluateBakeMapsWithRustKernel,
+  isRustBakeMapKind,
+  type RustBakeCorrespondenceState,
+  resolveBakeCagesWithRustKernel,
+  shouldUseRustBake,
+} from './bake-rust';
 import { fromBase64, toBase64 } from './base64';
+import {
+  type AtlasBleedReport,
+  type AtlasGrid,
+  atlasBleedReport,
+  type DilateAtlasOptions,
+  type DilateAtlasResult,
+  dilate,
+  prepareAtlasDilation,
+} from './compute/atlas-ts';
+import {
+  bakeCorrespondCpu,
+  type CpuCorrespondenceData,
+  evaluateBakeMapsCpu,
+  prepareEvalBake,
+} from './compute/bake-correspond-cpu';
 import {
   allRows,
   BAKE_MAP_KINDS,
   type BakeRows,
   bakeRows,
   diagonalOf,
+  emissiveScale,
+  ensureGroupBvhs,
   finishBake,
   finishBakeWithFilter,
   gridOf,
   prepareBake,
+  resolveBakeCagePlan,
   tsBakeBackend,
 } from './compute/bake-ts';
 import { filterBakeTexture } from './compute/bake-webgpu';
 import { prepareBakeOcclusion } from './compute/bake-webgpu-ao';
 import {
+  bakeCorrespondGpu,
+  evaluateBakeMapsGpu,
+  type GpuCorrespondenceData,
+  runBakeCorrespondGpu,
+  runGpuAtlasDilation,
+} from './compute/bake-webgpu-correspond';
+import {
+  type AnalyticPatch,
+  type AnalyticVerify,
+  type BakeAnalyticParams,
+  type BakeBounds,
   type BakeCage,
   type BakeClipCluster,
   type BakeDirection,
   type BakeGroupReport,
   type BakeGroupSettings,
+  type BakeHandedness,
   type BakeJobNormals,
   type BakeJobParams,
   type BakeMapKind,
   type BakeProvenance,
   type BakeSlot,
+  type BakeStack,
   type BakeStrayCluster,
   type ComputeBackend,
   type ComputeJobReport,
@@ -44,12 +92,157 @@ import { type ModelingError, type ModelingErrorCode, modelingError } from './err
 import type { NormalMode } from './finish';
 import { checkSnapshotOperand, decodeSnapshot, encodeSnapshot } from './fxem';
 import type { Tuple3 } from './geom';
+import type { LowpolyOptions } from './lowpoly';
 import type { TextureReference, TextureSink } from './materials';
-import type { Model } from './model';
+import type { CornerChannelName } from './mesh';
+import { Model, model } from './model';
 import type { OpDiagnostic } from './ops';
 import type { Issue } from './report';
-import { idTexture, normalTexture, r16Texture, textureFrom } from './texture';
+import { sel } from './selectors';
+import { mipChain, packFloat32Texture, r16Texture } from './texture';
 import { defaultProtectMip } from './uv';
+import type { ValidationCode, ValidationReport } from './validate';
+
+export {
+  type AtlasBleedReport,
+  type AtlasGrid,
+  atlasBleedReport,
+  type DilateAtlasOptions,
+  type DilateAtlasResult,
+};
+
+function packDilatedTexture(
+  name: string,
+  tex: TextureAsset,
+  rgba01: Float32Array,
+  grid: AtlasGrid,
+  wantMips: boolean | undefined,
+  alphaCutoff: number | undefined,
+): Result<TextureAsset, ModelingError> {
+  const mips = wantMips ?? tex.mips.kind === 'packed';
+  const texels = grid.w * grid.h;
+  if (tex.format === 'r16unorm') {
+    return ok(r16Texture(grid.w, grid.h, (x, y) => rgba01[(y * grid.w + x) * 4] as number, mips));
+  }
+  const packed = new Uint8Array(texels * 4);
+  for (let i = 0; i < texels * 4; i++) {
+    packed[i] = Math.max(0, Math.min(255, Math.round((rgba01[i] as number) * 255)));
+  }
+  const base: TextureAsset = {
+    kind: 'texture',
+    format: tex.format,
+    colorSpace: tex.colorSpace,
+    shape: { viewDimension: '2d', extent: { width: grid.w, height: grid.h } },
+    mips: { kind: 'none' },
+    data: packed,
+  };
+  if (!mips) return ok(base);
+  const layout =
+    name === 'normal' || name === 'normalObject'
+      ? 'normal'
+      : name === 'ormh'
+        ? 'ormh'
+        : alphaCutoff !== undefined
+          ? 'mask'
+          : 'color';
+  const chain = mipChain(base, {
+    layout,
+    ...(layout === 'mask' && alphaCutoff !== undefined ? { alphaCutoff } : {}),
+  });
+  if (!chain.ok) return chain;
+  const total = chain.value.levels.reduce((sum, l) => sum + l.length, 0);
+  const data = new Uint8Array(total);
+  let off = 0;
+  for (const level of chain.value.levels) {
+    data.set(level, off);
+    off += level.length;
+  }
+  return ok({
+    ...base,
+    data,
+    mips: { kind: 'packed', levelCount: chain.value.levels.length },
+  });
+}
+
+/**
+ * Dilate 2D atlas `TextureAsset` buffers on CPU without re-running a 3D mesh bake.
+ * Reuses the exact `dilate` and `mipBleed` primitives used by `bakeMaps`.
+ */
+export function dilateAtlas(options: DilateAtlasOptions): Result<DilateAtlasResult, ModelingError> {
+  if (shouldUseRustBake(options.backend, undefined)) {
+    return dilateAtlasWithRustKernel(options, packDilatedTexture);
+  }
+  const prep = prepareAtlasDilation(options);
+  if (!prep.ok) return prep;
+  const { entries, grid, mask, owner, frame, gutter, protectMip, categorical } = prep.value;
+  const texels = grid.w * grid.h;
+  const kinds = entries.map(([name]) =>
+    categorical.has(name) ? ('materialId' as BakeMapKind) : 'baseColor',
+  );
+  const buffers = entries.map(([, tex]) => {
+    const out = new Float64Array(texels * 4);
+    if (tex.format === 'r16unorm') {
+      const view = new Uint16Array(tex.data.buffer, tex.data.byteOffset, texels);
+      for (let i = 0; i < texels; i++) {
+        out[i * 4] = (view[i] as number) / 65535;
+        out[i * 4 + 3] = 1;
+      }
+    } else {
+      for (let i = 0; i < texels * 4; i++) {
+        out[i] = (tex.data[i] as number) / 255;
+      }
+    }
+    return out;
+  });
+  const covered = Uint8Array.from(mask);
+  const outOwner = Int32Array.from(owner);
+  dilate(kinds, buffers, covered, outOwner, frame, grid, gutter);
+  const textures: Record<string, TextureAsset> = {};
+  for (const [k, [name, tex]] of entries.entries()) {
+    const packed = packDilatedTexture(
+      name,
+      tex,
+      Float32Array.from(buffers[k] as Float64Array),
+      grid,
+      options.mips,
+      options.alphaCutoff,
+    );
+    if (!packed.ok) return packed;
+    textures[name] = packed.value;
+  }
+  return ok({
+    textures,
+    bleed: atlasBleedReport(outOwner, mask, grid, protectMip),
+    backend: 'ts',
+  });
+}
+
+/**
+ * Dilate 2D atlas `TextureAsset` maps on WebGPU reusing the bake JFA + ring dilation +
+ * RGBA8 pack pipelines. Falls back cleanly to CPU `dilateAtlas` when GPU preconditions aren't met.
+ */
+export async function dilateAtlasWithGpu(
+  options: DilateAtlasOptions,
+  device: GPUDevice,
+): Promise<Result<DilateAtlasResult, ModelingError>> {
+  const gpu = await runGpuAtlasDilation(options, device);
+  if (gpu === undefined) return dilateAtlas(options);
+  if (!gpu.ok) return gpu;
+  const { entries, grid, packedBytesCopy, bleed } = gpu.value;
+  const texels = grid.w * grid.h;
+  const mapBytes = texels * 4;
+  const textures: Record<string, TextureAsset> = {};
+  for (let m = 0; m < entries.length; m++) {
+    const [name, tex] = entries[m] as readonly [string, TextureAsset];
+    const u8 = new Uint8Array(packedBytesCopy, m * mapBytes, mapBytes);
+    const f32 = new Float32Array(mapBytes);
+    for (let i = 0; i < mapBytes; i++) f32[i] = (u8[i] as number) / 255;
+    const packed = packDilatedTexture(name, tex, f32, grid, options.mips, options.alphaCutoff);
+    if (!packed.ok) return packed;
+    textures[name] = packed.value;
+  }
+  return ok({ textures, bleed, backend: 'webgpu' });
+}
 
 /**
  * Baking (bake groups, cage and ray
@@ -83,6 +276,7 @@ export interface BakeSettings {
    * `<groupPrefix><id>` belongs to bake group `id` on the base and on the detail (untagged faces
    * form the group ''; rays only find their own group); `floater` tags detail faces
    * that float over the surface (normal-only: height ignores them, AO does not see them).
+   * Floating detail shells (a boolean's `details: 'float'`) are floaters without a tag.
    */
   readonly tags?: { readonly groupPrefix?: string; readonly floater?: string };
   /** Per bake group id: overrides of the bake-wide cage and direction. */
@@ -151,9 +345,44 @@ export interface BakeSettings {
   readonly wrap?: { readonly u?: true | Tuple3; readonly v?: true | Tuple3 };
   /** Pack box-filtered mips with the textures (default true; resample maps have none). */
   readonly mips?: boolean;
+  /**
+   * Analytic bake (BK63, texture target): where the base carries the patch domain (`uv1`, or
+   * the BK56 carrier channel) and a `Model` detail records NURBS patches, position, normal /
+   * normalObject and height come from the exact patches instead of rays; every other map, and
+   * every base triangle the patches do not fully describe, is ray-baked and counted in the
+   * `analytic` diagnostic (fail-closed). Default off: the ray bake is unchanged byte for byte.
+   * `true` is `{ verify: 'all' }`. The analytic bake buys accuracy, not speed: at 256 x 256 the
+   * default verifier costs about 4.2x the ray bake (1.7x the `'off'` / `'sample'` cost).
+   */
+  readonly analytic?: true | AnalyticOptions;
   readonly compute?: ComputePolicy;
+  /** Execution backend selector ('auto' uses Rust WASM when initialized; 'ts' forces TS baseline). */
+  readonly backend?: 'auto' | 'rust' | 'ts';
   /** Work units before `model-work-budget`. */
   readonly budget?: number;
+}
+
+export interface AnalyticOptions {
+  /**
+   * 'all' (default): before sampling, compare the exact patch with the ray bake at every
+   * analytic sub-sample; a disagreement beyond the tolerance ray-bakes the whole group
+   * (`analytic-mismatch`). The weaker modes are explicit opt-outs with a known limit:
+   * 'sample' compares at most 256 area-stratified points per group, so a local error (for
+   * example a 10 mm move of four faces) can pass between them; 'off' trusts the patches, and
+   * only the stale-descriptor guard (the detail's own vertices must lie on each patch within
+   * its chord) still protects the output. That guard compares every face of a patch up to 2048
+   * faces and a deterministic every-Nth-face stride above that (a 2484-face patch is compared at
+   * stride 2); it cannot see a deleted detail face, and 'sample' catches only a contiguous hole
+   * of a few percent while 'all' catches a single deleted face. Neither opt-out proves the exact result.
+   */
+  readonly verify?: AnalyticVerify;
+  /**
+   * The patches to evaluate (default: the detail Model's recorded surfaces with their `chord` /
+   * `angle`). A primitive-Shape producer supplies descriptors here; a bytes detail needs them.
+   */
+  readonly patches?: readonly AnalyticPatch[];
+  /** The base corner channel holding the normalized patch domain (default: the base Model's). */
+  readonly domain?: CornerChannelName;
 }
 
 export interface BakeOptions extends BakeSettings {
@@ -209,6 +438,11 @@ type BakeTimeCheck = Exclude<BakeCheck, (typeof BAKE_CHECKS)[number]>;
 const STEEP_WARN = 0.03;
 /** Fraction of a group's samples below which its ray correspondence is reported (V2). */
 const RAY_HIT_WARN = 0.99;
+/**
+ * Flat-fallback share of a group's samples above which the bake warns: a flat sample has no facing
+ * detail surface within reach, so its texel carries the base normal, not the detail's.
+ */
+export const FLAT_SHARE_WARN = 0.05;
 /** Fraction of stacked samples that may conflict before V5 reports (outliers at chart rims). */
 const STACK_RATIO = 0.01;
 /**
@@ -287,6 +521,46 @@ function snapshotOf(input: Model | Uint8Array, name: string): Result<Uint8Array,
   return ok(input.snapshot());
 }
 
+/** The analytic bake of the options: its job params, or why the bake stays on rays (undefined: not requested). */
+function analyticOf(
+  settings: BakeSettings,
+  base: Model | Uint8Array,
+  detail: Model | Uint8Array,
+): { readonly params?: BakeAnalyticParams; readonly skipped?: string } | undefined {
+  const request = settings.analytic;
+  if (request === undefined) return undefined;
+  const options: AnalyticOptions = request === true ? {} : request;
+  if ((settings.target ?? 'texture') !== 'texture') {
+    return { skipped: 'the vertex target has no analytic bake' };
+  }
+  if (
+    !settings.maps.some(
+      (m) => m === 'position' || m === 'normal' || m === 'normalObject' || m === 'height',
+    )
+  ) {
+    return { skipped: 'no requested map is analytic (position, normal, normalObject, height)' };
+  }
+  let patches = options.patches;
+  if (patches === undefined) {
+    if (!(detail instanceof Model)) {
+      return {
+        skipped: 'a bytes detail records no patches: pass analytic.patches or a Model detail',
+      };
+    }
+    patches = detail.analyticSource().surfaces.map((surface) => ({
+      kind: 'nurbs' as const,
+      name: surface.name,
+      surface: surface.surface,
+      chord: surface.chord ?? 0.001,
+      angle: surface.angle ?? 12,
+    }));
+  }
+  if (patches.length === 0) return { skipped: 'the detail records no patches' };
+  const domain = options.domain ?? (base instanceof Model ? base.analyticSource().domain : 'uv1');
+  const detailDomain = detail instanceof Model ? detail.analyticSource().domain : domain;
+  return { params: { verify: options.verify ?? 'all', domain, detailDomain, patches } };
+}
+
 function diagonal(snapshots: readonly Uint8Array[]): Result<number, ModelingError> {
   const positions: number[][] = [];
   for (const bytes of snapshots) {
@@ -311,6 +585,7 @@ function jobParams(
   settings: BakeSettings,
   snapshots: readonly Uint8Array[],
   resample: TextureAsset | undefined,
+  analytic?: BakeAnalyticParams,
 ): Result<BakeJobParams, ModelingError> {
   const target = settings.target ?? 'texture';
   if (target === 'texture' && settings.resolution === undefined) {
@@ -370,6 +645,7 @@ function jobParams(
     cavity: { range: settings.cavity?.range ?? [0.15, 0.5] },
     opacity: { cutoff: settings.opacity?.cutoff ?? 0.5 },
     ...(settings.wrap === undefined ? {} : { wrap: settings.wrap }),
+    ...(analytic === undefined ? {} : { analytic }),
     ...(resample === undefined
       ? {}
       : {
@@ -414,19 +690,7 @@ function textureOf(
   switch (map) {
     case 'normal':
     case 'normalObject':
-      return normalTexture(
-        width,
-        height,
-        (x, y) => {
-          const o = at(x, y);
-          return [
-            (values[o] as number) * 2 - 1,
-            (values[o + 1] as number) * 2 - 1,
-            (values[o + 2] as number) * 2 - 1,
-          ];
-        },
-        { mips },
-      );
+      return packFloat32Texture(width, height, values, { colorSpace: 'linear', mips }, 'normal');
     case 'height':
       if (params.height.bits === 16) {
         return ok(r16Texture(width, height, (x, y) => values[at(x, y)] as number, mips));
@@ -446,21 +710,20 @@ function textureOf(
     default:
       break;
   }
-  const texel = (x: number, y: number) => {
-    const o = at(x, y);
-    return [
-      values[o] as number,
-      values[o + 1] as number,
-      values[o + 2] as number,
-      values[o + 3] as number,
-    ] as const;
-  };
-  if (map === 'materialId') return idTexture(width, height, texel, mips);
-  return textureFrom(width, height, texel, {
-    colorSpace: map === 'baseColor' ? 'srgb' : 'linear',
-    mips,
-    ...(map === 'opacity' ? { alphaCutoff: params.opacity.cutoff } : {}),
-  });
+  if (map === 'materialId') {
+    return packFloat32Texture(width, height, values, { colorSpace: 'srgb', mips }, 'id');
+  }
+  return packFloat32Texture(
+    width,
+    height,
+    values,
+    {
+      colorSpace: map === 'baseColor' ? 'srgb' : 'linear',
+      mips,
+      ...(map === 'opacity' ? { alphaCutoff: params.opacity.cutoff } : {}),
+    },
+    'color',
+  );
 }
 
 const floats = (bytes: Uint8Array) =>
@@ -474,6 +737,41 @@ const floats = (bytes: Uint8Array) =>
 export function bakeMaps(options: BakeOptions): Result<BakeResult, ModelingError> {
   const request = bakeRequest(options);
   if (!request.ok) return request;
+  const p = request.value.params;
+  const canRust =
+    shouldUseRustBake(options.backend, options.compute) &&
+    options.native === undefined &&
+    options.budget === undefined &&
+    options.cache === undefined &&
+    p.target === 'texture' &&
+    p.analytic === undefined &&
+    p.maps.every(isRustBakeMapKind) &&
+    !(p.wrap && (typeof p.wrap.u === 'object' || typeof p.wrap.v === 'object'));
+  if (canRust) {
+    const work = new WorkMeter(DEFAULT_WORK_BUDGET, options.signal);
+    const prepared = prepareBake(request.value, work, { deferDetailBvh: true });
+    if (!prepared.ok) return prepared;
+    const rustCorr = bakeCorrespondWithRustKernel(prepared.value);
+    if (!rustCorr.ok) return rustCorr;
+    try {
+      const out = evaluateBakeMapsWithRustKernel(rustCorr.value, p);
+      if (!out.ok) return out;
+      const backendIdentity = `${tsBakeBackend.identity}/rust-wasm/1`;
+      const { metrics, ...rest } = out.value;
+      return bakeResult(options, request.value, {
+        ...rest,
+        report: {
+          backend: tsBakeBackend.name,
+          backendIdentity,
+          quality: tsBakeBackend.quality('bake'),
+          cacheKey: computeCacheKey(request.value, backendIdentity),
+          metrics: { ...metrics, work: work.units },
+        },
+      });
+    } finally {
+      rustCorr.value.corr.dispose();
+    }
+  }
   const job = runComputeJob(request.value, tsBakeBackend, {
     policy: options.compute ?? 'auto',
     ...(options.native === undefined ? {} : { native: options.native }),
@@ -497,13 +795,41 @@ export async function bakeMapsWithGpu(
   const request = bakeRequest(options);
   if (!request.ok) return request;
   const work = new WorkMeter(options.budget ?? DEFAULT_WORK_BUDGET, options.signal);
-  const prepared = prepareBake(request.value, work);
+  const prepared = prepareBake(request.value, work, {
+    deferDetailBvh: options.budget === undefined && getModelingKernelWasm() !== undefined,
+  });
   if (!prepared.ok) return prepared;
+  if (options.budget === undefined) {
+    const gpuOut = await runBakeCorrespondGpu(device, prepared.value, work, options.mips ?? true);
+    if (gpuOut !== undefined) {
+      if (!gpuOut.ok) return gpuOut;
+      if (!work.spend(0)) return err(work.failure as ModelingError);
+      const backendIdentity = `${tsBakeBackend.identity}/webgpu-correspond-jfa/1`;
+      const { metrics, ...rest } = gpuOut.value.output;
+      return bakeResult(
+        options,
+        request.value,
+        {
+          ...rest,
+          report: {
+            backend: tsBakeBackend.name,
+            backendIdentity,
+            quality: tsBakeBackend.quality('bake'),
+            cacheKey: computeCacheKey(request.value, backendIdentity),
+            metrics: { ...metrics, work: work.units },
+          },
+        },
+        gpuOut.value.prepackedTextures,
+      );
+    }
+  }
+  ensureGroupBvhs(prepared.value);
   const params = request.value.params;
   const grid = gridOf(params);
   const ao =
     options.budget === undefined &&
     params.target === 'texture' &&
+    params.analytic === undefined &&
     !grid.u &&
     !grid.v &&
     !params.maps.includes('opacity')
@@ -585,6 +911,15 @@ export async function bakeMapsParallel(
       }),
     );
   }
+  const result = await parallelBakeJob(request.value, options, executor);
+  return result.ok ? bakeResult(options, request.value, result.value) : result;
+}
+
+async function parallelBakeJob(
+  request: ComputeJobRequest<'bake'>,
+  options: Pick<BakeOptions, 'budget' | 'signal'>,
+  executor: BakeExecutor,
+): Promise<Result<ComputeJobResult<'bake'>, ModelingError>> {
   const budget = options.budget ?? DEFAULT_WORK_BUDGET;
   const work = new WorkMeter(budget, options.signal);
   const fail = (cause: ModelingError) =>
@@ -601,11 +936,11 @@ export async function bakeMapsParallel(
         cause.hint,
       ),
     );
-  const prepared = prepareBake(request.value, work);
+  const prepared = prepareBake(request, work);
   if (!prepared.ok) return fail(prepared.error);
   let parts: readonly BakeRows[] = [];
-  if (request.value.params.target === 'texture') {
-    const sampled = await executor(request.value, allRows(request.value.params), {
+  if (request.params.target === 'texture') {
+    const sampled = await executor(request, allRows(request.params), {
       budget: budget - work.units,
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
@@ -619,13 +954,13 @@ export async function bakeMapsParallel(
   const out = finishBake(prepared.value, parts, work);
   if (!out.ok) return fail(out.error);
   const { metrics, ...rest } = out.value;
-  return bakeResult(options, request.value, {
+  return ok({
     ...rest,
     report: {
       backend: tsBakeBackend.name,
       backendIdentity: tsBakeBackend.identity,
       quality: tsBakeBackend.quality('bake'),
-      cacheKey: computeCacheKey(request.value, tsBakeBackend.identity),
+      cacheKey: computeCacheKey(request, tsBakeBackend.identity),
       metrics: { ...metrics, work: work.units },
     },
   });
@@ -717,7 +1052,9 @@ const SETTINGS_SHAPE: OptionShape = {
   opacity: { cutoff: true },
   wrap: { u: true, v: true },
   mips: true,
+  analytic: { verify: true, patches: true, domain: true },
   compute: true,
+  backend: true,
   budget: true,
 };
 const OPTIONS_SHAPE: OptionShape = {
@@ -782,7 +1119,8 @@ function bakeRequest(options: BakeOptions): Result<ComputeJobRequest<'bake'>, Mo
     if (!bytes.ok) return bytes;
     inputs.push(bytes.value);
   }
-  const params = jobParams(options, inputs.slice(0, 2), options.resample);
+  const analytic = analyticOf(options, options.base, options.detail)?.params;
+  const params = jobParams(options, inputs.slice(0, 2), options.resample, analytic);
   if (!params.ok) return params;
   return ok({ kind: 'bake', inputs, params: params.value });
 }
@@ -792,6 +1130,7 @@ function bakeResult(
   options: BakeOptions,
   request: ComputeJobRequest<'bake'>,
   job: ComputeJobResult<'bake'>,
+  prepackedTextures?: Partial<Record<BakeMapKind, TextureAsset>>,
 ): Result<BakeResult, ModelingError> {
   const base = { value: request.inputs[0] as Uint8Array };
   const params = { value: request.params };
@@ -802,11 +1141,19 @@ function bakeResult(
   const vertexColors: Partial<Record<BakeMapKind, Float32Array>> = {};
   let colored: Uint8Array | undefined;
   for (const [k, map] of p.maps.entries()) {
-    const values = floats(outputs[k] as Uint8Array);
     if (p.target === 'vertex') {
-      vertexColors[map] = values;
+      vertexColors[map] = floats(outputs[k] as Uint8Array);
       continue;
     }
+    const prepacked = prepackedTextures?.[map];
+    if (prepacked !== undefined) {
+      textures[map] = prepacked;
+      if (options.texture !== undefined) {
+        references[map] = options.texture(`${options.key ?? 'bake'}-${map}`, prepacked);
+      }
+      continue;
+    }
+    const values = floats(outputs[k] as Uint8Array);
     const texture = textureOf(map, values, p, options.mips ?? true, options.resample);
     if (!texture.ok) return texture;
     textures[map] = texture.value;
@@ -829,11 +1176,34 @@ function bakeResult(
   }
   const issues: Issue<BakeTimeCheck>[] = [];
   for (const g of provenance.groups) {
-    if (g.samples > 0 && g.rayHits / g.samples < RAY_HIT_WARN) {
+    if (g.samples > 0 && (g.rayHits / g.samples < RAY_HIT_WARN || g.missClusters.length > 0)) {
       issues.push({
         code: 'ray-miss',
         severity: 'warn',
-        detail: { subject: g.id, samples: g.samples, rayHits: g.rayHits },
+        detail: {
+          subject: g.id,
+          samples: g.samples,
+          rayHits: g.rayHits,
+          nearest: g.nearest,
+          clusters: g.missClusters,
+        },
+      });
+    }
+  }
+  for (const g of provenance.groups) {
+    const flat = g.branches.flat;
+    if (g.samples > 0 && flat / g.samples > FLAT_SHARE_WARN) {
+      issues.push({
+        code: 'ray-miss',
+        severity: 'warn',
+        detail: {
+          subject: g.id,
+          check: 'flat-fallback',
+          samples: g.samples,
+          flat,
+          share: flat / g.samples,
+          threshold: FLAT_SHARE_WARN,
+        },
       });
     }
   }
@@ -917,6 +1287,21 @@ function bakeResult(
       detail: { subject: provenance.handedness.face, samples: provenance.handedness.samples },
     });
   }
+  const analytic = provenance.analytic;
+  for (const m of analytic?.mismatches ?? []) {
+    issues.push({
+      code: 'analytic-mismatch',
+      severity: 'warn',
+      detail: {
+        subject: m.patch,
+        group: m.group,
+        map: m.map,
+        worst: m.worst,
+        tolerance: m.tolerance,
+        count: m.count,
+      },
+    });
+  }
   const coverage =
     textures.opacity === undefined ? undefined : coverageIssue(textures.opacity, p.opacity.cutoff);
   if (coverage !== undefined) issues.push(coverage);
@@ -926,6 +1311,28 @@ function bakeResult(
     message: `bake (${p.maps.join(', ')}) sampled ${provenance.covered} ${p.target === 'texture' ? 'texel(s)' : 'vertices'} on the ${report.backend} backend (${report.quality})`,
     detail: { metrics: report.metrics, cacheKey: report.cacheKey, materials: provenance.materials },
   });
+  const analyticNote = analyticOf(options, options.base, options.detail);
+  if (analytic !== undefined) {
+    const share =
+      analytic.analyticSamples / Math.max(1, analytic.analyticSamples + analytic.raySamples);
+    diagnostics.push({
+      severity: 'info',
+      message: `analytic bake: ${analytic.analyticSamples} sub-sample(s) exact, ${analytic.raySamples} on rays (${(share * 100).toFixed(1)} % exact), verify ${analytic.verify}${analytic.mismatches.length > 0 ? `, ${analytic.mismatches.length} mismatch(es) ray-baked` : ''}`,
+      detail: {
+        analyticSamples: analytic.analyticSamples,
+        raySamples: analytic.raySamples,
+        maps: analytic.maps,
+        groups: analytic.groups,
+        mismatches: analytic.mismatches,
+      },
+    });
+  } else if (analyticNote?.skipped !== undefined) {
+    diagnostics.push({
+      severity: 'info',
+      message: `analytic bake skipped, every map is ray-baked: ${analyticNote.skipped}`,
+      detail: { reason: analyticNote.skipped },
+    });
+  }
   return ok({
     textures,
     references,
@@ -984,9 +1391,9 @@ export function bakeSources(
       ),
     );
   }
-  if (!/^[\w-]+$/.test(options.key)) {
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(options.key)) {
     return err(
-      modelingError('model-invalid-argument', 'key is letters, digits, _ or -', {
+      modelingError('model-invalid-argument', 'key is a lower-case Pack source key segment', {
         key: options.key,
       }),
     );
@@ -999,6 +1406,7 @@ export function bakeSources(
     { ...options, target: 'texture' },
     [base.value, detail.value],
     undefined,
+    analyticOf({ ...options, target: 'texture' }, options.base, options.detail)?.params,
   );
   if (!params.ok) return params;
   const encoded = { base: toBase64(base.value), detail: toBase64(detail.value) };
@@ -1011,7 +1419,8 @@ export function bakeSources(
       mips: options.mips ?? true,
       ...encoded,
     };
-    out[`texture/${options.key}-${map}`] = { kind: BAKE_COOK_KIND, execution: 'cooked', source };
+    out[`texture/${options.key}-${map.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`] =
+      { kind: BAKE_COOK_KIND, execution: 'cooked', source };
   }
   return ok(out);
 }
@@ -1048,17 +1457,19 @@ export interface BakeCookInput {
 /**
  * The `modeling-bake` NativeCooker: decodes a `bakeSources` entry, runs the bake job on
  * the TS backend (one run per distinct base, detail and settings; later maps of the
- * same bake reuse it) and returns the map as an ordinary texture payload. A failed bake
+ * same bake reuse it) and returns the map as an ordinary texture payload. An optional
+ * row executor shares bakeMapsParallel's exact kernel and returns asynchronously;
+ * that path retains the per-cooker map memo, while job ByteCache reuse stays serial. A failed bake
  * throws, so the cook transaction keeps its last-known-good texture.
  */
 export function createBakeCooker(
-  options: { readonly budget?: number } = {},
+  options: { readonly budget?: number; readonly executor?: BakeExecutor } = {},
 ): NativeCooker<TextureAsset, BakeCookInput> {
   const memo = new Map<string, Map<BakeMapKind, Float32Array>>();
   return {
     key: BAKE_COOK_KIND,
     cacheIdentity: () => tsBakeBackend.identity,
-    cook(input, context): NativeCookDraft<TextureAsset> {
+    cook(input, context): NativeCookDraft<TextureAsset> | Promise<NativeCookDraft<TextureAsset>> {
       if (typeof input?.guid !== 'string' || input.guid.length === 0) {
         throw new TypeError(`${BAKE_COOK_KIND}: the cook input carries its asset GUID`);
       }
@@ -1070,37 +1481,1112 @@ export function createBakeCooker(
       }
       const request = { kind: 'bake' as const, inputs: [base, detail], params: source.params };
       const key = computeCacheKey(request, tsBakeBackend.identity);
-      let maps = memo.get(key);
-      if (maps === undefined) {
-        const job = runComputeJob(request, tsBakeBackend, {
-          policy: 'ts',
-          ...(options.budget === undefined ? {} : { budget: options.budget }),
-          ...(context?.cache === undefined ? {} : { cache: context.cache }),
-        });
-        if (!job.ok) {
-          throw new TypeError(`${job.error.code}: ${job.error.message}`);
-        }
-        maps = new Map(
+      const textureFor = (maps: Map<BakeMapKind, Float32Array>): NativeCookDraft<TextureAsset> => {
+        const texture = textureOf(
+          source.map,
+          maps.get(source.map) as Float32Array,
+          source.params,
+          source.mips,
+          undefined,
+        );
+        if (!texture.ok) throw new TypeError(`${texture.error.code}: ${texture.error.message}`);
+        return {
+          guid: input.guid,
+          payload: texture.value,
+          refs: [],
+          artifacts: {},
+          inputFingerprint: `${key}:${source.map}:${source.mips ? 'mips' : 'base'}`,
+        };
+      };
+      const retained = memo.get(key);
+      if (retained !== undefined) return textureFor(retained);
+      const remember = (job: Result<ComputeJobResult<'bake'>, ModelingError>) => {
+        if (!job.ok) throw new TypeError(`${job.error.code}: ${job.error.message}`);
+        const maps = new Map(
           source.params.maps.map((m, k) => [m, floats(job.value.outputs[k] as Uint8Array)]),
         );
         memo.clear();
         memo.set(key, maps);
-      }
-      const texture = textureOf(
-        source.map,
-        maps.get(source.map) as Float32Array,
-        source.params,
-        source.mips,
-        undefined,
-      );
-      if (!texture.ok) throw new TypeError(`${texture.error.code}: ${texture.error.message}`);
-      return {
-        guid: input.guid,
-        payload: texture.value,
-        refs: [],
-        artifacts: {},
-        inputFingerprint: `${key}:${source.map}:${source.mips ? 'mips' : 'base'}`,
+        return textureFor(maps);
       };
+      if (options.executor !== undefined) {
+        return parallelBakeJob(request, options, options.executor).then(remember);
+      }
+      return remember(
+        runComputeJob(request, tsBakeBackend, {
+          policy: 'ts',
+          ...(options.budget === undefined ? {} : { budget: options.budget }),
+          ...(context?.cache === undefined ? {} : { cache: context.cache }),
+        }),
+      );
     },
   };
+}
+
+// ---- Decomposed Atoms: Cage Plan, Correspondence, Map Evaluation, and Lowpoly Bake ----
+
+export interface BakeCageOptions {
+  readonly base: Model | Uint8Array;
+  readonly detail: Model | Uint8Array;
+  readonly cage?: Partial<BakeCage>;
+  readonly direction?: BakeDirection;
+  readonly tags?: { readonly groupPrefix?: string; readonly floater?: string };
+  readonly groups?: Readonly<Record<string, BakeGroupSettings>>;
+  readonly normals?: NormalMode;
+  readonly detailNormals?: NormalMode;
+  readonly ao?: BakeSettings['ao'];
+  readonly thickness?: BakeSettings['thickness'];
+  readonly height?: BakeSettings['height'];
+  readonly position?: BakeSettings['position'];
+  readonly wrap?: BakeSettings['wrap'];
+  readonly backend?: 'auto' | 'rust' | 'ts';
+}
+
+export interface BakeCageStrayPart {
+  readonly gap: number;
+  readonly faces: readonly number[];
+  readonly bounds: BakeBounds;
+}
+
+export interface BakeCageGroupPlan {
+  readonly id: string;
+  readonly offset: number;
+  readonly maxRay: number;
+  readonly aoDistance: number;
+  readonly thicknessDistance: number;
+  readonly direction: BakeDirection;
+  readonly detailTriangles: number;
+  readonly steepArea: number;
+  readonly strayParts: number;
+  readonly strayGap: number;
+  readonly strayInfo: readonly BakeCageStrayPart[];
+}
+
+export interface BakeCagePlan {
+  readonly diagonal: number;
+  readonly heightRange: readonly [number, number];
+  readonly positionBounds: BakeBounds;
+  readonly emissiveScale: number;
+  readonly uvReady: boolean;
+  readonly groups: readonly BakeCageGroupPlan[];
+  readonly strayParts: number;
+  readonly maxSteepArea: number;
+  readonly issues: readonly Issue<BakeTimeCheck>[];
+  readonly pass: boolean;
+}
+
+const CAGE_PLAN_SHAPE: OptionShape = {
+  base: true,
+  detail: true,
+  cage: CAGE_SHAPE,
+  direction: true,
+  tags: { groupPrefix: true, floater: true },
+  groups: { record: { cage: CAGE_SHAPE, direction: true } },
+  normals: true,
+  detailNormals: true,
+  ao: {
+    rays: true,
+    bias: true,
+    distance: true,
+    scope: true,
+    exclude: true,
+    attenuation: true,
+    floor: true,
+    denoise: true,
+  },
+  thickness: { rays: true, distance: true },
+  height: { bits: true, range: true },
+  position: { bounds: true },
+  wrap: { u: true, v: true },
+  backend: true,
+};
+
+/**
+ * Preflight cage distances, direction fields, stray floating parts, and steep-wall fractions
+ * per bake group before running UV rasterization or raycasting.
+ */
+export function resolveBakeCages(options: BakeCageOptions): Result<BakeCagePlan, ModelingError> {
+  const unknown = rejectUnknown(options, CAGE_PLAN_SHAPE);
+  if (unknown !== undefined) return err(unknown);
+  const base = snapshotOf(options.base, 'base');
+  if (!base.ok) return base;
+  const detail = snapshotOf(options.detail, 'detail');
+  if (!detail.ok) return detail;
+  const synthSettings: BakeSettings = {
+    maps: ['normal'],
+    resolution: 64,
+    ...(options.cage === undefined ? {} : { cage: options.cage }),
+    ...(options.direction === undefined ? {} : { direction: options.direction }),
+    ...(options.tags === undefined ? {} : { tags: options.tags }),
+    ...(options.groups === undefined ? {} : { groups: options.groups }),
+    ...(options.normals === undefined ? {} : { normals: options.normals }),
+    ...(options.detailNormals === undefined ? {} : { detailNormals: options.detailNormals }),
+    ...(options.ao === undefined ? {} : { ao: options.ao }),
+    ...(options.thickness === undefined ? {} : { thickness: options.thickness }),
+    ...(options.height === undefined ? {} : { height: options.height }),
+    ...(options.position === undefined ? {} : { position: options.position }),
+    ...(options.wrap === undefined ? {} : { wrap: options.wrap }),
+    ...(options.backend === undefined ? {} : { backend: options.backend }),
+  };
+  const params = jobParams(synthSettings, [base.value, detail.value], undefined, undefined);
+  if (!params.ok) return params;
+  let plan = resolveBakeCagePlan(
+    { kind: 'bake', inputs: [base.value, detail.value], params: params.value },
+    { allowMissingUv: true },
+  );
+  if (!plan.ok) return plan;
+  if (shouldUseRustBake(options.backend, undefined)) {
+    plan = resolveBakeCagesWithRustKernel(base.value, detail.value, params.value, plan.value);
+    if (!plan.ok) return plan;
+  }
+  const groups: BakeCageGroupPlan[] = plan.value.groups.map((g) => ({
+    id: g.id,
+    offset: g.offset,
+    maxRay: g.maxRay,
+    aoDistance: g.aoDistance,
+    thicknessDistance: g.thicknessDistance,
+    direction: g.direction,
+    detailTriangles: g.triangles,
+    steepArea: g.steep,
+    strayParts: g.strayParts,
+    strayGap: g.strayGap,
+    strayInfo: g.strayInfo.map((info) => ({
+      gap: info.gap,
+      faces: [...info.faces],
+      bounds: info.bounds,
+    })),
+  }));
+  const issues: Issue<BakeTimeCheck>[] = [];
+  for (const g of groups) {
+    if (g.steepArea > STEEP_WARN) {
+      issues.push({
+        code: 'steep-wall',
+        severity: 'warn',
+        detail: { subject: g.id, steepArea: g.steepArea },
+      });
+    }
+    if (g.strayParts > 0) {
+      issues.push({
+        code: 'stray-detail',
+        severity: 'warn',
+        detail: {
+          subject: g.id,
+          parts: g.strayParts,
+          gap: g.strayGap,
+          partsInfo: g.strayInfo,
+          hint: STRAY_GROUP_HINT,
+        },
+      });
+    }
+  }
+  return ok({
+    diagonal: plan.value.diagonal,
+    heightRange: plan.value.encoding.heightRange,
+    positionBounds: plan.value.encoding.positionBounds,
+    emissiveScale: emissiveScale(params.value.slots),
+    uvReady: plan.value.uvReady,
+    groups,
+    strayParts: groups.reduce((n, g) => n + g.strayParts, 0),
+    maxSteepArea: groups.reduce((m, g) => Math.max(m, g.steepArea), 0),
+    issues,
+    pass: issues.every((i) => i.severity === 'info'),
+  });
+}
+
+export interface BakeCorrespondOptions {
+  readonly base: Model | Uint8Array;
+  readonly detail: Model | Uint8Array;
+  readonly resolution: number | readonly [number, number];
+  readonly cage?: Partial<BakeCage>;
+  readonly direction?: BakeDirection;
+  readonly tags?: { readonly groupPrefix?: string; readonly floater?: string };
+  readonly groups?: Readonly<Record<string, BakeGroupSettings>>;
+  readonly samples?: 1 | 4 | 9 | 16;
+  readonly normals?: NormalMode;
+  readonly detailNormals?: NormalMode;
+  readonly height?: BakeSettings['height'];
+  readonly position?: BakeSettings['position'];
+  readonly wrap?: BakeSettings['wrap'];
+  readonly rawCage?: boolean;
+  readonly analytic?: BakeSettings['analytic'];
+  readonly ao?: BakeSettings['ao'];
+  readonly thickness?: BakeSettings['thickness'];
+  readonly compute?: ComputePolicy;
+  readonly backend?: 'auto' | 'rust' | 'ts';
+  readonly budget?: number;
+  readonly signal?: { readonly aborted: boolean };
+}
+
+export interface BakeEvalOptions {
+  readonly maps: readonly BakeMapKind[];
+  readonly filter?: 'bspline' | 'none';
+  readonly gutter?: number | 'fill';
+  readonly protectMip?: number;
+  readonly ao?: BakeSettings['ao'];
+  readonly thickness?: BakeSettings['thickness'];
+  readonly slots?: BakeSettings['slots'];
+  readonly edgeWear?: BakeSettings['edgeWear'];
+  readonly cavity?: BakeSettings['cavity'];
+  readonly height?: BakeSettings['height'];
+  readonly position?: BakeSettings['position'];
+  readonly opacity?: BakeSettings['opacity'];
+  readonly resample?: TextureAsset;
+  readonly mips?: boolean;
+  readonly texture?: TextureSink;
+  readonly key?: string;
+  readonly budget?: number;
+  readonly signal?: { readonly aborted: boolean };
+}
+
+export interface BakeCorrespondence {
+  readonly version: 1;
+  readonly backend: 'ts' | 'rust' | 'webgpu';
+  readonly resolution: readonly [number, number];
+  readonly samples: 1 | 4 | 9 | 16;
+  readonly covered: number;
+  readonly coverage: number;
+  readonly rayHits: number;
+  readonly nearest: number;
+  readonly heightRange: readonly [number, number];
+  readonly positionBounds: BakeBounds;
+  readonly stack: BakeStack;
+  readonly handedness: BakeHandedness;
+  readonly groups: readonly BakeGroupReport[];
+  readonly issues: readonly Issue<BakeTimeCheck>[];
+  readonly pass: boolean;
+  readonly cacheKey: string;
+  /** @internal */
+  readonly _state: {
+    readonly sourceOptions: BakeOptions;
+    readonly baseRequest: ComputeJobRequest<'bake'>;
+    readonly workUnits: number;
+    readonly cpu?: CpuCorrespondenceData;
+    readonly rust?: RustBakeCorrespondenceState;
+    readonly gpu?: GpuCorrespondenceData;
+    readonly seedJob: ComputeJobResult<'bake'>;
+  };
+}
+
+const CORRESPOND_SHAPE: OptionShape = {
+  base: true,
+  detail: true,
+  resolution: true,
+  cage: CAGE_SHAPE,
+  direction: true,
+  tags: { groupPrefix: true, floater: true },
+  groups: { record: { cage: CAGE_SHAPE, direction: true } },
+  samples: true,
+  normals: true,
+  detailNormals: true,
+  height: { bits: true, range: true },
+  position: { bounds: true },
+  wrap: { u: true, v: true },
+  rawCage: true,
+  analytic: { verify: true, patches: true, domain: true },
+  ao: {
+    rays: true,
+    bias: true,
+    distance: true,
+    scope: true,
+    exclude: true,
+    attenuation: true,
+    floor: true,
+    denoise: true,
+  },
+  thickness: { rays: true, distance: true },
+  compute: true,
+  backend: true,
+  budget: true,
+  signal: true,
+};
+
+const EVAL_SHAPE: OptionShape = {
+  maps: true,
+  filter: true,
+  gutter: true,
+  protectMip: true,
+  ao: {
+    rays: true,
+    bias: true,
+    distance: true,
+    scope: true,
+    exclude: true,
+    attenuation: true,
+    floor: true,
+    denoise: true,
+  },
+  thickness: { rays: true, distance: true },
+  slots: {
+    record: {
+      materialId: true,
+      baseColor: true,
+      roughness: true,
+      metallic: true,
+      emissive: true,
+      emissiveIntensity: true,
+    },
+  },
+  edgeWear: { range: true, noise: { scale: true, amount: true, seed: true } },
+  cavity: { range: true },
+  height: { bits: true, range: true },
+  position: { bounds: true },
+  opacity: { cutoff: true },
+  resample: true,
+  mips: true,
+  texture: true,
+  key: true,
+  budget: true,
+  signal: true,
+};
+
+function buildCorrespondenceHandle(
+  backend: 'ts' | 'rust' | 'webgpu',
+  sourceOptions: BakeOptions,
+  baseRequest: ComputeJobRequest<'bake'>,
+  workUnits: number,
+  provenance: BakeProvenance,
+  metrics: Readonly<Record<string, number>>,
+  cpu?: CpuCorrespondenceData,
+  gpu?: GpuCorrespondenceData,
+  rust?: RustBakeCorrespondenceState,
+): Result<BakeCorrespondence, ModelingError> {
+  const { w, h } = gridOf(baseRequest.params);
+  const backendIdentity =
+    backend === 'webgpu'
+      ? `${tsBakeBackend.identity}/webgpu-correspond-jfa/1`
+      : backend === 'rust'
+        ? `${tsBakeBackend.identity}/rust-wasm/1`
+        : tsBakeBackend.identity;
+  const seedJob: ComputeJobResult<'bake'> = {
+    status: 'ok',
+    outputs: [new Uint8Array(0)],
+    provenance,
+    locations: [],
+    report: {
+      backend: tsBakeBackend.name,
+      backendIdentity,
+      quality: tsBakeBackend.quality('bake'),
+      cacheKey: computeCacheKey(baseRequest, backendIdentity),
+      metrics: { ...metrics, work: workUnits },
+    },
+  };
+  const dummyTex: TextureAsset = {
+    kind: 'texture',
+    format: 'rgba8unorm',
+    colorSpace: 'linear',
+    shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+    mips: { kind: 'none' },
+    data: new Uint8Array(4),
+  };
+  const dummyEval = bakeResult(
+    { ...sourceOptions, maps: ['normal'], mips: false },
+    { ...baseRequest, params: { ...baseRequest.params, maps: ['normal'] } },
+    seedJob,
+    { normal: dummyTex },
+  );
+  if (!dummyEval.ok) return dummyEval;
+  return ok({
+    version: 1,
+    backend,
+    resolution: [w, h],
+    samples: baseRequest.params.samples as 1 | 4 | 9 | 16,
+    covered: provenance.covered,
+    coverage: provenance.covered / (w * h),
+    rayHits: provenance.rayHits,
+    nearest: provenance.nearest,
+    heightRange: provenance.heightRange,
+    positionBounds: provenance.positionBounds,
+    stack: provenance.stack,
+    handedness: provenance.handedness,
+    groups: provenance.groups,
+    issues: dummyEval.value.issues,
+    pass: dummyEval.value.pass,
+    cacheKey: seedJob.report.cacheKey,
+    _state: {
+      sourceOptions,
+      baseRequest,
+      workUnits,
+      ...(cpu === undefined ? {} : { cpu }),
+      ...(rust === undefined ? {} : { rust }),
+      ...(gpu === undefined ? {} : { gpu }),
+      seedJob,
+    },
+  });
+}
+
+function gpuCorrespondenceProvenance(gpu: GpuCorrespondenceData): {
+  readonly provenance: BakeProvenance;
+  readonly metrics: Readonly<Record<string, number>>;
+} {
+  const { prepared, width, height, weight, island, counters, stack, handedness, activeCount } = gpu;
+  const { groups, params, encoding } = prepared;
+  const syntheticPart: BakeRows = {
+    rows: [],
+    sums: [],
+    weight,
+    island,
+    point: new Float64Array(0),
+    normal: new Float64Array(0),
+    hits: new Float64Array(0),
+    counts: Float64Array.from({ length: groups.length * 11 }, (_, idx) => {
+      const g = Math.floor(idx / 11);
+      const k = idx % 11;
+      const src = g * 5;
+      if (k === 0) return counters[src] ?? 0;
+      if (k === 1) return counters[src + 1] ?? 0;
+      if (k === 2) return counters[src + 2] ?? 0;
+      if (k === 3) return counters[src + 3] ?? 0;
+      if (k === 4) return counters[src + 4] ?? 0;
+      if (k === 6) return counters[src] ?? 0;
+      if (k === 7) return (counters[src + 1] ?? 0) + (counters[src + 2] ?? 0);
+      return 0;
+    }),
+    findings: new Float64Array(0),
+    stack: new Float64Array(8),
+  };
+  const dummyWork = new WorkMeter(DEFAULT_WORK_BUDGET);
+  const done = finishBake(
+    {
+      ...prepared,
+      params: { ...params, maps: ['normal'] },
+      encoding: { ...encoding, params: { ...params, maps: ['normal'] } },
+    },
+    [syntheticPart],
+    dummyWork,
+    {
+      values: [new Float32Array(0)],
+      covered: activeCount,
+      curvatureRange: 0,
+      bleed: [],
+      stack,
+      handedness,
+    },
+  );
+  if (done.ok) {
+    return { provenance: done.value.provenance, metrics: done.value.metrics };
+  }
+  return {
+    provenance: {
+      covered: activeCount,
+      rayHits: 0,
+      nearest: 0,
+      groups: [],
+      materials: [],
+      curvatureRange: 0,
+      heightRange: encoding.heightRange,
+      positionBounds: encoding.positionBounds,
+      emissiveScale: 1,
+      bleed: [],
+      stack,
+      handedness,
+    },
+    metrics: { covered: activeCount, coverage: activeCount / (width * height) },
+  };
+}
+
+/**
+ * Resolve base-to-detail primary correspondence once on CPU, producing an immutable
+ * `BakeCorrespondence` reusable across any subsequent `evaluateBakeMaps` passes.
+ */
+export function bakeCorrespond(
+  options: BakeCorrespondOptions,
+): Result<BakeCorrespondence, ModelingError> {
+  const unknown = rejectUnknown(options, CORRESPOND_SHAPE);
+  if (unknown !== undefined) return err(unknown);
+  const bakeOpts: BakeOptions = {
+    ...(options as unknown as Omit<BakeOptions, 'maps'>),
+    maps: ['normal'],
+    mips: false,
+  };
+  const request = bakeRequest(bakeOpts);
+  if (!request.ok) return request;
+  const work = new WorkMeter(options.budget ?? DEFAULT_WORK_BUDGET, options.signal);
+  const p = request.value.params;
+  const canRust =
+    shouldUseRustBake(options.backend, options.compute) &&
+    options.budget === undefined &&
+    p.target === 'texture' &&
+    p.analytic === undefined &&
+    !(p.wrap && (typeof p.wrap.u === 'object' || typeof p.wrap.v === 'object'));
+  const prepared = prepareBake(request.value, work, canRust ? { deferDetailBvh: true } : undefined);
+  if (!prepared.ok) return prepared;
+  if (canRust) {
+    const rustCorr = bakeCorrespondWithRustKernel(prepared.value);
+    if (!rustCorr.ok) return rustCorr;
+    return buildCorrespondenceHandle(
+      'rust',
+      bakeOpts,
+      request.value,
+      work.units,
+      rustCorr.value.provenance,
+      rustCorr.value.metrics,
+      undefined,
+      undefined,
+      rustCorr.value,
+    );
+  }
+  const corr = bakeCorrespondCpu(prepared.value, work);
+  if (!corr.ok) return corr;
+  // Run light finishBake to obtain canonical group reports & audit metrics
+  const dummyWork = new WorkMeter(DEFAULT_WORK_BUDGET);
+  const seedOut = evaluateBakeMapsCpu(
+    corr.value,
+    { ...request.value.params, maps: ['height'], filter: 'none', gutter: 0 },
+    undefined,
+    dummyWork,
+  );
+  if (!seedOut.ok) return seedOut;
+  return buildCorrespondenceHandle(
+    'ts',
+    bakeOpts,
+    request.value,
+    work.units,
+    seedOut.value.provenance,
+    seedOut.value.metrics,
+    corr.value,
+  );
+}
+
+/**
+ * Resolve base-to-detail primary correspondence once on WebGPU (WASM batch SAH BVH +
+ * single-submission `correspondOnly` compute pass), falling back to CPU `bakeCorrespond`
+ * for `samples > 1`, wrapped UVs, or analytic bakes.
+ */
+export async function bakeCorrespondWithGpu(
+  options: BakeCorrespondOptions,
+  device: GPUDevice,
+): Promise<Result<BakeCorrespondence, ModelingError>> {
+  if (options.compute === 'ts' || options.compute === 'native') return bakeCorrespond(options);
+  const unknown = rejectUnknown(options, CORRESPOND_SHAPE);
+  if (unknown !== undefined) return err(unknown);
+  const bakeOpts: BakeOptions = {
+    ...(options as unknown as Omit<BakeOptions, 'maps'>),
+    maps: ['normal'],
+    mips: false,
+  };
+  const request = bakeRequest(bakeOpts);
+  if (!request.ok) return request;
+  const work = new WorkMeter(options.budget ?? DEFAULT_WORK_BUDGET, options.signal);
+  const prepared = prepareBake(request.value, work, {
+    deferDetailBvh: options.budget === undefined && getModelingKernelWasm() !== undefined,
+  });
+  if (!prepared.ok) return prepared;
+  if (options.budget === undefined) {
+    const gpu = await bakeCorrespondGpu(device, prepared.value);
+    if (gpu !== undefined) {
+      if (!work.spend(0)) return err(work.failure as ModelingError);
+      const { provenance, metrics } = gpuCorrespondenceProvenance(gpu);
+      return buildCorrespondenceHandle(
+        'webgpu',
+        bakeOpts,
+        request.value,
+        work.units,
+        provenance,
+        metrics,
+        undefined,
+        gpu,
+      );
+    }
+  }
+  ensureGroupBvhs(prepared.value);
+  const cpu = bakeCorrespondCpu(prepared.value, work);
+  if (!cpu.ok) return cpu;
+  const dummyWork = new WorkMeter(DEFAULT_WORK_BUDGET);
+  const seedOut = evaluateBakeMapsCpu(
+    cpu.value,
+    { ...request.value.params, maps: ['height'], filter: 'none', gutter: 0 },
+    undefined,
+    dummyWork,
+  );
+  if (!seedOut.ok) return seedOut;
+  return buildCorrespondenceHandle(
+    'ts',
+    bakeOpts,
+    request.value,
+    work.units,
+    seedOut.value.provenance,
+    seedOut.value.metrics,
+    cpu.value,
+  );
+}
+
+function buildEvalRequest(
+  correspondence: BakeCorrespondence,
+  options: BakeEvalOptions,
+): Result<
+  {
+    readonly evalOptions: BakeOptions;
+    readonly request: ComputeJobRequest<'bake'>;
+    readonly resampleTex:
+      | { readonly width: number; readonly height: number; readonly data: Uint8Array }
+      | undefined;
+  },
+  ModelingError
+> {
+  const unknown = rejectUnknown(options, EVAL_SHAPE);
+  if (unknown !== undefined) return err(unknown);
+  const { sourceOptions, baseRequest } = correspondence._state;
+  const evalOptions: BakeOptions = {
+    ...sourceOptions,
+    maps: options.maps,
+    ...(options.filter === undefined ? {} : { filter: options.filter }),
+    ...(options.gutter === undefined ? {} : { gutter: options.gutter }),
+    ...(options.protectMip === undefined ? {} : { protectMip: options.protectMip }),
+    ...(options.ao === undefined ? {} : { ao: options.ao }),
+    ...(options.thickness === undefined ? {} : { thickness: options.thickness }),
+    ...(options.slots === undefined ? {} : { slots: options.slots }),
+    ...(options.edgeWear === undefined ? {} : { edgeWear: options.edgeWear }),
+    ...(options.cavity === undefined ? {} : { cavity: options.cavity }),
+    ...(options.height === undefined ? {} : { height: options.height }),
+    ...(options.position === undefined ? {} : { position: options.position }),
+    ...(options.opacity === undefined ? {} : { opacity: options.opacity }),
+    ...(options.resample === undefined ? {} : { resample: options.resample }),
+    mips: options.mips ?? true,
+    ...(options.texture === undefined ? {} : { texture: options.texture }),
+    ...(options.key === undefined ? {} : { key: options.key }),
+  };
+  let resampleBytesVal: Uint8Array | undefined;
+  let resampleTex:
+    | { readonly width: number; readonly height: number; readonly data: Uint8Array }
+    | undefined;
+  if (options.resample !== undefined) {
+    const bytes = resampleBytes(options.resample);
+    if (!bytes.ok) return bytes;
+    resampleBytesVal = bytes.value;
+    resampleTex = {
+      width: options.resample.shape.extent.width,
+      height: options.resample.shape.extent.height,
+      data: bytes.value,
+    };
+  }
+  const inputs =
+    resampleBytesVal === undefined
+      ? baseRequest.inputs.slice(0, 2)
+      : [
+          baseRequest.inputs[0] as Uint8Array,
+          baseRequest.inputs[1] as Uint8Array,
+          resampleBytesVal,
+        ];
+  const analytic = analyticOf(evalOptions, sourceOptions.base, sourceOptions.detail)?.params;
+  const params = jobParams(evalOptions, inputs.slice(0, 2), options.resample, analytic);
+  if (!params.ok) return params;
+  return ok({
+    evalOptions,
+    request: { kind: 'bake', inputs, params: params.value },
+    resampleTex,
+  });
+}
+
+/**
+ * Evaluate arbitrary maps (`normal`, `ao`, `curvature`, `edgeWear`, `cavity`, `ormh`, `slots`, etc.)
+ * on CPU from an existing `BakeCorrespondence` without repeating UV rasterization or primary raycasts.
+ */
+export function evaluateBakeMaps(
+  correspondence: BakeCorrespondence,
+  options: BakeEvalOptions,
+): Result<BakeResult, ModelingError> {
+  const built = buildEvalRequest(correspondence, options);
+  if (!built.ok) return built;
+  const rust = correspondence._state.rust;
+  if (
+    rust !== undefined &&
+    options.budget === undefined &&
+    built.value.request.params.maps.every(isRustBakeMapKind)
+  ) {
+    const out = evaluateBakeMapsWithRustKernel(rust, built.value.request.params);
+    if (!out.ok) return out;
+    const { metrics, ...rest } = out.value;
+    const backendIdentity = `${tsBakeBackend.identity}/rust-wasm/1`;
+    return bakeResult(built.value.evalOptions, built.value.request, {
+      ...rest,
+      report: {
+        backend: tsBakeBackend.name,
+        backendIdentity,
+        quality: tsBakeBackend.quality('bake'),
+        cacheKey: computeCacheKey(built.value.request, backendIdentity),
+        metrics: { ...metrics, work: 0 },
+      },
+    });
+  }
+  const work = new WorkMeter(options.budget ?? DEFAULT_WORK_BUDGET, options.signal);
+  let cpu = correspondence._state.cpu;
+  if (cpu === undefined && rust !== undefined) {
+    ensureGroupBvhs(rust.prepared);
+    const fallback = bakeCorrespondCpu(rust.prepared, work);
+    if (!fallback.ok) return fallback;
+    cpu = fallback.value;
+  }
+  if (cpu === undefined) {
+    return err(
+      modelingError(
+        'model-invalid-argument',
+        'evaluateBakeMaps expects a CPU correspondence from bakeCorrespond',
+        { backend: correspondence.backend },
+        'call evaluateBakeMapsWithGpu(correspondence, options, device) for a WebGPU correspondence',
+      ),
+    );
+  }
+  const out = evaluateBakeMapsCpu(cpu, built.value.request.params, built.value.resampleTex, work);
+  if (!out.ok) return out;
+  const { metrics, ...rest } = out.value;
+  const backendIdentity = tsBakeBackend.identity;
+  return bakeResult(built.value.evalOptions, built.value.request, {
+    ...rest,
+    report: {
+      backend: tsBakeBackend.name,
+      backendIdentity,
+      quality: tsBakeBackend.quality('bake'),
+      cacheKey: computeCacheKey(built.value.request, backendIdentity),
+      metrics: { ...metrics, work: work.units },
+    },
+  });
+}
+
+/**
+ * Evaluate arbitrary maps on WebGPU from an existing `BakeCorrespondence` without rebuilding
+ * BVHs, rasterizing base UVs, or re-running primary correspondence rays (when AO is omitted,
+ * no BVH buffers are even uploaded to GPU). Falls back cleanly to CPU `evaluateBakeMaps` if needed.
+ */
+export async function evaluateBakeMapsWithGpu(
+  correspondence: BakeCorrespondence,
+  options: BakeEvalOptions,
+  device: GPUDevice,
+): Promise<Result<BakeResult, ModelingError>> {
+  const gpu = correspondence._state.gpu;
+  if (gpu === undefined) return evaluateBakeMaps(correspondence, options);
+  const built = buildEvalRequest(correspondence, options);
+  if (!built.ok) return built;
+  const work = new WorkMeter(options.budget ?? DEFAULT_WORK_BUDGET, options.signal);
+  const evalPrepared = prepareEvalBake(
+    gpu.prepared,
+    built.value.request.params,
+    built.value.resampleTex,
+  );
+  if (options.budget === undefined) {
+    const gpuOut = await evaluateBakeMapsGpu(
+      device,
+      gpu,
+      evalPrepared,
+      work,
+      built.value.evalOptions.mips ?? true,
+    );
+    if (gpuOut !== undefined) {
+      if (!gpuOut.ok) return gpuOut;
+      if (!work.spend(0)) return err(work.failure as ModelingError);
+      const backendIdentity = `${tsBakeBackend.identity}/webgpu-correspond-eval/1`;
+      const { metrics, ...rest } = gpuOut.value.output;
+      return bakeResult(
+        built.value.evalOptions,
+        built.value.request,
+        {
+          ...rest,
+          report: {
+            backend: tsBakeBackend.name,
+            backendIdentity,
+            quality: tsBakeBackend.quality('bake'),
+            cacheKey: computeCacheKey(built.value.request, backendIdentity),
+            metrics: { ...metrics, work: work.units },
+          },
+        },
+        gpuOut.value.prepackedTextures,
+      );
+    }
+  }
+  const cpuFallback = bakeCorrespond({
+    ...(correspondence._state.sourceOptions as BakeCorrespondOptions),
+  });
+  if (!cpuFallback.ok) return cpuFallback;
+  return evaluateBakeMaps(cpuFallback.value, options);
+}
+
+export interface BakeLowpolyOptions {
+  readonly detail: Model;
+  /** Optional explicit low-poly base. When omitted, derived non-destructively from `detail`. */
+  readonly base?: Model;
+  readonly key?: string;
+  readonly lowpoly?: Omit<LowpolyOptions, 'uv'>;
+  readonly maps?: readonly BakeMapKind[];
+  readonly resolution?: number | readonly [number, number];
+  readonly normals?: NormalMode;
+  readonly detailNormals?: NormalMode;
+  readonly tags?: { readonly groupPrefix?: string; readonly floater?: string };
+  readonly groups?: Readonly<Record<string, BakeGroupSettings>>;
+  readonly cage?: Partial<BakeCage>;
+  readonly direction?: BakeDirection;
+  readonly gutter?: number | 'fill';
+  readonly protectMip?: number;
+  readonly samples?: 1 | 4 | 9 | 16;
+  readonly filter?: 'bspline' | 'none';
+  readonly ao?: BakeSettings['ao'];
+  readonly thickness?: BakeSettings['thickness'];
+  readonly slots?: BakeSettings['slots'];
+  readonly edgeWear?: BakeSettings['edgeWear'];
+  readonly cavity?: BakeSettings['cavity'];
+  readonly height?: BakeSettings['height'];
+  readonly position?: BakeSettings['position'];
+  readonly opacity?: BakeSettings['opacity'];
+  readonly wrap?: BakeSettings['wrap'];
+  readonly mips?: boolean;
+  readonly view?: { readonly distance: number; readonly fov?: number; readonly height?: number };
+  readonly texture?: TextureSink;
+  readonly compute?: ComputePolicy;
+  readonly backend?: 'auto' | 'rust' | 'ts';
+  readonly budget?: number;
+  readonly signal?: { readonly aborted: boolean };
+}
+
+export interface BakeLowpolyResult {
+  readonly base: Model;
+  readonly mesh: MeshAsset;
+  readonly assetKey: string;
+  readonly textures: Partial<Record<BakeMapKind, TextureAsset>>;
+  readonly references: Partial<Record<BakeMapKind, TextureReference>>;
+  readonly cagePlan: BakeCagePlan;
+  readonly correspondence: BakeCorrespondence;
+  readonly validation: ValidationReport;
+  readonly bake: BakeResult;
+  readonly pass: boolean;
+  readonly issues: readonly (Issue<ValidationCode> | Issue<BakeTimeCheck>)[];
+  readonly diagnostics: readonly OpDiagnostic[];
+}
+
+const BAKE_LOWPOLY_SHAPE: OptionShape = {
+  ...CORRESPOND_SHAPE,
+  ...EVAL_SHAPE,
+  lowpoly: {
+    union: { mode: true, voxelSize: true },
+    targetFaces: true,
+    hardAngle: true,
+    silhouette: { views: true, weight: true },
+    slivers: true,
+    quads: true,
+    tags: { groupPrefix: true, preserveGroups: true },
+    roles: true,
+  },
+  view: { distance: true, fov: true, height: true },
+  key: true,
+};
+
+function prepareLowpolyStage(options: BakeLowpolyOptions): Result<
+  {
+    readonly base: Model;
+    readonly key: string;
+    readonly normals: NormalMode;
+    readonly resolution: number | readonly [number, number];
+    readonly maps: readonly BakeMapKind[];
+    readonly protectMip: number;
+    readonly validation: ValidationReport;
+    readonly cagePlan: BakeCagePlan;
+    readonly correspondOpts: BakeCorrespondOptions;
+    readonly evalOpts: BakeEvalOptions;
+    readonly diagnostics: readonly OpDiagnostic[];
+  },
+  ModelingError
+> {
+  const unknown = rejectUnknown(options, BAKE_LOWPOLY_SHAPE);
+  if (unknown !== undefined) return err(unknown);
+  const key = options.key ?? 'model';
+  const maps = options.maps ?? (['normal', 'ormh', 'baseColor', 'ao'] as const);
+  const resolution = options.resolution ?? 1024;
+  const minRes = typeof resolution === 'number' ? resolution : minOf(resolution);
+  const protectMip = options.protectMip ?? defaultProtectMip(minRes);
+  const hardAngle = options.lowpoly?.hardAngle ?? 45;
+  const normals: NormalMode = options.normals ?? { mode: 'autoSmooth', angle: hardAngle };
+  const diagnostics: OpDiagnostic[] = [];
+
+  let base: Model;
+  if (options.base !== undefined) {
+    base = model(options.backend === undefined ? undefined : { backend: options.backend });
+    const copy = base.append(options.base);
+    if (copy.status !== 'ok' || base.poisoned !== undefined) {
+      return err(
+        base.poisoned ??
+          modelingError('model-precondition', 'base model is valid', { status: copy.status }),
+      );
+    }
+  } else {
+    base = model(options.backend === undefined ? undefined : { backend: options.backend });
+    const copy = base.append(options.detail);
+    if (copy.status !== 'ok' || base.poisoned !== undefined) {
+      return err(
+        base.poisoned ??
+          modelingError('model-precondition', 'detail model is valid for lowpoly derivation', {}),
+      );
+    }
+    const floaterTag = options.tags?.floater;
+    if (floaterTag !== undefined) {
+      base.delete(sel.tag(floaterTag).atLeast(0));
+      if (base.poisoned !== undefined) return err(base.poisoned);
+    }
+    const detailInspect = base.inspect();
+    const defaultTarget = Math.max(24, Math.min(2000, Math.round(detailInspect.faces * 0.25)));
+    const groupPrefix = options.lowpoly?.tags?.groupPrefix ?? options.tags?.groupPrefix;
+    const lowReport = base.lowpoly(sel.all(), {
+      ...options.lowpoly,
+      targetFaces: options.lowpoly?.targetFaces ?? defaultTarget,
+      hardAngle,
+      roles: options.lowpoly?.roles ?? 'form',
+      ...(groupPrefix === undefined
+        ? {}
+        : { tags: { groupPrefix, preserveGroups: options.lowpoly?.tags?.preserveGroups ?? true } }),
+      uv: { resolution: minRes, padding: { mips: protectMip } },
+    });
+    if (lowReport.diagnostics !== undefined) pushAll(diagnostics, lowReport.diagnostics);
+    if (lowReport.status !== 'ok' || base.poisoned !== undefined) {
+      return err(
+        base.poisoned ??
+          modelingError('model-precondition', 'lowpoly derivation succeeded', {
+            report: lowReport.diagnostics,
+          }),
+      );
+    }
+  }
+
+  const validation = base.validate({
+    bake: {
+      checks: BAKE_CHECKS,
+      normals,
+      ...(options.view === undefined ? {} : { view: options.view }),
+    },
+    shells: {},
+    uniqueUv: true,
+  });
+
+  const cageOpts: BakeCageOptions = {
+    base,
+    detail: options.detail,
+    normals,
+    ...(options.detailNormals === undefined ? {} : { detailNormals: options.detailNormals }),
+    ...(options.cage === undefined ? {} : { cage: options.cage }),
+    ...(options.direction === undefined ? {} : { direction: options.direction }),
+    ...(options.tags === undefined ? {} : { tags: options.tags }),
+    ...(options.groups === undefined ? {} : { groups: options.groups }),
+    ...(options.ao === undefined ? {} : { ao: options.ao }),
+    ...(options.thickness === undefined ? {} : { thickness: options.thickness }),
+    ...(options.height === undefined ? {} : { height: options.height }),
+    ...(options.position === undefined ? {} : { position: options.position }),
+    ...(options.wrap === undefined ? {} : { wrap: options.wrap }),
+    ...(options.backend === undefined ? {} : { backend: options.backend }),
+  };
+  const cagePlan = resolveBakeCages(cageOpts);
+  if (!cagePlan.ok) return cagePlan;
+
+  const correspondOpts: BakeCorrespondOptions = {
+    base,
+    detail: options.detail,
+    resolution,
+    normals,
+    ...(options.detailNormals === undefined ? {} : { detailNormals: options.detailNormals }),
+    ...(options.cage === undefined ? {} : { cage: options.cage }),
+    ...(options.direction === undefined ? {} : { direction: options.direction }),
+    ...(options.tags === undefined ? {} : { tags: options.tags }),
+    ...(options.groups === undefined ? {} : { groups: options.groups }),
+    ...(options.samples === undefined ? {} : { samples: options.samples }),
+    ...(options.ao === undefined ? {} : { ao: options.ao }),
+    ...(options.thickness === undefined ? {} : { thickness: options.thickness }),
+    ...(options.height === undefined ? {} : { height: options.height }),
+    ...(options.position === undefined ? {} : { position: options.position }),
+    ...(options.wrap === undefined ? {} : { wrap: options.wrap }),
+    ...(options.compute === undefined ? {} : { compute: options.compute }),
+    ...(options.backend === undefined ? {} : { backend: options.backend }),
+    ...(options.budget === undefined ? {} : { budget: options.budget }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
+  const evalOpts: BakeEvalOptions = {
+    maps,
+    protectMip,
+    key,
+    ...(options.filter === undefined ? {} : { filter: options.filter }),
+    ...(options.gutter === undefined ? {} : { gutter: options.gutter }),
+    ...(options.ao === undefined ? {} : { ao: options.ao }),
+    ...(options.thickness === undefined ? {} : { thickness: options.thickness }),
+    ...(options.slots === undefined ? {} : { slots: options.slots }),
+    ...(options.edgeWear === undefined ? {} : { edgeWear: options.edgeWear }),
+    ...(options.cavity === undefined ? {} : { cavity: options.cavity }),
+    ...(options.height === undefined ? {} : { height: options.height }),
+    ...(options.position === undefined ? {} : { position: options.position }),
+    ...(options.opacity === undefined ? {} : { opacity: options.opacity }),
+    ...(options.mips === undefined ? {} : { mips: options.mips }),
+    ...(options.texture === undefined ? {} : { texture: options.texture }),
+    ...(options.budget === undefined ? {} : { budget: options.budget }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
+
+  return ok({
+    base,
+    key,
+    normals,
+    resolution,
+    maps,
+    protectMip,
+    validation,
+    cagePlan: cagePlan.value,
+    correspondOpts,
+    evalOpts,
+    diagnostics,
+  });
+}
+
+function finalizeLowpolyStage(
+  stage: Extract<ReturnType<typeof prepareLowpolyStage>, { ok: true }>['value'],
+  correspondence: BakeCorrespondence,
+  bake: BakeResult,
+): Result<BakeLowpolyResult, ModelingError> {
+  const { base, key, normals, validation, cagePlan, diagnostics } = stage;
+  const assetKey = `mesh/${key}`;
+  const finished = base.finish({ key, normals });
+  if (!finished.ok) return finished;
+  const mesh = finished.value[assetKey] as MeshAsset;
+  const issues: (Issue<ValidationCode> | Issue<BakeTimeCheck>)[] = [
+    ...validation.issues,
+    ...bake.issues,
+  ];
+  return ok({
+    base,
+    mesh,
+    assetKey,
+    textures: bake.textures,
+    references: bake.references,
+    cagePlan,
+    correspondence,
+    validation,
+    bake,
+    pass: validation.pass && bake.pass,
+    issues,
+    diagnostics: [...diagnostics, ...bake.diagnostics],
+  });
+}
+
+/**
+ * End-to-end non-destructive high-to-low authoring pipeline (CPU):
+ * derives low-poly `base` (unless explicitly supplied) preserving `bake:<id>` groups and
+ * dropping `detail`/`tool`/`floater` faces -> aligns sharp edges & `uv.auto` padding to
+ * `protectMip` -> validates `BAKE_CHECKS` / `shells` / `uniqueUv` -> preflights cages ->
+ * runs `bakeCorrespond` + `evaluateBakeMaps` -> exports `MeshAsset` with matching tangent frame.
+ */
+export function bakeLowpoly(options: BakeLowpolyOptions): Result<BakeLowpolyResult, ModelingError> {
+  const stage = prepareLowpolyStage(options);
+  if (!stage.ok) return stage;
+  const correspondence = bakeCorrespond(stage.value.correspondOpts);
+  if (!correspondence.ok) return correspondence;
+  const bake = evaluateBakeMaps(correspondence.value, stage.value.evalOpts);
+  if (!bake.ok) return bake;
+  return finalizeLowpolyStage(stage.value, correspondence.value, bake.value);
+}
+
+/**
+ * End-to-end non-destructive high-to-low authoring pipeline executed on WebGPU (`bakeCorrespondWithGpu`
+ * + `evaluateBakeMapsWithGpu`) with exact CPU tangent/validation/export semantics.
+ */
+export async function bakeLowpolyWithGpu(
+  options: BakeLowpolyOptions,
+  device: GPUDevice,
+): Promise<Result<BakeLowpolyResult, ModelingError>> {
+  const stage = prepareLowpolyStage(options);
+  if (!stage.ok) return stage;
+  const correspondence = await bakeCorrespondWithGpu(stage.value.correspondOpts, device);
+  if (!correspondence.ok) return correspondence;
+  const bake = await evaluateBakeMapsWithGpu(correspondence.value, stage.value.evalOpts, device);
+  if (!bake.ok) return bake;
+  return finalizeLowpolyStage(stage.value, correspondence.value, bake.value);
 }

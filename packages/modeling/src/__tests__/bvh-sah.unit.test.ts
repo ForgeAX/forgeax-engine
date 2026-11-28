@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LEGACY_BVH, TriangleBvh } from '../compute/bvh';
+import { TriangleBvh } from '../compute/bvh';
 import { model } from '../model';
 import { sel } from '../selectors';
 
@@ -81,14 +81,14 @@ describe('TriangleBvh SAH (U38, gate)', () => {
   });
 });
 
-describe('TriangleBvh legacy tree (shrinkwrap, layer)', () => {
-  it('an unbounded ray finds the hit a bounded one finds (no slack: Infinity * 0 culled every box)', () => {
+describe('TriangleBvh unbounded rays', () => {
+  it('an unbounded ray finds the hit a bounded one finds', () => {
     const { positions, indices } = scene();
-    const legacy = new TriangleBvh(positions, indices, LEGACY_BVH);
+    const bvh = new TriangleBvh(positions, indices);
     let hits = 0;
     for (const { o, d } of rays(500)) {
-      const bounded = legacy.raycast(o, d, 2);
-      expect(legacy.raycast(o, d, Number.POSITIVE_INFINITY)).toEqual(bounded);
+      const bounded = bvh.raycast(o, d, 2);
+      expect(bvh.raycast(o, d, Number.POSITIVE_INFINITY)).toEqual(bounded);
       if (bounded !== undefined) hits++;
     }
     expect(hits).toBeGreaterThan(100);
@@ -145,20 +145,12 @@ describe('TriangleBvh SAH on faceted shapes: on- and off-surface queries (gate)'
       return JSON.stringify(out);
     });
 
-  it('SAH and median trees answer byte-identically; without exact hits they differ (falsifier); vertex ties take the lowest triangle', () => {
+  it('SAH and median trees answer byte-identically; vertex ties take the lowest triangle', () => {
     const { positions, indices, points } = faceted();
     const sah = answers(new TriangleBvh(positions, indices), points);
     const median = answers(new TriangleBvh(positions, indices, { median: true }), points);
     expect(points.length).toBeGreaterThan(1000);
     expect(sah.filter((a, i) => a !== median[i])).toEqual([]);
-    // Round-off hits of rays almost in a facet's plane, kept by the pre-fix trees: the tree decides.
-    const rawSah = answers(new TriangleBvh(positions, indices, { exactHits: false }), points);
-    const rawMedian = answers(
-      new TriangleBvh(positions, indices, { median: true, exactHits: false }),
-      points,
-    );
-    // Measured: 408 of 1034 vertices differ.
-    expect(rawSah.filter((a, i) => a !== rawMedian[i]).length).toBeGreaterThan(100);
     // A query at a vertex is (nearly) at distance 0 from every triangle at that position; the
     // triangles at exactly the least distance tie, and only the (distance, triangle) order settles them.
     const at = new Map<string, number[]>();

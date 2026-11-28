@@ -97,11 +97,12 @@ import {
 } from './program-template.js';
 import {
   type AdmittedShaderTemplateManifest,
-  admitShaderTemplateManifest,
+  admitOwnedShaderTemplateManifest,
   isShaderTemplateManifestRow,
   materializeShaderTemplateManifest,
   SHADER_PROJECT_MANIFEST_VERSION,
   SHADER_TEMPLATE_MANIFEST_VERSION,
+  templateManifestMaterial,
 } from './program-template-manifest.js';
 import {
   findVariantByKey,
@@ -658,6 +659,14 @@ export class ShaderRegistry {
     return work;
   }
 
+  /** Initialize the material compiler so a mounted source can admit a template synchronously. */
+  async initializeMaterialTemplateCompiler(
+    fallback?: ShaderRegistryOptions['prepareProgramCompiler'],
+  ): Promise<ShaderResult<void, ShaderError>> {
+    const compiler = await this.#initializeProgramCompiler(fallback);
+    return compiler.ok ? ok(undefined) : compiler;
+  }
+
   /** Admit source and its portable compiler before Render selects any pass or target. */
   async prepareMaterialTemplate(
     template: MaterialShaderTemplate,
@@ -708,7 +717,7 @@ export class ShaderRegistry {
   async #admitTemplateManifest(
     parsed: unknown,
   ): Promise<ShaderResult<AdmittedShaderTemplateManifest, ShaderError>> {
-    const declaration = admitShaderTemplateManifest(parsed);
+    const declaration = await admitOwnedShaderTemplateManifest(parsed);
     if (!declaration.ok) return declaration;
     const compiler = await this.#initializeProgramCompiler();
     if (!compiler.ok) return compiler;
@@ -1163,7 +1172,12 @@ export class ShaderRegistry {
     if (!request.ok) return request;
     const { admitted, compiler, selected, key } = request.value;
     const compile = compiler.compileAsync;
-    if (compile === undefined || this.#templatePrograms.has(key)) return ok(true);
+    if (
+      compile === undefined ||
+      this.#templatePrograms.has(key) ||
+      this.#admitted?.template?.preparedPrograms.has(key) === true
+    )
+      return ok(true);
     const existing = this.#templatePreparations.get(key);
     if (existing !== undefined) {
       if (existing.error !== undefined) return err(existing.error);
@@ -1253,6 +1267,9 @@ export class ShaderRegistry {
             hint: 'shader preparation is pending. Await the selected program before requesting its source',
           }),
       );
+    const prepared = this.#admitted?.template?.preparedPrograms.get(key);
+    if (prepared !== undefined)
+      return ok(this.#storeTemplateProgram(key, prepared.artifact, prepared.source));
     const started = nowMs();
     const compiled = compiler.compile(admitted.template, selected.defines);
     this.#templateCompileMs += nowMs() - started;
@@ -1294,14 +1311,17 @@ export class ShaderRegistry {
   #storeTemplateProgram(
     key: string,
     result: ShaderProgramCompilation,
+    verifiedSource?: ShaderSource,
   ): ResolvedShaderTemplateProgram {
-    // Reflection, reads and the immutable source belong to this selected program.
-    const manifestEntry = structuredClone(result.manifestEntry);
-    const receipt = result.receipt === undefined ? undefined : structuredClone(result.receipt);
+    // A published selection already owns immutable facts; the live compiler's
+    // result may be borrowed from a host and must be detached on admission.
+    const manifestEntry =
+      verifiedSource === undefined ? structuredClone(result.manifestEntry) : result.manifestEntry;
+    const receipt = verifiedSource === undefined ? structuredClone(result.receipt) : result.receipt;
     freezeTemplateProgramFacts(manifestEntry);
     if (receipt !== undefined) freezeTemplateProgramFacts(receipt);
     const program = this.materialProgram(
-      manifestEntry.wgsl,
+      verifiedSource ?? manifestEntry.wgsl,
       manifestEntry.entryPoints,
       result.forwardFog ?? receipt?.forwardFog,
     );
@@ -1321,9 +1341,8 @@ export class ShaderRegistry {
     identifier: string,
     source: string,
   ): readonly MaterialShaderManifestVariant[] {
-    const declaration = this.#admitted?.template?.wire.materialShaders.find(
-      (row) => row.identifier === identifier,
-    );
+    const family = this.#admitted?.materials.get(identifier);
+    const declaration = family === undefined ? undefined : templateManifestMaterial(family);
     const template =
       declaration === undefined ? undefined : this.#templates.get(declaration.program);
     if (template === undefined) return [];
@@ -1471,10 +1490,8 @@ export class ShaderRegistry {
     identifier: string,
     definesKey: string,
   ): ShaderResult<void, ShaderError> {
-    const declaration = this.#admitted?.template?.wire.materialShaders.find(
-      (row) => row.identifier === identifier,
-    );
     const family = this.#admitted?.materials.get(identifier);
+    const declaration = family === undefined ? undefined : templateManifestMaterial(family);
     const selected = family === undefined ? undefined : findVariantByKey(family, definesKey);
     if (declaration === undefined || family === undefined || selected === undefined)
       return err(
@@ -1487,7 +1504,7 @@ export class ShaderRegistry {
       identifier,
       declaration.program,
       selected.defines,
-      JSON.parse(family.paramSchema) as readonly ParamSchemaEntry[],
+      declaration.engineSchema ?? (JSON.parse(family.paramSchema) as readonly ParamSchemaEntry[]),
     );
   }
 
@@ -1514,6 +1531,7 @@ export class ShaderRegistry {
     if (!selected.ok) return selected;
     if (
       template.template.engine !== undefined &&
+      paramSchema !== template.template.engine.paramSchema &&
       JSON.stringify(paramSchema) !== JSON.stringify(template.template.engine.paramSchema)
     )
       return err(

@@ -26,7 +26,7 @@ import {
   ShaderRegistry,
 } from '@forgeax/engine-shader';
 import { deriveMaterialDynamicInputLayout, err, ok } from '@forgeax/engine-types';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { assert, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { prepareRuntimeMaterialTemplate } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { materialParametersToParamSchema } from '../../../assets-runtime/src/material/runtime-shader';
@@ -37,6 +37,7 @@ import { createRenderer as constructRenderer, exposeRenderer } from '../assembly
 import { resolveMaterialPipelineVertexEntry } from '../assembly/material/pipeline-helpers';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, PointLight } from '../components';
 import { DeviceScope } from '../device/device-scope';
+import { ShadowMeshReads } from '../device/mesh-changes';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
@@ -598,9 +599,23 @@ describe('GPU-driven production projection', () => {
     });
     const world = new World({ assets });
     const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-    const publisher = createRenderPublisher(world, assets, identity, device.caps);
+    const publisher = createRenderPublisher(
+      world,
+      assets,
+      identity,
+      device.caps,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { deferred: false, ray: false, sceneIndex: false },
+    );
     const prepare = vi.spyOn(GpuDrivenProduction.prototype, 'prepare');
     const directDraws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexed');
+    const atlasMeshRead = vi.spyOn(ShadowMeshReads.prototype, 'add');
     const errors: unknown[] = [];
     renderer.onError((error) => errors.push(error));
     try {
@@ -634,7 +649,40 @@ describe('GPU-driven production projection', () => {
         )
         .unwrap();
       world.update(1 / 60).unwrap();
+      const direct = publisher.prepare(world.getResource(Time).elapsed).unwrap();
+      expect(direct.packet.materials[0]?.value.materialSceneIndexProgramKeys).toEqual({});
+      expect(direct.packet.programs).toHaveLength(2);
+      const directPacket = structuredClone(direct.packet, {
+        transfer: renderPublicationTransfers(direct.message),
+      });
+      direct.accept();
+      const sceneIndexDemand = vi.fn(() =>
+        publisher.requireMaterialPrograms({ deferred: false, ray: false, sceneIndex: true }),
+      );
+      const directDraw = renderer.draw({
+        publication: encodeRenderPublication(directPacket),
+        onSourceSceneIndexDemand: sceneIndexDemand,
+      });
+      if (!directDraw.ok) throw directDraw.error;
+      expect(sceneIndexDemand).toHaveBeenCalledTimes(1);
+      if (directDraw.value !== undefined) {
+        expect(directDraw.value.presentation).toBe('pending');
+        expect((await directDraw.value.completed).ok).toBe(true);
+      }
+      publisher
+        .recycle(
+          directPacket.revision,
+          renderPublicationTransfers(encodeRenderPublication(directPacket)),
+        )
+        .unwrap();
       const candidate = publisher.prepare(world.getResource(Time).elapsed).unwrap();
+      expect(candidate.packet.programs).toHaveLength(2);
+      expect(projection.passes.map(({ name }) => name)).toContain('deferred');
+      const firstMaterial = candidate.packet.materials[0]?.value;
+      expect(firstMaterial?.passes.map(({ name }) => name)).toEqual(['forward', 'shadow-caster']);
+      expect(firstMaterial?.materialProgramKeys?.deferred).toBeUndefined();
+      expect(firstMaterial?.materialSceneIndexProgramKeys?.deferred).toBeUndefined();
+      expect(firstMaterial?.materialSurfacePrograms).toBeUndefined();
       const packet = structuredClone(candidate.packet, {
         transfer: renderPublicationTransfers(candidate.message),
       });
@@ -656,12 +704,15 @@ describe('GPU-driven production projection', () => {
       expect(state.gpuDriven.cpuFallbackDrawItems).toBe(0);
       expect(state.gpuDriven.gpuOwnedEntityCount).toBe(1);
       expect(state.gpuDriven.shadowViews.some((view) => view.candidateCount === 1)).toBe(true);
+      // The published view has no World lease and has not enabled staggering.
+      // The physical shadow draw still runs, but its atlas cannot be retained.
+      expect(atlasMeshRead).not.toHaveBeenCalled();
       const scene = prepare.mock.calls.at(-1)?.[0].scene?.scene;
-      if (scene === undefined) throw new Error('missing production GPU Scene');
+      assert(scene !== undefined, 'missing production GPU Scene');
       const binding = prepare.mock.calls.at(-1)?.[0].scene?.plan.batches.at(0)?.binding;
-      if (binding === undefined) throw new Error('expected material binding');
+      assert(binding !== undefined, 'expected material binding');
       const row = scene.materialIndexForResource(binding.material);
-      if (row === undefined) throw new Error('missing uploaded material row');
+      assert(row !== undefined, 'missing uploaded material row');
       const writesBeforeObservation = queue.writes.length;
       const reads = scene.inputs.capture();
       const inputBuffer = reads.buffer().unwrap().buffer;
@@ -731,6 +782,7 @@ describe('GPU-driven production projection', () => {
         if (geometryLane === 'direct') expect(directDraws).toHaveBeenCalled();
         expect(renderer.inspect().renderScene.projectionRecords).toBe(1);
         expect(errors).toEqual([]);
+        expect(atlasMeshRead).not.toHaveBeenCalled();
         publisher
           .recycle(
             publication.revision,
@@ -738,9 +790,52 @@ describe('GPU-driven production projection', () => {
           )
           .unwrap();
       }
+      expect(
+        publisher.requireMaterialPrograms({ deferred: true, ray: false, sceneIndex: true }),
+      ).toBe(true);
+      const expanded = publisher.prepare(world.getResource(Time).elapsed).unwrap();
+      const expandedMaterial = expanded.packet.materials[0]?.value;
+      expect(expandedMaterial?.materialSurfacePrograms).toBeUndefined();
+      expect(expandedMaterial?.passes.map(({ name }) => name)).toContain('deferred');
+      const deferredKey = expandedMaterial?.materialProgramKeys?.deferred;
+      const deferredSceneIndexKey = expandedMaterial?.materialSceneIndexProgramKeys?.deferred;
+      expect(deferredKey).toBeDefined();
+      expect(deferredSceneIndexKey).toBeDefined();
+      expect(expanded.packet.programs.map(({ key }) => key)).toEqual(
+        expect.arrayContaining([deferredKey, deferredSceneIndexKey?.specializationKey]),
+      );
+      const publication = structuredClone(expanded.packet, {
+        transfer: renderPublicationTransfers(expanded.message),
+      });
+      expanded.accept();
+      const expandedDraw = renderer.draw({ publication: encodeRenderPublication(publication) });
+      if (!expandedDraw.ok) throw expandedDraw.error;
+      expect((await expandedDraw.value?.completed)?.ok).toBe(true);
+      expect(renderer.inspect().renderScene.projectionRecords).toBe(1);
+      expect(errors).toEqual([]);
+      publisher
+        .recycle(
+          publication.revision,
+          renderPublicationTransfers(encodeRenderPublication(publication)),
+        )
+        .unwrap();
+      expect(
+        publisher.requireMaterialPrograms({ deferred: true, ray: true, sceneIndex: true }),
+      ).toBe(true);
+      const ray = publisher.prepare(world.getResource(Time).elapsed).unwrap();
+      const surfacePrograms = ray.packet.materials[0]?.value.materialSurfacePrograms;
+      expect(surfacePrograms?.['ray-hit']?.programKey).toBeDefined();
+      expect(surfacePrograms?.['card-capture']?.programKey).toBeDefined();
+      expect(ray.packet.programs.map(({ key }) => key)).toEqual(
+        expect.arrayContaining([
+          surfacePrograms?.['ray-hit']?.programKey,
+          surfacePrograms?.['card-capture']?.programKey,
+        ]),
+      );
     } finally {
       prepare.mockRestore();
       directDraws.mockRestore();
+      atlasMeshRead.mockRestore();
       requestDevice.mockRestore();
       publisher.dispose();
       renderer.dispose();
@@ -809,15 +904,18 @@ describe('GPU-driven production projection', () => {
         summarize.mockClear();
         ssrInputs.mockClear();
         const submitted = renderer.draw({ publication: encodeRenderPublication(packet) });
-        if (!submitted.ok) throw submitted.error;
+        if (!submitted.ok) {
+          const failure = submitted.error as Error & { detail?: { cause?: { detail?: unknown } } };
+          const cause = failure.detail?.cause?.detail;
+          if (cause instanceof Error) throw cause;
+          throw failure;
+        }
         const receipt = submitted.value;
         if (receipt === undefined) throw new Error('missing publication receipt');
         const completed = await receipt.completed;
         if (!completed.ok) throw completed.error;
         expect.soft(inspect, `frame ${frame} full inspection`).not.toHaveBeenCalled();
-        expect(emit).toHaveBeenCalledOnce();
-        // After the first GPU selection, per-row receipts visit residual rows only.
-        expect([...(emit.mock.calls[0]?.[0] ?? [])]).toHaveLength(frame === 0 ? 744 : 0);
+        expect(emit, `frame ${frame} expanded GPU draw receipts`).not.toHaveBeenCalled();
         expect(summarize).not.toHaveBeenCalled();
         expect(ssrInputs).not.toHaveBeenCalled();
         const state = renderer.inspect().renderScene;
@@ -1369,7 +1467,7 @@ describe('GPU-driven production projection', () => {
       temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
       temporalView: new TemporalViewHistory(),
       compiledFrameGraph: null,
-      compiledFrameGraphGeneration: 0,
+      graphGeneration: 0,
       retiredCompiledFrameGraphs: new Set(),
       materialBgAssemblyCache: new MaterialBgAssemblyCache(),
       meshBindGroupCache: new WeakMap(),
@@ -1440,7 +1538,7 @@ describe('GPU-driven production projection', () => {
         expect(compile()).toBe(first);
         encode(first);
       }
-      expect(state.compiledFrameGraphGeneration).toBe(1);
+      expect(state.graphGeneration).toBe(1);
       Object.assign(resident, { contentEpoch: ++epoch });
       device.queue.writeBuffer(resident.vertexBuffer.handle, 0, new Float32Array([0.25])).unwrap();
       current = prepare();
@@ -1468,7 +1566,7 @@ describe('GPU-driven production projection', () => {
       if (recoveredGraph === null) throw new Error('expected recovered graph');
       encode(recoveredGraph);
       recovered.scene.dispose();
-      expect(state.compiledFrameGraphGeneration).toBe(3);
+      expect(state.graphGeneration).toBe(3);
       // A fresh device starts its own local counters; actual buffer identities
       // must still prevent reuse of the previous device's compiled resources.
       const nextDevice = (
@@ -1507,7 +1605,7 @@ describe('GPU-driven production projection', () => {
         expect(freshGraph).not.toBe(recoveredGraph);
         if (freshGraph === null) throw new Error('expected fresh-device graph');
         encode(freshGraph);
-        expect(state.compiledFrameGraphGeneration).toBe(4);
+        expect(state.graphGeneration).toBe(4);
       } finally {
         nextProduction.dispose();
         nextScene.scene.dispose();

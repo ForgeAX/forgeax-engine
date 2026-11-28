@@ -1,7 +1,9 @@
 import { createProfiler, type Profiler } from '@forgeax/engine-profiler';
+import { err } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { registeredSystem } from '../../__tests__/registered-system.fixture';
+import * as recording from '../../record/frame-capture';
 import type { RenderSystemInternals } from '../../record/render-context';
 
 import {
@@ -11,7 +13,6 @@ import {
   stageCaptureGraphCompile,
   ViewCaptureGraphs,
 } from '../capture-graph-systems';
-import { ViewRecorder } from '../render-views';
 import {
   createRenderWorld,
   endRenderFrame,
@@ -20,7 +21,6 @@ import {
   renderSubmission,
   runRenderRecord,
 } from '../render-world';
-import { withInertTemporal } from './temporal-owner-fixture';
 
 async function fixture(profiler?: Profiler) {
   const world = createRenderWorld();
@@ -30,16 +30,13 @@ async function fixture(profiler?: Profiler) {
   const deviceScope = { generation: 0 };
   const viewContext = { root: internals, camera: 11, deviceScope };
   Object.assign(internals, { viewContext });
-  const view = world
-    .spawn({
-      component: ViewRecorder,
-      data: { state: world.allocUniqueRef('ViewRecorder', withInertTemporal({}, { internals })) },
-    })
-    .unwrap();
+  const view = world.spawn().unwrap();
   internals.viewEntity = view;
-  expect(stageCaptureGraphCompile(internals)).toBe(true);
+  const input = { internals } as recording.CaptureGraphCompileInput;
+  const stage = () => stageCaptureGraphCompile(input);
+  expect(stage()).toBe(true);
   const record = () => runRenderRecord(world, { device, frameId: 1 });
-  return { world, device, internals, view, viewContext, deviceScope, record };
+  return { world, device, internals, view, viewContext, deviceScope, input, stage, record };
 }
 
 it('has no fallback compilation if the capture compiler is removed', async () => {
@@ -59,18 +56,22 @@ it('has no fallback compilation if the capture compiler is removed', async () =>
   expect(f.world.execution.health).toBe('healthy');
 });
 
-it('stores missing component inputs as failure data without poisoning the World', async () => {
+it('compiles the staged faces and reports their failure without poisoning the World', async () => {
   const f = await fixture();
   const identityCapture = { entries: [], complete: true, instrumentationAccepted: false };
   f.internals.renderPassCpuIdentityCapture = identityCapture;
-  expect(f.record().ok).toBe(true);
-  expect(identityCapture.complete).toBe(false);
-  const outcome = captureGraphOutcome(f.internals);
-  expect(outcome.ok).toBe(false);
-  if (!outcome.ok)
-    expect(outcome.error.detail.cause.detail).toMatchObject({ system: 'render-standard-lighting' });
-  endRenderFrame(f.world);
-  expect(f.world.execution.health).toBe('healthy');
+  const failure = err(recording.captureGraphFailure('invalid face'));
+  const compiler = vi.spyOn(recording, 'compileCaptureGraphBatch').mockReturnValueOnce(failure);
+  try {
+    expect(f.record().ok).toBe(true);
+    expect(compiler).toHaveBeenCalledExactlyOnceWith(f.input);
+    expect(identityCapture.complete).toBe(false);
+    expect(captureGraphOutcome(f.internals)).toBe(failure);
+    expect(f.world.execution.health).toBe('healthy');
+  } finally {
+    compiler.mockRestore();
+    endRenderFrame(f.world);
+  }
 });
 
 it.each([
@@ -149,16 +150,14 @@ it('retains a frozen successful pass vocabulary only while its producer is uncha
   // device/view producer, but that retained list is not a per-frame roster.
   renderSubmission(f.world).frame = 2;
   renderSubmission(f.world).open = true;
-  expect(stageCaptureGraphCompile(f.internals)).toBe(true);
+  expect(f.stage()).toBe(true);
   state.outcome = { ok: false };
   endRenderFrame(f.world);
   expect(captureGraphPassPhaseManifest(f.internals)?.passes).toHaveLength(2);
 
-  // A no-face/no-probe compile is a normal empty batch, not a new vocabulary.
+  // A frame without admitted captures retains the vocabulary without staging new work.
   renderSubmission(f.world).frame = 3;
   renderSubmission(f.world).open = true;
-  expect(stageCaptureGraphCompile(f.internals)).toBe(true);
-  state.outcome = { ok: true, value: { cube: [], probes: [] } };
   endRenderFrame(f.world);
   expect(captureGraphPassPhaseManifest(f.internals)?.passes).toEqual([
     { name: 'capture-face.4', kind: 'raster' },
@@ -222,7 +221,7 @@ it('drops retained capture vocabulary when the device or view identity changes',
   expect(captureGraphPassPhaseManifest(f.internals)).toBeUndefined();
   renderSubmission(f.world).frame = 2;
   renderSubmission(f.world).open = true;
-  expect(stageCaptureGraphCompile(f.internals)).toBe(true);
+  expect(f.stage()).toBe(true);
   expect(state.phaseManifest).toBeUndefined();
   state.outcome = {
     ok: true,
@@ -245,7 +244,7 @@ it('drops retained capture vocabulary when the device or view identity changes',
   expect(captureGraphPassPhaseManifest(f.internals)).toBeUndefined();
   renderSubmission(f.world).frame = 3;
   renderSubmission(f.world).open = true;
-  expect(stageCaptureGraphCompile(f.internals)).toBe(true);
+  expect(f.stage()).toBe(true);
   expect(state.phaseManifest).toBeUndefined();
   endRenderFrame(f.world);
 });

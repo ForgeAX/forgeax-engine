@@ -1,0 +1,33 @@
+{
+  "tool": "qf",
+  "case": "brep-box-quad",
+  "available": true,
+  "toolCommit": "810b7a0967c35b0dc85b4464e3835e26a756c967",
+  "inputSha256": "ad9979905850dad451dc0030bfc5fbd5431c579cb9a76c30ddf1e48f0a56e576",
+  "inputFaces": 12,
+  "targetFaces": 600,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-i", "<in.obj>", "-o", "<out.obj>", "-f", "600", "-sharp", "-seed", "1"],
+      "cwd": null,
+      "wallSeconds": 15.685702829,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 600,
+        "sharp": "on (threshold fixed at 60 deg in upstream source)",
+        "seed": 1
+      }
+    }
+  ],
+  "wallSeconds": 15.685702829,
+  "outcome": "ok",
+  "outputSha256": "f2b38a12d699c5ff52a1ed2764fa7a40ac79a17fc68d6761356fbce767fe4836",
+  "rawOutputSha256": "465bcdb4eade9e6b3bbb968c9b8535244dbb1fcfcd0794edccb51778c8ce9bb9",
+  "outputFaces": 600,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

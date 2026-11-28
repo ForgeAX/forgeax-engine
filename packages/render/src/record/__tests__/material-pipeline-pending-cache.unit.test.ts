@@ -216,6 +216,7 @@ describe('main-pass material pipeline cache', () => {
     const staged = {} as MaterialShaderPipelineEntry;
     const get = vi.fn().mockReturnValue(visible);
     const prepare = vi.fn().mockReturnValueOnce(null).mockReturnValue(staged);
+    const issued: unknown[] = [];
     const requests = createGeometryPipelineRequests(
       {
         runtime: {
@@ -234,6 +235,12 @@ describe('main-pass material pipeline cache', () => {
         transparentDepthWrite: false,
         oit: undefined,
       },
+      (_phase, action) => {
+        const result = action();
+        issued.push(result);
+        return result;
+      },
+      'record/graph-execute/forward/pipeline-selection',
     );
     const layout = deriveVertexLayoutProjection({ position: new Float32Array(9) });
     const resolve = (preparation: boolean) =>
@@ -258,6 +265,7 @@ describe('main-pass material pipeline cache', () => {
     expect(resolve(true)).toBe(staged);
     expect(get).toHaveBeenCalledTimes(1);
     expect(prepare).toHaveBeenCalledTimes(2);
+    expect(issued).toEqual([visible, null, staged]);
   });
 
   it('keeps transient pending pipelines retryable across a tight frame loop', () => {

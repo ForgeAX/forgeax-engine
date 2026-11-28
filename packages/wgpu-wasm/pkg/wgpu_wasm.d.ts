@@ -443,6 +443,57 @@ export class ValidatedModule {
     [Symbol.dispose](): void;
 }
 
+export class WasmWgpuRenderKernel {
+    free(): void;
+    [Symbol.dispose](): void;
+    begin_frame(frame_id: number, surface_width: number, surface_height: number): void;
+    cmd_buffer_capacity(): number;
+    commit_scene_delta_len(byte_len: number): number;
+    create_buffer(size: number, usage: number, data?: Uint8Array | null, label?: string | null): number;
+    create_dynamic_texture(width: number, height: number, format_code: number): number;
+    create_material(shader_program_id: number, layout_family_id: number, render_state_bits: number, variant_flags: number, queue: number, param_bytes: Uint8Array, base_color_texture_id: number, normal_texture_id: number, metallic_roughness_texture_id: number, emissive_texture_id: number, occlusion_texture_id: number, sampler_id: number, label?: string | null): number;
+    create_mesh(vertex_layout_id: number, vertex_data: Uint8Array, index_data: Uint8Array | null | undefined, index_count: number, vertex_count: number, is_uint32_index: boolean, topology: number, label?: string | null): number;
+    create_sampler(hash: number, address_mode_u?: string | null, address_mode_v?: string | null, address_mode_w?: string | null, mag_filter?: string | null, min_filter?: string | null, mipmap_filter?: string | null, compare?: string | null, label?: string | null): number;
+    create_texture(width: number, height: number, format_code: number, usage: number, data: Uint8Array | null | undefined, mip_level_count: number, array_layer_count: number, sample_count: number, label?: string | null): number;
+    cull(cam_x: number, cam_y: number, cam_z: number, layer_mask: number, flags: number, lod_bias: number): number;
+    cull_lights_ptr(): number;
+    cull_summary_ptr(): number;
+    cull_vp_ptr(): number;
+    delta_buffer_capacity(): number;
+    destroy_buffer(id: number): void;
+    destroy_dynamic_texture(id: number): void;
+    destroy_material(id: number): void;
+    destroy_mesh(id: number): void;
+    destroy_sampler(id: number): void;
+    destroy_shader_program(id: number): void;
+    destroy_texture(id: number): void;
+    ensure_cmd_buffer(min_words: number): number;
+    ensure_delta_buffer(min_bytes: number): number;
+    gpu_memory_bytes(): number;
+    /**
+     * Creates an in-WASM `RenderKernelCore` + `WgpuKernelExecutor` borrowing the
+     * underlying `wgpu::Device` and `wgpu::Queue` from a live `RhiWgpuDevice` handle.
+     */
+    constructor(raw_device: any, adapter_name?: string | null, backend_name?: string | null);
+    object_count(): number;
+    readback_ticket(ticket_id: number): any;
+    receipt_ptr(): number;
+    register_shader_program(code: string, vertex_entry_point: string | null | undefined, fragment_entry_point: string | null | undefined, compute_entry_point: string | null | undefined, layout_family_id: number, vertex_layouts_json: string | null | undefined, color_formats_json: string | null | undefined, depth_format: string | null | undefined, sample_count: number, blend_mode?: string | null, primitive_topology?: string | null, label?: string | null, extra_state_json?: string | null): number;
+    resolved_cmds_len(): number;
+    resolved_cmds_ptr(): number;
+    set_capture_resolved(enabled: boolean): void;
+    /**
+     * Executes `RenderKernelCore::submit_frame` + `WgpuKernelExecutor::sync_scene_gpu_buffers`
+     * + `WgpuKernelExecutor::execute_physical_stream_with_target` in a single WASM call.
+     */
+    submit_frame_words(word_len: number, uniform_data: Uint8Array, target_view: any): number;
+    submitted_bitmap_len(): number;
+    submitted_bitmap_ptr(): number;
+    supports_scene_4bgl(): boolean;
+    upload_dynamic_texture(id: number, revision: number, width: number, height: number, data: Uint8Array): boolean;
+    write_buffer(id: number, offset: number, data: Uint8Array): void;
+}
+
 /**
  * Compose a WGSL shader via naga_oil and serialise the composed naga module
  * back to WGSL text (plan-strategy D-01 Rust-side composer).
@@ -457,6 +508,11 @@ export function compose_shader(entry_source: string, imports_json: string, defin
  * footnote), so it is injected via JS-side options.
  */
 export function emit_reflection(validated: ValidatedModule, options_json: string): string;
+
+/**
+ * Exposes the wgpu-wasm linear WebAssembly.Memory for zero-copy TypedArray views in JS.
+ */
+export function kernelWasmMemory(): any;
 
 /**
  * WGSL source -> `naga::Module`. On failure throws a `JsError` whose payload carries
@@ -512,8 +568,10 @@ export interface InitOutput {
     readonly __wbg_rhiwgputexture_free: (a: number, b: number) => void;
     readonly __wbg_rhiwgputextureview_free: (a: number, b: number) => void;
     readonly __wbg_validatedmodule_free: (a: number, b: number) => void;
+    readonly __wbg_wasmwgpurenderkernel_free: (a: number, b: number) => void;
     readonly compose_shader: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
     readonly emit_reflection: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly kernelWasmMemory: () => any;
     readonly parse: (a: number, b: number) => [number, number, number];
     readonly rhiwgpuadapter_features: (a: number) => any;
     readonly rhiwgpuadapter_requestDevice: (a: number, b: any) => any;
@@ -623,10 +681,48 @@ export interface InitOutput {
     readonly start: () => void;
     readonly validate: (a: number) => [number, number, number];
     readonly validate_render_entries: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
+    readonly wasmwgpurenderkernel_begin_frame: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly wasmwgpurenderkernel_cmd_buffer_capacity: (a: number) => number;
+    readonly wasmwgpurenderkernel_commit_scene_delta_len: (a: number, b: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_create_buffer: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_create_dynamic_texture: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_create_material: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_create_mesh: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_create_sampler: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_create_texture: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_cull: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_cull_lights_ptr: (a: number) => number;
+    readonly wasmwgpurenderkernel_cull_summary_ptr: (a: number) => number;
+    readonly wasmwgpurenderkernel_cull_vp_ptr: (a: number) => number;
+    readonly wasmwgpurenderkernel_delta_buffer_capacity: (a: number) => number;
+    readonly wasmwgpurenderkernel_destroy_buffer: (a: number, b: number) => void;
+    readonly wasmwgpurenderkernel_destroy_dynamic_texture: (a: number, b: number) => void;
+    readonly wasmwgpurenderkernel_destroy_material: (a: number, b: number) => void;
+    readonly wasmwgpurenderkernel_destroy_mesh: (a: number, b: number) => void;
+    readonly wasmwgpurenderkernel_destroy_sampler: (a: number, b: number) => void;
+    readonly wasmwgpurenderkernel_destroy_shader_program: (a: number, b: number) => void;
+    readonly wasmwgpurenderkernel_destroy_texture: (a: number, b: number) => void;
+    readonly wasmwgpurenderkernel_ensure_cmd_buffer: (a: number, b: number) => number;
+    readonly wasmwgpurenderkernel_ensure_delta_buffer: (a: number, b: number) => number;
+    readonly wasmwgpurenderkernel_gpu_memory_bytes: (a: number) => number;
+    readonly wasmwgpurenderkernel_new: (a: any, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_object_count: (a: number) => number;
+    readonly wasmwgpurenderkernel_readback_ticket: (a: number, b: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_receipt_ptr: (a: number) => number;
+    readonly wasmwgpurenderkernel_register_shader_program: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number, u: number, v: number, w: number, x: number, y: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_resolved_cmds_len: (a: number) => number;
+    readonly wasmwgpurenderkernel_resolved_cmds_ptr: (a: number) => number;
+    readonly wasmwgpurenderkernel_set_capture_resolved: (a: number, b: number) => void;
+    readonly wasmwgpurenderkernel_submit_frame_words: (a: number, b: number, c: number, d: number, e: any) => [number, number, number];
+    readonly wasmwgpurenderkernel_submitted_bitmap_len: (a: number) => number;
+    readonly wasmwgpurenderkernel_submitted_bitmap_ptr: (a: number) => number;
+    readonly wasmwgpurenderkernel_supports_scene_4bgl: (a: number) => number;
+    readonly wasmwgpurenderkernel_upload_dynamic_texture: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+    readonly wasmwgpurenderkernel_write_buffer: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly wasm_bindgen__convert__closures_____invoke__h1312d179d1d9248b: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h931c01826ed95e78: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h09bca630b4c3a312: (a: number, b: number) => number;
+    readonly wasm_bindgen__convert__closures_____invoke__h09995749915d5b17: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__hc3cc56db47cb764c: (a: number, b: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

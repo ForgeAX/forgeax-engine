@@ -15,6 +15,7 @@ import type {
   RenderSystemInternals,
 } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
+import { recordContext } from '../world/view-record-context';
 
 export interface ProbeBackgroundResources {
   readonly pipeline: RenderPipeline;
@@ -28,15 +29,17 @@ export async function createProbeBackgroundResources(
   runtime: RenderSystemInternals,
   format: TextureFormat,
 ): Promise<ProbeBackgroundResources | undefined> {
-  const code = getIblProbeBackgroundSource();
-  if (code === undefined) return undefined;
+  const scope = recordContext(runtime).deviceScope;
+  const source = getIblProbeBackgroundSource(scope);
+  if (source === undefined) return undefined;
   const device = runtime.device;
-  const descriptor = { code, label: 'reflection-probe-background' };
+  const label = 'reflection-probe-background';
+  const descriptor = source.descriptor(label);
   const module =
     runtime.createShaderModule === undefined
       ? runtime.shaderModuleFactory?.createShaderModule(descriptor)
       : await runtime.createShaderModule(device, descriptor);
-  if (module === undefined) return undefined;
+  if (module === undefined || !scope.isAlive() || runtime.device !== device) return undefined;
   const layout = device
     .createBindGroupLayout({
       entries: [
@@ -48,7 +51,7 @@ export async function createProbeBackgroundResources(
     .unwrap();
   const pipeline = device
     .createRenderPipeline({
-      label: descriptor.label,
+      label,
       layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
       vertex: { module: module.unwrap(), entryPoint: 'probe_background_vs', buffers: [] },
       fragment: {
@@ -64,9 +67,7 @@ export async function createProbeBackgroundResources(
       },
     })
     .unwrap();
-  const uniform = device
-    .createBuffer({ label: descriptor.label, size: 80, usage: 0x40 | 0x08 })
-    .unwrap();
+  const uniform = device.createBuffer({ label, size: 80, usage: 0x40 | 0x08 }).unwrap();
   return { pipeline, layout, uniform, groups: new WeakMap() };
 }
 

@@ -97,7 +97,7 @@ fn evaluate_standard_surface(sourceInput : SurfaceInput, materialValue : Materia
       surfaceTriplanarObjectSpace(materialValue)) * faceDirection;
   } else {
     let normalSample = sampleSurfaceTexture(normalTexture, normalTexture_sampler,
-      surfaceUv(input, transform, metadata, rotation) * metadata.zw, surfaceTextureFootprint(input, transform, metadata));
+      surfaceUv(input, transform, metadata, rotation) * metadata.zw, surfaceTextureFootprint(input, transform, metadata), input.materialTextureMipBias);
 #ifdef OBJECT_SPACE_NORMAL_AVAILABLE
     let objectSpaceNormal = standardUsesObjectSpaceNormal();
 #else
@@ -123,9 +123,11 @@ fn evaluate_standard_surface(sourceInput : SurfaceInput, materialValue : Materia
     let uv = surfaceUv(input, materialValue.bumpTextureCoordinatesTransform, materialValue.bumpTextureCoordinatesMetadata, materialValue.bumpTextureCoordinatesRotation) * materialValue.bumpTextureCoordinatesMetadata.zw;
     let dx = dpdx(uv);
     let dy = dpdy(uv);
-    let height = textureSampleGrad(bumpTexture, bumpTexture_sampler, uv, dx, dy).r;
-    let heightX = textureSampleGrad(bumpTexture, bumpTexture_sampler, uv + dx, dx, dy).r;
-    let heightY = textureSampleGrad(bumpTexture, bumpTexture_sampler, uv + dy, dx, dy).r;
+    let gradX = dx * exp2(input.materialTextureMipBias);
+    let gradY = dy * exp2(input.materialTextureMipBias);
+    let height = textureSampleGrad(bumpTexture, bumpTexture_sampler, uv, gradX, gradY).r;
+    let heightX = textureSampleGrad(bumpTexture, bumpTexture_sampler, uv + dx, gradX, gradY).r;
+    let heightY = textureSampleGrad(bumpTexture, bumpTexture_sampler, uv + dy, gradX, gradY).r;
     normal = perturbBumpNormal(input.positionWS, normal,
       materialValue.bumpScale * vec2<f32>(heightX - height, heightY - height), faceDirection);
   }

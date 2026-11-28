@@ -10,12 +10,27 @@ finer level be checked against it.** The kernel gives the data format and the ch
 taste stays with you.
 
 Read this file first when starting a new object (vehicle, machine, prop, creature). Then
+for an armored machine or mech go to [hard-surface-mech.md](hard-surface-mech.md), and in any case
 go to [design-drawings.md](design-drawings.md) for the drawing data and its checks,
 [vehicle-design.md](vehicle-design.md) for the car-shaped worked route, and the API
 manuals [../reference/drawings.md](../reference/drawings.md),
 [../reference/surfaces.md](../reference/surfaces.md),
 [../reference/validation.md](../reference/validation.md) and
 [../reference/rig.md](../reference/rig.md) for parameters.
+
+## Fix the gates before the first builder
+
+Write down, before any part is built, what each level must pass and which command or
+call decides it: the L0 dimensions and silhouette, the L1 sections, the L2 shut lines,
+the L3 clearances. A gate written after the model exists is fitted to the model. When
+several people or sessions build parts in parallel, the contract and the checks are the
+first deliverable, ahead of the first builder.
+
+The checks do not substitute for each other, and a number is necessary but not
+sufficient: after every gate that passes, look at the render it scored. See
+[hard-surface-mech](hard-surface-mech.md#reading-the-reference) for reading a reference
+(one authority, measured drawing noise, view weights) and
+[Evidence and reporting](hard-surface-mech.md#evidence-and-reporting) for what each kind of evidence can claim.
 
 ## The five levels
 
@@ -47,6 +62,13 @@ record rather than a sketch:
 - `tolerance`: the allowed deviation in meters; the checks use it per item (default 2 mm).
 - `link`: items in different views with the same `link` are one 3D element, so a roof
   line drawn in side and plan is one thing, not two.
+
+When the proportions drive several parts, keep the parameters and the landmarks derived from
+them in one spec module that parts and the drawing both read. Parts hold no length of their own;
+the drawing's `derived` items are computed from the same spec, so `validate({ drawing })` fails
+when a part was built from stale numbers. Example:
+[spec-single-source](../examples/spec-single-source/) (change `ratio` once and the thigh, shin
+and drawing move together).
 
 ```ts
 import { model, type Drawing } from '@forgeax/engine/modeling';
@@ -96,6 +118,11 @@ Considerations, not a recipe:
 6. **Cheap check, then expensive check.** Run the numeric checks (dimensions, IoU,
    fairness, shut lines) at every level; render and inspect only after they pass.
    The numbers find drift a glance cannot; the eye finds taste the numbers cannot.
+7. **Relations or coordinates.** A profile whose drawing states relations (a slot tangent
+   to two lines, equal radii, an edge at an angle) can be stated as `sketch.solve`
+   constraints instead of derived trigonometry; `dof` and `free` then say whether the
+   statement is complete. A profile with a known construction stays shorter as coordinates
+   computed in code. See [../reference/sketch.md](../reference/sketch.md).
 
 ## What each level can be checked with
 
@@ -160,6 +187,13 @@ appeal.
 - **Passing vacuously.** A check with nothing to compare reports it: surface quality
   returns `nothing-checked`, a drawing item with no measure is reported without
   `found`. Treat "unmeasured" as not passed.
+- **Thresholds tighter than the reference.** A gate stricter than the drawing's own noise
+  (a perspective concept image, a shadowed ground) rejects correct models. Measure the
+  noise first, loosen the tolerance, mark the items `basis: 'estimate'`.
+- **Lowering the target to turn the table green.** If a gate cannot be met, report the
+  measurement and the gap; do not change the threshold to pass.
+- **Numbers from an older build.** Rerun the checks after the last edit and report those
+  numbers.
 - **Fixing the render instead of the data.** If a render looks wrong, find the failing
   finding first; if none fails, the missing check is itself a gap in the drawing.
 

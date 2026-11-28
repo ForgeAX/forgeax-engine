@@ -2,7 +2,11 @@ import type { box3 } from '@forgeax/engine-math';
 import { captureBatchGeometry } from '../gpu-driven/batch-execution';
 import { freezePreparedGpuDrivenDraw, ownGpuDrivenVertexInputs } from '../gpu-driven/prepared-draw';
 import { sealSourceDraws } from '../gpu-driven/source-draw-indices';
-import { captureInstanceGenerations, instanceRowsSurvived } from '../instance-generations';
+import {
+  captureInstanceGenerations,
+  type InstanceOrdinalOrder,
+  survivingInstanceOrdinals,
+} from '../instance-generations';
 import { type MaterialResource, materialHasTemporalDisplacement } from '../material-resource';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type {
@@ -16,8 +20,14 @@ import { CapturedSceneTransform, type ScenePoseWriter } from './captured-transfo
 import { FrameSet } from './frame-set';
 import type { GenerationalWeakMap } from './generational-weak-map';
 import type { MaterialFrame } from './material-dispatch';
-import { SceneDrawSlot, slotContent, slotTransform } from './mesh-draw';
-import type { MeshGeometry } from './mesh-frame';
+import {
+  drawPoseStorage,
+  meshDrawSnapshot,
+  SceneDrawSlot,
+  slotContent,
+  slotTransform,
+} from './mesh-draw';
+import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './mesh-materials';
 import type { GpuSceneMotion, RenderSceneBounds, RenderSceneSlot } from './render-scene-types';
 import type { RowContent } from './row-contents';
@@ -106,7 +116,7 @@ export interface CachedWorldBounds {
 }
 
 interface TemporalMemo {
-  readonly source: RenderableSnapshot;
+  readonly source: RowContent;
   readonly submitted: RenderableSnapshot | RenderableSnapshot['transform'] | undefined;
   readonly submittedGeneration: number | undefined;
   readonly wasVisible: boolean;
@@ -116,112 +126,60 @@ interface TemporalMemo {
 // Slots and their snapshots are replaced every frame; see GenerationalWeakMap.
 export type TemporalCache = GenerationalWeakMap<RenderSceneSlot, TemporalMemo>;
 
-/**
- * The last submitted frame of one view, written at change time: each row that
- * changed since that frame keeps the record the frame drew (`undefined` when
- * it drew none), and every other row is still its submitted record. Memory is
- * O(changed rows); a submission starts a fresh history, so an earlier one
- * stays exact for the frame lists that captured it.
- */
-/** Submissions a temporal draw reader may lag and still diff instead of re-reading. */
-const HISTORY_LINK_DEPTH = 4;
-
 /** Native view selections retain their fixed addresses. Borrowed iterables
  * record each generation at its public read, including reentrant Scene writes. */
 export type SubmittedVisibility = FrameSet | ReadonlyMap<number, number>;
 
+/** One accepted Scene root with the actual visible selection. A later submission
+ * replaces the root without retaining its predecessor. Independent readers pin
+ * their own roots and compare them through the Scene's bounded change journal. */
 export class SubmittedHistory {
-  private readonly changed = new Map<number, RenderSceneSlot | undefined>();
-  /** The history this submission replaced; linked only across roster submissions. */
-  private predecessor: SubmittedHistory | undefined;
-
   /** No submitted frame since the last temporal cut: every row is new. */
   static cut(): SubmittedHistory {
-    return new SubmittedHistory(true);
+    return new SubmittedHistory();
   }
 
-  /**
-   * `visible` maps slot to its submitted visible generation; absent: every
-   * submitted row was visible. `previous` is the history this submission
-   * replaces; with no visible map on either side, the two link.
-   */
-  static submitted(visible?: SubmittedVisibility, previous?: SubmittedHistory): SubmittedHistory {
-    // A completed submission can publish the same previous poses and roster.
-    // The first subsequent row write still records its exact pre-change value.
-    if (
-      previous !== undefined &&
-      !previous.isCut &&
-      previous.changed.size === 0 &&
-      visible === previous.visible
-    )
-      return previous;
-    const next = new SubmittedHistory(false, visible);
-    // A cut records no rows, so nothing submitted under it can be diffed.
-    if (
-      previous !== undefined &&
-      !previous.isCut &&
-      ((visible === undefined && previous.visible === undefined) ||
-        (visible instanceof FrameSet && previous.visible instanceof FrameSet))
-    ) {
-      next.predecessor = previous;
-      // A bounded chain: a reader further behind relinks by a full re-read.
-      let tail = previous;
-      for (let depth = 1; depth < HISTORY_LINK_DEPTH && tail.predecessor !== undefined; depth++)
-        tail = tail.predecessor;
-      tail.predecessor = undefined;
-    }
-    return next;
+  static submitted(
+    frame: SceneSlotFrame,
+    visible?: SubmittedVisibility,
+    previous?: SubmittedHistory,
+  ): SubmittedHistory {
+    return previous?.frame === frame && previous.visible === visible
+      ? previous
+      : new SubmittedHistory(frame, visible);
   }
 
   private constructor(
-    readonly isCut: boolean,
+    private readonly frame?: SceneSlotFrame,
     private readonly visible?: SubmittedVisibility,
   ) {}
 
-  /**
-   * Visit every slot whose submitted record or visibility can differ between
-   * `before` and this history, both read against Scene frames whose own row
-   * diff the caller visits. Each replaced history holds exactly the rows
-   * written between its submission and the next, so their union names every
-   * slot whose submitted record moved. False when `before` is not linked.
-   */
+  /** Compare the two submitted roots and their visibility evidence. */
   changesSince(before: SubmittedHistory, visit: (slot: number) => void): boolean {
     if (before === this) return true;
-    let cursor: SubmittedHistory | undefined = this;
-    while (cursor !== undefined && cursor !== before) cursor = cursor.predecessor;
-    if (cursor === undefined) return false;
-    cursor = this;
-    while (cursor !== undefined) {
-      for (const slot of cursor.changed.keys()) visit(slot);
-      if (cursor === before) break;
-      const prior: SubmittedHistory | undefined = cursor.predecessor;
-      if (cursor.visible instanceof FrameSet && prior?.visible instanceof FrameSet)
-        cursor.visible.changesSince(prior.visible, visit);
-      cursor = prior;
-    }
+    const current = this.frame;
+    const previous = before.frame;
+    if (current === undefined || previous === undefined) return false;
+    const visible = this.visible;
+    const oldVisible = before.visible;
+    const compareSelection = visible instanceof FrameSet && oldVisible instanceof FrameSet;
+    if (visible !== oldVisible && !compareSelection) return false;
+    if (current !== previous && !current.changesSince(previous, visit)) return false;
+    if (compareSelection && visible !== oldVisible) visible.changesSince(oldVisible, visit);
     return true;
   }
 
-  /** Keep the first pre-change record of `slot` since the submitted frame. */
-  record(slot: number, before: RenderSceneSlot | undefined): void {
-    if (!this.isCut && !this.changed.has(slot)) this.changed.set(slot, before);
+  at(slot: number): RenderSceneSlot | undefined {
+    return this.frame?.slotAt(slot);
   }
 
-  /** The record `slot` had in the submitted frame; `current` is any later frame of this history. */
-  at(slot: number, current: SceneSlotFrame): RenderSceneSlot | undefined {
-    if (this.isCut) return undefined;
-    return this.changed.has(slot) ? this.changed.get(slot) : current.slotAt(slot);
-  }
-
-  /** Previous facts for an already resolved current row, without another Scene index read. */
   before(row: RenderSceneSlot): RenderSceneSlot | undefined {
-    if (this.isCut) return undefined;
-    return this.changed.has(row.slot) ? this.changed.get(row.slot) : row;
+    return this.at(row.slot);
   }
 
   admitted(submitted: RenderSceneSlot): boolean {
     return (
-      !this.isCut &&
+      this.frame !== undefined &&
       (this.visible === undefined ||
         (this.visible instanceof FrameSet
           ? this.visible.has(submitted.slot)
@@ -229,36 +187,57 @@ export class SubmittedHistory {
     );
   }
 
-  wasVisible(slot: number, generation: number, current: SceneSlotFrame): boolean {
-    if (this.isCut) return false;
+  gpuMotionAt(
+    slot: number,
+    generation: number,
+    current: RowContent,
+    displacement: boolean,
+    into: GpuSceneMotion,
+  ): GpuSceneMotion {
+    const previous = this.frame?.contentAt(slot);
+    const seed =
+      !this.wasVisible(slot, generation) ||
+      this.frame?.generationAt(slot) !== generation ||
+      previous?.assetHandle !== current.assetHandle ||
+      previous?.materials !== current.materials ||
+      displacement;
+    writeMotion(current, previous, seed, into, true);
+    return into;
+  }
+
+  wasVisible(slot: number, generation: number): boolean {
+    if (this.frame === undefined) return false;
     if (this.visible instanceof FrameSet && !this.visible.has(slot)) return false;
     return this.visible === undefined || this.visible instanceof FrameSet
-      ? this.at(slot, current)?.generation === generation
+      ? this.frame.generationAt(slot) === generation
       : this.visible.get(slot) === generation;
   }
 }
 
 export function temporalDrawSnapshot(
-  snapshot: RenderableSnapshot,
-  counters: FrameCacheTally | undefined,
   slot: RenderSceneSlot,
+  meshes: MeshFrame,
+  counters: FrameCacheTally | undefined,
   history: SubmittedHistory,
   materials: MaterialFrame | undefined,
   cache: TemporalCache,
 ): RenderableSnapshot {
+  const native = slot instanceof SceneDrawSlot;
+  const source = native ? slot.drawContent(meshes) : meshDrawSnapshot(slot.snapshot, meshes);
   // Hidden authored rows keep their source identity but own no accepted draw materials.
-  if (snapshot.authorVisible === false) return snapshot;
+  if (source.authorVisible === false)
+    return native ? slot.draw(meshes) : (source as RenderableSnapshot);
   const submitted = history.before(slot);
   const wasVisible = submitted?.generation === slot.generation && history.admitted(submitted);
   // The pose wrapper is unique to an issued native row. A memo must not keep
   // the previous row key alive and thereby chain its earlier submission history.
   const submittedSource =
     submitted instanceof SceneDrawSlot ? submitted.transform : submitted?.snapshot;
-  const displacementSource = hasDisplacementSource(snapshot, materials);
+  const displacementSource = hasDisplacementSource(source, materials);
   const memo = cache.get(slot);
   if (
     memo !== undefined &&
-    memo.source === snapshot &&
+    memo.source === source &&
     memo.submitted === submittedSource &&
     memo.submittedGeneration === submitted?.generation &&
     memo.wasVisible === wasVisible &&
@@ -268,12 +247,13 @@ export function temporalDrawSnapshot(
     return memo.value;
   }
   if (counters !== undefined) counters.misses += 1;
-  const value = {
-    ...snapshot,
-    temporal: createTemporalSnapshot(slot, submitted, wasVisible, displacementSource),
-  };
+  const temporal = createTemporalSnapshot(slot, submitted, wasVisible, displacementSource);
+  // Bound geometry is shared by pose versions. Only the final temporal reader needs a draw row.
+  const value: RenderableSnapshot = native
+    ? { ...source, entityKey: slot.entityKey, transform: slot.transform, temporal }
+    : { ...(source as RenderableSnapshot), temporal };
   cache.set(slot, {
-    source: snapshot,
+    source,
     submitted: submittedSource,
     submittedGeneration: submitted?.generation,
     wasVisible,
@@ -284,6 +264,25 @@ export function temporalDrawSnapshot(
 }
 
 const NO_REACTIVE_REASONS: readonly RenderableReactiveReason[] = Object.freeze([]);
+
+function compatibleInstanceOrder(
+  current: InstancesSnapshot | undefined,
+  previous: InstancesSnapshot | undefined,
+): InstanceOrdinalOrder | undefined {
+  if (
+    current === undefined ||
+    previous === undefined ||
+    (current.collectionId !== undefined &&
+      previous.collectionId !== undefined &&
+      current.collectionId !== previous.collectionId) ||
+    current.transforms.length < current.instanceCount * 16 ||
+    previous.transforms.length < previous.instanceCount * 16 ||
+    current.generations?.length !== current.instanceCount ||
+    previous.generations?.length !== previous.instanceCount
+  )
+    return undefined;
+  return survivingInstanceOrdinals(current.generations, previous.generations);
+}
 
 export function createTemporalSnapshot(
   slot: RenderSceneSlot,
@@ -313,37 +312,8 @@ export function createTemporalSnapshot(
   // Displacement bytes can change independently of the material version.
   const seedCurrent =
     !sameGeneration || !wasVisible || geometryChanged || materialsChanged || displacementSource;
-  const currentInstances = current.instances;
-  const submittedInstances = previous?.instances;
-  // A collection-owned column is retained by reference and the projection
-  // store recycles it two revisions later; a submission that lags further
-  // (failed or skipped submit) is a temporal cut, never a stale read.
-  const submittedRecycled =
-    currentInstances?.collectionId !== undefined &&
-    submittedInstances?.collectionId === currentInstances.collectionId &&
-    submittedInstances.transforms !== currentInstances.transforms &&
-    (currentInstances.revision ?? 0) - (submittedInstances.revision ?? 0) > 1;
-  const instancesCompatible =
-    !submittedRecycled &&
-    (currentInstances === undefined && submittedInstances === undefined
-      ? true
-      : currentInstances !== undefined &&
-        submittedInstances !== undefined &&
-        (currentInstances.collectionId === undefined ||
-          submittedInstances.collectionId === undefined ||
-          currentInstances.collectionId === submittedInstances.collectionId) &&
-        currentInstances.transforms.length >= currentInstances.instanceCount * 16 &&
-        submittedInstances.transforms.length >= submittedInstances.instanceCount * 16 &&
-        currentInstances.generations?.length === currentInstances.instanceCount &&
-        submittedInstances.generations?.length === submittedInstances.instanceCount &&
-        instanceRowsSurvived(currentInstances.generations, submittedInstances.generations));
-  const motionValid = !seedCurrent && submitted !== undefined && instancesCompatible;
-  const previousInstances =
-    seedCurrent || submittedRecycled ? currentInstances : submittedInstances;
   if (into !== undefined) {
-    into.motionValid = motionValid;
-    into.reactive = seedCurrent;
-    into.previousInstances = previousInstances;
+    writeMotion(current, previous, seedCurrent, into, true);
     return into;
   }
   const priorTransform =
@@ -358,9 +328,9 @@ export function createTemporalSnapshot(
     if (displacementSource) reasons.push('displacement-source');
     reactiveReasons = reasons;
   }
-  return {
-    previousSource: seedCurrent ? 'current-seed' : 'last-submitted',
-    motionValid,
+  const result = {
+    previousSource: seedCurrent ? ('current-seed' as const) : ('last-submitted' as const),
+    motionValid: false,
     reactive: seedCurrent,
     reactiveReasons,
     previousTransform:
@@ -374,8 +344,48 @@ export function createTemporalSnapshot(
     // baseline, while stable collections retain the submitted column and
     // use identity generations to map reordered entries and seed replaced
     // entries.
-    previousInstances,
+    previousInstances: undefined as RenderableTemporalSnapshot['previousInstances'],
   };
+  writeMotion(current, previous, seedCurrent, result, false);
+  return result;
+}
+
+function writeMotion(
+  current: RowContent,
+  previous: RowContent | undefined,
+  seedCurrent: boolean,
+  into: GpuSceneMotion,
+  retainInstanceOrder: boolean,
+): void {
+  const currentInstances = current.instances;
+  const submittedInstances = previous?.instances;
+  // A collection-owned column is retained by reference and the projection
+  // store recycles it two revisions later; a submission that lags further
+  // (failed or skipped submit) is a temporal cut, never a stale read.
+  const submittedRecycled =
+    currentInstances?.collectionId !== undefined &&
+    submittedInstances?.collectionId === currentInstances.collectionId &&
+    submittedInstances.transforms !== currentInstances.transforms &&
+    (currentInstances.revision ?? 0) - (submittedInstances.revision ?? 0) > 1;
+  const instanceOrder =
+    seedCurrent || submittedRecycled
+      ? undefined
+      : compatibleInstanceOrder(currentInstances, submittedInstances);
+  const motionValid =
+    !seedCurrent &&
+    previous !== undefined &&
+    (instanceOrder !== undefined ||
+      (currentInstances === undefined && submittedInstances === undefined));
+  const previousInstances =
+    seedCurrent || submittedRecycled ? currentInstances : submittedInstances;
+  into.motionValid = motionValid;
+  into.reactive = seedCurrent;
+  into.previousInstances = previousInstances;
+  if (retainInstanceOrder) {
+    into.instanceOrder = instanceOrder;
+    into.instanceOrderGenerations =
+      instanceOrder === undefined ? undefined : currentInstances?.generations;
+  }
 }
 
 /**
@@ -448,10 +458,7 @@ export function ownSnapshot(
     ...(snapshot.gpuDrivenDraws === undefined
       ? {}
       : { gpuDrivenDraws: ownGpuDrivenDraws(snapshot.gpuDrivenDraws) }),
-    transform: poses.capture(
-      CapturedSceneTransform.column(pose),
-      CapturedSceneTransform.offset(pose),
-    ),
+    transform: pose instanceof CapturedSceneTransform ? pose.retain() : poses.capture(pose),
     ...(snapshot.localAabb === undefined ? {} : { localAabb: sharedAabb(snapshot.localAabb) }),
     ...(snapshot.instances === undefined ? {} : { instances: ownInstances(snapshot.instances) }),
     ...(snapshot.spriteInstances === undefined
@@ -485,12 +492,25 @@ export function ownPointsLinesSnapshot(
 const detachedBox = new Float64Array(6);
 
 export function worldBounds(snapshot: RenderableSnapshot): RenderSceneBounds | undefined {
-  if (!writeTransformedWorldBounds(detachedBox, snapshot.localAabb, snapshot.transform.world))
-    return undefined;
+  if (!writeSnapshotWorldBounds(detachedBox, snapshot)) return undefined;
   return {
     min: [detachedBox[0] as number, detachedBox[1] as number, detachedBox[2] as number],
     max: [detachedBox[3] as number, detachedBox[4] as number, detachedBox[5] as number],
   };
+}
+
+export function writeSnapshotWorldBounds(
+  out: { [lane: number]: number },
+  snapshot: Pick<RenderableSnapshot, 'localAabb' | 'transform'>,
+): boolean {
+  const local = snapshot.localAabb;
+  const pose = drawPoseStorage(snapshot);
+  return writeTransformedWorldBounds(
+    out,
+    local,
+    CapturedSceneTransform.column(pose),
+    CapturedSceneTransform.offset(pose),
+  );
 }
 
 /** Read the addressed matrix and local extents once and write all six world coordinates. */

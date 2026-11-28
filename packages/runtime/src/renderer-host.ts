@@ -1,13 +1,10 @@
 import { AssetRegistry, validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
 import type { RenderError, RendererOptions, RenderResult } from '@forgeax/engine-render';
+import { EngineEnvironmentError } from '@forgeax/engine-render/internal/backend-contract';
 import type {
   BundlerOptions,
   RendererHostAssembly,
   RendererHostBundlerOptions,
-} from '@forgeax/engine-render/internal/construct-renderer';
-import {
-  constructRendererHost,
-  EngineEnvironmentError,
 } from '@forgeax/engine-render/internal/construct-renderer';
 import { RhiError, type RhiErrorCode } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
@@ -51,6 +48,7 @@ function canFallbackToWgpu(error: unknown): error is EngineEnvironmentError {
 
 /** Assemble one selected backend and assign environment causes to that channel. */
 async function attemptRendererHost(
+  constructRendererHost: typeof import('@forgeax/engine-render/internal/construct-renderer').constructRendererHost,
   backend: BackendPackSelection,
   canvas: unknown,
   options: RendererOptions | undefined,
@@ -95,8 +93,19 @@ export async function constructRuntimeRendererHost(
           : prepared;
       }),
   };
-  const first = await loadBackendPack(options);
-  let result = await attemptRendererHost(first, canvas, options, publication);
+  // The publication-only realm never enters Renderer construction. Realm
+  // hosts that do build a Renderer can load its code alongside backend selection.
+  const [first, { constructRendererHost }] = await Promise.all([
+    loadBackendPack(options),
+    import('@forgeax/engine-render/internal/construct-renderer'),
+  ]);
+  let result = await attemptRendererHost(
+    constructRendererHost,
+    first,
+    canvas,
+    options,
+    publication,
+  );
   if (
     first.kind === 'webgpu' &&
     (options?.renderBackend ?? 'auto') === 'auto' &&
@@ -105,7 +114,13 @@ export async function constructRuntimeRendererHost(
   ) {
     const primary = result.error.detail.webgpuError;
     const fallback = await loadBackendPack(options, 'wgpu-webgl2');
-    result = await attemptRendererHost(fallback, canvas, options, publication);
+    result = await attemptRendererHost(
+      constructRendererHost,
+      fallback,
+      canvas,
+      options,
+      publication,
+    );
     if (!result.ok && result.error instanceof EngineEnvironmentError) {
       result = err(
         new EngineEnvironmentError(result.error.reason, {
@@ -128,13 +143,16 @@ export async function constructRuntimeRendererHost(
 export { loadRhiPack } from './backend-selection';
 export type { AssetRegistry };
 
-/** CPU asset assembly for the source realm of a split Renderer. */
+/** Stage the source Registry and shader readiness before the App installs its decoder leases. */
 export function stagePublicationAssets(
   bundler?: BundlerOptions,
-  options: { readonly assetBudgetBytes?: number } = {},
+  options: {
+    readonly assetBudgetBytes?: number;
+    readonly shaderPublication?: ReturnType<typeof stagePublicationShaders>;
+  } = {},
 ) {
   if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
-  const { catalog, ready } = stagePublicationShaders(bundler);
+  const { catalog, ready } = options.shaderPublication ?? stagePublicationShaders(bundler);
   const assets = new AssetRegistry({
     shaderRegistry: catalog,
     importTransport: bundler?.importTransport,
@@ -143,7 +161,6 @@ export function stagePublicationAssets(
       ? {}
       : { limits: { maxBytes: options.assetBudgetBytes } }),
   });
-  installDefaultAssetDecoders(assets);
   return { assets, ready };
 }
 
@@ -154,6 +171,7 @@ export async function createPublicationAssets(
 ): Promise<AssetRegistry> {
   const { assets, ready } = stagePublicationAssets(bundler, options);
   try {
+    installDefaultAssetDecoders(assets);
     await ready;
     return assets;
   } catch (cause) {

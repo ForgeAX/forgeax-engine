@@ -6,11 +6,11 @@ import { createCloudFeatureView } from '../cloud/reconstruction/frame-context';
 import { renderMaterialContext } from '../extract/material-context';
 import { renderFeatureSourceContext } from '../features/source';
 import { renderFeatureViewIdentity } from '../features/view';
+import { resetViewFeatures } from '../features/view-feature-work';
 import type { PreparedRenderPublication } from '../publication/receiver';
 import { type RenderResourceScope, worldRenderResources } from '../publication/resource-scope';
 import { activeRenderProfileSession } from '../record/profile-session';
 import { type RenderSystemInternals, runProfiledRenderPhase } from '../record/render-context';
-import { resetRenderFeatureGraphState } from '../record/typed-frame-graph';
 import type { CameraSnapshot, DrawOptions } from '../render-contract';
 import type { ExtractedFrame } from '../render-system-extract';
 import { extractSource } from '../render-system-extract-tail';
@@ -32,8 +32,8 @@ import {
 import { RenderPrepare, renderSubmission } from './render-world';
 import { type RenderSceneAdoption, RenderSceneDelta, RenderSceneInput } from './scene-systems';
 import { readViewField, readViewState, requireViewField } from './view-field';
+import { adoptViewRecordAttempt } from './view-record-attempt';
 import { recordContext } from './view-record-context';
-import { adoptViewRecordAttempt } from './view-record-systems';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 
 /** System names other Render World systems order against. */
@@ -217,12 +217,12 @@ export function viewPublication(
  * old graph before the next frame re-runs feature contribution.
  */
 function retireSwappedPipelineGraph(
-  { frameState, internals, scene }: ViewSettlementOwner,
+  { frameState, scene }: ViewSettlementOwner,
   publication: PreparedRenderPublication | undefined,
 ): void {
   const install = frameState.standardInstall;
   if (frameState.installedPipelineHandle === install.built) return;
-  resetRenderFeatureGraphState(internals);
+  resetViewFeatures(frameState);
   install.built = frameState.installedPipelineHandle;
   if (publication === undefined) scene.resetView();
 }
@@ -289,30 +289,31 @@ export function stageRenderScene(
   );
   const host = recordContext(owner.internals).featureHost;
   if (host !== undefined)
-    source.captureFeatures = (frame) =>
-      host.captureSource({
-        ...renderFeatureSourceContext(
-          sourceWorld,
-          frame,
-          owner.internals.rendererFrameNumber ?? owner.frameState.frameNumber,
-          renderMaterialContext(owner.internals.device.caps, owner.internals.device.limits),
-          (camera) =>
-            createCloudFeatureView(
-              camera,
-              undefined,
-              recordContext(owner.internals).canvas.width,
-              recordContext(owner.internals).canvas.height,
-              recordContext(owner.internals).deviceScope.generation,
-              opts.temporalReset === true,
-              false,
-            ),
-          {
-            owner: owner.frameState.graphResourceOwner,
-            retained: owner.frameState.compiledFrameGraph !== null,
-          },
-        ),
-        caps: owner.internals.device.caps,
-      });
+    source.captureFeatures = (frame) => {
+      const { caps, limits } = owner.internals.device;
+      const { canvas, deviceScope } = recordContext(owner.internals);
+      const context = renderFeatureSourceContext(
+        sourceWorld,
+        frame,
+        owner.internals.rendererFrameNumber ?? owner.frameState.frameNumber,
+        renderMaterialContext(caps, limits),
+        (camera) =>
+          createCloudFeatureView(
+            camera,
+            undefined,
+            canvas.width,
+            canvas.height,
+            deviceScope.generation,
+            opts.temporalReset === true,
+            false,
+          ),
+        {
+          owner: owner.frameState.graphResourceOwner,
+          retained: owner.frameState.compiledFrameGraph !== null,
+        },
+      );
+      return host.captureSource(Object.assign(context, { caps }));
+    };
 }
 
 /**
@@ -378,29 +379,29 @@ function followRecordPublication(
   mode: ViewFrameState['mode'],
 ): ExtractedFrame {
   const { internals, scene } = owner;
-  if (mode === 'capture' || recordContext(internals).captureView !== undefined)
-    return scene.followPublication(
-      adoption,
-      captureViewFrame(internals, publication.frame),
-      'renderer:capture',
-    );
+  const kernel = internals.renderKernel;
+  if (mode === 'capture' || recordContext(internals).captureView !== undefined) {
+    const captureFrame = captureViewFrame(internals, publication.frame);
+    return kernel === undefined
+      ? scene.followPublication(adoption, captureFrame, 'renderer:capture')
+      : scene.followPublication(adoption, captureFrame, 'renderer:capture', kernel);
+  }
   const view = composedViewCamera(world, entity);
   if (view === undefined) {
     const selectedCamera = viewCameraOf(world, entity)?.camera ?? publication.frame.cameras[0];
-    return scene.followPublication(
-      adoption,
-      publication.frame,
-      selectedCamera === undefined ? undefined : renderFeatureViewIdentity(selectedCamera),
-    );
+    const id = selectedCamera === undefined ? undefined : renderFeatureViewIdentity(selectedCamera);
+    return kernel === undefined
+      ? scene.followPublication(adoption, publication.frame, id)
+      : scene.followPublication(adoption, publication.frame, id, kernel);
   }
-  return scene.followPublication(
-    adoption,
-    {
-      ...publication.frame,
-      cameras: view.camera === undefined ? [] : [view.camera],
-    },
-    view.camera === undefined ? undefined : renderFeatureViewIdentity(view.camera),
-  );
+  const viewFrame = {
+    ...publication.frame,
+    cameras: view.camera === undefined ? [] : [view.camera],
+  };
+  const viewId = view.camera === undefined ? undefined : renderFeatureViewIdentity(view.camera);
+  return kernel === undefined
+    ? scene.followPublication(adoption, viewFrame, viewId)
+    : scene.followPublication(adoption, viewFrame, viewId, kernel);
 }
 
 /**
@@ -440,17 +441,26 @@ function prepareViewFrame(
         return followRecordPublication(world, owner, entity, adoption, publication, state.mode);
       const inputs = viewFrameScopes(world, state);
       if (inputs.world === undefined) throw new Error('A local view requires its source World');
+      const kernel = owner.internals.renderKernel;
       if (
         adoption.localFrame !== undefined &&
         inputs.cameraEntityKey === source.opts.cameraEntityKey &&
         readViewField(world, entity, RenderView, 'primary') === true
       )
-        return owner.scene.followAdoption(adoption, undefined, session);
-      return owner.scene.followAdoption(
-        adoption,
-        candidateFrameBuilder(world, owner, entity, inputs.world, inputs.cameraEntityKey, session),
+        return kernel === undefined
+          ? owner.scene.followAdoption(adoption, undefined, session)
+          : owner.scene.followAdoption(adoption, undefined, session, kernel);
+      const builder = candidateFrameBuilder(
+        world,
+        owner,
+        entity,
+        inputs.world,
+        inputs.cameraEntityKey,
         session,
       );
+      return kernel === undefined
+        ? owner.scene.followAdoption(adoption, builder, session)
+        : owner.scene.followAdoption(adoption, builder, session, kernel);
     });
     return { ok: true, value };
   } catch (cause) {

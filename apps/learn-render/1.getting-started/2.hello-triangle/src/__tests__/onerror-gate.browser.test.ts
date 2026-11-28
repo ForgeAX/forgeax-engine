@@ -31,7 +31,7 @@ describe('learn-render 1.2 hello-triangle onerror-gate', () => {
     const bootstrapDeadline = performance.now() + GATE_TIMEOUT_MS - GATE_SETTLE_MARGIN_MS;
     if (typeof navigator.gpu === 'undefined') {
       throw new Error(
-        "[learn-render 1.2 hello-triangle.onerror-gate] code: 'webgpu-unavailable'; vitest.config.ts launches chrome-beta with WebGPU flags",
+        "[learn-render 1.2 hello-triangle.onerror-gate] code: 'webgpu-unavailable'; vitest.config.ts launches chrome with WebGPU flags",
       );
     }
     canvas = document.createElement('canvas');

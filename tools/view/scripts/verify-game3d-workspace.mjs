@@ -70,10 +70,7 @@ try {
     console.error('direct local Engine binding', binding.resolved.entry);
   }
   browser = await chromium.launch({
-    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
-    ...(!process.env.FORGEAX_BROWSER_EXECUTABLE && process.env.FORGEAX_CHROME_CHANNEL
-      ? { channel: process.env.FORGEAX_CHROME_CHANNEL }
-      : {}),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: false,
     args: [...browserLaunch.args, '--use-angle=swiftshader'],
     chromiumSandbox: true,

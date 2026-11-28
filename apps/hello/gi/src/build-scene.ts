@@ -9,6 +9,7 @@ import {
 } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
 import {
+  ANTIALIAS_NONE,
   Atmosphere,
   Camera,
   DirectionalLight,
@@ -135,7 +136,13 @@ export function setCameraPose(world: World, camera: Entity, pose: GiCamera, cut:
   world.set(camera, Camera, { historyVersion }).unwrap();
 }
 
-export function spawnCamera(world: World, pose: GiCamera, aspect: number): Entity {
+/** `antialias` defaults to none so the deterministic GI probes stay unjittered; players pass ANTIALIAS_TSR. */
+export function spawnCamera(
+  world: World,
+  pose: GiCamera,
+  aspect: number,
+  antialias = ANTIALIAS_NONE,
+): Entity {
   return world
     .spawn(
       { component: Transform, data: cameraTransform(pose) },
@@ -146,7 +153,7 @@ export function spawnCamera(world: World, pose: GiCamera, aspect: number): Entit
           aspect,
           near: 0.05,
           far: 120,
-          antialias: 0,
+          antialias,
           bloom: 0,
           tonemap: 0,
           exposure: 1,

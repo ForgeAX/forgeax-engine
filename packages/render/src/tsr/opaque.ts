@@ -1,7 +1,14 @@
 import type { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { BindGroup, BindGroupLayout, ComputePipeline } from '@forgeax/engine-rhi';
+import type {
+  BindGroup,
+  BindGroupLayout,
+  Buffer,
+  ComputePipeline,
+  RhiDevice,
+} from '@forgeax/engine-rhi';
 import { TSR_OPAQUE_FRAGMENT_WGSL, TSR_OPAQUE_WGSL } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
+import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { renderInternalCopySize, renderInternalSize } from '../pipeline/render-extent';
 import { createRasterState, type RasterState } from '../raster-graph-state';
 import {
@@ -13,7 +20,43 @@ import {
 import { usesTsrCompute } from './capabilities';
 import { TSR_ANALYSIS_FORMATS } from './layout';
 
-/** Capture bounded opaque color before fog, transmission and transparency mutate scene. */
+interface OpaqueParamsUniform {
+  buffer: Buffer | undefined;
+  lastExposure: number;
+  readonly scratch: Float32Array;
+  readonly bytes: Uint8Array;
+}
+
+function createOpaqueParamsState(): OpaqueParamsUniform {
+  const scratch = new Float32Array(4);
+  return {
+    buffer: undefined,
+    lastExposure: Number.NaN,
+    scratch,
+    bytes: new Uint8Array(scratch.buffer),
+  };
+}
+
+function syncOpaqueParams(device: RhiDevice, state: OpaqueParamsUniform, exposure: number): Buffer {
+  if (state.buffer === undefined) {
+    state.buffer = device
+      .createBuffer({
+        label: 'tsr-measure-opaque.params',
+        size: 16,
+        usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+        mappedAtCreation: false,
+      })
+      .unwrap();
+  }
+  if (state.lastExposure !== exposure) {
+    state.scratch[0] = exposure;
+    device.queue.writeBuffer(state.buffer, 0, state.bytes).unwrap();
+    state.lastExposure = exposure;
+  }
+  return state.buffer;
+}
+
+/** Capture pre-fog exposed GLuma (UE MeasureFlickeringLuma) before fog and transparency mutate scene. */
 export function addTsrOpaqueGuide(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
@@ -25,9 +68,10 @@ export function addTsrOpaqueGuide(
     size: renderInternalSize(topology),
   });
   if (!target.ok) return target;
+  const paramsState = createOpaqueParamsState();
   if (!usesTsrCompute(topology.lane)) {
     let state: RasterState | undefined;
-    const bindings: { source: unknown; group: import('@forgeax/engine-rhi').BindGroup }[] = [];
+    const bindings: { source: unknown; group: BindGroup }[] = [];
     const added = graph.addRasterPass('tsr-measure-opaque', {
       accesses: [
         { resource: scene.view, usage: 'sampled-read' },
@@ -39,10 +83,18 @@ export function addTsrOpaqueGuide(
           frame,
           TSR_OPAQUE_FRAGMENT_WGSL,
           'tsr-measure-opaque',
-          [{ binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } }],
+          [
+            { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
+            { binding: 1, visibility: 2, buffer: { type: 'uniform' } },
+          ],
           'tsr_fullscreen',
           'tsr_measure_opaque_fragment',
           [TSR_ANALYSIS_FORMATS.opaque],
+        );
+        const paramsBuffer = syncOpaqueParams(
+          frame.runtime.device,
+          paramsState,
+          frame.camera.exposure,
         );
         const source = resources.textureView(scene.view).unwrap();
         let group = bindings.find((row) => row.source === source)?.group;
@@ -50,7 +102,10 @@ export function addTsrOpaqueGuide(
           group = frame.runtime.device
             .createBindGroup({
               layout: state.layout,
-              entries: [{ binding: 0, resource: { kind: 'textureView', value: source } }],
+              entries: [
+                { binding: 0, resource: { kind: 'textureView', value: source } },
+                { binding: 1, resource: { kind: 'buffer', value: { buffer: paramsBuffer } } },
+              ],
             })
             .unwrap();
           if (bindings.length === 2) bindings.shift();
@@ -98,6 +153,7 @@ export function addTsrOpaqueGuide(
                   viewDimension: '2d',
                 },
               },
+              { binding: 2, visibility: 4, buffer: { type: 'uniform' } },
             ],
           })
           .unwrap();
@@ -110,6 +166,7 @@ export function addTsrOpaqueGuide(
           .unwrap();
         program = { layout, pipeline };
       }
+      const paramsBuffer = syncOpaqueParams(device, paramsState, frame.camera.exposure);
       const source = resources.textureView(scene.view).unwrap(),
         output = resources.textureView(target.value.view).unwrap();
       let group = cached.find((c) => c.source === source && c.output === output)?.group;
@@ -121,6 +178,7 @@ export function addTsrOpaqueGuide(
             entries: [
               { binding: 0, resource: { kind: 'textureView', value: source } },
               { binding: 1, resource: { kind: 'textureView', value: output } },
+              { binding: 2, resource: { kind: 'buffer', value: { buffer: paramsBuffer } } },
             ],
           })
           .unwrap();

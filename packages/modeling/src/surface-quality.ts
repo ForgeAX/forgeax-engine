@@ -99,6 +99,13 @@ export interface NamedSurface {
    * side pair with its measured gap and largest positional weld move.
    */
   readonly seams?: readonly SurfaceSeam[];
+  /**
+   * The tessellation criteria this patch was meshed with (`m.surface` `chord` in meters and
+   * `angle` in degrees; defaults 0.001 and 12): the analytic bake bounds how far a ray bake of that
+   * tessellation may differ from the exact patch (BK63).
+   */
+  readonly chord?: number;
+  readonly angle?: number;
 }
 
 /** Which limits an edge is judged by: patch sides, edges of a transition patch, trim edges. */
@@ -147,7 +154,8 @@ export interface FairnessOptions {
   /**
    * A curvature spike is a local peak that rises above both neighbouring valleys by
    * more than `spike` times the curve's median curvature (at least 1 / length) and is
-   * narrower than a fifth of the curve (default 0.5).
+   * narrower than a fifth of the curve, or one of three or more maxima that each stand
+   * that far above their troughs, which is a ripple of any wavelength (default 0.5).
    */
   readonly spike?: number;
   /** Largest curvature rate |dk/ds|, 1/m^2 (per scene; default none). */
@@ -162,9 +170,9 @@ export interface FairnessOptions {
 }
 
 export interface SurfaceQualityOptions {
-  /** G0: largest gap along a shared edge, meters (default 1e-4). */
+  /** G0: largest gap along a shared edge, meters (default 1e-5, the D09 primary limit). */
   readonly position?: number;
-  /** G1: largest kink across a shared edge, degrees (default 0.5). */
+  /** G1: largest kink across a shared edge, degrees (default 0.1, the D09 primary limit). */
   readonly angle?: number;
   /**
    * G2: largest jump of the cross-edge normal curvature, 1/m. Default per scene: 5 % of
@@ -188,6 +196,13 @@ export interface SurfaceQualityOptions {
   readonly continuity?: Continuity;
   /** Sides closer than this are adjacent and get measured (default 1e-3 m, at least 10 x position). */
   readonly adjacency?: number;
+  /**
+   * Reach (m) within which a side facing another patch's side across an open gap is paired with
+   * it and measured, so a seam left open wider than `adjacency` fails its position limit with
+   * its real gap (default 0.1 m; at most `adjacency` turns the search off). Only partners that
+   * lie across the side, near its tangent plane and with no nearer side between count.
+   */
+  readonly reach?: number;
   /** Samples per patch side (default 16, 2 to 256). */
   readonly samples?: number;
   /**
@@ -311,6 +326,7 @@ export interface SurfaceQualityReport {
     readonly classes: Partial<Readonly<Record<EdgeClass, EdgeLimits>>>;
     readonly continuity: Continuity;
     readonly adjacency: number;
+    readonly reach: number;
     readonly maxNet: readonly [number, number];
     readonly maxInflections: number;
     readonly spike: number;
@@ -546,6 +562,7 @@ interface Thresholds {
   readonly curvatureFloor: number;
   readonly rate: number;
   readonly adjacency: number;
+  readonly reach: number;
   readonly samples: number;
   readonly classes: Partial<Readonly<Record<EdgeClass, EdgeLimits>>>;
 }
@@ -729,6 +746,32 @@ function samplesFor(
     : t.samples;
 }
 
+/**
+ * Whether the side of `B` at `f` lies across side `sideA` of `A` at `ca`: the way to it leaves
+ * `A` through that side, stays near the tangent plane of both patches and enters `B` through
+ * its side. A patch stacked above another or a side seen along its patch is not across it.
+ */
+function facesAcross(
+  sideA: PatchSide,
+  ca: SurfaceCurvature,
+  B: NurbsSurface,
+  sideB: PatchSide,
+  f: number,
+): boolean {
+  const [ub, vb] = sideParameters(B, sideB, f);
+  const cb = surfaceCurvature(B, ub, vb);
+  if (cb === undefined) return false;
+  const d = unit(sub(cb.point, ca.point));
+  const fa = sideVectors(ca, sideA);
+  const fb = sideVectors(cb, sideB);
+  return (
+    Math.abs(dot(d, ca.normal)) < 0.5 &&
+    Math.abs(dot(d, cb.normal)) < 0.5 &&
+    dot(d, unit(fa.inward)) < 0 &&
+    dot(d, unit(fb.inward)) > 0
+  );
+}
+
 /** Measure the shared part of side `sideA` of `a` against every side of `b`. */
 function measureSide(
   surfaces: readonly NamedSurface[],
@@ -757,11 +800,12 @@ function measureSide(
       if (a === b && sampler.side === sideA) continue;
       if (sampler.length < t.adjacency) continue;
       const hit = closestOnSide(B, sampler, ca.point);
-      if (hit.distance <= t.adjacency && (best === undefined || hit.distance < best.distance))
+      if (hit.distance <= t.reach && (best === undefined || hit.distance < best.distance))
         best = { side: sampler.side, ...hit };
     }
     if (best === undefined) continue;
     if (trimmed(surfaces[b] as NamedSurface, best.side, best.f)) continue;
+    if (best.distance > t.adjacency && !facesAcross(sideA, ca, B, best.side, best.f)) continue;
     // A gap side pairs only with its nearest neighbour: a blend between two patches
     // leaves their sides close but not adjacent.
     // A sample beyond the end of b's side continues it end to end; it is not beside it.
@@ -900,7 +944,7 @@ function measureTrim(
   const gaps = [surfaces[a], surfaces[b]].flatMap((x) =>
     x?.transition?.gap === undefined ? [] : [x.transition.gap],
   );
-  const held = { ...limits, position: Math.min(limits.position, ...gaps) };
+  const held = { ...limits, position: Math.min(limits.position, minOf(gaps)) };
   const [[u0, u1], [v0, v1]] = surfaceDomain(A);
   const n = loop.length;
   if (n < 3) return [];
@@ -1400,6 +1444,47 @@ function pointFairness(
   return judgeFairness(name, { ts, ks, ss, points, binormals }, ranges, limits, true);
 }
 
+/** Curvature maxima that make a curve rippled: a fair line has at most two. */
+const RIPPLE_PEAKS = 3;
+
+/**
+ * Interior curvature maxima that stand more than `swing` above both the trough before and
+ * the trough after them (a zigzag with hysteresis: plateaus and noise below `swing` never
+ * count), with the smaller of the two heights.
+ */
+function swungMaxima(ks: readonly number[], swing: number): { k: number; swing: number }[] {
+  const pivots: number[] = [0];
+  let extreme = 0;
+  let up: boolean | undefined;
+  for (let k = 1; k < ks.length; k++) {
+    const v = ks[k] as number;
+    const at = ks[extreme] as number;
+    if (up === undefined) {
+      if (Math.abs(v - at) > swing) {
+        up = v > at;
+        pivots.push(k);
+        extreme = k;
+      }
+    } else if (up ? v >= at : v <= at) {
+      extreme = k;
+      pivots[pivots.length - 1] = k;
+    } else if (Math.abs(v - at) > swing) {
+      up = !up;
+      pivots.push(k);
+      extreme = k;
+    }
+  }
+  const found: { k: number; swing: number }[] = [];
+  for (let i = 1; i < pivots.length - 1; i++) {
+    const k = pivots[i] as number;
+    const v = ks[k] as number;
+    const before = ks[pivots[i - 1] as number] as number;
+    const after = ks[pivots[i + 1] as number] as number;
+    if (v > before && v > after) found.push({ k, swing: Math.min(v - before, v - after) });
+  }
+  return found;
+}
+
 function judgeFairness(
   name: string,
   data: CurvatureSamples,
@@ -1465,6 +1550,13 @@ function judgeFairness(
     if (prominence > spikeFloor && width < scale / 5)
       spikes.push({ ...place(k), curvature: kv, prominence });
   }
+  // A ripple of any wavelength: three or more curvature maxima, each swinging the curvature
+  // by more than the spike floor, though none need be narrow enough to be a spike alone.
+  const maxima = swungMaxima(ks, spikeFloor);
+  if (maxima.length >= RIPPLE_PEAKS)
+    for (const peak of maxima)
+      if (!spikes.some((x) => x.t === ts[peak.k]))
+        spikes.push({ ...place(peak.k), curvature: ks[peak.k] as number, prominence: peak.swing });
   let curvatureRate = 0;
   let rateIndex = 0;
   for (let k = 1; k < samples - 1; k++) {
@@ -1741,7 +1833,7 @@ function highlightIssues(
     },
   );
   if (!traced.ok) return traced;
-  const { traces, degrees, diagonal } = traced.value;
+  const { traces, step, origin, diagonal } = traced.value;
   if (traces.length === 0)
     return ok({
       issues: [
@@ -1912,7 +2004,7 @@ function highlightIssues(
         severity: 'warn',
         detail: {
           subject: `${names[0]}:highlight`,
-          level: trace.level * degrees,
+          level: origin + trace.level * step,
           patches: names,
           point: (inflections[0] ?? spikes[0] ?? rateAt).point,
           inflections,
@@ -1955,8 +2047,8 @@ export function checkSurfaceQuality(
     if (entry.continuity !== undefined && !(entry.continuity in LEVEL))
       return err(invalid('continuity is G0, G1, G2 or G3', { curve: entry.name }));
   }
-  const position = options.position ?? 1e-4;
-  const angle = options.angle ?? 0.5;
+  const position = options.position ?? D09_CLASSES.primary.position;
+  const angle = options.angle ?? D09_CLASSES.primary.angle;
   const continuity = options.continuity ?? 'G1';
   const samples = options.samples ?? 16;
   const maxNet = options.maxNet ?? [8, 6];
@@ -1992,6 +2084,9 @@ export function checkSurfaceQuality(
     return err(invalid('maxNet holds two integers of at least 2', { maxNet }));
   const adjacency = options.adjacency ?? Math.max(1e-3, 10 * position);
   if (!finitePositive(adjacency)) return err(invalid('adjacency is positive', { adjacency }));
+  if (options.reach !== undefined && !finitePositive(options.reach))
+    return err(invalid('reach is positive', { reach: options.reach }));
+  const reach = Math.max(adjacency, options.reach ?? 0.1);
   const thresholds: Thresholds = {
     position,
     angle,
@@ -1999,6 +2094,7 @@ export function checkSurfaceQuality(
     curvatureFloor: options.curvatureFloor ?? 0.01,
     rate,
     adjacency,
+    reach,
     samples,
     classes,
   };
@@ -2222,8 +2318,8 @@ export function checkSurfaceQuality(
       if (
         [0, 1, 2].some(
           (c) =>
-            (la[c] as number) > (hb[c] as number) + adjacency ||
-            (lb[c] as number) > (ha[c] as number) + adjacency,
+            (la[c] as number) > (hb[c] as number) + reach ||
+            (lb[c] as number) > (ha[c] as number) + reach,
         )
       )
         continue;
@@ -2338,6 +2434,7 @@ export function checkSurfaceQuality(
       classes,
       continuity,
       adjacency,
+      reach,
       maxNet: [longest, shortest],
       maxInflections: fairnessOptions.maxInflections ?? 0,
       spike: fairnessOptions.spike ?? 0.5,

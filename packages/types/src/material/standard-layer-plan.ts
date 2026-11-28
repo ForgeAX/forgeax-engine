@@ -63,8 +63,20 @@ export type StandardPhysicalTextureField = (typeof STANDARD_PHYSICAL_TEXTURE_FIE
 export function standardPhysicalTextureFields(
   schema: readonly { readonly name: string }[],
 ): readonly StandardPhysicalTextureField[] {
-  const names = new Set(schema.map((entry) => entry.name));
-  return STANDARD_PHYSICAL_TEXTURE_FIELDS.filter((field) => names.has(field));
+  const fields: readonly string[] = STANDARD_PHYSICAL_TEXTURE_FIELDS;
+  let mask = 0;
+  for (let index = 0; index < schema.length; index++) {
+    const entry = schema[index];
+    if (entry === undefined) continue;
+    const fieldIndex = fields.indexOf(entry.name);
+    if (fieldIndex >= 0) mask |= 1 << fieldIndex;
+  }
+  const output: StandardPhysicalTextureField[] = [];
+  for (let index = 0; index < STANDARD_PHYSICAL_TEXTURE_FIELDS.length; index++) {
+    const field = STANDARD_PHYSICAL_TEXTURE_FIELDS[index];
+    if (field !== undefined && (mask & (1 << index)) !== 0) output.push(field);
+  }
+  return output;
 }
 
 /** Scalar + texture names whose declaration selects a physical Standard layer. */

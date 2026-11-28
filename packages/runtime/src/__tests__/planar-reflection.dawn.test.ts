@@ -15,7 +15,13 @@ import {
   ReadonlyDynamicInputPage,
   type Renderer,
 } from '@forgeax/engine-render';
-import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
+import {
+  attachRecorder,
+  buildFrameModel,
+  decodeTape,
+  type EncodedTape,
+  openReplay,
+} from '@forgeax/engine-rhi-debug';
 import * as captureWebgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
@@ -35,6 +41,73 @@ import { verifyPlanarMultiCamera } from './planar-multi-camera.fixture';
 import { inspectReplayWorks } from './replay-inspections.fixture';
 
 const PLANAR_REFLECTION_WARMUP_FRAMES = 60;
+
+function expectPairedMediumResolves(encoded: EncodedTape) {
+  const tape = decodeTape(encoded.bytes).unwrap();
+  const model = buildFrameModel(tape);
+  for (const name of [
+    'single-layer-medium-opaque-resolve',
+    'single-layer-medium-nearest-resolve',
+  ]) {
+    const matching = model.passes.filter((pass) => {
+      const begin = tape.events[pass.beginEventIndex];
+      return begin?.kind === 'beginRenderPass' && begin.desc.label === name;
+    });
+    expect(matching).toHaveLength(1);
+    expect(matching[0]?.workIndices).toHaveLength(1);
+    expect(matching[0]?.colorAttachmentViewHandleIds).toHaveLength(2);
+  }
+}
+
+async function verifyOrderedMediumViews(
+  renderer: Renderer,
+  setAntialias: (value: number) => void,
+  displayRed: () => Promise<{ count: number }>,
+  settleView: () => Promise<FrameReceipt>,
+  captureView: (label: string) => Promise<EncodedTape>,
+) {
+  const originalProfile = renderer.inspect().profile;
+  const variants = [
+    { renderPath: 'forward', antialias: 0 },
+    { renderPath: 'deferred', antialias: 0 },
+    { renderPath: 'forward', antialias: 2 },
+    { renderPath: 'forward', antialias: 3 },
+    { renderPath: 'deferred', antialias: 3 },
+  ] as const;
+  const recorded = [];
+  for (const { renderPath, antialias } of variants) {
+    renderer.setProfile({ ...originalProfile, renderPath }).unwrap();
+    setAntialias(antialias);
+    for (let frame = 0; frame < 3; frame++) await settleView();
+    const sample = await displayRed();
+    const inspection = renderer.inspect({ fields: ['featureGraph', 'perFramePassNames'] });
+    if (sample.count <= 10) await captureView('ordered-medium-failure');
+    expect(
+      sample.count,
+      JSON.stringify({ renderPath, antialias, names: inspection.perFramePassNames }),
+    ).toBeGreaterThan(10);
+    expect(inspection.featureGraph?.last.topologyKey).toContain(`"${renderPath}Display"`);
+    const names = inspection.perFramePassNames;
+    expect(names).toContain('single-layer-medium-color');
+    const opaquePair =
+      antialias === 2 ? 'single-layer-medium-opaque-resolve' : 'transmission-backdrop-copy';
+    expect(names.indexOf(opaquePair)).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf(opaquePair)).toBeLessThan(names.indexOf('single-layer-medium-color'));
+    if (antialias === 2) {
+      expect(names).not.toContain('transmission-backdrop-copy');
+      expectPairedMediumResolves(await captureView('ordered-medium-msaa'));
+    }
+    if (antialias === 3)
+      expect(names.indexOf('taa-resolve')).toBeGreaterThan(
+        names.indexOf('single-layer-medium-color'),
+      );
+    expect(names).not.toContain('temporal');
+    recorded.push({ renderPath, antialias, names });
+  }
+  renderer.setProfile(originalProfile).unwrap();
+  setAntialias(0);
+  return recorded;
+}
 
 it('captures offscreen geometry, clips the opposite half space and records the water consumer', async () => {
   vi.stubEnv('FORGEAX_WORKSPACE_TIMING', '1');
@@ -261,9 +334,10 @@ it('captures offscreen geometry, clips the opposite half space and records the w
       await draw();
     }
     const displayRed = async () => {
-      const armed = activeRenderer.requestObservation?.(['linear-hdr']);
-      if (armed === undefined || !armed.ok) throw new Error('HDR observation unavailable');
-      const receipt = await draw();
+      const receipt = await draw(() => {
+        const armed = activeRenderer.requestObservation?.(['linear-hdr']);
+        if (armed === undefined || !armed.ok) throw new Error('HDR observation unavailable');
+      });
       const result = await activeRenderer.observe(receipt, { include: ['linear-hdr'] });
       if (!result.ok) throw result.error;
       const observation = result.value.observations?.find((value) => value.domain === 'linear-hdr');
@@ -310,6 +384,28 @@ it('captures offscreen geometry, clips the opposite half space and records the w
         .perFramePassNames.some((name) => name.startsWith('planar-reflection-face')),
     ).toBe(true);
     expect(renderer.inspect().perFramePassNames).toContain('single-layer-medium-color');
+    const orderedMedium = await verifyOrderedMediumViews(
+      renderer,
+      (antialias) => world.set(displayCamera, Camera, { antialias }).unwrap(),
+      displayRed,
+      draw,
+      async (label) => {
+        const pending = recorder.captureFrame();
+        (await recorder.frameBoundary()).unwrap();
+        const sample = await displayRed();
+        (await recorder.frameBoundary()).unwrap();
+        const tape = (await pending).unwrap();
+        writeFileSync(resolve(artifactDir, `${label}.rhitape`), tape.bytes);
+        writeFileSync(resolve(artifactDir, `${label}.rgba16f`), sample.bytes);
+        expect(nativeErrors).toEqual([]);
+        expect(errors).toEqual([]);
+        return tape;
+      },
+    );
+    writeFileSync(
+      resolve(artifactDir, 'ordered-medium-passes.json'),
+      JSON.stringify(orderedMedium, null, 2),
+    );
     const readTarget = async () => {
       let ticket: ReturnType<typeof activeRenderer.requestTargetReadback> | undefined;
       const observed: { value?: Awaited<ReturnType<typeof activeRenderer.observe>> } = {};

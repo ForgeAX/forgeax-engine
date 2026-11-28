@@ -56,7 +56,8 @@ describe('C-110 armor detail bake', () => {
       if ((ao[i * 4] as number) < 200) occluded++;
       colors.add(Array.from(id.subarray(i * 4, i * 4 + 3)).join(','));
     }
-    // Measured at 128 texels: 10 tilted (bolt flanks, seam ends) and 129 occluded texels.
+    // Measured at 128 texels: 9 tilted, all on bolt flanks inside their charts (the lane head
+    // flattened them to 0 by treating a 70-degree flank as a back-turned wall), and 363 occluded.
     expect(tilted).toBeGreaterThanOrEqual(5);
     expect(occluded).toBeGreaterThan(50);
     const srgb = (c: number) => Math.round((c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055) * 255);
@@ -80,7 +81,7 @@ describe('C-110 armor detail bake', () => {
       'mesh/armor',
       'mesh/armor-detail',
       'texture/armor-ao',
-      'texture/armor-materialId',
+      'texture/armor-material-id',
       'texture/armor-normal',
     ]);
     expect(outputs['texture/armor-normal']).toMatchObject({ kind: 'modeling-bake', execution: 'cooked' });

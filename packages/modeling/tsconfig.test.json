@@ -12,6 +12,8 @@
   "include": [
     "src/**/*",
     "examples/**/*",
-    "types/**/*"
+    "scripts/quad-eval/**/*",
+    "types/**/*",
+    "scripts/asset-bench/**/*"
   ]
 }

@@ -35,6 +35,7 @@ describe('volumetric fog parameter slots', () => {
 
     const first = stageVolumetricFogParams(internals, frameState, payload(1));
     expect(state().pending?.slot).toBe(0);
+    const firstPayload = state().pending?.params;
     expect(state().accepted).toBeNull();
     // A failed submit retries into the same pending slot.
     expect(stageVolumetricFogParams(internals, frameState, payload(2))).toBe(first);
@@ -52,7 +53,9 @@ describe('volumetric fog parameter slots', () => {
     promoteVolumetricFogParams(state());
     stageVolumetricFogParams(internals, frameState, payload(4));
     expect(state().pending?.slot).toBe(0);
-    expect(state().buffers.filter((buffer) => buffer !== null)).toHaveLength(2);
+    expect(state().pending?.params).toBe(firstPayload);
+    expect(state().accepted?.params[0]).toBe(3);
+    expect(state().slots.filter((slot) => slot !== null)).toHaveLength(2);
     expect(fired).toEqual([]);
   });
 });

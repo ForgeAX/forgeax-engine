@@ -1,9 +1,9 @@
 import type { World } from '@forgeax/engine-ecs';
 import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import {
-  graphFacts,
   type LodObservationCapture,
   type LodObservationViewCapture,
+  viewBindingGeneration,
 } from '../assembly/lod-observation';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
@@ -74,15 +74,13 @@ function viewObservation(
 ): LodObservationViewCapture {
   const rendered = view.rendered;
   const inspection = rendered ? view.owner.lod.cell : undefined;
-  const graph = graphFacts(view.owner);
   return Object.freeze({
     viewKey: view.key,
     entityKey: view.camera,
     eye: view.eye,
     attachmentId: inspection?.view.attachmentId ?? (facts.attachment || 'none'),
     viewGeneration: facts.viewGeneration,
-    graphGeneration: graph.generation,
-    graphIncarnation: graph.incarnation,
+    graphGeneration: viewBindingGeneration(view.owner) ?? 0,
     state: rendered ? ('rendered' as const) : ('held' as const),
     owner: view.owner,
     viewRef: view,
@@ -98,7 +96,6 @@ function primaryObservationViews(
   world: World | undefined,
 ): readonly LodObservationViewCapture[] {
   const primaryInspection = owner.lod.cell;
-  const graph = graphFacts(owner);
   const camera =
     cameras.find((candidate) => candidate.entityKey === primaryInspection?.view.cameraEntity) ??
     cameras[0];
@@ -112,8 +109,7 @@ function primaryObservationViews(
       eye: undefined,
       attachmentId,
       viewGeneration: camera?.historyVersion ?? primaryInspection?.view.viewGeneration ?? 0,
-      graphGeneration: graph.generation,
-      graphIncarnation: graph.incarnation,
+      graphGeneration: viewBindingGeneration(owner) ?? 0,
       state: 'rendered',
       owner,
       viewRef: undefined,

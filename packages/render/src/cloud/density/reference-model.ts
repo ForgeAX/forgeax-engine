@@ -38,6 +38,8 @@ export interface ReferenceCloudTextures {
   body(uvw: Vec3): Vec4;
 }
 
+const REFERENCE_MASK_STRENGTH = 0.01;
+
 function mix(from: number, to: number, t: number): number {
   return from * (1 - t) + to * t;
 }
@@ -65,8 +67,6 @@ export function evaluateReferenceConservative(
   ];
   const carrier = Math.max(...layout);
   const mask = textures.mask([coord[0], coord[1]]);
-  const maskContribution =
-    0.01 * controls.maskWeight * (mask[0] * 0.4 + mask[1] * 0.35 + mask[2] * 0.25);
   const vertical =
     mix(
       0.8,
@@ -77,6 +77,13 @@ export function evaluateReferenceConservative(
       ),
       controls.profileWeight,
     ) - 0.5;
+  const maskSupportT = Math.min(1, Math.max(0, vertical / REFERENCE_MASK_STRENGTH));
+  const maskSupport = maskSupportT * maskSupportT * (3 - 2 * maskSupportT);
+  const maskContribution =
+    REFERENCE_MASK_STRENGTH *
+    controls.maskWeight *
+    maskSupport *
+    (mask[0] * 0.4 + mask[1] * 0.35 + mask[2] * 0.25);
   const noise2 = textures.body([
     coord[0] * 60 - wind[0] * 6,
     coord[1] * 60 - wind[1] * 6,

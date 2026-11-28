@@ -1,0 +1,175 @@
+{
+ "tests": [
+  "src/brep/__tests__/metric-uv.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "x1a-cyl-scale",
+   "file": "src/brep/tessellate.ts",
+   "old": "      su = surface.radius;\n",
+   "new": "      su = 1;\n"
+  },
+  {
+   "id": "x1a-sphere-sv",
+   "file": "src/brep/tessellate.ts",
+   "old": "      sv = surface.radius;\n",
+   "new": "      sv = 1;\n"
+  },
+  {
+   "id": "x1a-torus-minor",
+   "file": "src/brep/tessellate.ts",
+   "old": "      sv = surface.minor;\n",
+   "new": "      sv = 1;\n"
+  },
+  {
+   "id": "x1a-cone-mid",
+   "file": "src/brep/tessellate.ts",
+   "old": "(sin(surface.halfAngle) * (g.v0 + g.v1)) / 2",
+   "new": "sin(surface.halfAngle) * g.v0"
+  },
+  {
+   "id": "x1a-no-pack",
+   "file": "src/brep/tessellate.ts",
+   "old": "        c.x = x;\n        c.y = y;",
+   "new": "        c.x = 0;\n        c.y = 0;"
+  },
+  {
+   "id": "x1a-no-gap",
+   "file": "src/brep/tessellate.ts",
+   "old": "x += c.width + gap;",
+   "new": "x += c.width;"
+  },
+  {
+   "id": "x1a-no-wrap",
+   "file": "src/brep/tessellate.ts",
+   "old": "if (x > 0 && x + c.width > w) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "x1a-period",
+   "file": "src/brep/tessellate.ts",
+   "old": "const period = side + gutter;",
+   "new": "const period = side * 0.5;"
+  },
+  {
+   "id": "x1a-zone-ignored",
+   "file": "src/brep/tessellate.ts",
+   "old": "uv.zones.get(role) ?? [0, 0]",
+   "new": "[0, 0]"
+  },
+  {
+   "id": "x1a-zone-proto",
+   "file": "src/brep/tessellate.ts",
+   "old": "for (const role of Object.keys(zones)) {",
+   "new": "for (const role in zones) {"
+  },
+  {
+   "id": "x1a-cell-cap",
+   "file": "src/brep/tessellate.ts",
+   "old": "Math.abs(i) > MAX_UV_CELL || Math.abs(j) > MAX_UV_CELL",
+   "new": "false"
+  },
+  {
+   "id": "x1a-zones-null",
+   "file": "src/brep/tessellate.ts",
+   "old": "typeof zones !== 'object' || zones === null || Array.isArray(zones)",
+   "new": "typeof uv.zones !== 'object'"
+  },
+  {
+   "id": "x1a-uv-null",
+   "file": "src/brep/tessellate.ts",
+   "old": "typeof uv !== 'object' || uv === null || Array.isArray(uv)",
+   "new": "typeof uv !== 'object'"
+  },
+  {
+   "id": "x1a-zone-y",
+   "file": "src/brep/tessellate.ts",
+   "old": "chart.cell[1] + (chart.y",
+   "new": "chart.cell[0] + (chart.y"
+  },
+  {
+   "id": "x1a-planar-origin",
+   "file": "src/brep/tessellate.ts",
+   "old": "(a - chart.a0) * chart.su",
+   "new": "a * chart.su"
+  },
+  {
+   "id": "x1a-gutter-check",
+   "file": "src/brep/tessellate.ts",
+   "old": "Number.isFinite(gutter) && gutter > 0",
+   "new": "Number.isFinite(gutter) && gutter >= 0"
+  },
+  {
+   "id": "x1a-zone-int",
+   "file": "src/brep/tessellate.ts",
+   "old": "!Number.isInteger(i) ||",
+   "new": "!Number.isFinite(i) ||"
+  },
+  {
+   "id": "x1a-cell-hole",
+   "file": "src/brep/tessellate.ts",
+   "old": "    if (!Number.isInteger(i) || !Number.isInteger(j))\n",
+   "new": "    if (!(cell as number[]).every((v) => Number.isInteger(v)))\n"
+  },
+  {
+   "id": "x1a-cell-len",
+   "file": "src/brep/tessellate.ts",
+   "old": "!Array.isArray(cell) || cell.length !== 2",
+   "new": "!Array.isArray(cell) || cell.length < 2"
+  },
+  {
+   "id": "x1a-first-entry-only",
+   "file": "src/brep/tessellate.ts",
+   "old": "for (const role of Object.keys(zones)) {",
+   "new": "for (const role of Object.keys(zones).slice(0, 1)) {"
+  },
+  {
+   "id": "x1a-arc-extent",
+   "file": "src/brep/tessellate.ts",
+   "old": "take([pc.c[0] + pc.r * cos(a), pc.c[1] + pc.r * sin(a)]);",
+   "new": "void a;"
+  },
+  {
+   "id": "x1a-snap-nonenum",
+   "file": "src/brep/tessellate.ts",
+   "old": "for (const role of Object.keys(zones)) {",
+   "new": "for (const role of Reflect.ownKeys(zones) as string[]) {"
+  },
+  {
+   "id": "x1a-snap-live-cell",
+   "file": "src/brep/tessellate.ts",
+   "old": "cells.set(role, [i, j]);",
+   "new": "cells.set(role, zones[role] as readonly [number, number]);"
+  },
+  {
+   "id": "x1a-snap-live-elements",
+   "file": "src/brep/tessellate.ts",
+   "old": "cells.set(role, [i, j]);",
+   "new": "cells.set(role, [cell[0], cell[1]]);"
+  },
+  {
+   "id": "x1a-snap-live-gutter",
+   "file": "src/brep/tessellate.ts",
+   "old": "    cells.set(role, [i, j]);\n  }\n  return ok({ zones: cells, gutter });",
+   "new": "    cells.set(role, [i, j]);\n  }\n  return ok({ zones: cells, gutter: uv.gutter });"
+  },
+  {
+   "id": "x1a-snap-no-catch",
+   "file": "src/brep/tessellate.ts",
+   "old": "  } catch {\n    return brepFail('brep-bad-argument', 'uv is readable",
+   "new": "  } catch (cause) {\n    throw cause;\n    return brepFail('brep-bad-argument', 'uv is readable"
+  },
+  {
+   "id": "x1a-gutter-unbounded",
+   "file": "src/brep/tessellate.ts",
+   "old": "  if (!(largest / period >= MIN_UV_SPAN))\n",
+   "new": "  if (false)\n"
+  },
+  {
+   "id": "x1a-snap-stringify",
+   "file": "src/brep/tessellate.ts",
+   "old": "  } catch {\n    return brepFail('brep-bad-argument', 'uv is readable (a property access threw)');",
+   "new": "  } catch (cause) {\n    return brepFail('brep-bad-argument', 'uv is readable (a property access threw)', { cause: String(cause) });"
+  }
+ ]
+}

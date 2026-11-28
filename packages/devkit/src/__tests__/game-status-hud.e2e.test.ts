@@ -8,7 +8,9 @@ import { hostStartupDocument, hostStartupScript } from '../host/startup-source.j
 it('shows English version and completed-frame diagnostics without intercepting game input', async () => {
   const executablePath = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,
-    '/opt/google/chrome-beta/chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/google-chrome',
     chromium.executablePath(),
   ].find((path): path is string => path !== undefined && existsSync(path));
   const browser = await chromium.launch({
@@ -80,7 +82,9 @@ it.each([
   const labels = resolveLoadProgressLabels({ lang });
   const executablePath = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,
-    '/opt/google/chrome-beta/chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/google-chrome',
     chromium.executablePath(),
   ].find((path): path is string => path !== undefined && existsSync(path));
   const browser = await chromium.launch({
@@ -143,7 +147,9 @@ it.each([
 it('admits gameplay when submitted and completed frame receipts cross an open shadow root', async () => {
   const executablePath = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,
-    '/opt/google/chrome-beta/chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/google-chrome',
     chromium.executablePath(),
   ].find((path): path is string => path !== undefined && existsSync(path));
   const browser = await chromium.launch({

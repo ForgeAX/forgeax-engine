@@ -49,29 +49,26 @@ export function probePixel(probe, size) {
   return { px, py, x: ((px + 0.5) / size) * 2 - 1, y: 1 - ((py + 0.5) / size) * 2 };
 }
 
-// The render package's documented McGuire-Bavoil weight on camera distance:
-// clamp(10 / (1e-5 + (d/5)^2 + (d/200)^6), 0.01, 500).
-function oitWeight(d) {
-  const near = d / 5;
-  const far = d / 200;
-  return Math.min(Math.max(10 / (1e-5 + near * near + far ** 6), 0.01), 500);
+// three.js r187's normalized composite oracle, without GPU storage scaling.
+function oitWeight(depth) {
+  return Math.min(Math.max(0.03 / (1e-5 + (depth / 200) ** 4), 0.01), 3000);
 }
 
 /** Expected linear color at a probe: the WBOIT model and exact back-to-front over. */
 export function probeReference(probe, size) {
   if (probe.name === 'occluded') return { weighted: [...OCCLUDER], exact: [...OCCLUDER] };
   if (probe.name === 'background') return { weighted: [...BACKGROUND], exact: [...BACKGROUND] };
-  const { x, y } = probePixel(probe, size);
+  const { x } = probePixel(probe, size);
   const fragments = OIT_LAYERS.map((layer) => ({
     color: layer.color,
     alpha: layer.alpha,
-    distance: Math.hypot(x, y, CAMERA_Z + x * Math.tan(layer.tilt)),
+    depth: CAMERA_Z + x * Math.tan(layer.tilt),
   }));
   const sum = [0, 0, 0];
   let weight = 0;
   let revealage = 1;
   for (const fragment of fragments) {
-    const w = fragment.alpha * oitWeight(fragment.distance);
+    const w = fragment.alpha ** 2 * oitWeight(fragment.depth);
     for (let c = 0; c < 3; c++) sum[c] += fragment.color[c] * w;
     weight += w;
     revealage *= 1 - fragment.alpha;
@@ -80,7 +77,7 @@ export function probeReference(probe, size) {
     (value, c) => (value / Math.max(weight, 1e-5)) * (1 - revealage) + BACKGROUND[c] * revealage,
   );
   const exact = [...BACKGROUND];
-  for (const fragment of [...fragments].sort((a, b) => b.distance - a.distance))
+  for (const fragment of [...fragments].sort((a, b) => b.depth - a.depth))
     for (let c = 0; c < 3; c++)
       exact[c] = fragment.color[c] * fragment.alpha + exact[c] * (1 - fragment.alpha);
   return { weighted, exact };

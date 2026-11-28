@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { createPublicationAssets } from '../renderer-host';
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { describe, expect, it, vi } from 'vitest';
+import { defaultAssetDecoderContributions } from '../asset-contributions';
+import { createPublicationAssets, stagePublicationAssets } from '../renderer-host';
+
+const constructionModuleLoaded = vi.hoisted(() => vi.fn());
+vi.mock('@forgeax/engine-render/internal/construct-renderer', async (load) => {
+  constructionModuleLoaded();
+  return load();
+});
 
 const mesh = (count: number) => ({
   kind: 'mesh' as const,
@@ -18,6 +26,25 @@ const mesh = (count: number) => ({
 });
 
 describe('split-source publication assets budget', () => {
+  it('leaves staged decoders to the App and equips standalone publication assets', async () => {
+    const install = vi.spyOn(AssetRegistry.prototype, 'installDecoder');
+    const options = { shaderManifestUrl: undefined };
+    const staged = stagePublicationAssets(options);
+    try {
+      await staged.ready;
+      expect(install).not.toHaveBeenCalled();
+      const standalone = await createPublicationAssets(options);
+      try {
+        expect(install).toHaveBeenCalledTimes(defaultAssetDecoderContributions.length);
+      } finally {
+        standalone.dispose();
+      }
+    } finally {
+      staged.assets.dispose();
+      install.mockRestore();
+    }
+  });
+
   it('applies the App asset budget to the source-realm AssetRegistry', async () => {
     const bounded = await createPublicationAssets(
       { shaderManifestUrl: undefined },
@@ -31,6 +58,7 @@ describe('split-source publication assets budget', () => {
     const defaulted = await createPublicationAssets({ shaderManifestUrl: undefined });
     expect(defaulted.create(mesh(10_000)).ok).toBe(true);
     defaulted.dispose();
+    expect(constructionModuleLoaded).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid budget before creating a registry', async () => {

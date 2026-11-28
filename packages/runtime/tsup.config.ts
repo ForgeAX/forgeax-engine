@@ -6,6 +6,7 @@ export default defineConfig({
   splitting: true,
   entry: [
     'src/index.ts',
+    'src/dev-import-transport.ts',
     'src/geometry/index.ts',
     'src/renderer-host.ts',
     'src/shader-publication.ts',

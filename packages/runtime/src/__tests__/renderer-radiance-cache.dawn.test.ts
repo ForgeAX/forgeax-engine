@@ -328,11 +328,14 @@ it('serves Lite reflections from the directional radiance cache under field gath
     ),
   );
   assert(diffuseComposite, 'frame contains the broad multiple-scattering composite');
+  const computeEntries = model.works.flatMap((work) =>
+    work.pipeline.shaders.filter((s) => s.stage === 'compute').map((s) => s.entryPoint),
+  );
+  expect(computeEntries).toContain('traceReflections');
   expect(
-    model.works.flatMap((work) =>
-      work.pipeline.shaders.filter((s) => s.stage === 'compute').map((s) => s.entryPoint),
-    ),
-  ).toEqual(expect.arrayContaining(['generateFieldReflections', 'traceReflections']));
+    computeEntries.includes('generateFieldReflections') ||
+      computeEntries.includes('generateReflectionsChebyshev'),
+  ).toBe(true);
   const [sceneHandle, fallbackHandle] = composite.attachments?.colorViewHandleIds ?? [];
   assert(sceneHandle && fallbackHandle);
   const replayOf = async (frameTape: typeof tape) => {

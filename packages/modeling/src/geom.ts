@@ -1,5 +1,7 @@
+import { err, ok, type Result } from '@forgeax/engine-types';
 import { maxOf } from './arrays';
 import { atan2, hypot3 } from './dmath';
+import { type ModelingError, modelingError } from './errors';
 import type { EditMesh } from './mesh';
 import { orient2d } from './predicates';
 
@@ -29,6 +31,25 @@ export function cross(a: Tuple3, b: Tuple3): Tuple3 {
 
 export function length(a: Tuple3): number {
   return hypot3(a[0], a[1], a[2]);
+}
+
+/** Area of triangle a, b, c. */
+export function triangleArea(a: Tuple3, b: Tuple3, c: Tuple3): number {
+  return length(cross(sub(b, a), sub(c, a))) / 2;
+}
+
+/**
+ * Aspect of triangle a, b, c: longest edge squared over twice the area (1.155 for an
+ * equilateral one, infinite for a degenerate one). The one definition every quality
+ * measure and limit shares.
+ */
+export function triangleAspect(a: Tuple3, b: Tuple3, c: Tuple3): number {
+  const area = triangleArea(a, b, c);
+  if (!(area > 0)) return Number.POSITIVE_INFINITY;
+  const ab = sub(b, a);
+  const ac = sub(c, a);
+  const bc = sub(c, b);
+  return Math.max(dot(ab, ab), dot(ac, ac), dot(bc, bc)) / (2 * area);
 }
 
 export function normalize(a: Tuple3): Tuple3 {
@@ -128,6 +149,13 @@ export function faceNormal(mesh: EditMesh, f: number): Tuple3 {
 
 export function faceArea(mesh: EditMesh, f: number): number {
   return length(newell(facePoints(mesh, f))) / 2;
+}
+
+/** Total area of the given faces: each face's Newell area, exact for planar polygons. */
+export function facesArea(mesh: EditMesh, faces: Iterable<number>): number {
+  let area = 0;
+  for (const f of faces) area += faceArea(mesh, f);
+  return area;
 }
 
 export function faceCentroid(mesh: EditMesh, f: number): Tuple3 {
@@ -276,12 +304,12 @@ function triangulateProjected(
   // Normalized ear area: twice the area over the summed squared edges. Corners below
   // SLIVER (inserted points an ulp off their edge) count as straight: an f64-positive
   // sliver collapses or inverts once export converts positions to f32.
+  const d2 = (i: number, j: number) => {
+    const dx = (xs[i] as number) - (xs[j] as number);
+    const dy = (ys[i] as number) - (ys[j] as number);
+    return dx * dx + dy * dy;
+  };
   const quality = (a: number, b: number, c: number): number => {
-    const d2 = (i: number, j: number) => {
-      const dx = (xs[i] as number) - (xs[j] as number);
-      const dy = (ys[i] as number) - (ys[j] as number);
-      return dx * dx + dy * dy;
-    };
     const span = d2(a, b) + d2(b, c) + d2(c, a);
     return span === 0 ? 0 : turn(a, b, c) / span;
   };
@@ -430,10 +458,72 @@ function triangulateProjected(
   }
   const first = alive.indexOf(1);
   out.push(first, next[first] as number, next[next[first] as number] as number);
+  // A run of straight corners can leave triangles that no ear order avoids (every
+  // vertex of the run lies on one line, so each ear along it is flat). A flat triangle
+  // has its middle corner on its longest edge: splitting the neighbour across that edge
+  // at the middle corner replaces both with two triangles that have area.
+  const flat = (a: number, b: number, c: number) => quality(a, b, c) <= SLIVER;
+  const edges = new Map<number, number>();
+  const tri = (t: number) =>
+    [out[t * 3], out[t * 3 + 1], out[t * 3 + 2]] as [number, number, number];
+  const key = (u: number, v: number) => u * n + v;
+  const count = out.length / 3;
+  for (let t = 0; t < count; t++) {
+    const [a, b, c] = tri(t);
+    edges.set(key(a, b), t);
+    edges.set(key(b, c), t);
+    edges.set(key(c, a), t);
+  }
+  const queue: number[] = [];
+  for (let t = 0; t < count; t++) if (flat(...tri(t))) queue.push(t);
+  for (let step = 0; step < queue.length && step < 4 * count; step++) {
+    const t = queue[step] as number;
+    const [x, y, z] = tri(t);
+    if (!flat(x, y, z)) continue;
+    // Rotate so the edge u -> v is the longest and w is its middle corner.
+    const rotations: [number, number, number][] = [
+      [x, y, z],
+      [y, z, x],
+      [z, x, y],
+    ];
+    let [u, v, w] = rotations[0] as [number, number, number];
+    for (const r of rotations) if (d2(r[0], r[1]) > d2(u, v)) [u, v, w] = r;
+    const m = edges.get(key(v, u));
+    if (m === undefined) continue;
+    const [p, q, r] = tri(m);
+    const d = p !== v && p !== u ? p : q !== v && q !== u ? q : r;
+    if (flat(v, u, d) || flat(v, w, d) || flat(w, u, d)) {
+      queue.push(t);
+      continue;
+    }
+    for (const e of [t, m]) {
+      const [a, b, c] = tri(e);
+      edges.delete(key(a, b));
+      edges.delete(key(b, c));
+      edges.delete(key(c, a));
+    }
+    const put = (e: number, a: number, b: number, c: number) => {
+      out.splice(e * 3, 3, a, b, c);
+      edges.set(key(a, b), e);
+      edges.set(key(b, c), e);
+      edges.set(key(c, a), e);
+    };
+    put(t, v, w, d);
+    put(m, w, u, d);
+  }
   return out;
 }
 
-/** Generalized winding number of `faces` around `p` (Van Oosterom and Strackee solid angles). */
+/** Triple product below this share of the three edge lengths' product reads as "in the plane". */
+const IN_PLANE = 1e-12;
+
+/**
+ * Generalized winding number of `faces` around `p` (Van Oosterom and Strackee solid angles).
+ * A triangle whose plane holds `p` subtends nothing: off the triangle that is exact, on it
+ * that is the mean of the two sides, so a point on a closed surface reads 0.5. Without this
+ * the sign of a rounding residue decided between +2 pi and -2 pi, and a point beside a
+ * concave face, in that face's plane, read as inside.
+ */
 export function windingNumber(mesh: EditMesh, faces: readonly number[], p: Tuple3): number {
   let total = 0;
   for (const f of faces) {
@@ -446,9 +536,79 @@ export function windingNumber(mesh: EditMesh, faces: readonly number[], p: Tuple
       const lb = length(b);
       const lc = length(c);
       const num = dot(a, cross(b, c));
+      if (Math.abs(num) <= IN_PLANE * la * lb * lc) continue;
       const den = la * lb * lc + dot(a, b) * lc + dot(a, c) * lb + dot(b, c) * la;
       total += 2 * atan2(num, den);
     }
   }
   return total / (4 * Math.PI);
+}
+
+/**
+ * Segments of a full circle whose chord sagitta stays within `tolerance`:
+ * `max(minimum, ceil(pi / acos(1 - tolerance / radius)))`, with the arc cosine taken
+ * through `atan2` so every realm computes the same count.
+ */
+export function segmentsFor(
+  radius: number,
+  tolerance: number,
+  minimum = 3,
+): Result<number, ModelingError> {
+  if (!Number.isFinite(radius) || radius <= 0) {
+    return err(modelingError('model-invalid-argument', 'radius is greater than 0', { radius }));
+  }
+  if (!Number.isFinite(tolerance) || tolerance <= 0 || tolerance >= 2 * radius) {
+    return err(
+      modelingError(
+        'model-invalid-argument',
+        'tolerance is greater than 0 and less than the diameter',
+        { tolerance, radius },
+        'tolerance is the largest chord sagitta in meters; use a value well below the radius',
+      ),
+    );
+  }
+  const e = tolerance / radius;
+  return ok(Math.max(minimum, Math.ceil(Math.PI / atan2(Math.sqrt(e * (2 - e)), 1 - e))));
+}
+
+/** Either an explicit segment count or a chord `tolerance` (meters), never both. */
+export type SegmentsOrTolerance<S extends object> =
+  | (S & { readonly tolerance?: never })
+  | (Partial<Record<keyof S, never>> & { readonly tolerance: number });
+
+/** The explicit count, or the one `tolerance` derives for `radius`; giving both or neither is invalid. */
+export function resolveSegments(
+  name: string,
+  explicit: number | undefined,
+  tolerance: number | undefined,
+  radius: number,
+  minimum: number,
+): Result<number, ModelingError> {
+  if ((explicit === undefined) === (tolerance === undefined)) {
+    return err(
+      modelingError(
+        'model-invalid-argument',
+        `exactly one of ${name} and tolerance is given`,
+        { [name]: explicit, tolerance },
+        'tolerance couples the resolution to the size; the segment count stays explicit',
+      ),
+    );
+  }
+  return tolerance === undefined ? ok(explicit as number) : segmentsFor(radius, tolerance, minimum);
+}
+
+/** A count that follows from `tolerance` is not also given. */
+export function rejectDerived(
+  name: string,
+  value: unknown,
+  tolerance: number | undefined,
+  rule: string,
+): Result<void, ModelingError> {
+  if (tolerance === undefined || value === undefined) return ok(undefined);
+  return err(
+    modelingError('model-invalid-argument', `${name} follows from tolerance: ${rule}`, {
+      [name]: value,
+      tolerance,
+    }),
+  );
 }

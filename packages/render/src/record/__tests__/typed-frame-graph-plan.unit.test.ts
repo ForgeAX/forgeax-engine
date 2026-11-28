@@ -9,7 +9,6 @@ import type { RenderFrameState } from '../frame-snapshot';
 import { getTextureIdentity, validateGraphTargetCaptureReadback } from '../frame-snapshot';
 import {
   type RenderFeatureGraphCandidate,
-  renderFeatureGraphPlanSignature,
   rollbackGraphCandidate,
   updateRenderFeaturePlanRevision,
 } from '../typed-frame-graph';
@@ -104,7 +103,6 @@ function executeCapture(overrides: CaptureOverrides = {}) {
       ...(overrides.onSubmitted === undefined ? {} : { onSubmitted: overrides.onSubmitted }),
       ...(overrides.track === undefined ? {} : { onSubmittedWork: overrides.track }),
     },
-    undefined,
     overrides.onPhysical,
   );
   return { submitted, errors, copies };
@@ -129,22 +127,18 @@ describe('typed frame graph feature plan authority', () => {
   it('stashes a barrier-prepared candidate without promoting it as a submitted scene graph', () => {
     const previousGraph = {} as never;
     const candidateGraph = {} as never;
-    const previousInstalled = { graph: previousGraph } as never;
-    const candidateInstalled = { graph: candidateGraph } as never;
+    const previousInstalled = { graph: previousGraph, standardLighting: 'current' } as never;
+    const candidateInstalled = { graph: candidateGraph, standardLighting: 'missing' } as never;
     const frameState = {
       compiledFrameGraphCandidate: {
-        graph: candidateGraph,
+        installed: candidateInstalled,
         previous: {
           installed: previousInstalled,
           graphGeneration: 7,
-          compiledGeneration: 3,
-          lightingSignature: 'accepted-before-pending',
         },
       },
       compiledFrameGraph: candidateInstalled,
       graphGeneration: 8,
-      compiledFrameGraphGeneration: 4,
-      standardLightingGraphSignature: 'candidate-only',
       unsubmittedCompiledFrameGraph: undefined,
       retiredCompiledFrameGraphs: new Set(),
       barrelDistortionGraphResolution: 'accepted',
@@ -155,11 +149,7 @@ describe('typed frame graph feature plan authority', () => {
     expect(frameState).toMatchObject({
       compiledFrameGraph: previousInstalled,
       graphGeneration: 7,
-      compiledFrameGraphGeneration: 3,
-      standardLightingGraphSignature: 'accepted-before-pending',
-      unsubmittedCompiledFrameGraph: {
-        installed: candidateInstalled,
-      },
+      unsubmittedCompiledFrameGraph: candidateInstalled,
     });
     expect(frameState.compiledFrameGraphCandidate).toBeUndefined();
   });
@@ -169,13 +159,6 @@ describe('typed frame graph feature plan authority', () => {
     expect(plan.candidateAvailableSameFrame).toBe(true);
     expect(plan.cpuReadbackCount).toBe(0);
     expect(plan.cpuUploadCount).toBe(0);
-  });
-
-  it('keys topology and last-known-good candidates by stable plan signature and generation', () => {
-    const first = renderFeatureGraphPlanSignature([planned(1, 'plan-a')]);
-    expect(renderFeatureGraphPlanSignature([planned(1, 'plan-a')])).toBe(first);
-    expect(renderFeatureGraphPlanSignature([planned(1, 'plan-b')])).not.toBe(first);
-    expect(renderFeatureGraphPlanSignature([planned(2, 'plan-a')])).not.toBe(first);
   });
 
   it('keys candidates only by producer plans', () => {

@@ -1,8 +1,10 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import type { MeshGpuHandles } from '../../device/gpu-residency';
+import { MeshChanges } from '../../device/mesh-changes';
 import { BatchTopology, type GpuDrivenBatchBinding } from '../../gpu-driven/batch-topology';
 import { MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
@@ -12,6 +14,8 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../../render-system-extract';
+import { setSceneRow } from '../../scene/__tests__/scene-row-writes';
+import { CapturedSceneTransform } from '../../scene/captured-transform';
 import type { DrawEvidence } from '../../scene/draw-evidence';
 import { FrameSet } from '../../scene/frame-set';
 import { MaterialDispatch, MaterialFrame } from '../../scene/material-dispatch';
@@ -19,12 +23,25 @@ import { SceneDrawSlot } from '../../scene/mesh-draw';
 import { cullPersistentFrame } from '../../scene/persistent-cull';
 import type { ProbeBlendBufferProjection } from '../../scene/probe-blend';
 import { RenderScene } from '../../scene/render-scene';
+import { SceneSlotPage, SceneSlots } from '../../scene/scene-slots';
 import { TRANSPARENT_SORT_MODE_DISTANCE } from '../../systems/transparent-sort-config';
 import { finalizeWaterMaterialAdmissionDraws } from '../../water/mesh-source-admission';
 import { type DirectDrawInput, DirectDrawPhase, ViewDrawPhases } from '../direct-draw-phase';
-import { addressDrawRows, issueDrawRows } from '../draw-row-pages';
+import {
+  addressDrawRows,
+  drawBindingReaderAt,
+  issueDrawRows,
+  JoinedDrawRows,
+  RecordingDrawRow,
+  rebindDrawPoses,
+  recordingDrawPose,
+  recordingDrawRowAt,
+  visitDrawPositions,
+  visitRecordingDrawRows,
+} from '../draw-row-pages';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
+import { GeometryDrawOrder } from '../geometry-draw-order';
 import { MaterialRelations } from '../material-binding-index';
 import { MemberMaterialPasses } from '../material-pass-groups';
 
@@ -155,6 +172,330 @@ function fixture(opaqueCount: number, glassCount: number) {
 const order = (output: ReturnType<DirectDrawPhase['emit']>) =>
   output.dispatch.map((entry) => entry.entityIndex as number);
 
+it('patches only the addressed page crossed by a continuing transparent reorder', () => {
+  const f = fixture(256, 96);
+  onTestFinished(() => f.scene.dispose());
+  const phase = new DirectDrawPhase();
+  const raw = f.input();
+  assert(raw.materials);
+  const materials = raw.materials
+    .with(opaque, undefined, { ...opaque.snapshot, immutableValues: true })
+    .with(glass, undefined, { ...glass.snapshot, immutableValues: true });
+  const feed = () => {
+    const input = f.input();
+    const draw = f.scene.drawFrame(materials);
+    return {
+      ...input,
+      scene: { ...input.scene, slotAt: draw.locate, drawSnapshotAt: draw },
+      lod: undefined,
+      materials,
+      select: (binding: GpuDrivenBatchBinding) => materials.get(binding.material)?.snapshot,
+    };
+  };
+  const readPages = (rows: ReturnType<DirectDrawPhase['emit']>['rows']): readonly object[] =>
+    Reflect.get(rows, 'root').values;
+  const initial = drawn(phase, feed());
+  const initialPages = readPages(initial.rows);
+  expect(initialPages).toHaveLength(6);
+  expect(order(initial).slice(256, 258)).toEqual([351, 350]);
+  const initialPhysical = f.scene.addressOwnedMeshDrawRows(initial.rows);
+  const meshSlot = initialPhysical.rows.at(257)?.meshSlot;
+  const pose = mat4.identity(mat4.create());
+  let before = initial;
+  let beforePages = initialPages;
+  for (let frame = 1; frame <= 60; frame++) {
+    const near = frame % 2 === 0;
+    pose[14] = near ? 350 : 352;
+    f.scene.apply([{ kind: 'update', entityKey: 350, world: pose }]);
+    pose[14] = 10 + frame;
+    f.scene.apply([{ kind: 'update', entityKey: 5, world: pose }]);
+    const next = drawn(phase, feed());
+    const pages = readPages(next.rows);
+    expect(pages[4]).not.toBe(beforePages[4]);
+    for (const index of [0, 1, 2, 3, 5]) expect(pages[index]).toBe(initialPages[index]);
+    const expected = near ? [351, 350] : [350, 351];
+    expect(order(next).slice(256, 258)).toEqual(expected);
+    expect(order(before).slice(256, 258)).toEqual([...expected].reverse());
+    const addressed = f.scene.addressOwnedMeshDrawRows(next.rows);
+    const moved = addressed.rows.at(near ? 257 : 256);
+    expect(moved?.source.entityKey).toBe(350);
+    expect(moved?.source.transform.world[14]).toBe(near ? 350 : 352);
+    expect(moved?.meshSlot).toBe(meshSlot);
+    expect(addressed.rows.at(5)?.source.transform.world[14]).toBe(10 + frame);
+    before = next;
+    beforePages = pages;
+  }
+  expect(initial.rows.at(257)?.source.transform.world[14]).toBe(350);
+  expect(initial.rows.at(5)?.source.transform.world[14]).toBe(5);
+  expect(order(initial).slice(256, 258)).toEqual([351, 350]);
+});
+
+it('sorts moving native rows by current columns and keeps the captured prior order', () => {
+  const f = fixture(2, 96);
+  onTestFinished(() => f.scene.dispose());
+  const phase = new DirectDrawPhase();
+  const reference = new DirectDrawPhase();
+  const fixtureInput = f.input();
+  assert(fixtureInput.materials);
+  const immutable = fixtureInput.materials
+    .with(opaque, undefined, { ...opaque.snapshot, immutableValues: true })
+    .with(glass, undefined, { ...glass.snapshot, immutableValues: true });
+  expect(immutable.hasBorrowedValues).toBe(false);
+  const prepare = () => ({
+    ...f.input(),
+    materials: immutable,
+    lod: undefined,
+    select: (binding: GpuDrivenBatchBinding) => immutable.get(binding.material)?.snapshot,
+  });
+  const native = (input: ReturnType<typeof prepare>) => {
+    const draw = f.scene.drawFrame(immutable);
+    return { ...input, scene: { ...input.scene, slotAt: draw.locate, drawSnapshotAt: draw } };
+  };
+  const captured = drawn(phase, native(prepare()));
+  const expectedInitial = drawn(reference, prepare());
+  expect(order(captured)).toEqual(order(expectedInitial));
+  const first = captured.rows.find((row) => row.source.entityKey === 65);
+  assert(first);
+  const initial = first.source.transform.world[14];
+  const initialOrder = order(captured);
+  const moved = [11, 65, 92];
+  const pose = mat4.identity(mat4.create());
+  const rebuilt = phase.work.rebuilt;
+  let sortedDifferent = false;
+  for (let frame = 1; frame <= 48; frame++) {
+    const x = frame % 2 === 0 ? 200 + frame : 15 + frame;
+    pose[14] = x;
+    f.scene.apply([{ kind: 'update', entityKey: 65, world: pose }]);
+    pose[14] = 100 + frame;
+    f.scene.apply([{ kind: 'update', entityKey: 11, world: pose }]);
+    pose[14] = 1 + frame;
+    f.scene.apply([{ kind: 'update', entityKey: 92, world: pose }]);
+    const raw = prepare();
+    const input = native(raw);
+    const open = vi.spyOn(SceneSlotPage.prototype, 'read');
+    const snapshot = vi.spyOn(SceneDrawSlot.prototype, 'authoredSnapshot');
+    let candidate: ReturnType<typeof drawn>;
+    try {
+      candidate = drawn(phase, input);
+      expect(open.mock.calls.some(([slot]) => moved.includes(slot))).toBe(false);
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(phase.work.rebuilt).toBe(rebuilt);
+    } finally {
+      open.mockRestore();
+      snapshot.mockRestore();
+    }
+    const known = drawn(reference, raw);
+    expect(order(candidate)).toEqual(order(known));
+    expect(
+      candidate.rows.find((row) => row.source.entityKey === 65)?.source.transform.world[14],
+    ).toBe(x);
+    if (order(candidate).join() !== initialOrder.join()) sortedDifferent = true;
+    expect(first.source.transform.world[14]).toBe(initial);
+    expect(order(captured)).toEqual(initialOrder);
+  }
+  expect(sortedDifferent).toBe(true);
+  const input = native(prepare());
+  let observed: number | undefined;
+  const external = drawn(phase, {
+    ...input,
+    lod: (rows) => {
+      observed = rows.find((row) => row.source.entityKey === 65)?.source.transform.world[14];
+      return rows;
+    },
+  });
+  expect(observed).toBe(248);
+  expect(external.rows.find((row) => row.source.entityKey === 65)?.source.transform.world[14]).toBe(
+    248,
+  );
+});
+
+it('shares the entire Pass directory across continuous Scene poses and preserves captures', () => {
+  const f = fixture(96, 0);
+  onTestFinished(() => f.scene.dispose());
+  const phase = new DirectDrawPhase();
+  const raw = f.input();
+  assert(raw.materials);
+  const materials = raw.materials.with(opaque, undefined, {
+    ...opaque.snapshot,
+    immutableValues: true,
+  });
+  const feed = () => ({
+    ...f.input(),
+    materials,
+    lod: undefined,
+    select: (binding: GpuDrivenBatchBinding) => materials.get(binding.material)?.snapshot,
+  });
+  const held = drawn(phase, feed()).rows;
+  const geometry = Reflect.get(held, 'root');
+  const stableLeaves = geometry.values.map(({ values }: { values: unknown }) => values);
+  const changed = [1, 10, 65, 92];
+  const pose = mat4.identity(mat4.create());
+  let before = held;
+  for (let frame = 1; frame <= 60; frame++) {
+    for (const entityKey of changed) {
+      pose[14] = frame * 100 + entityKey;
+      f.scene.apply([{ kind: 'update', entityKey, world: pose }]);
+    }
+    const rows = drawn(phase, feed()).rows;
+    expect(Reflect.get(rows, 'root')).toBe(geometry);
+    const joined = new JoinedDrawRows([{ rows, start: 0 }]);
+    for (const id of changed) {
+      const binding = drawBindingReaderAt(joined, id);
+      expect(binding?.source.entityKey).toBe(id);
+      expect(binding?.world).toBe(held.at(id)?.world);
+    }
+    expect(Reflect.get(rows, 'observed')).toBeUndefined();
+    const open = vi.spyOn(SceneSlotPage.prototype, 'read');
+    const snapshot = vi.spyOn(SceneDrawSlot.prototype, 'authoredSnapshot');
+    try {
+      let positions = 0;
+      visitDrawPositions(joined, (source, position) => {
+        expect(source).toBe(position);
+        positions++;
+      });
+      expect(positions).toBe(rows.length);
+      let moved = 0;
+      let shared: ValidatedRenderable['recordingPose'];
+      visitRecordingDrawRows(
+        joined,
+        (row) => {
+          if (!changed.includes(row.source.entityKey)) return;
+          expect(CapturedSceneTransform.lane(recordingDrawPose(row), 14)).toBe(
+            frame * 100 + row.source.entityKey,
+          );
+          expect(row.recordingPose).toBeDefined();
+          shared ??= row.recordingPose;
+          expect(row.recordingPose).toBe(shared);
+          moved++;
+        },
+        'pose',
+      );
+      expect(moved).toBe(changed.length);
+      expect(open).not.toHaveBeenCalled();
+      expect(snapshot).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+      snapshot.mockRestore();
+    }
+    let visited = 0;
+    let borrowed: ValidatedRenderable | undefined;
+    visitRecordingDrawRows(rows, (row) => {
+      const entity = row.source.entityKey;
+      if (!changed.includes(entity)) return;
+      expect(row.source.transform.world[14]).toBe(frame * 100 + entity);
+      if (borrowed === undefined) borrowed = row;
+      else expect(row).toBe(borrowed);
+      visited++;
+    });
+    expect(visited).toBe(changed.length);
+    for (const id of changed) {
+      const dynamic = rows.at(id);
+      expect(dynamic).toBe(rows.at(id));
+      expect(dynamic?.source.transform.world[14]).toBe(frame * 100 + id);
+      expect(before.at(id)?.source.transform.world[14]).toBe((frame - 1) * 100 + id);
+      expect(held.at(id)?.source.transform.world[14]).toBe(id);
+    }
+    before = rows;
+  }
+  const replaced = before.at(1);
+  assert(replaced);
+  const patched = issueDrawRows(before.length, before, (write) =>
+    write(1, { ...replaced, meshSlot: 900 }),
+  );
+  const patchedLeaves = Reflect.get(patched, 'root').values;
+  expect(patchedLeaves[0].values).not.toBe(stableLeaves[0]);
+  expect(patchedLeaves[1].values).toBe(stableLeaves[1]);
+  expect(patched.at(1)?.meshSlot).toBe(900);
+  expect(before.at(1)).toBe(replaced);
+});
+
+it('revalidates only the affected direct geometry under continuous packet and Mesh edits', () => {
+  const f = fixture(0, 0);
+  onTestFinished(() => f.scene.dispose());
+  const phase = new DirectDrawPhase();
+  const meshResidency = new MeshChanges();
+  const lodGuid = AssetGuid.parse('00000000-0000-7000-8000-000000000002');
+  assert(lodGuid.ok);
+  const asset = createPrimitiveMesh('cube').unwrap();
+  function unbatched(entity: number, assetHandle: number, z = entity): RenderableSnapshot {
+    const { gpuDrivenDraws: _draws, ...base } = source(entity, opaque, z);
+    return { ...base, assetHandle, materialOverrides: [opaque] };
+  }
+
+  const lodEntity = 128;
+  const ownedView = unbatched(129, 512);
+  f.write([
+    ...Array.from({ length: lodEntity }, (_, entity) => unbatched(entity, 10 + entity)),
+    unbatched(lodEntity, 500),
+  ]);
+  expect(
+    f.scene.adoptMesh(500, { ...asset, lods: [{ mesh: lodGuid.value, screenCoverage: 0.5 }] }),
+  ).toBe(true);
+  let revision = 1;
+  const resources = {
+    ...sourceScope,
+    get revision() {
+      return revision;
+    },
+  };
+  const reads: number[] = [];
+  const prepareUnbatched: DirectDrawInput['prepareUnbatched'] = (sources) =>
+    sources.map((source, renderableIndex) => {
+      reads.push(source.entityKey);
+      return {
+        source,
+        mesh,
+        renderableIndex,
+        meshSlot: 0,
+        renderState: undefined,
+        stencilReference: undefined,
+      };
+    });
+  const render = () => {
+    reads.length = 0;
+    const frame = f.input();
+    const input = {
+      ...frame,
+      sourceScope: resources,
+      prepareUnbatched,
+      meshResidency,
+      viewDraws: [ownedView],
+    };
+    return drawn(phase, input);
+  };
+
+  const first = render();
+  expect(first.rows).toHaveLength(130);
+  expect(reads).toHaveLength(130);
+  let previous = first;
+  for (let frame = 1; frame <= 32; frame++) {
+    revision++;
+    f.write([unbatched(frame, 10 + frame, frame + 1000)]);
+    expect(
+      f.scene.adoptMesh(10, { ...asset, aabb: new Float32Array([-frame, -1, -1, 1, 1, 1]) }),
+    ).toBe(true);
+    const next = render();
+    expect(reads.slice().sort((a, b) => a - b)).toEqual([0, frame, lodEntity, 129]);
+    expect(next.rows.find((row) => row.source.entityKey === 0)?.source.localAabb?.[0]).toBe(-frame);
+    expect(
+      next.rows.find((row) => row.source.entityKey === frame)?.source.transform.world[14],
+    ).toBe(frame + 1000);
+    expect(next.rows.find((row) => row.source.entityKey === 100)).toBe(
+      previous.rows.find((row) => row.source.entityKey === 100),
+    );
+    previous = next;
+  }
+  expect(first.rows.find((row) => row.source.entityKey === 20)?.source.transform.world[14]).toBe(
+    20,
+  );
+  meshResidency.create();
+  render();
+  expect(reads).toHaveLength(130);
+  meshResidency.reset();
+  render();
+  expect(reads).toHaveLength(130);
+});
+
 it('issues only camera-admitted draw snapshots while moving casters stay available to shadow passes', () => {
   const f = fixture(12, 0);
   const phase = new DirectDrawPhase();
@@ -167,6 +508,7 @@ it('issues only camera-admitted draw snapshots while moving casters stay availab
       ...source(i, opaque, -8),
       localAabb: box,
       renderLayers: i % 2 ? 2 : 1,
+      shadowCaster: i % 2 === 0,
     })),
   );
   for (let tick = 0; tick < 6; tick++) {
@@ -195,7 +537,7 @@ it('issues only camera-admitted draw snapshots while moving casters stay availab
       f.scene,
       tick,
       undefined,
-      (row, out) => f.scene.writeCullingWorldBoundsAt(row, out),
+      f.scene.writeCullingPoseBounds.bind(f.scene),
     ).frame;
     assert(frame.cameraVisible && frame.cameraAdmission);
     draw.mockClear();
@@ -211,7 +553,12 @@ it('issues only camera-admitted draw snapshots while moving casters stay availab
     const custom = vi.fn(() => true);
     expect(drawn(new DirectDrawPhase(), { ...input, visible: custom }).rows.length).toBe(6);
     expect(custom).toHaveBeenCalledTimes(6);
-    expect(drawn(new DirectDrawPhase(), { ...base, scene, shadow: true }).rows.length).toBe(12);
+    draw.mockClear();
+    expect(drawn(new DirectDrawPhase(), { ...input, shadow: true, cullMask: 2 }).rows).toHaveLength(
+      0,
+    );
+    expect(draw).not.toHaveBeenCalled();
+    expect(drawn(new DirectDrawPhase(), { ...base, scene, shadow: true }).rows.length).toBe(6);
   }
 });
 
@@ -520,6 +867,33 @@ it('retires view rows without Pass bins before their material version is release
   const released = drawn(phase, { ...input, viewDraws: [], materials: held.without(opaque) });
   expect(released.rows).toEqual([]);
   expect(released.dispatch).toEqual([]);
+});
+
+it('updates material subscriptions of a pending row from its last accepted slot list', () => {
+  const f = fixture(0, 0);
+  onTestFinished(() => f.scene.dispose());
+  const phase = new DirectDrawPhase();
+  const materials = new MaterialFrame(undefined).with(opaque).with(other).with(glass);
+  const slots = [other, other, glass];
+  const renderable = { ...source(91, opaque), materials: slots };
+  const input = { ...f.input(), materials, prepareUnbatched: () => [] };
+  const observes = (resource: MaterialResource) =>
+    phase.materialValuesChanged(
+      materials,
+      materials.with(resource, undefined, { ...resource.snapshot, roughness: 0.3125 }),
+    );
+
+  expect(drawn(phase, { ...input, viewDraws: [renderable] }).rows).toHaveLength(0);
+  expect(observes(opaque)).toBe(true);
+  expect(observes(other)).toBe(true);
+  slots[0] = slots[1] = opaque;
+  expect(observes(other)).toBe(true);
+  expect(drawn(phase, { ...input, viewDraws: [{ ...renderable }] }).rows).toHaveLength(0);
+  expect(observes(other)).toBe(false);
+  expect(observes(glass)).toBe(true);
+  drawn(phase, { ...input, viewDraws: [] });
+  expect(observes(opaque)).toBe(false);
+  expect(observes(glass)).toBe(false);
 });
 
 it('keeps a steady frame at zero phase work and returns the same output', () => {
@@ -927,6 +1301,91 @@ it('publishes dense pose edits with the current ordinary physical addresses', ()
   expect(moved.rows.map((row) => row.meshSlot)).toEqual(placed.rows.map((row) => row.meshSlot));
 });
 
+it('records alternate pass orders from the current pose without allocating new order storage', () => {
+  const slots = new SceneSlots();
+  const count = 96;
+  const sources = Array.from({ length: count }, (_, index) => source(index + 1, opaque));
+  for (const [index, snapshot] of sources.entries())
+    setSceneRow(slots, index, { snapshot, entityKey: index + 1, generation: 0 });
+  const first = slots.capture();
+  const pass = issueDrawRows(
+    count,
+    undefined,
+    (write) => {
+      for (let index = 0; index < count; index++) {
+        const sceneSlot = first.slotAt(index);
+        assert(sceneSlot instanceof SceneDrawSlot);
+        write(index, {
+          ...receiptRow(),
+          meshSlot: index,
+          renderableIndex: index * 2 ** 32,
+          source: sceneSlot.authoredSnapshot(),
+          sceneSlot,
+        });
+      }
+    },
+    first,
+  );
+  const order = new GeometryDrawOrder();
+  const scratch = new RecordingDrawRow();
+  const worlds = sources[0]?.transform.world.slice() as Float32Array;
+  let positionBacking: object | undefined;
+  let lookupGrowths: number | undefined;
+  let rowView: ValidatedRenderable | undefined;
+  for (let frame = 1; frame <= 60; frame++) {
+    const moved = (frame * 73) % count;
+    worlds[12] = frame;
+    slots.writePreparedPose(moved, worlds, 0, 1);
+    const rows = new JoinedDrawRows([{ start: 0, rows: rebindDrawPoses(pass, slots.capture()) }]);
+    const selected = new Set([moved * 2 ** 32, (moved + 1) * 2 ** 32, -1]);
+    const read = vi.spyOn(SceneSlotPage.prototype, 'read');
+    try {
+      order.admitPass(frame, rows.length);
+      expect(order.prepare(rows, selected)).toBe(order);
+      expect(order.at(0)).toBe(moved);
+      if (moved + 1 < count) expect(order.at(1)).toBe(moved + 1);
+      const tail = Array.from({ length: count }, (_, i) => order.at(i));
+      expect(new Set(tail).size).toBe(count);
+      const draw = recordingDrawRowAt(rows, order.at(0), scratch, true);
+      rowView ??= draw;
+      expect(draw).toBe(rowView);
+      expect(draw?.meshSlot).toBe(moved);
+      expect(draw?.recordingPose?.poseColumn[(draw.recordingPose.poseOffset ?? 0) + 12]).toBe(
+        frame,
+      );
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      scratch.clear();
+      read.mockRestore();
+    }
+    const backing = Reflect.get(order, 'positions') as object;
+    const growths = Reflect.get(order, 'remaining').bucketGrowths as number;
+    positionBacking ??= backing;
+    lookupGrowths ??= growths;
+    expect(backing).toBe(positionBacking);
+    expect(growths).toBe(lookupGrowths);
+  }
+  expect(pass.at(73)?.source.transform.world[12]).toBe(0);
+});
+
+it('releases a large order workspace after a smaller frame and preserves it across order changes', () => {
+  const order = new GeometryDrawOrder();
+  const row = receiptRow();
+  const rows = Array.from({ length: 1600 }, (_, renderableIndex) => ({ ...row, renderableIndex }));
+  const selected = new Set([rows.length - 1]);
+  order.admitPass(1, rows.length);
+  order.prepare(rows, selected);
+  const large = Reflect.get(order, 'positions');
+  order.admitPass(2, rows.length);
+  order.admitPass(3, rows.length);
+  order.prepare(rows, selected);
+  expect(Reflect.get(order, 'positions')).toBe(large);
+  order.admitPass(4, 1);
+  order.admitPass(5, 1);
+  expect(Reflect.get(order, 'positions')).toHaveLength(0);
+  expect(Reflect.get(order, 'remaining').capacity).toBe(0);
+});
+
 it('re-reads only flipped rows when camera admission evidence changes', () => {
   const f = fixture(1000, 0);
   const phase = new DirectDrawPhase();
@@ -1041,6 +1500,26 @@ it('re-judges residency only for batches of the current plan', () => {
   const output = drawn(phase, { ...input, meshes: live });
   expect(output.rows).toHaveLength(10);
   expect(order(output)).toEqual(order(drawn(new DirectDrawPhase(), { ...input, meshes: live })));
+});
+
+it('replays a native membership edit after batch selection interrupts the diff', () => {
+  const f = fixture(8, 0);
+  const phase = new DirectDrawPhase();
+  const old = drawn(phase, f.input());
+  f.write(Array.from({ length: 8 }, (_, index) => source(index, other)));
+  const input = f.input();
+  expect(() =>
+    phase.queue({
+      ...input,
+      select: () => {
+        throw new Error('interrupted batch selection');
+      },
+    }),
+  ).toThrow('interrupted batch selection');
+  const retried = drawn(phase, input);
+  expect([...retried.rows].map((row) => row.source.material)).toEqual(Array(8).fill(other));
+  expect(order(retried)).toEqual(order(drawn(new DirectDrawPhase(), input)));
+  expect([...old.rows].map((row) => row.source.material)).toEqual(Array(8).fill(opaque));
 });
 
 it('keeps surviving material rows in phase order at their Scene slots when another bin grows', () => {

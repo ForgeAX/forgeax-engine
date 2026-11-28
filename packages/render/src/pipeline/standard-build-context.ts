@@ -8,6 +8,7 @@ import type {
   RenderPipelineTarget,
 } from '../render-pipeline';
 import type { TargetCoverageAttachment } from '../temporal/target-coverage-attachment';
+import { addWaterFluidGraph } from '../water/fluid-graph';
 
 /** Standard-only graph input; custom pipeline consumers never see coverage. */
 export type StandardPipelineBuildContext = RenderPipelineBuildContext<RenderPipelineFrame> & {
@@ -23,6 +24,10 @@ export type StandardPipelineBuildContext = RenderPipelineBuildContext<RenderPipe
   readonly forwardOutput?: import('./standard-forward-output').StandardForwardOutput;
   /** Internal conformance override; never populated from game-authored pipeline assets. */
   readonly gtaoExecutionOverride?: 'fragment' | 'compute';
+  /** Optional tree-shakeable viewport debug-visualization extension. */
+  readonly viewportOutput?:
+    | import('../viewport-output-contract').ViewportOutputExtension
+    | undefined;
 };
 
 export type WaterInfoGraphTargets = ReadonlyMap<
@@ -43,6 +48,22 @@ export function standardWaterInfoGraphTargets(
     if (target !== undefined) targets.set(targetName, target);
   }
   return targets;
+}
+
+export function prepareStandardWaterView(
+  context: StandardPipelineBuildContext,
+  topology: import('../render-pipeline').RenderPipelineTopology,
+) {
+  if (topology.water !== true) return ok(undefined);
+  const info = context.contributeFeatures({
+    placement: 'scene',
+    targets: [],
+    include: ['water-info-producer', 'water-gpu-mesh', 'water-advanced-producer'],
+  });
+  if (!info.ok) return info;
+  const targets = standardWaterInfoGraphTargets(context, context.viewIdentity ?? 'camera:0');
+  const fluid = addWaterFluidGraph(context);
+  return fluid.ok ? ok({ targets, fluid: fluid.value }) : fluid;
 }
 
 /** The actual main opaque surface, before any Water depth/color consumer. */

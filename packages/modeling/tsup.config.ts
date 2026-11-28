@@ -5,6 +5,8 @@ export default defineConfig({
   ...baseTsupConfig,
   entry: {
     index: 'src/index.ts',
+    'brep/index': 'src/brep/index.ts',
+    'quad/index': 'src/quad/index.ts',
     'tools/index': 'src/tools/index.ts',
     'tools/capture-worker': 'src/tools/capture-worker.ts',
     'tools/capture-host': 'src/tools/capture-host.ts',

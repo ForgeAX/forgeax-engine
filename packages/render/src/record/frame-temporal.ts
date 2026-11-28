@@ -2,6 +2,7 @@
 // temporal view with its reset reason, and the camera-owned post-process
 // parameters projected from that view at record time.
 
+import type { Mat4 } from '@forgeax/engine-math';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { standardBloomAdmitted } from '../bloom-admission';
 import { isTemporalAntialias } from '../components/camera';
@@ -203,7 +204,7 @@ export function resolveFrameTemporal(
   fogSignature: string,
   environmentReady: boolean,
   temporalReset: boolean,
-  currentUnjitteredViewProjection: Float32Array,
+  currentUnjitteredViewProjection: Mat4,
 ) {
   const previous = frameState.temporalView.accepted;
   const motionBlurDemand = motionBlurDemandFor(camera);
@@ -340,6 +341,33 @@ function setDepthOfFieldParams(
   }
 }
 
+function bindOpticalParams(
+  own: Map<string, Uint8Array> | undefined,
+  borrowed: ReadonlyMap<string, Uint8Array>,
+  camera: CameraSnapshot,
+  temporalView: TemporalView,
+  targetH: number,
+): Map<string, Uint8Array> | undefined {
+  if (camera.depthOfField !== undefined) {
+    own ??= new Map(borrowed);
+    setDepthOfFieldParams(own, camera, camera.depthOfField, {
+      width: temporalView.input.width,
+      height: targetH,
+    });
+  }
+  if (camera.lensFlare !== undefined) {
+    own ??= new Map(borrowed);
+    const lensFlareParams = packLensFlareParams(
+      camera.lensFlare,
+      standardBloomAdmitted(camera) ? camera.bloomIntensity : 0,
+    );
+    for (const program of LENS_FLARE_PROGRAMS) {
+      if (program.params !== undefined) own.set(program.name, lensFlareParams);
+    }
+  }
+  return own;
+}
+
 /**
  * Camera-owned temporal controls are projected into the per-frame
  * post-process parameter map at record time. The extracted ECS map only
@@ -369,21 +397,22 @@ export function buildFramePostProcessParams(
       own.set(id, effect.frameParams);
     }
   }
-  if (nativeDisplayGrade) return own ?? postProcessParams;
-  const params = own ?? new Map(postProcessParams);
-  stampOutputGamut(internals, postProcessParams, params);
+  if (!nativeDisplayGrade || camera.postProcessing !== false)
+    own = bindOpticalParams(own, postProcessParams, camera, temporalView, targetH);
   if (camera.motionBlur !== undefined && motionBlurDemand) {
-    params.set(
+    own ??= new Map(postProcessParams);
+    own.set(
       'forgeax.motion-blur',
       packMotionBlurFrameParams(camera.motionBlur, deltaSeconds, temporalView.historyValid),
     );
   }
-  if (camera.depthOfField !== undefined) {
-    setDepthOfFieldParams(params, camera, camera.depthOfField, {
-      width: temporalView.input.width,
-      height: targetH,
-    });
+  if (barrelMapping !== undefined && barrelMapping.strength > 0) {
+    own ??= new Map(postProcessParams);
+    own.set(BARREL_DISTORTION_POST_PROCESS_ID, packBarrelDistortionParams(barrelMapping));
   }
+  if (nativeDisplayGrade) return own ?? postProcessParams;
+  const params = own ?? new Map(postProcessParams);
+  stampOutputGamut(internals, postProcessParams, params);
   if (
     camera.lensEffects !== undefined ||
     internals.getPostProcessParamsBuffer?.(LENS_EFFECTS_POST_PROCESS_ID) !== undefined
@@ -396,18 +425,6 @@ export function buildFramePostProcessParams(
       CHROMATIC_ABERRATION_POST_PROCESS_ID,
       packChromaticAberrationParams(camera.lensEffects),
     );
-  }
-  if (camera.lensFlare !== undefined) {
-    const lensFlareParams = packLensFlareParams(
-      camera.lensFlare,
-      standardBloomAdmitted(camera) ? camera.bloomIntensity : 0,
-    );
-    for (const program of LENS_FLARE_PROGRAMS) {
-      if (program.params !== undefined) params.set(program.name, lensFlareParams);
-    }
-  }
-  if (barrelMapping !== undefined && barrelMapping.strength > 0) {
-    params.set(BARREL_DISTORTION_POST_PROCESS_ID, packBarrelDistortionParams(barrelMapping));
   }
   return params;
 }

@@ -4,7 +4,7 @@ import { compileShader } from '../../../../../shader-compiler/src/compile';
 import { loadEngineShaderEntries } from '../../../../../vite-plugin-shader/src/engine-inputs/load-engine-shader-entries';
 import { VIEW_UNIFORM_BYTES } from '../../../record/view-ubo';
 
-it('reads actual reference probe evaluations with independent fixed two-step budget', async () => {
+it('reads a fixed trace budget and skips mask-only samples outside the height profile', async () => {
   const engine = await loadEngineShaderEntries();
   const entry = engine.cloudAtmosphere.find(
     (entry) =>
@@ -96,6 +96,7 @@ it('reads actual reference probe evaluations with independent fixed two-step bud
     ] as const;
     const view = buf(VIEW_UNIFORM_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
       params = buf(304, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
+      distantSky = buf(16, GPUBufferUsage.STORAGE),
       read = buf(512, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
     const v = new Float32Array(VIEW_UNIFORM_BYTES / 4);
     v.set([0, -1, 0], 16);
@@ -116,7 +117,10 @@ it('reads actual reference probe evaluations with independent fixed two-step bud
     device.queue.submit([seed.finish()]);
     const group0 = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: view } }],
+      entries: [
+        { binding: 0, resource: { buffer: view } },
+        { binding: 25, resource: { buffer: distantSky } },
+      ],
     });
     const group1 = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(1),
@@ -129,8 +133,8 @@ it('reads actual reference probe evaluations with independent fixed two-step bud
         { binding: 2, resource: { buffer: params } },
         { binding: 3, resource: depth.createView() },
         { binding: 5, resource: zero.createView() },
-        { binding: 6, resource: zero.createView() },
-        { binding: 7, resource: white.createView() },
+        { binding: 6, resource: white.createView() },
+        { binding: 7, resource: zero.createView() },
         { binding: 8, resource: body.createView() },
         { binding: 9, resource: bsm.createView() },
         { binding: 10, resource: white.createView() },
@@ -178,7 +182,7 @@ it('reads actual reference probe evaluations with independent fixed two-step bud
         const m = value & 1023;
         return e === 0 ? m * 2 ** -24 : (1 + m / 1024) * 2 ** (e - 15);
       });
-      expect(actual.slice(0, 3)).toEqual([2, 2, skip ? 0 : 2]);
+      expect(actual).toEqual([2, 2, skip ? 0 : 2, 0]);
       results.push({ skip, actual });
     }
     const evidence = process.env.FORGEAX_CLOUD_PROBE_EVIDENCE;

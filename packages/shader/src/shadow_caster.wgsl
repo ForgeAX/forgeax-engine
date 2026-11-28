@@ -563,6 +563,7 @@ fn evaluateShadowSurface(in : VsOut, frontFacing : bool) -> SurfaceData {
     mat3x3<f32>(in.objectBasis0, in.objectBasis1, in.objectBasis2),
 #endif
     view.fogHeightOpacity.w,
+    0.0,
   );
 #ifdef STANDARD_STOCK_SURFACE_AVAILABLE
   var shadowMaterial = material;

@@ -64,7 +64,7 @@ it.each([
           const weight = f.skinWeight[vertex * 4 + lane] as number;
           sum += weight;
           const joint = f.skinIndex[vertex * 4 + lane] as number;
-          expect(frame.matrix(0, joint, current, inverse)).toBe(true);
+          expect(frame.matrix(0, joint, current)).toBe(true);
           for (let axis = 0; axis < 3; axis++) {
             let value = current[12 + axis] as number;
             for (let dimension = 0; dimension < 3; dimension++)
@@ -239,7 +239,7 @@ it.each([
     inverse = mat4.create();
   const envelopes = new Float32Array([1, 1, 1, 1, x, 0, 0, 0, x, 0, 0, 0]);
   try {
-    expect(frame.matrix(0, 0, current, inverse)).toBe(true);
+    expect(frame.matrix(0, 0, current)).toBe(true);
     expect(current[0]).not.toBe(0);
     const gpuCoefficient =
       mode === 'cancellation'

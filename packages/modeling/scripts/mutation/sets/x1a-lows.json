@@ -1,0 +1,74 @@
+{
+ "tests": [
+  "src/brep/__tests__/metric-uv.unit.test.ts",
+  "src/brep/__tests__/model-brep.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "l7-1-model-reread",
+   "file": "src/model.ts",
+   "old": "stage.tessellate(shape, read)",
+   "new": "stage.tessellate(shape, options)"
+  },
+  {
+   "id": "l7-1-journal-reread",
+   "file": "src/model.ts",
+   "old": "{ name, ...read }",
+   "new": "{ name, ...options }"
+  },
+  {
+   "id": "l7-1-spread-throws",
+   "file": "src/model.ts",
+   "old": "      read = undefined;\n",
+   "new": "      throw new Error('x');\n"
+  },
+  {
+   "id": "l7-1-read-unchecked",
+   "file": "src/model.ts",
+   "old": "      if (read === undefined)\n",
+   "new": "      if (false)\n"
+  },
+  {
+   "id": "l7-1-tess-catch",
+   "file": "src/brep/tessellate.ts",
+   "old": "    return brepFail('brep-bad-argument', 'options are readable (a property access threw)');",
+   "new": "    throw new Error('x');"
+  },
+  {
+   "id": "l7-1-tess-angle-reread",
+   "file": "src/brep/tessellate.ts",
+   "old": "const angle = rawAngle ?? DEFAULT_ANGLE;",
+   "new": "const angle = options.angle ?? DEFAULT_ANGLE;"
+  },
+  {
+   "id": "l7-1-tess-uv-reread",
+   "file": "src/brep/tessellate.ts",
+   "old": "snapshotUv(uvOptions)",
+   "new": "snapshotUv(options.uv)"
+  },
+  {
+   "id": "l7-2-threshold-zero",
+   "file": "src/brep/tessellate.ts",
+   "old": "largest / period >= MIN_UV_SPAN",
+   "new": "largest / period >= 0"
+  },
+  {
+   "id": "l7-2-span-tiny",
+   "file": "src/brep/tessellate.ts",
+   "old": "export const MIN_UV_SPAN = 1e-6;",
+   "new": "export const MIN_UV_SPAN = 1e-9;"
+  },
+  {
+   "id": "l7-2-span-huge",
+   "file": "src/brep/tessellate.ts",
+   "old": "export const MIN_UV_SPAN = 1e-6;",
+   "new": "export const MIN_UV_SPAN = 0.1;"
+  },
+  {
+   "id": "l7-2-gutter-unbounded",
+   "file": "src/brep/tessellate.ts",
+   "old": "  if (!(largest / period >= MIN_UV_SPAN))\n",
+   "new": "  if (false)\n"
+  }
+ ]
+}

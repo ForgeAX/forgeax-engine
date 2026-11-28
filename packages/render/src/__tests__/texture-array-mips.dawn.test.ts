@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import {
   AssetRegistry,
   blitMipmapsSync,
+  configureNativeMipmapCompiler,
   getOrCreateMipmapPipeline,
+  mipmapCacheSize,
 } from '@forgeax/engine-assets-runtime';
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
@@ -81,7 +83,10 @@ for (const mode of ['eager', 'resident', 'recovery'] as const)
         (_device, descriptor) => recorder.backend.createShaderModule(device, descriptor),
         device.caps,
       );
-      if (mode !== 'eager') (await store.prewarmMipmapPipeline(device, [format])).unwrap();
+      const compile = vi.fn(recorder.backend.createShaderModuleImmediate);
+      configureNativeMipmapCompiler(device, compile);
+      expect(mipmapCacheSize(device)).toBe(0);
+      expect(compile).not.toHaveBeenCalled();
       const assets = new AssetRegistry();
       const colorSpace = format.endsWith('-srgb') ? 'srgb' : 'linear';
       const upload = async (pod: TextureAsset) => {
@@ -169,6 +174,8 @@ for (const mode of ['eager', 'resident', 'recovery'] as const)
         expect(model.works.filter((work) => work.kind === 'draw')).toHaveLength(
           layers * (numMipLevels({ width, height }) - 1) * 2,
         );
+        expect(compile).toHaveBeenCalledTimes(1);
+        expect(mipmapCacheSize(device)).toBe(1);
         expect(await raw.popErrorScope()).toBeNull();
         expect(errors).toEqual([]);
       } finally {

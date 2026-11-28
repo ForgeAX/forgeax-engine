@@ -1663,6 +1663,476 @@ export class ValidatedModule {
 }
 if (Symbol.dispose) ValidatedModule.prototype[Symbol.dispose] = ValidatedModule.prototype.free;
 
+export class WasmWgpuRenderKernel {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        WasmWgpuRenderKernelFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_wasmwgpurenderkernel_free(ptr, 0);
+    }
+    /**
+     * @param {number} frame_id
+     * @param {number} surface_width
+     * @param {number} surface_height
+     */
+    begin_frame(frame_id, surface_width, surface_height) {
+        const ret = wasm.wasmwgpurenderkernel_begin_frame(this.__wbg_ptr, frame_id, surface_width, surface_height);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @returns {number}
+     */
+    cmd_buffer_capacity() {
+        const ret = wasm.wasmwgpurenderkernel_cmd_buffer_capacity(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} byte_len
+     * @returns {number}
+     */
+    commit_scene_delta_len(byte_len) {
+        const ret = wasm.wasmwgpurenderkernel_commit_scene_delta_len(this.__wbg_ptr, byte_len);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @param {number} size
+     * @param {number} usage
+     * @param {Uint8Array | null} [data]
+     * @param {string | null} [label]
+     * @returns {number}
+     */
+    create_buffer(size, usage, data, label) {
+        var ptr0 = isLikeNone(data) ? 0 : passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(label) ? 0 : passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_create_buffer(this.__wbg_ptr, size, usage, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @param {number} width
+     * @param {number} height
+     * @param {number} format_code
+     * @returns {number}
+     */
+    create_dynamic_texture(width, height, format_code) {
+        const ret = wasm.wasmwgpurenderkernel_create_dynamic_texture(this.__wbg_ptr, width, height, format_code);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @param {number} shader_program_id
+     * @param {number} layout_family_id
+     * @param {number} render_state_bits
+     * @param {number} variant_flags
+     * @param {number} queue
+     * @param {Uint8Array} param_bytes
+     * @param {number} base_color_texture_id
+     * @param {number} normal_texture_id
+     * @param {number} metallic_roughness_texture_id
+     * @param {number} emissive_texture_id
+     * @param {number} occlusion_texture_id
+     * @param {number} sampler_id
+     * @param {string | null} [label]
+     * @returns {number}
+     */
+    create_material(shader_program_id, layout_family_id, render_state_bits, variant_flags, queue, param_bytes, base_color_texture_id, normal_texture_id, metallic_roughness_texture_id, emissive_texture_id, occlusion_texture_id, sampler_id, label) {
+        const ptr0 = passArray8ToWasm0(param_bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(label) ? 0 : passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_create_material(this.__wbg_ptr, shader_program_id, layout_family_id, render_state_bits, variant_flags, queue, ptr0, len0, base_color_texture_id, normal_texture_id, metallic_roughness_texture_id, emissive_texture_id, occlusion_texture_id, sampler_id, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @param {number} vertex_layout_id
+     * @param {Uint8Array} vertex_data
+     * @param {Uint8Array | null | undefined} index_data
+     * @param {number} index_count
+     * @param {number} vertex_count
+     * @param {boolean} is_uint32_index
+     * @param {number} topology
+     * @param {string | null} [label]
+     * @returns {number}
+     */
+    create_mesh(vertex_layout_id, vertex_data, index_data, index_count, vertex_count, is_uint32_index, topology, label) {
+        const ptr0 = passArray8ToWasm0(vertex_data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(index_data) ? 0 : passArray8ToWasm0(index_data, wasm.__wbindgen_malloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(label) ? 0 : passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_create_mesh(this.__wbg_ptr, vertex_layout_id, ptr0, len0, ptr1, len1, index_count, vertex_count, is_uint32_index, topology, ptr2, len2);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @param {number} hash
+     * @param {string | null} [address_mode_u]
+     * @param {string | null} [address_mode_v]
+     * @param {string | null} [address_mode_w]
+     * @param {string | null} [mag_filter]
+     * @param {string | null} [min_filter]
+     * @param {string | null} [mipmap_filter]
+     * @param {string | null} [compare]
+     * @param {string | null} [label]
+     * @returns {number}
+     */
+    create_sampler(hash, address_mode_u, address_mode_v, address_mode_w, mag_filter, min_filter, mipmap_filter, compare, label) {
+        var ptr0 = isLikeNone(address_mode_u) ? 0 : passStringToWasm0(address_mode_u, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(address_mode_v) ? 0 : passStringToWasm0(address_mode_v, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(address_mode_w) ? 0 : passStringToWasm0(address_mode_w, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(mag_filter) ? 0 : passStringToWasm0(mag_filter, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        var ptr4 = isLikeNone(min_filter) ? 0 : passStringToWasm0(min_filter, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len4 = WASM_VECTOR_LEN;
+        var ptr5 = isLikeNone(mipmap_filter) ? 0 : passStringToWasm0(mipmap_filter, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len5 = WASM_VECTOR_LEN;
+        var ptr6 = isLikeNone(compare) ? 0 : passStringToWasm0(compare, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len6 = WASM_VECTOR_LEN;
+        var ptr7 = isLikeNone(label) ? 0 : passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len7 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_create_sampler(this.__wbg_ptr, hash, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6, ptr7, len7);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @param {number} width
+     * @param {number} height
+     * @param {number} format_code
+     * @param {number} usage
+     * @param {Uint8Array | null | undefined} data
+     * @param {number} mip_level_count
+     * @param {number} array_layer_count
+     * @param {number} sample_count
+     * @param {string | null} [label]
+     * @returns {number}
+     */
+    create_texture(width, height, format_code, usage, data, mip_level_count, array_layer_count, sample_count, label) {
+        var ptr0 = isLikeNone(data) ? 0 : passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(label) ? 0 : passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_create_texture(this.__wbg_ptr, width, height, format_code, usage, ptr0, len0, mip_level_count, array_layer_count, sample_count, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @param {number} cam_x
+     * @param {number} cam_y
+     * @param {number} cam_z
+     * @param {number} layer_mask
+     * @param {number} flags
+     * @param {number} lod_bias
+     * @returns {number}
+     */
+    cull(cam_x, cam_y, cam_z, layer_mask, flags, lod_bias) {
+        const ret = wasm.wasmwgpurenderkernel_cull(this.__wbg_ptr, cam_x, cam_y, cam_z, layer_mask, flags, lod_bias);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    cull_lights_ptr() {
+        const ret = wasm.wasmwgpurenderkernel_cull_lights_ptr(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    cull_summary_ptr() {
+        const ret = wasm.wasmwgpurenderkernel_cull_summary_ptr(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    cull_vp_ptr() {
+        const ret = wasm.wasmwgpurenderkernel_cull_vp_ptr(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    delta_buffer_capacity() {
+        const ret = wasm.wasmwgpurenderkernel_delta_buffer_capacity(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} id
+     */
+    destroy_buffer(id) {
+        wasm.wasmwgpurenderkernel_destroy_buffer(this.__wbg_ptr, id);
+    }
+    /**
+     * @param {number} id
+     */
+    destroy_dynamic_texture(id) {
+        wasm.wasmwgpurenderkernel_destroy_dynamic_texture(this.__wbg_ptr, id);
+    }
+    /**
+     * @param {number} id
+     */
+    destroy_material(id) {
+        wasm.wasmwgpurenderkernel_destroy_material(this.__wbg_ptr, id);
+    }
+    /**
+     * @param {number} id
+     */
+    destroy_mesh(id) {
+        wasm.wasmwgpurenderkernel_destroy_mesh(this.__wbg_ptr, id);
+    }
+    /**
+     * @param {number} id
+     */
+    destroy_sampler(id) {
+        wasm.wasmwgpurenderkernel_destroy_sampler(this.__wbg_ptr, id);
+    }
+    /**
+     * @param {number} id
+     */
+    destroy_shader_program(id) {
+        wasm.wasmwgpurenderkernel_destroy_shader_program(this.__wbg_ptr, id);
+    }
+    /**
+     * @param {number} id
+     */
+    destroy_texture(id) {
+        wasm.wasmwgpurenderkernel_destroy_texture(this.__wbg_ptr, id);
+    }
+    /**
+     * @param {number} min_words
+     * @returns {number}
+     */
+    ensure_cmd_buffer(min_words) {
+        const ret = wasm.wasmwgpurenderkernel_ensure_cmd_buffer(this.__wbg_ptr, min_words);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} min_bytes
+     * @returns {number}
+     */
+    ensure_delta_buffer(min_bytes) {
+        const ret = wasm.wasmwgpurenderkernel_ensure_delta_buffer(this.__wbg_ptr, min_bytes);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    gpu_memory_bytes() {
+        const ret = wasm.wasmwgpurenderkernel_gpu_memory_bytes(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Creates an in-WASM `RenderKernelCore` + `WgpuKernelExecutor` borrowing the
+     * underlying `wgpu::Device` and `wgpu::Queue` from a live `RhiWgpuDevice` handle.
+     * @param {any} raw_device
+     * @param {string | null} [adapter_name]
+     * @param {string | null} [backend_name]
+     */
+    constructor(raw_device, adapter_name, backend_name) {
+        var ptr0 = isLikeNone(adapter_name) ? 0 : passStringToWasm0(adapter_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(backend_name) ? 0 : passStringToWasm0(backend_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_new(raw_device, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        WasmWgpuRenderKernelFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * @returns {number}
+     */
+    object_count() {
+        const ret = wasm.wasmwgpurenderkernel_object_count(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} ticket_id
+     * @returns {any}
+     */
+    readback_ticket(ticket_id) {
+        const ret = wasm.wasmwgpurenderkernel_readback_ticket(this.__wbg_ptr, ticket_id);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @returns {number}
+     */
+    receipt_ptr() {
+        const ret = wasm.wasmwgpurenderkernel_receipt_ptr(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {string} code
+     * @param {string | null | undefined} vertex_entry_point
+     * @param {string | null | undefined} fragment_entry_point
+     * @param {string | null | undefined} compute_entry_point
+     * @param {number} layout_family_id
+     * @param {string | null | undefined} vertex_layouts_json
+     * @param {string | null | undefined} color_formats_json
+     * @param {string | null | undefined} depth_format
+     * @param {number} sample_count
+     * @param {string | null} [blend_mode]
+     * @param {string | null} [primitive_topology]
+     * @param {string | null} [label]
+     * @param {string | null} [extra_state_json]
+     * @returns {number}
+     */
+    register_shader_program(code, vertex_entry_point, fragment_entry_point, compute_entry_point, layout_family_id, vertex_layouts_json, color_formats_json, depth_format, sample_count, blend_mode, primitive_topology, label, extra_state_json) {
+        const ptr0 = passStringToWasm0(code, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(vertex_entry_point) ? 0 : passStringToWasm0(vertex_entry_point, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        var ptr2 = isLikeNone(fragment_entry_point) ? 0 : passStringToWasm0(fragment_entry_point, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(compute_entry_point) ? 0 : passStringToWasm0(compute_entry_point, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        var ptr4 = isLikeNone(vertex_layouts_json) ? 0 : passStringToWasm0(vertex_layouts_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len4 = WASM_VECTOR_LEN;
+        var ptr5 = isLikeNone(color_formats_json) ? 0 : passStringToWasm0(color_formats_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len5 = WASM_VECTOR_LEN;
+        var ptr6 = isLikeNone(depth_format) ? 0 : passStringToWasm0(depth_format, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len6 = WASM_VECTOR_LEN;
+        var ptr7 = isLikeNone(blend_mode) ? 0 : passStringToWasm0(blend_mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len7 = WASM_VECTOR_LEN;
+        var ptr8 = isLikeNone(primitive_topology) ? 0 : passStringToWasm0(primitive_topology, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len8 = WASM_VECTOR_LEN;
+        var ptr9 = isLikeNone(label) ? 0 : passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len9 = WASM_VECTOR_LEN;
+        var ptr10 = isLikeNone(extra_state_json) ? 0 : passStringToWasm0(extra_state_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len10 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_register_shader_program(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, layout_family_id, ptr4, len4, ptr5, len5, ptr6, len6, sample_count, ptr7, len7, ptr8, len8, ptr9, len9, ptr10, len10);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    resolved_cmds_len() {
+        const ret = wasm.wasmwgpurenderkernel_resolved_cmds_len(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    resolved_cmds_ptr() {
+        const ret = wasm.wasmwgpurenderkernel_resolved_cmds_ptr(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {boolean} enabled
+     */
+    set_capture_resolved(enabled) {
+        wasm.wasmwgpurenderkernel_set_capture_resolved(this.__wbg_ptr, enabled);
+    }
+    /**
+     * Executes `RenderKernelCore::submit_frame` + `WgpuKernelExecutor::sync_scene_gpu_buffers`
+     * + `WgpuKernelExecutor::execute_physical_stream_with_target` in a single WASM call.
+     * @param {number} word_len
+     * @param {Uint8Array} uniform_data
+     * @param {any} target_view
+     * @returns {number}
+     */
+    submit_frame_words(word_len, uniform_data, target_view) {
+        const ptr0 = passArray8ToWasm0(uniform_data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_submit_frame_words(this.__wbg_ptr, word_len, ptr0, len0, target_view);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    submitted_bitmap_len() {
+        const ret = wasm.wasmwgpurenderkernel_submitted_bitmap_len(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    submitted_bitmap_ptr() {
+        const ret = wasm.wasmwgpurenderkernel_submitted_bitmap_ptr(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {boolean}
+     */
+    supports_scene_4bgl() {
+        const ret = wasm.wasmwgpurenderkernel_supports_scene_4bgl(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * @param {number} id
+     * @param {number} revision
+     * @param {number} width
+     * @param {number} height
+     * @param {Uint8Array} data
+     * @returns {boolean}
+     */
+    upload_dynamic_texture(id, revision, width, height, data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_upload_dynamic_texture(this.__wbg_ptr, id, revision, width, height, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * @param {number} id
+     * @param {number} offset
+     * @param {Uint8Array} data
+     */
+    write_buffer(id, offset, data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmwgpurenderkernel_write_buffer(this.__wbg_ptr, id, offset, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+}
+if (Symbol.dispose) WasmWgpuRenderKernel.prototype[Symbol.dispose] = WasmWgpuRenderKernel.prototype.free;
+
 /**
  * Compose a WGSL shader via naga_oil and serialise the composed naga module
  * back to WGSL text (plan-strategy D-01 Rust-side composer).
@@ -1727,6 +2197,15 @@ export function emit_reflection(validated, options_json) {
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
+}
+
+/**
+ * Exposes the wgpu-wasm linear WebAssembly.Memory for zero-copy TypedArray views in JS.
+ * @returns {any}
+ */
+export function kernelWasmMemory() {
+    const ret = wasm.kernelWasmMemory();
+    return ret;
 }
 
 /**
@@ -1885,6 +2364,10 @@ function __wbg_get_imports() {
         },
         __wbg___wbindgen_jsval_loose_eq_677f21e468d6b461: function(arg0, arg1) {
             const ret = arg0 == arg1;
+            return ret;
+        },
+        __wbg___wbindgen_memory_caa4a6165639c8b5: function() {
+            const ret = wasm.memory;
             return ret;
         },
         __wbg___wbindgen_number_get_2e0e7dee9f701a71: function(arg0, arg1) {
@@ -2730,6 +3213,10 @@ function __wbg_get_imports() {
             const ret = new Array();
             return ret;
         },
+        __wbg_new_from_slice_9a868026ffa4208a: function(arg0, arg1) {
+            const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
+            return ret;
+        },
         __wbg_new_typed_b01cb72a8af741a3: function(arg0, arg1) {
             try {
                 var state0 = {a: arg0, b: arg1};
@@ -3183,18 +3670,18 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1873, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1933, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 9, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h931c01826ed95e78);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h09995749915d5b17);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 11, ret: RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }, inner_ret: Some(RustStruct { name: "RhiWgpuCompletionRequest", unique_crate_identifier: "wgpu-wasm-be790ca1f18a4bd9" }) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h09bca630b4c3a312);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__hc3cc56db47cb764c);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0) {
@@ -3263,13 +3750,13 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen__convert__closures_____invoke__h09bca630b4c3a312(arg0, arg1) {
-    const ret = wasm.wasm_bindgen__convert__closures_____invoke__h09bca630b4c3a312(arg0, arg1);
+function wasm_bindgen__convert__closures_____invoke__hc3cc56db47cb764c(arg0, arg1) {
+    const ret = wasm.wasm_bindgen__convert__closures_____invoke__hc3cc56db47cb764c(arg0, arg1);
     return RhiWgpuCompletionRequest.__wrap(ret);
 }
 
-function wasm_bindgen__convert__closures_____invoke__h931c01826ed95e78(arg0, arg1, arg2) {
-    wasm.wasm_bindgen__convert__closures_____invoke__h931c01826ed95e78(arg0, arg1, arg2);
+function wasm_bindgen__convert__closures_____invoke__h09995749915d5b17(arg0, arg1, arg2) {
+    wasm.wasm_bindgen__convert__closures_____invoke__h09995749915d5b17(arg0, arg1, arg2);
 }
 
 function wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b(arg0, arg1, arg2) {
@@ -3361,6 +3848,9 @@ const RhiWgpuTextureViewFinalization = (typeof FinalizationRegistry === 'undefin
 const ValidatedModuleFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_validatedmodule_free(ptr, 1));
+const WasmWgpuRenderKernelFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_wasmwgpurenderkernel_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

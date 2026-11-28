@@ -1,9 +1,11 @@
-import type { Result } from '@forgeax/engine-types';
+import { err, type Result } from '@forgeax/engine-types';
 import { cos } from '../dmath';
 import type { ModelingError } from '../errors';
 import { type Model, model } from '../model';
 import type { Point2 } from '../primitives';
 import { type FaceSelector, sel } from '../selectors';
+import { type ThreadGeometry, threadRadii, threadReach, threadSweep } from '../thread-sweep';
+import { specOf } from '../threads';
 import {
   checkAll,
   circle,
@@ -15,18 +17,18 @@ import {
   revolveCircle,
 } from './common';
 
-/** ISO metric coarse sizes: thread diameter, pitch, hex across flats, head and nut heights (mm). */
+/** Hex head and nut dimensions (mm) by ISO metric coarse size; thread diameter and pitch come from `threads`. */
 export const METRIC_SIZES = {
-  M3: { d: 3, pitch: 0.5, s: 5.5, k: 2, m: 2.4 },
-  M4: { d: 4, pitch: 0.7, s: 7, k: 2.8, m: 3.2 },
-  M5: { d: 5, pitch: 0.8, s: 8, k: 3.5, m: 4.7 },
-  M6: { d: 6, pitch: 1, s: 10, k: 4, m: 5.2 },
-  M8: { d: 8, pitch: 1.25, s: 13, k: 5.3, m: 6.8 },
-  M10: { d: 10, pitch: 1.5, s: 16, k: 6.4, m: 8.4 },
-  M12: { d: 12, pitch: 1.75, s: 18, k: 7.5, m: 10.8 },
-  M16: { d: 16, pitch: 2, s: 24, k: 10, m: 14.8 },
-  M20: { d: 20, pitch: 2.5, s: 30, k: 12.5, m: 18 },
-  M24: { d: 24, pitch: 3, s: 36, k: 15, m: 21.5 },
+  M3: { s: 5.5, k: 2, m: 2.4 },
+  M4: { s: 7, k: 2.8, m: 3.2 },
+  M5: { s: 8, k: 3.5, m: 4.7 },
+  M6: { s: 10, k: 4, m: 5.2 },
+  M8: { s: 13, k: 5.3, m: 6.8 },
+  M10: { s: 16, k: 6.4, m: 8.4 },
+  M12: { s: 18, k: 7.5, m: 10.8 },
+  M16: { s: 24, k: 10, m: 14.8 },
+  M20: { s: 30, k: 12.5, m: 18 },
+  M24: { s: 36, k: 15, m: 21.5 },
 } as const;
 
 export type MetricSize = keyof typeof METRIC_SIZES;
@@ -40,9 +42,10 @@ export function metric(size: MetricSize): {
   readonly m: number;
 } {
   const row = METRIC_SIZES[size];
+  const thread = specOf(size);
   return {
-    d: row.d / 1000,
-    pitch: row.pitch / 1000,
+    d: thread.major,
+    pitch: thread.pitch,
     s: row.s / 1000,
     k: row.k / 1000,
     m: row.m / 1000,
@@ -57,6 +60,13 @@ export interface HexBoltOptions extends RecipeNaming {
   readonly thread?: number;
   /** Segments around the shank (default 24). */
   readonly segments?: number;
+  /**
+   * 'cosmetic' (default) draws V rings; 'modeled' sweeps a real helical ridge on a root-diameter
+   * shank. A modeled bolt fits a modeled tapped hole of the same size and segments with the thread
+   * phase `360 y / pitch` degrees about Y at the seat height `y` above the hole's face (rotate the
+   * bolt by it unless the seat sits a whole number of pitches above the face).
+   */
+  readonly threadGeometry?: ThreadGeometry;
 }
 
 export const HEX_BOLT_RANGES = {
@@ -120,25 +130,50 @@ export function hexBolt(options: HexBoltOptions): Result<RecipePart, ModelingErr
   if (!threadOk.ok) return threadOk;
   const head = `${name}-head`;
   const shank = `${name}-shank`;
-  const m = model();
+  const modeled = options.threadGeometry === 'modeled';
+  const spec = specOf(options.size);
+  const m = model(modeled ? { tolerance: pitch * 1e-6 } : {});
   hexPrism(m, s, d / 2, k, segments, head);
   m.delete(sel.createdBy(head, 'hole'));
   m.fillHoles(sel.createdBy(head, 'top').boundary().and(sel.edges.meshBoundary()), { label: head });
   const top = sel.createdBy(head, 'top').or(sel.createdBy(head, 'cap'));
   m.dissolve(top.toEdges('contained').minus(top.boundary()));
   chamferRim(m, sel.createdBy(head).and(sel.facing('+y')), 0.05 * s, `${name}-chamfer`);
+  const root = threadRadii(spec, segments).root;
+  const runout = -length + thread;
   m.revolve({
-    points: [
-      [0, -length],
-      [d / 2 - tipChamfer, -length],
-      [d / 2, -length + tipChamfer],
-      [d / 2, 0],
-    ],
+    points: modeled
+      ? [
+          [0, -length],
+          [root - tipChamfer, -length],
+          [root, -length + tipChamfer],
+          [root, runout],
+          [d / 2, runout],
+          [d / 2, 0],
+        ]
+      : [
+          [0, -length],
+          [d / 2 - tipChamfer, -length],
+          [d / 2, -length + tipChamfer],
+          [d / 2, 0],
+        ],
     segments,
     label: shank,
   });
   m.weld({ distance: d * 1e-6 });
-  const rings = Math.floor(thread / pitch);
+  const rings = modeled ? 0 : Math.floor(thread / pitch);
+  if (modeled) {
+    const lip = threadReach(spec, segments, 'ridge');
+    const from = -length + tipChamfer + lip + 0.1 * pitch;
+    const ridge = model({ tolerance: pitch * 1e-6 });
+    ridge.sweep({
+      ...threadSweep(spec, 'ridge', from, runout - lip, segments),
+      label: 'ridge',
+    });
+    if (ridge.poisoned !== undefined) return err(ridge.poisoned);
+    m.union(ridge, { label: `${name}-thread` });
+    if (m.poisoned !== undefined) return err(m.poisoned);
+  }
   for (let i = 0; i < rings; i++) {
     m.panelLine(
       {

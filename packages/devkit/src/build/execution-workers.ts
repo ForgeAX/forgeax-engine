@@ -72,6 +72,8 @@ export const engineCapabilityMeta = 'forgeax.engineCapability';
 export interface ExecutionWorkerEntriesApi {
   /** Modules emitted as public Engine facade chunks in this build. */
   readonly facadeModules: ReadonlySet<string>;
+  /** Public entries imported directly by portable Runtime Pack programs. */
+  readonly runtimeFacadeModules: ReadonlySet<string>;
 }
 export const executionWorkerEntriesName = 'forgeax:execution-worker-entries';
 export interface EngineCapabilityMeta {
@@ -157,6 +159,7 @@ export function executionWorkerEntries(
     hostPrefix !== undefined && normalizePath(filename).startsWith(hostPrefix);
   const facades = new Map<string, string>();
   const facadeModules = new Set<string>();
+  const runtimeFacadeModules = new Set<string>();
   const staticPackTaskReferences = new Set<string>();
   const imports = new Map<string, string>();
   const admitDevelopmentModule = (id: string): void => {
@@ -232,7 +235,7 @@ export function executionWorkerEntries(
   };
   return {
     name: executionWorkerEntriesName,
-    api: { facadeModules } satisfies ExecutionWorkerEntriesApi,
+    api: { facadeModules, runtimeFacadeModules } satisfies ExecutionWorkerEntriesApi,
     enforce: 'pre',
     configResolved(config) {
       base = config.base;
@@ -325,6 +328,7 @@ export function executionWorkerEntries(
           facadeModules.add(resolved.id);
         }
         if (building && reference) {
+          runtimeFacadeModules.add(resolved.id);
           const external = externalPrefix + encodeURIComponent(specifier);
           const previous = imports.get(external);
           if (previous && previous !== reference)

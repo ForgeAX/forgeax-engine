@@ -1,9 +1,11 @@
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { DirectionalShadowQuality } from '../components/directional-shadow-filter';
 import { type MeshChange, type MeshChanges, ShadowMeshReads } from '../device/mesh-changes';
+import { viewFeaturesOf } from '../features/view-feature-work';
 import type { ShadowViewInvalidationReason } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { CapturedSceneTransform } from '../scene/captured-transform';
 import { sparseRowsOf } from '../scene/frame-list';
 import {
   type ShadowMaterialContent,
@@ -22,8 +24,6 @@ import type {
   DirectionalShadowWorldState,
   RenderFrameState,
 } from './frame-snapshot';
-import type { RenderSystemInternals } from './render-context';
-import { getRenderFeatureGraphState } from './typed-frame-graph';
 
 export interface ShadowMeshInput {
   readonly reads: ShadowMeshReads;
@@ -181,8 +181,11 @@ function sameTerrainShadowContent(
     for (let edge = 0; edge < section.neighbors.length; edge++)
       if (section.neighbors[edge] !== next.neighbors[edge]) return false;
     // Terrain admits translation-only transforms.
+    const pose = CapturedSceneTransform.storage(a.transform);
+    const nextPose = CapturedSceneTransform.storage(b.transform);
     for (let axis = 12; axis <= 14; axis++)
-      if (a.transform.world[axis] !== b.transform.world[axis]) return false;
+      if (CapturedSceneTransform.lane(pose, axis) !== CapturedSceneTransform.lane(nextPose, axis))
+        return false;
   }
 }
 
@@ -202,7 +205,6 @@ function sameDirectionalShadowQuality(
 }
 
 export function prepareDirectionalShadowCache(
-  internals: RenderSystemInternals,
   frameState: RenderFrameState,
   sourceScope: RenderResourceScope,
   lease: RenderReadLease | undefined,
@@ -218,7 +220,7 @@ export function prepareDirectionalShadowCache(
   // GPU feature buffers can change without an ECS mesh mutation. Until a
   // producer provides a stable content revision, never reuse their shadow atlas.
   if (
-    getRenderFeatureGraphState(internals).plans.some(({ plan }) =>
+    viewFeaturesOf(frameState).work.plans.some(({ plan }) =>
       plan.passes.some((pass) => pass.kind === 'shadow-caster'),
     )
   ) {

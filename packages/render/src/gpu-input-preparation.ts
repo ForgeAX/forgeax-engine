@@ -39,6 +39,7 @@ function invalid(expected: string): RhiError {
 }
 
 type DirtyRange = { readonly start: number; readonly end: number };
+const MAX_PATCH_WRITES = 8;
 
 /** One private observer of the Arena's actual bytes; it owns no numeric allocation. */
 export class InputPreparation {
@@ -119,10 +120,8 @@ export class InputPreparation {
     try {
       const source = host.snapshot();
       this.extentBytes = source.words.byteLength;
-      const result =
-        this.copiedWords < source.words.length
-          ? this.copyCold(host, source.words, maxBytes / 4)
-          : this.copyDirty(host, source.words, maxBytes / 4);
+      const budget = maxBytes / 4;
+      const result = this.copyStep(host, source, budget);
       if (!result.ok) return result;
       if (this.failure !== undefined) return err(this.failure);
       if (this.host !== host || !host.current())
@@ -154,6 +153,32 @@ export class InputPreparation {
     return result;
   }
 
+  private copyStep(
+    host: InputPreparationHost,
+    source: ReturnType<InputPreparationHost['snapshot']>,
+    budget: number,
+  ): Result<void, RhiError> {
+    const { words, revision } = source;
+    // A small retained span can converge even when several independent
+    // descriptors change every frame. A reentrant write keeps its ticket.
+    if (this.dirty.size > 1 && words.length <= budget) {
+      const result = this.write(host, words, 0, words.length);
+      if (
+        result.ok &&
+        this.host === host &&
+        host.current() &&
+        host.snapshot().revision === revision
+      ) {
+        this.copiedWords = words.length;
+        this.dirty.clear();
+      }
+      return result;
+    }
+    return this.copiedWords < words.length
+      ? this.copyCold(host, words, budget)
+      : this.copyDirty(host, words, budget);
+  }
+
   private copyCold(
     host: InputPreparationHost,
     words: Uint32Array<ArrayBuffer>,
@@ -170,19 +195,26 @@ export class InputPreparation {
     words: Uint32Array<ArrayBuffer>,
     budget: number,
   ): Result<void, RhiError> {
-    const next = this.dirty.entries().next();
-    if (next.done) return ok(undefined);
-    const [address, ticket] = next.value;
-    const end = Math.min(ticket.end, ticket.start + budget);
-    const result = this.write(host, words, ticket.start, end - ticket.start);
-    if (!result.ok || this.host !== host || !host.current()) return result;
-    const current = this.dirty.get(address);
-    this.dirty.delete(address);
-    // Rotate both an unfinished suffix and a reentrant replacement behind other work.
-    if (current !== ticket) {
-      if (current !== undefined) this.dirty.set(address, current);
-    } else if (end < ticket.end) this.dirty.set(address, { start: end, end: ticket.end });
-    return result;
+    const patches = Math.min(this.dirty.size, MAX_PATCH_WRITES);
+    let remaining = budget;
+    for (let i = 0; i < patches && remaining > 0; i++) {
+      const next = this.dirty.entries().next();
+      if (next.done) break;
+      const [address, ticket] = next.value;
+      const end = Math.min(ticket.end, ticket.start + remaining);
+      const count = end - ticket.start;
+      const result = this.write(host, words, ticket.start, count);
+      if (!result.ok || this.host !== host || !host.current() || host.snapshot().words !== words)
+        return result;
+      const current = this.dirty.get(address);
+      this.dirty.delete(address);
+      // Rotate both an unfinished suffix and a reentrant replacement behind other work.
+      if (current !== ticket) {
+        if (current !== undefined) this.dirty.set(address, current);
+      } else if (end < ticket.end) this.dirty.set(address, { start: end, end: ticket.end });
+      remaining -= count;
+    }
+    return ok(undefined);
   }
 
   private commitPrepared(): Result<void, RhiError> {

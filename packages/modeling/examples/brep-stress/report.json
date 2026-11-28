@@ -1,0 +1,434 @@
+{
+  "parts": [
+    {
+      "name": "gearbox-cover",
+      "steps": [
+        {
+          "part": "gearbox-cover",
+          "id": "A1",
+          "feature": "plate r60 x 8",
+          "tool": "cylinder",
+          "route": "direct",
+          "ok": true,
+          "faces": 3,
+          "volume": 90477.86842338607,
+          "valid": true
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A2",
+          "feature": "bolt circle, 8 bores r4 on r55",
+          "tool": "applyPattern/difference",
+          "route": "direct",
+          "ok": true,
+          "faces": 11,
+          "volume": 87260.87754611018,
+          "valid": true
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A3",
+          "feature": "central boss r16 up to z20",
+          "tool": "booleanSolids/union",
+          "route": "direct",
+          "ok": true,
+          "faces": 15,
+          "volume": 101737.33649385194,
+          "valid": true
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A4",
+          "feature": "bore r7 through plate and boss",
+          "tool": "booleanSolids/difference",
+          "route": "direct",
+          "ok": true,
+          "faces": 16,
+          "volume": 97734.94745317854,
+          "valid": true
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A5",
+          "feature": "raised rim ring r42..50, z2..14 overlapping the plate top",
+          "tool": "booleanSolids/union",
+          "route": "direct",
+          "ok": false,
+          "failure": {
+            "code": "model-partial",
+            "expected": "one circle on a planar face with one outer loop",
+            "detail": {
+              "brep": "brep-ssi-unsupported",
+              "face": 2
+            }
+          },
+          "gap": "G3"
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A5b",
+          "feature": "raised rim as a stacked revolve solid",
+          "tool": "revolve",
+          "route": "fallback",
+          "ok": true,
+          "faces": 4,
+          "volume": 23122.121930420893,
+          "valid": true
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A6",
+          "feature": "rib: gusset plate unioned on the cover",
+          "tool": "booleanSolids/union",
+          "route": "direct",
+          "ok": false,
+          "failure": {
+            "code": "model-partial",
+            "expected": "planar faces that meet along a line",
+            "detail": {
+              "brep": "brep-ssi-unsupported",
+              "kinds": "plane/plane"
+            }
+          },
+          "gap": "G2"
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A6b",
+          "feature": "4 ribs as stand-alone extruded gussets",
+          "tool": "extrude + circularPattern",
+          "route": "fallback",
+          "ok": true,
+          "faces": 5,
+          "volume": 728.0000000000001,
+          "valid": true
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A7",
+          "feature": "oil pipe stub unioned on the cover",
+          "tool": "booleanSolids/union",
+          "route": "direct",
+          "ok": false,
+          "failure": {
+            "code": "model-partial",
+            "expected": "plane or cylinder faces",
+            "detail": {
+              "brep": "brep-ssi-unsupported",
+              "kinds": "cylinder/nurbs"
+            }
+          },
+          "gap": "G4"
+        },
+        {
+          "part": "gearbox-cover",
+          "id": "A7b",
+          "feature": "oil pipe stub: hollow quarter-arc sweep, stand-alone",
+          "tool": "sweep",
+          "route": "fallback",
+          "ok": true,
+          "faces": 50,
+          "volume": 2201.484484196233,
+          "valid": true
+        }
+      ],
+      "solids": [
+        {
+          "id": "A1-A4",
+          "label": "plate, bolt circle, bore",
+          "faces": 16,
+          "valid": true
+        },
+        {
+          "id": "A5",
+          "label": "raised rim",
+          "faces": 4,
+          "valid": true
+        },
+        {
+          "id": "A6",
+          "label": "4 ribs",
+          "faces": 5,
+          "valid": true
+        },
+        {
+          "id": "A6",
+          "label": "",
+          "faces": 5,
+          "valid": true
+        },
+        {
+          "id": "A6",
+          "label": "",
+          "faces": 5,
+          "valid": true
+        },
+        {
+          "id": "A6",
+          "label": "",
+          "faces": 5,
+          "valid": true
+        },
+        {
+          "id": "A7",
+          "label": "oil pipe stub",
+          "faces": 50,
+          "valid": true
+        }
+      ]
+    },
+    {
+      "name": "pump-manifold",
+      "steps": [
+        {
+          "part": "pump-manifold",
+          "id": "B1",
+          "feature": "inlet flange r50 x 10 (z-10..0)",
+          "tool": "cylinder",
+          "route": "direct",
+          "ok": true,
+          "faces": 3,
+          "volume": 78539.81633974485,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B2",
+          "feature": "bolt circle, 6 bores r3.5 on r42",
+          "tool": "applyPattern/difference",
+          "route": "direct",
+          "ok": true,
+          "faces": 9,
+          "volume": 76230.7457393564,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B3",
+          "feature": "flow bore r26 through the flange",
+          "tool": "booleanSolids/difference",
+          "route": "direct",
+          "ok": true,
+          "faces": 10,
+          "volume": 54993.57940108938,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B4",
+          "feature": "two port bosses r5 under the flange",
+          "tool": "applyPattern/union",
+          "route": "direct",
+          "ok": true,
+          "faces": 14,
+          "volume": 56878.534993243265,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B5",
+          "feature": "lofted transition: square 70 / bore r26 to round r22 / bore r16",
+          "tool": "loft (ruled, hollow)",
+          "route": "direct",
+          "ok": true,
+          "faces": 66,
+          "volume": 66228.41342164011,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B6",
+          "feature": "inlet flange unioned onto the transition",
+          "tool": "booleanSolids/union",
+          "route": "direct",
+          "ok": false,
+          "failure": {
+            "code": "model-partial",
+            "expected": "plane or cylinder faces",
+            "detail": {
+              "brep": "brep-ssi-unsupported",
+              "kinds": "nurbs/cylinder"
+            }
+          },
+          "gap": "G6"
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B6b",
+          "feature": "flange and transition kept as touching solids of the assembly",
+          "tool": "assembly",
+          "route": "fallback",
+          "ok": true,
+          "faces": 66,
+          "volume": 66228.41342164011,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B7",
+          "feature": "swept pipe: hollow quarter arc r30, tube r22 / bore r16",
+          "tool": "sweep (circle path)",
+          "route": "direct",
+          "ok": true,
+          "faces": 50,
+          "volume": 33369.84011361711,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B8",
+          "feature": "elbow pipe unioned onto the transition",
+          "tool": "booleanSolids/union",
+          "route": "direct",
+          "ok": false,
+          "failure": {
+            "code": "model-partial",
+            "expected": "plane or cylinder faces",
+            "detail": {
+              "brep": "brep-ssi-unsupported",
+              "kinds": "nurbs/nurbs"
+            }
+          },
+          "gap": "G6"
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B8b",
+          "feature": "elbow pipe kept as a touching solid of the assembly",
+          "tool": "assembly",
+          "route": "fallback",
+          "ok": true,
+          "faces": 50,
+          "volume": 33369.84011361711,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B9",
+          "feature": "outlet flange r36 x 8",
+          "tool": "cylinder",
+          "route": "direct",
+          "ok": true,
+          "faces": 3,
+          "volume": 32572.032632418977,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B10",
+          "feature": "outlet bolt circle, 8 bores r3 on r29",
+          "tool": "applyPattern/difference",
+          "route": "direct",
+          "ok": true,
+          "faces": 11,
+          "volume": 30762.475263951248,
+          "valid": true
+        },
+        {
+          "part": "pump-manifold",
+          "id": "B11",
+          "feature": "outlet bore r16",
+          "tool": "booleanSolids/difference",
+          "route": "direct",
+          "ok": true,
+          "faces": 12,
+          "volume": 24328.493509399355,
+          "valid": true
+        }
+      ],
+      "solids": [
+        {
+          "id": "B1-B3",
+          "label": "inlet flange, bolt circle, bore",
+          "faces": 14,
+          "valid": true
+        },
+        {
+          "id": "B5",
+          "label": "lofted transition",
+          "faces": 66,
+          "valid": true
+        },
+        {
+          "id": "B7",
+          "label": "swept elbow pipe",
+          "faces": 50,
+          "valid": true
+        },
+        {
+          "id": "B9-B11",
+          "label": "outlet flange",
+          "faces": 12,
+          "valid": true
+        }
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "id": "G1",
+      "owner": "trimface",
+      "summary": "A bore coaxial with a boss unioned on a plate: the plate cap, now a face with an outer circle and the boss circle, classifies out of its own trim.",
+      "repro": "booleanSolids(booleanSolids(cylinder({ radius: 60, height: 8 }), cylinder r16 z-6..20, \"union\"), cylinder r7 z-10..30, \"difference\")",
+      "outcome": "builds"
+    },
+    {
+      "id": "G2",
+      "owner": "e1 boolean",
+      "summary": "Union only: a planar tool face crossing a cylinder cap plate now splits the cap along the straight section line (G2 section cap, single-loop case). Difference, intersect and multi-loop caps still fail closed (model-partial). Rib, gusset and side-port unions on a round plate build through this path.",
+      "repro": "booleanSolids(cylinder({ radius: 60, height: 8 }), move(box({ size: [20, 4, 10] }), [26, 0, 5]), \"union\")",
+      "outcome": "builds"
+    },
+    {
+      "id": "G3",
+      "owner": "e1 boolean",
+      "summary": "A hollow ring (annulus cap) unioned over a plate: one of its circles lies neither wholly in nor out of the plate face.",
+      "repro": "booleanSolids(cylinder({ radius: 60, height: 8 }), revolve({ profile: [[48,0],[60,0],[60,10],[48,10],[48,0]] }) moved to z0, \"union\")",
+      "outcome": "fail-close",
+      "failure": {
+        "code": "model-partial",
+        "expected": "a circle that is neither wholly in nor out of the planar face",
+        "detail": {
+          "brep": "brep-ssi-unsupported"
+        }
+      }
+    },
+    {
+      "id": "G4",
+      "owner": "sweep",
+      "summary": "A swept (NURBS) tube has no plane/NURBS intersection in the boolean, so a stub cannot be unioned onto a plate or flange.",
+      "repro": "booleanSolids(cylinder({ radius: 60, height: 8 }), sweep({ profile: polygon(6), path: quarter circle r19 at z4 }), \"union\")",
+      "outcome": "fail-close",
+      "failure": {
+        "code": "model-partial",
+        "expected": "plane or cylinder faces",
+        "detail": {
+          "brep": "brep-ssi-unsupported",
+          "kinds": "cylinder/nurbs"
+        }
+      }
+    },
+    {
+      "id": "G5",
+      "owner": "trimface",
+      "summary": "A boss unioned on a flange that already carries a bore: the flange cap again classifies out of its trim.",
+      "repro": "booleanSolids(booleanSolids(cylinder({ radius: 50, height: 10 }), cylinder r26 bore, \"difference\"), cylinder r5 at y34 z-22..-4, \"union\")",
+      "outcome": "builds"
+    },
+    {
+      "id": "G6",
+      "owner": "e1 boolean",
+      "summary": "Lofted (NURBS) and swept (NURBS) faces have no NURBS/plane or NURBS/NURBS surface intersection, so flange and pipe cannot be unioned to the transition.",
+      "repro": "booleanSolids(loft({ sections: [square z0, circle r22 z40], mode: \"ruled\" }), cylinder({ radius: 50, height: 10 }) at z-5, \"union\")",
+      "outcome": "fail-close",
+      "failure": {
+        "code": "model-partial",
+        "expected": "plane or cylinder faces",
+        "detail": {
+          "brep": "brep-ssi-unsupported",
+          "kinds": "nurbs/cylinder"
+        }
+      }
+    }
+  ]
+}

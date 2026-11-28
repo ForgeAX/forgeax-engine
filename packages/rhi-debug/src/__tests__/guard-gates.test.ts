@@ -111,23 +111,17 @@ describe('RHI-debug error owner gate', () => {
 
 describe('AC-08 partial: explicit browser host capability', () => {
   it('keeps recorder construction in the host adapter and out of browser core', () => {
-    const browserAppPath = path.resolve(
-      __dirname,
-      '..',
-      '..',
-      '..',
-      '..',
-      'packages',
-      'app',
-      'src',
-      'browser.ts',
-    );
-    const browserContent = readFileSync(browserAppPath, 'utf-8');
-    expect(browserContent).toContain('if (bundler?.attachRhiRecorder !== undefined)');
-    expect(browserContent).toContain('await bundler.attachRhiRecorder(rendererOpts)');
-    expect(browserContent).not.toContain('attachRecorder(');
-    expect(browserContent).not.toMatch(/\bimport\.meta\.(?:env|hot)\b/);
-    expect(browserContent).not.toContain('rhiDebugFlag');
+    const appSource = path.join(ENGINE_ROOT, 'packages', 'app', 'src');
+    const browserEntry = readFileSync(path.join(appSource, 'browser.ts'), 'utf-8');
+    const localApp = readFileSync(path.join(appSource, 'browser-local.ts'), 'utf-8');
+    expect(browserEntry).toContain("await import('./browser-local')");
+    expect(localApp).toContain('if (bundler?.attachRhiRecorder !== undefined)');
+    expect(localApp).toContain('await bundler.attachRhiRecorder(rendererOpts)');
+    for (const source of [browserEntry, localApp]) {
+      expect(source).not.toContain('attachRecorder(');
+      expect(source).not.toMatch(/\bimport\.meta\.(?:env|hot)\b/);
+      expect(source).not.toContain('rhiDebugFlag');
+    }
 
     const hostAdapterPath = path.resolve(
       __dirname,

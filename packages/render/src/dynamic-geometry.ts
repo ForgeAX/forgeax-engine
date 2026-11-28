@@ -5,6 +5,10 @@ import {
 } from '@forgeax/engine-geometry';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import {
+  DEFAULT_DYNAMIC_GEOMETRY_MESH_BUDGET_BYTES,
+  validateDynamicGeometryMeshBudget,
+} from './dynamic-geometry-budget';
 import { attributeChannelBytes, packedRowsEligible } from './publication/packed-rows-mesh';
 
 /** A standard MeshAsset candidate prepared for one attached World generation. */
@@ -402,18 +406,6 @@ export interface DynamicGeometryLifecycle {
   invalidateGeneration(generation: number): void;
   inspect(): DynamicGeometryInspection;
   dispose(): void;
-}
-
-export const DEFAULT_DYNAMIC_GEOMETRY_MESH_BUDGET_BYTES = 64 * 1024 * 1024;
-
-/** Shared admission check for lifecycle and renderer construction, before backend allocation. */
-export function validateDynamicGeometryMeshBudget(maxMeshBytes: number): void {
-  const maxMeshByteLimit = 512 * 1024 * 1024;
-  if (!Number.isSafeInteger(maxMeshBytes) || maxMeshBytes < 1 || maxMeshBytes > maxMeshByteLimit) {
-    throw new RangeError(
-      `maxMeshBytes must be a positive safe integer no greater than ${maxMeshByteLimit}`,
-    );
-  }
 }
 
 export function createDynamicGeometryLifecycle(

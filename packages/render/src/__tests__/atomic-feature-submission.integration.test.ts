@@ -19,7 +19,7 @@ import {
 } from '../features/render-graph-contribution';
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import type { RenderFrameState } from '../record/frame-snapshot';
-import { getRenderFeatureGraphState } from '../record/typed-frame-graph';
+import { commitFeatureCandidate, validateRenderFeaturePlans } from '../record/typed-frame-graph';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import {
   abortStagedTemporalGpuState,
@@ -102,12 +102,13 @@ it.each([
     ]);
     expect(batch.frame.errors).toEqual([]);
     const plans = batch.frame.plans;
+    const work = validateRenderFeaturePlans(plans).unwrap();
+    const { executions } = work;
     const builder = new RenderGraphBuilder<RenderPipelineFrame>();
-    projectRenderFeaturePlans(
-      builder,
-      plans.map(getRenderFeaturePlanExecutionProjection).filter((value) => value !== undefined),
-      { state: createRenderFeatureProjectionState(), resolveTarget: () => undefined },
-    ).unwrap();
+    projectRenderFeaturePlans(builder, executions, {
+      state: createRenderFeatureProjectionState(),
+      resolveTarget: () => undefined,
+    }).unwrap();
     const graph = builder.compile({ device, surfaceSize: { width: 4, height: 4 } }).unwrap();
     expect(graph.inspect().passes.map((pass) => pass.name)).toEqual(
       mode === 'ordinary' ? ['first'] : ['first', 'second'],
@@ -127,7 +128,8 @@ it.each([
       },
     } as unknown as RenderFrameState;
     const internals = { device, errorRegistry: new RhiErrorListenerRegistry() } as never;
-    getRenderFeatureGraphState(internals).plans = plans;
+    commitFeatureCandidate(internals, frameState, { plans, fullscreenEffects: new Map() }, work);
+    const execute = vi.spyOn(graph, 'execute');
     const submit = vi.spyOn(device.queue, 'submit');
     const accepted = executeCompiledFrameGraph(
       internals,
@@ -142,6 +144,7 @@ it.each([
         if (!(mode === 'atomic-skipped' && pass.name === 'second')) encode();
       },
     );
+    expect(execute.mock.calls[0]?.[0].featureExecutions).toBe(executions);
     expect(accepted).toBe(mode === 'atomic' || mode === 'ordinary');
     expect(submit).toHaveBeenCalledTimes(mode === 'atomic' || mode === 'ordinary' ? 1 : 0);
   } finally {
@@ -312,7 +315,12 @@ it.each([
     },
   } as never;
   const internals = { device, errorRegistry: new RhiErrorListenerRegistry() } as never;
-  getRenderFeatureGraphState(internals).plans = plans;
+  commitFeatureCandidate(
+    internals,
+    frameState,
+    { plans, fullscreenEffects: new Map() },
+    validateRenderFeaturePlans(plans).unwrap(),
+  );
   const submit = vi.spyOn(device.queue, 'submit');
   const skipped =
     mode === 'skip-producer' ? 'producer' : mode === 'skip-consumer' ? 'consumer' : undefined;

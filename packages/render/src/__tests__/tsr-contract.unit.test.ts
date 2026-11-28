@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { ANTIALIAS_TAA, ANTIALIAS_TSR, antialiasFromF32 } from '../components/camera';
 import { validateDynamicResolutionCamera } from '../components/dynamic-resolution';
 import { TemporalViewHistory } from '../temporal/frame';
-import { createTemporalView, resolveTemporalReset } from '../temporal/view';
+import {
+  createTemporalView,
+  resolveTemporalReset,
+  temporalMaterialTextureMipBias,
+} from '../temporal/view';
 
 describe('TSR temporal contract', () => {
   it('keeps published TAA identity and gives TSR its own mode', () => {
@@ -23,7 +27,8 @@ describe('TSR temporal contract', () => {
     });
     expect(view.mode).toBe('tsr');
     expect(view.historyRequired).toBe(true);
-    expect(view.currentJitterUv).toEqual([-0.25 / 960, 1 / 6 / 536]);
+    expect(view.currentJitterUv?.[0]).toBeCloseTo(-0.25 / 960, 12);
+    expect(view.currentJitterUv?.[1]).toBeCloseTo(1 / 6 / 536, 12);
     expect([view.input.width, view.input.height]).toEqual([1920, 1080]);
     expect(view.currentProjection).toBe('jittered');
   });
@@ -60,5 +65,18 @@ describe('TSR temporal contract', () => {
     expect(history.commit()).toBe('tsr');
     expect(history.frameIndex).toBe(1);
     expect(history.accepted?.mode).toBe('tsr');
+  });
+
+  it('follows the UE automatic surface texture mip bias', () => {
+    // SceneVisibility.cpp:5336-5351: offset -0.3, floor -2, ceil to 8/1024 steps.
+    expect(temporalMaterialTextureMipBias(1)).toBe(-0.296875);
+    expect(temporalMaterialTextureMipBias(0.5)).toBe(-1.296875);
+    expect(temporalMaterialTextureMipBias(0.25)).toBe(-2);
+    const bias = (antialias: 'taa' | 'tsr' | 'none', internalWidth: number) =>
+      createTemporalView({ antialias, width: 100, height: 100, internalWidth, internalHeight: 100 })
+        .materialTextureMipBias;
+    expect(bias('tsr', 100)).toBe(-0.296875);
+    expect(bias('taa', 50)).toBe(-1.296875);
+    expect(bias('none', 100)).toBe(0);
   });
 });

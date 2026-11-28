@@ -22,7 +22,7 @@ export function createStandardClusterLayout(
 ): StandardClusterLayout {
   const clusterCount = grid.x * grid.y * grid.z;
   return Object.freeze({
-    grid,
+    grid: grid === DEFAULT_CLUSTER_GRID ? grid : Object.freeze({ ...grid }),
     clusterCount,
     clusterGridStrideU32: CLUSTER_GRID_STRIDE_U32,
     clusterGridCountWordOffsetU32: CLUSTER_GRID_COUNT_WORD_OFFSET_U32,

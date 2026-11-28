@@ -56,7 +56,12 @@ import type {
 
 export const planExecutionProjections = new WeakMap<
   RenderFeaturePlannedFrame,
-  { readonly execution: RenderFeaturePlanExecution; readonly nativeSignature?: string }
+  {
+    readonly execution: RenderFeaturePlanExecution;
+    readonly nativeSignature?: string;
+    readonly standardCloud?: true;
+    readonly standardWater?: true;
+  }
 >();
 
 export interface RenderFeaturePlanExecutionPass {

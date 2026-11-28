@@ -548,6 +548,7 @@ export const SURFACE_INPUT_FIELDS = [
   ['uvFootprint1', 'vec4<f32>'],
   ['objectToWorld', 'mat3x3<f32>'],
   ['frameTime', 'f32'],
+  ['materialTextureMipBias', 'f32'],
 ] as const;
 
 const SURFACE_DATA_FIELDS = [

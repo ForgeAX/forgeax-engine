@@ -84,9 +84,13 @@ arm.scan(path, { contacts: [{ parts: ['flap', 'slider'] }] }); // first contacts
   result and parts whose own joints are at rest keep their exact rest contact (seams of
   split skins); parts without crossings are tested
   for containment. Open sheets use the triangles' local reach through each other.
-  A penetrating pair also carries `suggestedMove`: the translation of `parts[1]` (posed model
-  space) that resolves it, `depth` plus the pair's tolerance along the axis where the two posed
-  bounds overlap least, away from `parts[0]` (ties: lowest axis, positive); absent at depth 0.
+  Each pair (and each `scan` pair) carries `basis`: `depth` when both parts are closed, `reach` when
+  either has an edge with one face. A `reach` pair is judged by an overestimate, so its status can
+  differ from the closed twin at the same pose; close the part or review the pair.
+  A penetrating, undesigned pair also carries `suggestedMove`: a translation of `parts[1]` (posed
+  model space) that was re-tested and leaves the pair not confirmed, the shortest axis move among
+  `depth` plus the tolerance and the full separation of the posed bounds; absent at depth 0, for
+  a designed pair, and when no tried move clears it.
   Each pair also reports `reach`: how far crossing surfaces pass through each other. Thin
   parts slicing through each other have a depth of at most half the thinner part, so no
   tolerance on depth tells them from a seat: closed parts whose edges each pass through the
@@ -169,7 +173,7 @@ arm.scan(path, { contacts: [{ parts: ['flap', 'slider'] }] }); // first contacts
   leader may. A loop-solved leader is not clamped, and a follower beyond its own limit is
   reported in `clamped` with `solved: true`.
 - **Mass and actuation**: `massProperties(model, { density, faces? })` returns the
-  volume, mass, centre of mass and inertia tensor (about the centre of mass) of a closed shell,
+  volume, surface area, mass, centre of mass and inertia tensor (about the centre of mass) of a closed shell,
   exactly for the polyhedron (signed tetrahedra); an open selection is `model-precondition`, as
   is any connected shell that is inside-out (negative volume, e.g. `mirror` without `flip`,
   unless another shell encloses it: then it is a cavity, such as a sealed void left by a
@@ -251,7 +255,14 @@ arm.scan(path, { contacts: [{ parts: ['flap', 'slider'] }] }); // first contacts
   stagger, with its joints. `draft(model, { direction, faces, warn })` gives
   each face's angle to a pull direction: up to `warn` (85) `safe`, up to 90 `critical`,
   beyond an `undercut`; `shadowed` lists faces a ray along the direction finds behind other
-  faces. `rig.release(part, path, { u, near, warn })` drafts the part's faces that have a
+  faces. `m.applyDraft(walls, { angle, direction, neutral })` gives prism walls that draft: each
+  wall plane turns by `angle` about its line on the `neutral` plane, leaning toward the pull
+  direction, and every moved vertex is re-solved on its incident planes, so the neutral
+  outline stays exact and `draft` then reports each wall at 90 - `angle` (a square prism
+  becomes the frustum of that angle). Walls must be planar and parallel to `direction`, the
+  neutral faces planar and perpendicular to it, otherwise `model-precondition` with
+  `detail.reason` `draft-non-prism`; walls that would cross are `model-degenerate`. Drafting
+  about the top face flares the base outward. See the [shaping](../examples/shaping/) insert. `rig.release(part, path, { u, near, warn })` drafts the part's faces that have a
   neighbour within `near` (5 mm) in front of them against their velocity at u+: moving
   away is `safe`, sliding along `critical`, moving into the neighbour an `undercut` (the part
   cannot leave that way).
@@ -267,10 +278,12 @@ arm.scan(path, { contacts: [{ parts: ['flap', 'slider'] }] }); // first contacts
   every limited end to have a stop and every stop to land.
 - **Connectivity**: `connectivity(poses, { gap, hardware, roots })`
   checks that every rigid part hangs off the roots through touching hardware in each pose.
-  Parts touch when their surfaces come within `gap` (default 0.5 mm, exact triangle
+  Each topologically connected shell inside a bound part is checked independently, so
+  grouping an attached bracket and a floating plate into one binding cannot hide the plate.
+  A detached shell reports its face ids. Parts touch when their surfaces come within `gap` (default 0.5 mm, exact triangle
   distance) or one encloses the other. Parts of one joint connect directly; across a joint
   (a part's joint and its nearest part-carrying ancestor) only when one of the two is
-  hardware (`hardware(part)`, default the `mount-*` part names). The `roots` joints (default the
+  hardware (`hardware(part, faces)`, default the `mount-*` part names). The `roots` joints (default the
   rig root) and the joints above them, such as a stand mechanism, are fixed. Each pose
   lists the `floating` parts (with the nearest part they may attach to within 5 cm), the
   `detached` touch groups (one mount reattaches each) and the `unlinked` joints, which no
@@ -316,8 +329,9 @@ arm.scan(path, { contacts: [{ parts: ['flap', 'slider'] }] }); // first contacts
   `bindAnimationTargets(world, root, joints)`. `clips: [{ name, path, duration, frameRate?, loop? }]`
   (exclusive with `path`) writes `animation-clip/<key>/<name>` each; the Engine clip has no
   loop flag, so `loop` is in `rig.exportedClips` (name, key, loop, duration, frames) and sets
-  `AnimationPlayer.looping` for the first clip, which the player starts on. `output` and `path` record what the last
-  `finish()` exported; `model.pose` and `model.interference` use that path. `form: 'skinned'` writes one mesh with
+  `AnimationPlayer.looping` for the first clip, which the player starts on. `output` records the last
+  exported scene. `path` records the legacy path or the first named clip, matching the initial
+  player selection; `model.pose --u`, `model.interference` and posed renders inspect it. `form: 'skinned'` writes one mesh with
   `skinIndex`/`skinWeight` (rigid parts single-influence, `bindAuto` regions up to four
   influences), `skeleton/<key>` and `skin/<key>` for the
   Engine's Skin path (its material needs the `forgeax::pbr-skin` program).
@@ -338,3 +352,47 @@ exact for convex overlaps and a lower bound for deeply non-convex ones;
 `bindAuto` regions are left out of interference. Automatic weights have no bone-heat
 or inpaint transfer tier yet, and falloff tails give distant bones a few percent of
 weight (raise `stiffness` or `prune` to localize).
+
+## Joint manifest
+
+`rig.manifest()` exports the joint table, limits, stops, mimic relations and part bindings as a
+schema-validated JSON document (`schema: 'forgeax.rig-manifest/1'`). A game can pose the mechanism
+without the modeling kernel: `readRigManifest` validates an untrusted value, `poseRigManifest`
+evaluates it, and `rigManifestJson` writes the canonical bytes (sorted keys, numbers rounded to 1e-9).
+The manifest carries no loop solver, so rigs with closed loops are refused.
+
+Consumer example:
+
+```ts
+import { poseRigManifest, readRigManifest } from '@forgeax/engine-modeling';
+
+const parsed = readRigManifest(JSON.parse(text));
+if (!parsed.ok) throw new Error(parsed.error.detail.issues.map((i) => i.code).join(', '));
+
+const pose = poseRigManifest(parsed.value, { crank: 20, slider: 0.02 });
+if (!pose.ok) throw new Error(pose.error.code);
+
+// Column-major 4x4 model-space matrices (the Engine Mat4 layout), one per joint and rigid part.
+// Apply each part matrix to the scene node that renders that part.
+// Followers are not coordinates: name the leader, the gear follows through its relation.
+// A value outside the limits is rejected; pass { clamp: true } to apply the nearest limit.
+```
+
+| Field | Meaning |
+|:--|:--|
+| `schema`, `units` | `'forgeax.rig-manifest/1'`; `{ length: 'm', angle: 'deg' }` (revolute degrees, prismatic meters). |
+| `key` | Output key of the last `finish()`; absent before it. |
+| `joints[].name`, `parent` | Unique name; parent name, or `null` for the single root. A parent is listed before its children. |
+| `joints[].kind`, `axis` | `fixed`, `revolute`, `prismatic` or `spherical`; `axis` is a unit vector in the rest frame (revolute and prismatic only). |
+| `joints[].limits` | Range for revolute and prismatic joints; `{ x, y, z }` ranges for spherical joints (an unlisted axis is locked at 0). |
+| `joints[].reach` | Range a driven root leader can take, narrowed by its followers. |
+| `joints[].stops` | `{ min?, max? }` hard stops, each `{ stop, against? }`. |
+| `joints[].mimic`, `leader` | A follower's declared leader, and the same relation composed onto its root leader (the joint a pose names). |
+| `joints[].driven` | `true` when a pose names the joint (not fixed, not a follower). |
+| `joints[].rest`, `restLocal` | Rest transform in model space and relative to the parent: `{ position, rotation }`, rotation `[x, y, z, w]` with `w >= 0`. |
+| `parts[].name`, `joint`, `sourceKey` | Rigid part bound to a joint; its mesh is stored in the joint's rest frame, so its matrix is the joint matrix. `sourceKey` is `mesh/<key>.<name>` after `finish()`. |
+| `parts[].skinned`, `joints`, `sourceKey` | `bindAuto` or skinned-form part: the joints it is weighted to, and the shared `mesh/<key>`. Skinned parts have no matrix. |
+
+Failures: `readRigManifest` returns `rig-manifest-invalid` with every issue in `detail.issues`
+(closed codes `manifest-*`); `poseRigManifest` returns `pose-unknown-joint`, `pose-fixed-joint`,
+`pose-follower-driven`, `pose-value-shape` or `pose-out-of-range`, each with a hint.

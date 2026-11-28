@@ -4,6 +4,7 @@ import { sharedFeatureGraphPassPrefix } from '../features/frame-plan';
 import { prepareRenderFeatureGraphTextureTargets } from '../features/graph-texture-targets';
 import {
   getRenderFeaturePlanExecutionProjection,
+  isStandardWaterPlan,
   type RenderFeatureFrameBatch,
   type RenderFeatureFrameResult,
   type RenderFeaturePlanExecution,
@@ -46,6 +47,7 @@ import {
 
 export interface SharedFeatureGraphPublication extends SharedGraphTexturePublication {
   readonly waterFluid: ReadonlyMap<string, WaterFluidMaterialPublication>;
+  readonly hasAdditionalFrameWork: boolean;
 }
 
 /** The existing shared graph publication also retains its exact consumer payloads. */
@@ -319,6 +321,9 @@ function compileSharedFeatureGraphOwned(
         passes: new Set(hoisted.flatMap((execution) => execution.passes)),
         topologyKey: sharedGraphTextureTopology(textures),
         waterFluid,
+        hasAdditionalFrameWork: result.plans.some(
+          (plan) => plan.plan.passes.length > 0 && !isStandardWaterPlan(plan),
+        ),
       };
       publishSharedGraphTextures(internals.featureHost, publication);
     }

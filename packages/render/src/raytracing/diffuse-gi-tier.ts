@@ -5,10 +5,12 @@ import type {
   StandardDiffuseGi,
   StandardGlobalSdfRegion,
   StandardIrradianceField,
+  StandardLiteReflections,
   StandardProfile,
   StandardScreenProbes,
 } from '../pipeline/standard-profile';
 import { freezeDiffuseGi, validateDiffuseGi } from './irradiance-field-plan';
+import { DEFAULT_LITE_REFLECTIONS } from './reflections-plan';
 import type { RayReferenceError } from './scene';
 import { SCREEN_PROBE_DEFAULTS } from './screen-probe-plan';
 
@@ -53,6 +55,8 @@ export interface DiffuseGiTierScene {
   /** Camera-following probe window (probes per axis per level); absent keeps one fixed
    * lattice. The tier owns the level count and its `probeBudget` splits over levels. */
   readonly clipmapDimensions?: readonly [number, number, number];
+  /** Optional Lite reflections configuration (`true` selects `DEFAULT_LITE_REFLECTIONS`). */
+  readonly reflections?: boolean | StandardLiteReflections;
 }
 
 /** Fixed per-tier budgets; `field` is omitted for `low`, `probes` for non screen-probe tiers. */
@@ -218,7 +222,17 @@ export function resolveDiffuseGiTier(
       ? {}
       : { clipmap: { levels: clipmapLevels, dimensions: scene.clipmapDimensions } }),
   };
-  const common = { maxDistance: scene.maxDistance, environment: scene.environment };
+  const reflections =
+    scene.reflections === true
+      ? DEFAULT_LITE_REFLECTIONS
+      : scene.reflections === false || scene.reflections === undefined
+        ? undefined
+        : scene.reflections;
+  const common = {
+    maxDistance: scene.maxDistance,
+    environment: scene.environment,
+    ...(reflections === undefined ? {} : { reflections }),
+  };
   const diffuseGi: StandardDiffuseGi =
     budget.probes === undefined
       ? { gather: 'irradiance-field', ...common, field }
@@ -240,4 +254,31 @@ export function resolveDiffuseGiTier(
 
 export function parseDiffuseGiTier(value: string | null | undefined): DiffuseGiTier | undefined {
   return DIFFUSE_GI_TIERS.find((tier) => tier === value);
+}
+
+/**
+ * Derive a physically grounded hemisphere sky miss radiance from a directional
+ * sun (outgoing direction, linear RGB color, intensity). Keeps the sky tint
+ * coupled to sun elevation rather than hardcoded flat gray.
+ */
+export function skyEnvironmentFromSun(
+  direction: readonly [number, number, number],
+  color: readonly [number, number, number],
+  intensity: number,
+): readonly [number, number, number] {
+  const len = Math.hypot(direction[0], direction[1], direction[2]);
+  if (!(len > 1e-8) || !(intensity > 0)) return [0, 0, 0];
+  // Outgoing light direction points downward (-y) for an overhead sun.
+  const sunElevation = Math.max(0, Math.min(1, -direction[1] / len));
+  const daylight = sunElevation ** 0.45;
+  const scale = intensity * (0.04 + 0.14 * daylight);
+  // Rayleigh sky tint shifts from warm horizon at low elevation to cool zenith blue overhead.
+  const tintR = 0.72 * (1 - daylight) + 0.56 * daylight;
+  const tintG = 0.68 * (1 - daylight) + 0.76 * daylight;
+  const tintB = 0.74 * (1 - daylight) + 1.0 * daylight;
+  return [
+    Math.max(0, color[0] * tintR * scale),
+    Math.max(0, color[1] * tintG * scale),
+    Math.max(0, color[2] * tintB * scale),
+  ];
 }

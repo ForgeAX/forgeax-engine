@@ -1,4 +1,7 @@
 import { dynamicCapacity, shouldShrinkCapacity } from './dynamic-capacity';
+import { GPU_SCENE_PRIMITIVE_FLAGS } from './gpu-scene-row-encoding';
+import { type InstanceOrdinalOrder, matchInstanceOrdinals } from './instance-generations';
+import type { GpuSceneMotion, RenderSceneSlot } from './scene/render-scene-types';
 import type { StableRangeAllocator } from './stable-range-allocator';
 
 type AddressRun = { first: number; count: number };
@@ -84,4 +87,64 @@ export class GpuScenePreviousRows {
     this.repack = -1;
     this.run = this.next = this.after = this.used = this.capacity = this.smallSubmissions = 0;
   }
+}
+
+export type GpuSceneTemporalSnapshot = Readonly<GpuSceneMotion>;
+
+/**
+ * Build a lookup from the current instance identity to its submitted ordinal.
+ * The GPU table is physically compacted by ordinal, so this small CPU lookup
+ * is the seam that keeps a stable logical instance from inheriting another
+ * row's previous transform after reorder. A missing or duplicate generation
+ * deliberately returns no proof and makes the caller seed the current pose.
+ */
+export function previousInstanceOrdinals(
+  current: NonNullable<RenderSceneSlot['snapshot']['instances']> | undefined,
+  temporal: GpuSceneTemporalSnapshot | undefined,
+): InstanceOrdinalOrder | undefined {
+  const previous = temporal?.previousInstances;
+  const currentGenerations = current?.generations;
+  const previousGenerations = previous?.generations;
+  if (
+    temporal?.motionValid !== true ||
+    current === undefined ||
+    previous === undefined ||
+    currentGenerations === undefined ||
+    previousGenerations === undefined ||
+    currentGenerations.length !== current.instanceCount ||
+    previousGenerations.length !== previous.instanceCount ||
+    current.transforms.length < current.instanceCount * 16 ||
+    previous.transforms.length < previous.instanceCount * 16
+  ) {
+    return undefined;
+  }
+  return temporal.instanceOrderGenerations === currentGenerations &&
+    temporal.instanceOrder !== undefined
+    ? temporal.instanceOrder
+    : matchInstanceOrdinals(currentGenerations, previousGenerations);
+}
+
+export function instanceIdentityChanged(
+  resident: Uint32Array | undefined,
+  current: Uint32Array | undefined,
+  ordinal: number,
+): boolean {
+  if (resident === undefined || current === undefined) return resident !== current;
+  return resident[ordinal] !== current[ordinal];
+}
+
+/**
+ * Temporal flags of a (re)written primitive, mirroring the resolved CPU
+ * temporal snapshot. A reset allocation seeds previous = current, so it never
+ * carries valid motion. Without temporal tracking no flag is published.
+ */
+export function primitiveTemporalFlags(
+  resetPrevious: boolean,
+  temporal: GpuSceneTemporalSnapshot | undefined,
+): number {
+  if (temporal === undefined) return 0;
+  return (
+    (temporal.reactive ? GPU_SCENE_PRIMITIVE_FLAGS.reactive : 0) |
+    (resetPrevious || !temporal.motionValid ? GPU_SCENE_PRIMITIVE_FLAGS.motionInvalid : 0)
+  );
 }

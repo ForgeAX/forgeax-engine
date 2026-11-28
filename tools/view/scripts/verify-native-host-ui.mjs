@@ -22,7 +22,7 @@ try {
     return terminal.result;
   };
   const started = await call('view.start', { frontendConfig: { layout: { responsiveAutoTuck: true } } });
-  browser = await chromium.launch({ executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE ?? '/usr/bin/google-chrome', headless: true, args: ['--disable-gpu'], chromiumSandbox: true});
+  browser = await chromium.launch({ ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }), headless: true, args: ['--disable-gpu'], chromiumSandbox: true});
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));

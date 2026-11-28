@@ -177,15 +177,20 @@ describe('Standard Bloom exact-zero topology', () => {
     );
     expect(forwardSource).toContain('addStandardPost');
     expect(clusteredSource).toContain('addStandardPost');
-    const postGate = postSource.indexOf(
-      'const postProcessing = !clearOnly && camera.postProcessing !== false;',
+    const stagesSource = readFileSync(
+      new URL('../pipeline/standard-output/layout.ts', import.meta.url),
+      'utf8',
     );
-    const gate = postSource.indexOf(
-      'bloom: postProcessing && standardBloomAdmitted(topology.camera)',
+    expect(stagesSource).toContain('standardBloomAdmitted(camera) ? stage.bloom : 0');
+    expect(stagesSource).toContain(
+      'if (topology.clearOnly || topology.camera.postProcessing === false) return 0;',
     );
+    const gate = postSource.indexOf('bloom: (stages & stage.bloom) !== 0');
     const declaration = postSource.indexOf('const bloomSpecs = standardBloomTargetSpecs(');
-    expect(postGate).toBeGreaterThanOrEqual(0);
-    expect(gate).toBeGreaterThan(postGate);
+    expect(postSource).toContain(
+      'const stages = context.outputStages ?? standardOutputStages(topology)',
+    );
+    expect(gate).toBeGreaterThanOrEqual(0);
     expect(declaration).toBeGreaterThan(gate);
   });
 

@@ -1,11 +1,22 @@
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import { describe, expect, it } from 'vitest';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import { createTsrProgram } from '../tsr/program';
+import { createTsrProgram, type TsrStage } from '../tsr/program';
 import { nativeDeviceFixture } from './native-device-fixture';
 
+const PRODUCTION_COMPUTE_STAGES: readonly TsrStage[] = [
+  'dilate',
+  'analyze',
+  'resurrectGuide',
+  'moire',
+  'rejectFused',
+  'spatial',
+  'reconstruct',
+  'resolve',
+];
+
 describe('production TSR compute programs', () => {
-  it('creates both production pipelines within the portable 16 KiB workgroup budget', async () => {
+  it('creates all production compute pipelines within the portable 16 KiB workgroup budget', async () => {
     const { device, native } = await nativeDeviceFixture({
       requiredLimits: { maxComputeWorkgroupStorageSize: 16384 },
     });
@@ -20,11 +31,9 @@ describe('production TSR compute programs', () => {
         },
       },
     } as unknown as RenderPipelineFrame;
-    const analysis = createTsrProgram(frame, true);
-    const reconstruction = createTsrProgram(frame, false);
-    expect(analysis.pipeline).toBeDefined();
-    expect(reconstruction.pipeline).toBeDefined();
-    expect(analysis.layout).not.toBe(reconstruction.layout);
+    const built = PRODUCTION_COMPUTE_STAGES.map((stage) => createTsrProgram(frame, stage));
+    for (const program of built) expect(program.pipeline).toBeDefined();
+    expect(built[1]?.layout).not.toBe(built[6]?.layout);
     await device.queue.onSubmittedWorkDone();
     expect(await native.popErrorScope()).toBeNull();
   });

@@ -7,11 +7,11 @@
       "description": "Package dist outputs and declared generated browser exports (engine runtime, types, ECS, math, all packages)",
       "fileClasses": [
         "packages/*/dist",
-        "packages/dsh/lib/client.js",
         "packages/preview/assets/canonical-kit",
         "packages/ui-blitz/pkg",
         "packages/physics-rapier2d/pkg",
-        "packages/physics-rapier3d/pkg"
+        "packages/physics-rapier3d/pkg",
+        "packages/render-kernel/dist/forgeax_render_kernel_wasm_bg.wasm"
       ],
       "producer": "core-build",
       "transferArtifact": "core-build"

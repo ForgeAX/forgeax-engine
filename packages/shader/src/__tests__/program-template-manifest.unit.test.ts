@@ -134,6 +134,52 @@ it('admits material selections without composition and transfers their CPU recip
   expect(service.compile).toHaveBeenCalledTimes(1);
 });
 
+it('registers an Engine material from its admitted schema without decoding a JSON copy', async () => {
+  const base = wire();
+  const schema = [{ name: 'roughness', type: 'f32', default: 0.5 }] as const;
+  const program = 'test::compute';
+  const [sourceMaterial] = base.materialShaders;
+  if (sourceMaterial === undefined) throw new Error('Missing fixture material');
+  const { paramSchema: _ignored, ...material } = sourceMaterial;
+  const document = {
+    ...base,
+    library: {
+      ...base.library,
+      programs: {
+        [program]: { ...base.library.programs[program], engine: { paramSchema: schema } },
+      },
+    },
+    materialShaders: [material],
+  };
+  const text = JSON.stringify(document);
+  const service = compiler();
+  const registry = new ShaderRegistry({
+    manifestUrl: '/owned-schema',
+    readText: async () => text,
+    programCompiler: service,
+  });
+  const clone = vi.spyOn(globalThis, 'structuredClone');
+  try {
+    (await registry.loadManifest()).unwrap();
+    expect(clone.mock.calls.some(([value]) => value?.schemaVersion === '7.0.0')).toBe(false);
+  } finally {
+    clone.mockRestore();
+  }
+  const parse = vi.spyOn(JSON, 'parse');
+  try {
+    registry.installMaterialManifestTemplate(program, 'RED=false').unwrap();
+    expect(parse).not.toHaveBeenCalled();
+    expect(registry.materialArtifactDeclaration(program)).toEqual({
+      kind: 'template',
+      paramSchema: schema,
+    });
+    expect(registry.materialShaderManifestEntry(program)?.paramSchema).toBe(JSON.stringify(schema));
+    expect(service.compile).not.toHaveBeenCalled();
+  } finally {
+    parse.mockRestore();
+  }
+});
+
 it('projects a selected program with its own facts without preparing the primary source', async () => {
   const service = compiler();
   const registry = new ShaderRegistry({
@@ -273,6 +319,40 @@ it('keeps the compiled publication at a shared URL when another host loads templ
   const restored = await loadCompiled();
   expect([...restored.entries()][0]).toBe([...original.entries()][0]);
   expect(service.compile).not.toHaveBeenCalled();
+});
+
+it('rejects a modified source module and non-finite JSON before starting the compiler', async () => {
+  const published = wire();
+  const source = Object.keys(published.library.sources)[0];
+  if (source === undefined) throw new Error('Missing library source');
+  const service = compiler();
+  const prepare = vi.fn(async () => ok(service));
+  const modified = {
+    ...published,
+    library: {
+      ...published.library,
+      sources: { ...published.library.sources, [source]: '// Different UTF-8 shader source.' },
+    },
+  };
+  let input = JSON.stringify(modified);
+  const registry = new ShaderRegistry({
+    manifestUrl: '/invalid-owned-library',
+    readText: async () => input,
+    prepareProgramCompiler: prepare,
+  });
+  expect((await registry.loadManifest()).ok).toBe(false);
+  expect([...registry.entries()]).toEqual([]);
+  input = JSON.stringify(published).replace(
+    '"compilerProfile":{',
+    '"compilerProfile":{"extra":1e999,',
+  );
+  expect((await registry.loadManifest()).ok).toBe(false);
+  expect(prepare).not.toHaveBeenCalled();
+  expect([...registry.entries()]).toEqual([]);
+  input = JSON.stringify(published);
+  (await registry.loadManifest()).unwrap();
+  expect(prepare).toHaveBeenCalledOnce();
+  expect([...registry.entries()].map(({ hash }) => hash)).toEqual(['stable-alias']);
 });
 
 it('rejects broken selections before initialization and retains structured first-use compiler errors', async () => {

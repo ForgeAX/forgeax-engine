@@ -40,8 +40,6 @@ function ownerFacts(owner: ViewSettlementOwner, scene: GpuScene) {
     pipeline: context.getPipelineState(),
     scope: context.deviceScope,
     device: owner.internals.device,
-    graph: owner.frameState.compiledFrameGraph,
-    graphGeneration: owner.frameState.compiledFrameGraphGeneration,
     views: production.inputBindingViews(scene),
   };
 }
@@ -61,14 +59,13 @@ function sameAddressOwner(facts: OwnerFacts, scene: GpuScene): boolean {
   );
 }
 
+/** Actual table and input view consumers own binding validity across display attachment changes. */
 function sameOwner(facts: OwnerFacts, scene: GpuScene): boolean {
   return (
     sameAddressOwner(facts, scene) &&
     facts.context.getPipelineState() === facts.pipeline &&
     facts.owner.frameState.meshBindGroupCache === facts.meshCache &&
-    facts.owner.frameState.materialBgAssemblyCache === facts.materialCache &&
-    facts.owner.frameState.compiledFrameGraph === facts.graph &&
-    facts.owner.frameState.compiledFrameGraphGeneration === facts.graphGeneration
+    facts.owner.frameState.materialBgAssemblyCache === facts.materialCache
   );
 }
 

@@ -11,27 +11,32 @@ import type {
   TextureView,
   Tlas,
 } from '@forgeax/engine-rhi';
-import { RhiError } from '@forgeax/engine-rhi';
 import { mipDimension } from '@forgeax/engine-types';
 import type { AttachmentBindings } from './attachment-bindings.js';
-import { allocationBytes, inspectPasses, inspectResource } from './compiled-inspection.js';
-import { applyTextureContentWrite, textureRangeCovered } from './content-ranges.js';
-import { err, ok, RenderGraphError, type Result, type ResultErr, type ResultOk } from './errors.js';
+import {
+  type AllocationVisitor,
+  type BoundGraphResources,
+  type GraphAllocationObserver,
+  releaseBoundResource,
+} from './bound-resources.js';
+import { inspectPasses, inspectResource } from './compiled-inspection.js';
+import { applyTextureContentWrite, firstMissingTextureRead } from './content-ranges.js';
+import { err, ok, RenderGraphError, type Result, type ResultErr } from './errors.js';
 import type { ResolvedColorTargetDescriptor } from './graph.js';
 import type {
   CompiledPass,
   CompiledResource,
+  CompiledTextureWrite,
   CompiledView,
   GraphTextureAllocation,
   PhysicalGraphSlots,
   ResourceHandleData,
-  ResourceRecord,
 } from './kernel-internal.js';
 import {
+  bindSlot,
   handleData,
   LINEAR_PASS_ACCESS_LIMIT,
   physicalAllocationKey,
-  releaseGraphTexture,
 } from './kernel-internal.js';
 import {
   decorateDescriptor,
@@ -39,6 +44,13 @@ import {
   safeEndPass,
   safePassScope,
 } from './native-pass.js';
+import {
+  type BoundRenderGraphResources,
+  NativeRecordingResources,
+  type PassResourcePreparation,
+  passGrantsAccess,
+  resolutionError,
+} from './native-recording-resources.js';
 import type { RasterBatch } from './raster-batching.js';
 import { coversUsage, SubgraphBindings } from './subgraph-bindings.js';
 import type {
@@ -46,7 +58,6 @@ import type {
   CompiledRenderGraphInfo,
   GraphAccelerationStructure,
   GraphAccess,
-  GraphAccessUsage,
   GraphBuffer,
   GraphPreparationStep,
   GraphResourceResolver,
@@ -83,11 +94,11 @@ function rasterBatchBoundary<FrameCtx extends RenderGraphFrame>(
 function passExecutionRecord<FrameCtx extends RenderGraphFrame>(
   pass: CompiledPass<FrameCtx>,
   executionIndex: number,
-  resolved: FrameResources,
+  physical: PhysicalGraphSlots<FrameCtx>,
   addresses: Uint32Array,
 ): RenderGraphPassExecution {
   if (pass.pass.kind === 'raster' && pass.pass.descriptor.depthStencilAttachment !== undefined) {
-    const view = resolved.views.values[addresses[pass.accessEnd] as number];
+    const view = physical.handle<TextureView>(addresses[pass.accessEnd] as number);
     if (view === undefined) throw resolutionError('raster depth attachment');
     return {
       name: pass.name,
@@ -101,8 +112,6 @@ function passExecutionRecord<FrameCtx extends RenderGraphFrame>(
 
 const DEFAULT_BLEND_CONSTANT = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 
-const compiledGraphs = new WeakSet<object>();
-const executingGraphs = new WeakSet<object>();
 interface ExecutionCursor {
   next: number;
   readonly pendingPasses?: Set<string> | undefined;
@@ -110,22 +119,46 @@ interface ExecutionCursor {
 
 type StagedTextureWrite = { readonly range: GraphTextureContentRange; readonly stored: boolean };
 
-/** A physical texture may enter a child graph through an imported alias. Keep
- * actual handles and immutable pass writes in issue order until submission. */
+/** Record physical destinations in issue order. Only an imported alias needs
+ * to resolve its handle against the owning graph's persistent allocations. */
 class TextureWriteJournal {
-  constructor(private readonly allocations: ReadonlyMap<Texture, GraphTextureAllocation>) {}
+  private readonly destinations: GraphTextureAllocation[] = [];
+  private readonly writes: StagedTextureWrite[] = [];
 
-  readonly textures: Texture[] = [];
-  readonly writes: StagedTextureWrite[] = [];
+  constructor(private readonly owned: ReadonlyMap<Texture, GraphTextureAllocation> | undefined) {}
 
-  add(texture: Texture, write: StagedTextureWrite): void {
-    if (!this.allocations.has(texture)) return;
-    this.textures.push(texture);
+  get length(): number {
+    return this.writes.length;
+  }
+
+  record<Frame extends RenderGraphFrame>(write: CompiledTextureWrite<Frame>): void {
+    const slot = write.texture;
+    const allocation =
+      slot.textureAllocation ??
+      (slot.handle === undefined ? undefined : this.owned?.get(slot.handle));
+    if (allocation === undefined) return;
+    this.destinations.push(allocation);
     this.writes.push(write);
   }
 
+  append(other: TextureWriteJournal): void {
+    for (let i = 0; i < other.writes.length; i++) {
+      this.destinations.push(other.destinations[i] as GraphTextureAllocation);
+      this.writes.push(other.writes[i] as StagedTextureWrite);
+    }
+  }
+
+  commit(): void {
+    for (let i = 0; i < this.writes.length; i++) {
+      const allocation = this.destinations[i] as GraphTextureAllocation;
+      const { range, stored } = this.writes[i] as StagedTextureWrite;
+      applyTextureContentWrite(allocation.committedContentRanges, range, stored);
+    }
+    this.clear();
+  }
+
   clear(): void {
-    this.textures.length = 0;
+    this.destinations.length = 0;
     this.writes.length = 0;
   }
 }
@@ -133,10 +166,10 @@ class TextureWriteJournal {
 type Writable<T> = { -readonly [K in keyof T]: T[K] };
 
 /** Resolve one pass's color attachments into its retained native descriptor. */
-function resolveRasterColors<FrameCtx>(
+function resolveRasterColors<FrameCtx extends RenderGraphFrame>(
   attachments: readonly RasterColorAttachment<FrameCtx>[],
   frame: FrameCtx,
-  resolved: FrameResources,
+  physical: PhysicalGraphSlots<FrameCtx>,
   addresses: Uint32Array,
   firstColor: number,
   retained: RenderPassDescriptor['colorAttachments'] | undefined,
@@ -144,9 +177,9 @@ function resolveRasterColors<FrameCtx>(
   const colorAttachments = (retained ?? []) as Writable<RenderPassColorAttachment>[];
   let colorIndex = 0;
   for (const attachment of attachments) {
-    const view = resolved.views.values[addresses[firstColor++] as number];
+    const view = physical.handle<TextureView>(addresses[firstColor++] as number);
     const targetId = addresses[firstColor++] as number;
-    const resolveTarget = targetId === 0 ? undefined : resolved.views.values[targetId];
+    const resolveTarget = targetId === 0 ? undefined : physical.handle<TextureView>(targetId);
     if (view === undefined || (targetId !== 0 && resolveTarget === undefined))
       return resolutionError('raster color attachment');
     const clearValue =
@@ -211,137 +244,6 @@ function resolveRasterDepth<Frame>(
   return depth;
 }
 
-/** Acceleration structures derive no RHI usage bits; a declared access keeps them live. */
-function isResolved<FrameCtx>(compiled: CompiledResource<FrameCtx>): boolean {
-  return compiled.record.kind === 'acceleration-structure'
-    ? compiled.firstUse !== null
-    : compiled.usage !== 0;
-}
-
-/** Execution reads current physical handles directly. A slot that publishes a public
- * Result owns that one immutable receipt until the handle is replaced. */
-class FrameBindings<T extends object> {
-  readonly values: (T | undefined)[] = [];
-  private readonly receipts: (ResultOk<T> | undefined)[] = [];
-
-  bind(id: number, value: T | undefined, receipt?: ResultOk<T>): boolean {
-    if (this.values[id] === value) return false;
-    this.values[id] = value;
-    if (receipt !== undefined || this.receipts[id] !== undefined) this.receipts[id] = receipt;
-    return true;
-  }
-
-  result(id: number): ResultOk<T> | undefined {
-    const value = this.values[id];
-    if (value === undefined) return undefined;
-    this.receipts[id] ??= ok(value);
-    return this.receipts[id];
-  }
-}
-
-interface FrameResources {
-  readonly buffers: FrameBindings<Buffer>;
-  readonly textures: FrameBindings<Texture>;
-  readonly views: FrameBindings<TextureView>;
-  readonly accelerationStructures: FrameBindings<Tlas>;
-}
-
-type AllocationState = 'live' | 'pending-retirement';
-type AllocationVisitor = (key: string | undefined, bytes: number, state: AllocationState) => void;
-
-/**
- * Compiled-graph owner ledger. It counts only graph-created physical handles;
- * imported handles are references owned by the caller and remain byte-unknown.
- */
-class RenderGraphAllocationLedger {
-  private readonly allocations = new Map<object, number | null>();
-  private phase: AllocationState = 'live';
-  private inspection: RenderGraphResourceAllocationInspection | undefined;
-  private heldBytes = 0;
-  private peakBytes = 0;
-  private successfulAllocationCount = 0;
-  private successfulAllocationBytes = 0;
-  private retiredBytes = 0;
-  private unknownByteSizeCount = 0;
-  importedResourceCount = 0;
-
-  inspect(): RenderGraphResourceAllocationInspection {
-    if (this.inspection !== undefined) return this.inspection;
-    this.inspection = Object.freeze({
-      unit: 'engine-allocation-bytes',
-      physicalResidency: 'unknown',
-      liveBytes: this.phase === 'live' ? this.heldBytes : 0,
-      pendingRetirementBytes: this.phase === 'pending-retirement' ? this.heldBytes : 0,
-      peakBytes: this.peakBytes,
-      successfulAllocationCount: this.successfulAllocationCount,
-      successfulAllocationBytes: this.successfulAllocationBytes,
-      pendingRetirementCount: this.phase === 'pending-retirement' ? this.allocations.size : 0,
-      retiredBytes: this.retiredBytes,
-      failedAllocationRollbacks: 0,
-      failedAllocationRollbackBytes: 0,
-      unknownByteSizeCount: this.unknownByteSizeCount,
-      importedResourceCount: this.importedResourceCount,
-    });
-    return this.inspection;
-  }
-
-  state(handle: object | undefined): AllocationState | 'released' {
-    return handle !== undefined && this.allocations.has(handle) ? this.phase : 'released';
-  }
-
-  visit(consume: AllocationVisitor): void {
-    for (const [handle, bytes] of this.allocations) {
-      if (bytes !== null) consume(physicalAllocationKey(handle), bytes, this.phase);
-    }
-  }
-
-  retireAll(): void {
-    if (this.phase === 'pending-retirement') return;
-    this.phase = 'pending-retirement';
-    this.inspection = undefined;
-  }
-
-  release(handle: object | undefined): void {
-    if (handle === undefined) return;
-    const bytes = this.allocations.get(handle);
-    if (bytes === undefined) return;
-    this.inspection = undefined;
-    this.allocations.delete(handle);
-    if (bytes === null) this.unknownByteSizeCount -= 1;
-    else {
-      this.heldBytes -= bytes;
-      this.retiredBytes += bytes;
-    }
-  }
-
-  allocate(handle: object, bytes: number | undefined, newlyAllocated: boolean): void {
-    if (this.allocations.has(handle)) return;
-    this.allocations.set(handle, bytes ?? null);
-    if (newlyAllocated) this.successfulAllocationCount += 1;
-    if (bytes === undefined) this.unknownByteSizeCount += 1;
-    else {
-      this.heldBytes += bytes;
-      if (newlyAllocated) this.successfulAllocationBytes += bytes;
-    }
-    this.peakBytes = this.heldBytes;
-  }
-}
-
-function resolutionError(label: string, cause?: unknown): RenderGraphError {
-  return new RenderGraphError(
-    {
-      code: 'resource-resolution-failed',
-      expected: `resource '${label}' resolves to a live RHI handle for this frame`,
-      hint: `repair the imported owner for '${label}' before executing the graph`,
-      detail: {
-        resourceLabel: label,
-        ...(cause === undefined ? {} : { accesses: [String(cause)] }),
-      },
-    },
-    cause === undefined ? undefined : { cause },
-  );
-}
-
 function validPhysicalDimension(size: number): boolean {
   return Number.isSafeInteger(size) && size > 0;
 }
@@ -349,7 +251,7 @@ function validPhysicalDimension(size: number): boolean {
 function bufferSize<FrameCtx>(
   resource: CompiledResource<FrameCtx> | undefined,
 ): number | undefined {
-  return resource?.record.kind === 'buffer' ? resource.record.descriptor.size : undefined;
+  return resource?.kind === 'buffer' ? resource.descriptor.size : undefined;
 }
 
 function sameViewFormats(
@@ -367,8 +269,8 @@ function sameTexture<FrameCtx>(
   left: CompiledResource<FrameCtx> | undefined,
   right: CompiledResource<FrameCtx> | undefined,
 ): boolean {
-  const a = left?.resolvedDescriptor ?? left?.textureDescriptor,
-    b = right?.resolvedDescriptor ?? right?.textureDescriptor;
+  const a = left?.resolvedDescriptor ?? left?.textureShape?.descriptor,
+    b = right?.resolvedDescriptor ?? right?.textureShape?.descriptor;
   return (
     a !== undefined &&
     b !== undefined &&
@@ -388,10 +290,10 @@ function sameView<FrameCtx extends RenderGraphFrame>(
   right: CompiledView<FrameCtx> | undefined,
   texture: CompiledResource<FrameCtx> | undefined,
 ): boolean {
-  const allocation = texture?.resolvedDescriptor ?? texture?.textureDescriptor;
+  const allocation = texture?.resolvedDescriptor ?? texture?.textureShape?.descriptor;
   if (left === undefined || right === undefined || allocation === undefined) return false;
-  const a = left.record.descriptor;
-  const b = right.record.descriptor;
+  const a = left.descriptor;
+  const b = right.descriptor;
   const mip = a.baseMipLevel ?? 0;
   const layer = a.baseArrayLayer ?? 0;
   const layers = allocation.size.depthOrArrayLayers;
@@ -408,27 +310,26 @@ function sameView<FrameCtx extends RenderGraphFrame>(
   );
 }
 
+/** The physical recording already owns its target addresses and execution generation. */
+export interface BoundRenderGraphRecording<Frame extends RenderGraphFrame>
+  extends CompiledRenderGraph<Frame> {
+  readonly graphGeneration: number;
+  readonly nativeResources: BoundRenderGraphResources;
+  getColorTargetDescriptor(name: string): ResolvedColorTargetDescriptor | undefined;
+  getColorTargetView(name: string): TextureView | undefined;
+}
+
 export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
-  implements CompiledRenderGraph<FrameCtx>
+  implements BoundRenderGraphRecording<FrameCtx>
 {
-  private retired = false;
+  readonly nativeResources: NativeRecordingResources<FrameCtx>;
   private nativeRecorder: NativeCommandRecorder<FrameCtx> | undefined;
   private subgraphBindings: SubgraphBindings | undefined;
-  private resolving = false;
   private retireResult: Promise<Result<void, RenderGraphError>> | undefined;
-  private readonly allocationLedger = new RenderGraphAllocationLedger();
   private inspection: CompiledRenderGraphInfo | undefined;
   private declarations: CompiledRenderGraphInfo['passes'] | undefined;
   private importsResolved = false;
   private readonly acceptsParentPorts: boolean;
-  // Frame-resource tables and per-pass resolvers are retained across frames:
-  // every execution refills the same tables, so steady frames allocate neither.
-  private readonly frameResources: FrameResources = {
-    buffers: new FrameBindings<Buffer>(),
-    textures: new FrameBindings<Texture>(),
-    views: new FrameBindings<TextureView>(),
-    accelerationStructures: new FrameBindings<Tlas>(),
-  };
   private readonly resolvers: (
     | {
         readonly resolver: GraphResourceResolver;
@@ -437,119 +338,47 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       }
     | undefined
   )[] = [];
-  private readonly importedViews: (
-    | { texture: Texture; view: ResultOk<TextureView> }
-    | undefined
-  )[] = [];
-  /** The compiler owns fixed membership; mutable resolution values stay with their records. */
-  private readonly imports: Extract<ResourceRecord<FrameCtx>, { origin: 'imported' }>[] = [];
-  private readonly frameViews: CompiledView<FrameCtx>[] = [];
-  private readonly nativeInputs: {
-    record: Extract<ResourceRecord<FrameCtx>, { origin: 'imported'; kind: 'texture' }>;
-    views: CompiledView<FrameCtx>[];
-    prepared?: Texture;
-  }[] = [];
-  private readonly allocationsByTexture = new Map<Texture, GraphTextureAllocation>();
-  private readonly firstViewByResource: (CompiledView<FrameCtx> | undefined)[] = [];
-  private readonly viewExtents: (
-    | ReturnType<GraphResourceResolver['textureViewExtent']>
-    | CompiledResource<FrameCtx>
-    | undefined
-  )[] = [];
-  private pendingTextureWrites = new TextureWriteJournal(this.allocationsByTexture);
-  private executingTextureWrites = new TextureWriteJournal(this.allocationsByTexture);
+  private pendingTextureWrites: TextureWriteJournal;
+  private executingTextureWrites: TextureWriteJournal;
 
   constructor(
     private readonly generation: number,
     private readonly owner: object,
     private readonly device: RhiDevice,
     private readonly physical: PhysicalGraphSlots<FrameCtx>,
-    private readonly bindings: AttachmentBindings,
+    private readonly resources: BoundGraphResources<FrameCtx>,
     private readonly slotsByLabel: ReadonlyMap<string, number>,
     private readonly accessIds: Uint32Array,
     private readonly passes: readonly CompiledPass<FrameCtx>[],
-    private readonly preparationPasses: readonly CompiledPass<FrameCtx>[],
+    preparations: readonly PassResourcePreparation[],
     hasSubgraph: boolean,
-    private readonly requiredTextureReads: readonly {
-      readonly resourceId: number;
-      readonly range: GraphTextureContentRange;
-      readonly passName: string;
-      readonly usage: GraphAccessUsage;
-    }[],
     private readonly rasterBatches: readonly (RasterBatch<FrameCtx> | undefined)[],
   ) {
-    compiledGraphs.add(this);
-
-    let importOnly = true;
-    for (const compiled of physical.resources()) {
-      if (
-        compiled.record.origin !== 'imported' ||
-        compiled.record.kind === 'acceleration-structure' ||
-        (compiled.record.kind === 'texture' && !isResolved(compiled))
-      )
-        importOnly = false;
-      if (!isResolved(compiled)) continue;
-      const handle = compiled.texture ?? compiled.buffer;
-      if (
-        compiled.textureAllocation !== undefined &&
-        compiled.record.kind === 'texture' &&
-        compiled.record.descriptor.lifetime === 'persistent'
-      )
-        this.allocationsByTexture.set(
-          compiled.textureAllocation.texture,
-          compiled.textureAllocation,
-        );
-      if (compiled.record.origin === 'imported') {
-        this.imports.push(compiled.record);
-        if (compiled.record.kind === 'texture' && compiled.record.native !== undefined)
-          this.nativeInputs.push({ record: compiled.record, views: [] });
-        this.allocationLedger.importedResourceCount++;
-        continue;
-      }
-      if (handle === undefined) continue;
-      if (compiled.texture !== undefined)
-        this.frameResources.textures.bind(compiled.record.id, compiled.texture);
-      if (compiled.buffer !== undefined)
-        this.frameResources.buffers.bind(compiled.record.id, compiled.buffer);
-      if (compiled.borrowedTextureSlot) continue;
-      this.allocationLedger.allocate(
-        handle,
-        allocationBytes(compiled),
-        compiled.textureAllocation === undefined || compiled.textureAllocation.references === 1,
-      );
-    }
-    this.acceptsParentPorts = importOnly && !hasSubgraph;
-    const nativeViews: (CompiledView<FrameCtx>[] | undefined)[] = [];
-    for (const input of this.nativeInputs) nativeViews[input.record.id] = input.views;
-    for (const view of physical.views()) {
-      const resource = physical.resource(view.record.textureId);
-      this.firstViewByResource[view.record.textureId] ??= view;
-      if (resource?.usage === 0) continue;
-      const size = resource?.textureDescriptor?.size;
-      if (
-        resource?.record.kind === 'texture' &&
-        resource.record.origin === 'imported' &&
-        resource.record.native?.resolvedExtent !== undefined
-      )
-        this.viewExtents[view.record.id] = resource;
-      else if (size !== undefined) {
-        const mip = view.record.descriptor.baseMipLevel ?? 0;
-        this.viewExtents[view.record.id] = ok(
-          Object.freeze({
-            width: mipDimension(size.width, mip),
-            height: mipDimension(size.height, mip),
-          }),
-        );
-      }
-      if (view.view !== undefined) this.frameResources.views.bind(view.record.id, view.view);
-      else this.frameViews.push(view);
-      if (view.record.resolve === undefined) nativeViews[view.record.textureId]?.push(view);
-    }
+    this.nativeResources = new NativeRecordingResources(
+      generation,
+      owner,
+      device,
+      physical,
+      resources.nativeInputs,
+      accessIds,
+      preparations,
+    );
+    this.acceptsParentPorts = resources.importOnly && !hasSubgraph;
+    this.pendingTextureWrites = new TextureWriteJournal(resources.persistentTextures);
+    this.executingTextureWrites = new TextureWriteJournal(resources.persistentTextures);
   }
 
   inspectAllocation(visit?: AllocationVisitor): RenderGraphResourceAllocationInspection {
-    if (visit !== undefined) this.allocationLedger.visit(visit);
-    return this.allocationLedger.inspect();
+    if (visit !== undefined) this.resources.visit(visit);
+    return this.resources.inspect();
+  }
+
+  get graphGeneration(): number {
+    return this.generation;
+  }
+
+  observeAllocations(observer: GraphAllocationObserver): boolean {
+    return this.resources.observeAllocations(observer);
   }
 
   declaresPass(name: string): boolean {
@@ -557,12 +386,18 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     return false;
   }
 
+  countPassesBeginningWith(prefix: string): number {
+    let count = 0;
+    for (const pass of this.passes) if (pass.name.startsWith(prefix)) count++;
+    return count;
+  }
+
   /** Read the bound declarations of one feature, independent of frame import identities. */
   resourceDeclarations(labels: string | readonly string[]): CompiledRenderGraphInfo['resources'] {
     const resources: CompiledRenderGraphInfo['resources'][number][] = [];
     if (typeof labels === 'string') {
       for (const compiled of this.physical.resources()) {
-        if (compiled.record.label.startsWith(labels)) resources.push(inspectResource(compiled));
+        if (compiled.label.startsWith(labels)) resources.push(inspectResource(compiled));
       }
     } else {
       for (const label of labels) {
@@ -575,14 +410,12 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   }
 
   inspect(): CompiledRenderGraphInfo {
-    const allocation = this.allocationLedger.inspect();
+    const allocation = this.resources.inspect();
     if (this.inspection?.resourceAllocation === allocation) return this.inspection;
     const resources = Array.from(this.physical.resources(), (compiled) => {
       const resource = inspectResource(compiled);
       if (this.importsResolved && resource.origin === 'imported') {
-        const handle =
-          this.frameResources.textures.values[compiled.record.id] ??
-          this.frameResources.buffers.values[compiled.record.id];
+        const handle = compiled.kind === 'acceleration-structure' ? undefined : compiled.handle;
         if (handle !== undefined)
           return Object.freeze({
             ...resource,
@@ -593,7 +426,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         return resource;
       return Object.freeze({
         ...resource,
-        allocationState: this.allocationLedger.state(compiled.texture ?? compiled.buffer),
+        allocationState: this.resources.state(compiled.handle),
       });
     });
     this.inspection = Object.freeze({
@@ -637,156 +470,33 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   }
 
   isRetired(): boolean {
-    return this.retired;
+    return this.nativeResources.isRetired();
   }
 
   preparedResourcesCurrent(): boolean {
-    if (this.retired || !this.nativeImportsCurrent()) return false;
-    for (const pass of this.preparationPasses) {
-      if (pass.pass.descriptor.preparedResourcesCurrent?.() === false || this.retired) return false;
-    }
-    return !this.retired;
+    return this.nativeResources.preparedResourcesCurrent();
   }
 
   prepareResources(
     current: () => boolean,
   ): Generator<GraphPreparationStep, Result<void, RenderGraphError>> {
-    let closed = false;
-    let advancing = false;
-    let finished = false;
-    let closingValue: Result<void, RenderGraphError> | undefined;
-    const work = this.prepareResourceSteps(() => !closed && current() && !closed);
-    const next = work.next.bind(work);
-    const finish = work.return.bind(work);
-    const close = (value: Result<void, RenderGraphError>) => {
-      closed = true;
-      closingValue = value;
-      if (!advancing && !finished) {
-        finished = true;
-        finish(value);
-      }
-      return { done: true as const, value };
-    };
-    return Object.freeze(
-      Object.assign(work, {
-        return: close,
-        throw: (cause?: unknown) => {
-          close(err(this.preparationInvalid()));
-          throw cause;
-        },
-        next: (value?: unknown) => {
-          if (closed || this.resolving || executingGraphs.has(this))
-            return close(err(this.preparationInvalid()));
-          // Admission covers one synchronous resume, never an ordinary frame between yields.
-          this.resolving = true;
-          advancing = true;
-          try {
-            const result = next(value);
-            if (result.done) {
-              closed = true;
-              finished = true;
-            }
-            return closed && !result.done && closingValue !== undefined
-              ? { done: true as const, value: closingValue }
-              : result;
-          } finally {
-            advancing = false;
-            this.resolving = false;
-            if (closed && !finished && closingValue !== undefined) close(closingValue);
-          }
-        },
-      }),
-    );
+    return this.nativeResources.prepareResources(current);
   }
 
-  private preparationInvalid(): RenderGraphError {
-    return new RenderGraphError({
-      code: 'graph-preparation-invalid',
-      expected: 'the original idle live graph and current native preparation inputs',
-      hint: 'reprepare from the original owners outside encoding and import resolution',
-      detail: { generation: this.generation },
-    });
-  }
-
-  private *prepareResourceSteps(
-    current: () => boolean,
-  ): Generator<GraphPreparationStep, Result<void, RenderGraphError>> {
-    const live = () => !this.retired && current() && !this.retired;
-    const imports = yield* this.prepareNativeImports(live);
-    if (!imports.ok) return imports;
-    for (const pass of this.preparationPasses) {
-      try {
-        if (!live()) return err(this.preparationInvalid());
-        const prepare = pass.pass.descriptor.prepareResources;
-        if (prepare === undefined) continue;
-        const resources = Object.freeze({
-          createdTextureView: (resource: GraphTextureView): TextureView | undefined => {
-            if (this.retired) return undefined;
-            const data = handleData(resource);
-            if (data?.kind !== 'texture-view' || !this.grants(pass, data.id)) return undefined;
-            return this.createdTextureView(resource);
-          },
-        });
-        const recipe = prepare(resources, live);
-        let step = recipe.next();
-        try {
-          while (!step.done) {
-            const value = yield step.value;
-            // An ordinary frame may replace the View while its native recipe is suspended.
-            if (!live()) return err(this.preparationInvalid());
-            step = recipe.next(value);
-          }
-        } finally {
-          if (!step.done) recipe.return(undefined);
-        }
-        if (!live()) return err(this.preparationInvalid());
-      } catch (cause) {
-        return err(
-          new RenderGraphError({
-            code: 'pass-preparation-failed',
-            expected: `pass '${pass.name}' prepares native resources without encoding`,
-            hint: 'inspect the original native owner failure in detail.cause',
-            detail: { passName: pass.name, passKind: pass.pass.kind, cause },
-          }),
-        );
-      }
-    }
-    return live() ? ok(undefined) : err(this.preparationInvalid());
-  }
-
-  /** Fixed native ownership only: this never resolves a frame, allocates or grants execution. */
   createdTextureView(resource: GraphTextureView): TextureView | undefined {
-    const data = handleData(resource);
-    if (this.retired || data?.owner !== this.owner || data.kind !== 'texture-view')
-      return undefined;
-    const texture = this.physical.resource(data.textureId);
-    const view = this.physical.view(data.id);
-    return texture?.record.kind === 'texture' &&
-      texture.record.origin === 'created' &&
-      view?.record.resolve === undefined
-      ? view?.view
-      : undefined;
+    return this.nativeResources.createdTextureView(resource);
   }
 
   /** @internal Detach physical inputs from pass callbacks, ordinals and inspection. */
   _attachmentBindings(device: RhiDevice): AttachmentBindings | undefined {
-    return this.retired || device !== this.device ? undefined : this.bindings;
+    return this.nativeResources.isRetired() || device !== this.device
+      ? undefined
+      : this.resources.attachments;
   }
 
   commitExecution(): void {
-    if (this.retired) {
-      this.pendingTextureWrites.clear();
-      return;
-    }
-    const { textures, writes } = this.pendingTextureWrites;
-    for (let index = 0; index < writes.length; index++) {
-      const allocation = this.allocationsByTexture.get(textures[index] as Texture);
-      if (allocation === undefined) continue;
-      const write = writes[index] as StagedTextureWrite;
-      const committed = allocation.committedContentRanges;
-      applyTextureContentWrite(committed, write.range, write.stored);
-    }
-    this.pendingTextureWrites.clear();
+    if (this.nativeResources.isRetired()) this.pendingTextureWrites.clear();
+    else this.pendingTextureWrites.commit();
   }
 
   discardExecution(): void {
@@ -795,49 +505,64 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
 
   getColorTargetView(name: string): TextureView | undefined {
     const slot = this.slotsByLabel.get(name);
-    if (slot === undefined || this.physical.resource(slot)?.passLocal) return undefined;
-    const view = this.firstViewByResource[slot];
-    return view === undefined
-      ? undefined
-      : (view.view ?? this.frameResources.views.values[view.record.id]);
+    if (slot === undefined) return undefined;
+    const resource = this.physical.resource(slot);
+    if (resource?.firstView === undefined || resource.passLocal) return undefined;
+    return this.physical.handle<TextureView>(resource.firstView);
   }
 
   getColorTargetTexture(name: string): Texture | undefined {
     const slot = this.slotsByLabel.get(name);
     if (slot === undefined) return undefined;
     const resource = this.physical.resource(slot);
-    if (resource?.record.kind !== 'texture' || resource.passLocal) return undefined;
-    return resource.texture ?? this.frameResources.textures.values[slot];
+    if (resource?.kind !== 'texture' || resource.passLocal) return undefined;
+    return resource.handle;
   }
 
   getColorTargetDescriptor(name: string): ResolvedColorTargetDescriptor | undefined {
     const slot = this.slotsByLabel.get(name);
     if (slot === undefined) return undefined;
     const resource = this.physical.resource(slot);
-    if (resource?.record.kind !== 'texture' || resource.passLocal) return undefined;
+    if (resource?.kind !== 'texture' || resource.passLocal) return undefined;
     if (resource.colorTarget !== undefined) return resource.colorTarget;
-    const descriptor = resource.resolvedDescriptor ?? resource.textureDescriptor;
+    const descriptor = resource.resolvedDescriptor ?? resource.textureShape?.descriptor;
     if (descriptor === undefined) return undefined;
     const { width, height } = descriptor.size;
-    if (resource.texture !== undefined) {
+    const texture = resource.handle;
+    if (texture === undefined) return undefined;
+    if (resource.origin === 'created') {
       resource.colorTarget = {
-        texture: resource.texture,
-        format: resource.record.descriptor.format,
+        texture,
+        format: resource.descriptor.format,
         size: { width, height },
         usage: resource.usage,
-        sample: resource.record.descriptor.sampleCount ?? 1,
+        sample: resource.descriptor.sampleCount ?? 1,
       };
       return resource.colorTarget;
     }
-    const texture = this.frameResources.textures.values[slot];
-    if (texture === undefined) return undefined;
     return {
       texture,
-      format: resource.record.descriptor.format,
+      format: resource.descriptor.format,
       size: { width, height, depthOrArrayLayers: descriptor.size.depthOrArrayLayers ?? 1 },
       usage: descriptor.usage ?? resource.usage,
       sample: descriptor.sampleCount ?? 1,
     };
+  }
+
+  private checkInheritedTextureReads(): RenderGraphError | undefined {
+    const inherited = this.resources.inheritedTextureReads;
+    if (inherited === undefined) return undefined;
+    for (const { label, allocation, reads } of inherited) {
+      const read = firstMissingTextureRead(reads, allocation.committedContentRanges);
+      if (read === undefined) continue;
+      return new RenderGraphError({
+        code: 'uninitialized-read',
+        expected: `borrowed persistent texture content remains initialized before pass '${read.passName}' executes`,
+        hint: 'recompile the candidate after the allocation content changes',
+        detail: { passName: read.passName, resourceLabel: label, usage: read.usage },
+      });
+    }
+    return undefined;
   }
 
   execute(
@@ -846,7 +571,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     instrumentation?: RenderGraphPassInstrumentation<FrameCtx>,
     pendingPasses?: Set<string>,
   ): Result<void, RenderGraphError> {
-    if (this.retired) {
+    if (this.nativeResources.isRetired()) {
       return err(
         new RenderGraphError({
           code: 'compiled-graph-retired',
@@ -857,26 +582,10 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       );
     }
 
-    for (const read of this.requiredTextureReads) {
-      const resource = this.physical.resource(read.resourceId);
-      const committed = resource?.textureAllocation?.committedContentRanges ?? [];
-      if (textureRangeCovered(read.range, committed)) continue;
-      return err(
-        new RenderGraphError({
-          code: 'uninitialized-read',
-          expected: `borrowed persistent texture content remains initialized before pass '${read.passName}' executes`,
-          hint: 'recompile the candidate after the allocation content changes',
-          detail: {
-            passName: read.passName,
-            ...(resource === undefined ? {} : { resourceLabel: resource.record.label }),
-            usage: read.usage,
-          },
-        }),
-      );
-    }
-
     const resolved = this.resolveFrameResources(frame);
     if (!resolved.ok) return resolved;
+    const inherited = this.checkInheritedTextureReads();
+    if (inherited !== undefined) return err(inherited);
     const writes = this.executingTextureWrites;
     const names = frame.nativePassNames;
     const start = names?.length ?? 0;
@@ -884,26 +593,16 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     try {
       const executed = this.#executeResolved(
         frame,
-        resolved.value,
         runPass,
         instrumentation,
         { next: 0, pendingPasses },
         writes,
       );
-      if (
-        executed.ok &&
-        writes.writes.length !== 0 &&
-        this.pendingTextureWrites.writes.length === 0
-      ) {
-        this.executingTextureWrites = this.pendingTextureWrites;
-        this.pendingTextureWrites = writes;
-      } else if (executed.ok) {
-        for (let i = 0; i < writes.writes.length; i++) {
-          this.pendingTextureWrites.add(
-            writes.textures[i] as Texture,
-            writes.writes[i] as StagedTextureWrite,
-          );
-        }
+      if (executed.ok && writes.length !== 0) {
+        if (this.pendingTextureWrites.length === 0) {
+          this.executingTextureWrites = this.pendingTextureWrites;
+          this.pendingTextureWrites = writes;
+        } else this.pendingTextureWrites.append(writes);
       }
       completed = executed.ok;
       return executed;
@@ -913,30 +612,19 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     }
   }
 
-  #stagePassTextureWrites(
-    pass: CompiledPass<FrameCtx>,
-    resolved: FrameResources,
-    writes: TextureWriteJournal,
-  ): void {
-    if (pass.pass.kind === 'subgraph') return;
-    for (const write of pass.textureWrites) {
-      const texture = resolved.textures.values[write.resourceId];
-      if (texture === undefined) continue;
-      writes.add(texture, write);
-    }
+  #stagePassTextureWrites(pass: CompiledPass<FrameCtx>, writes: TextureWriteJournal): void {
+    for (const write of pass.textureWrites) writes.record(write);
   }
 
   #executeResolved(
     frame: FrameCtx,
-    resolved: FrameResources,
     runPass?: RenderGraphPassRunner,
     instrumentation?: RenderGraphPassInstrumentation<FrameCtx>,
     indices: ExecutionCursor = { next: 0 },
     writes = this.executingTextureWrites,
   ): Result<void, RenderGraphError> {
-    if (this.retired || executingGraphs.has(this))
+    if (!this.nativeResources.enter())
       return this.subgraphError('execution', 'a live, non-recursive compiled graph');
-    executingGraphs.add(this);
     try {
       for (let passIndex = 0; passIndex < this.passes.length; passIndex++) {
         const batch = this.rasterBatches[passIndex];
@@ -949,7 +637,6 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
                 passIndex,
                 last,
                 frame,
-                resolved,
                 runPass,
                 instrumentation,
                 indices,
@@ -976,19 +663,18 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         }
         const pass = this.passes[passIndex] as CompiledPass<FrameCtx>;
         const executionIndex = pass.pass.kind === 'subgraph' ? indices.next : indices.next++;
-        const resolver = this.passResolver(pass, resolved);
+        const resolver = this.passResolver(pass);
         try {
           if (pass.pass.descriptor.executeIf?.(frame) === false) continue;
           // The execution record and encode closure exist only for an observer.
           const execution =
             runPass === undefined && instrumentation === undefined
               ? undefined
-              : passExecutionRecord(pass, executionIndex, resolved, this.accessIds);
+              : passExecutionRecord(pass, executionIndex, this.physical, this.accessIds);
           if (runPass !== undefined && execution !== undefined) {
             const observed = this.#observePass(
               pass,
               frame,
-              resolved,
               resolver,
               execution,
               runPass,
@@ -1001,7 +687,6 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
             const encoded = this.#encodePass(
               pass,
               frame,
-              resolved,
               resolver,
               execution,
               runPass,
@@ -1011,7 +696,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
             );
             if (!encoded.ok) return encoded;
             indices.pendingPasses?.delete(pass.name);
-            this.#stagePassTextureWrites(pass, resolved, writes);
+            this.#stagePassTextureWrites(pass, writes);
           }
         } catch (cause) {
           // A native child names the physical command that failed and carries the original RHI cause.
@@ -1033,7 +718,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       }
       return ok(undefined);
     } finally {
-      executingGraphs.delete(this);
+      this.nativeResources.leave();
     }
   }
 
@@ -1042,7 +727,6 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     first: number,
     last: number,
     frame: FrameCtx,
-    resolved: FrameResources,
     runPass: RenderGraphPassRunner | undefined,
     instrumentation: RenderGraphPassInstrumentation<FrameCtx> | undefined,
     indices: ExecutionCursor,
@@ -1066,7 +750,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       if (active.pass.kind !== 'raster')
         throw new Error('compiled raster batch contains non-raster work');
       const descriptor = active.pass.descriptor;
-      const resolver = this.passResolver(active, resolved);
+      const resolver = this.passResolver(active);
       if (encoder === undefined) {
         const physical = {
           name,
@@ -1090,7 +774,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         const colors = resolveRasterColors(
           attachments,
           frame,
-          resolved,
+          this.physical,
           this.accessIds,
           final.accessEnd + 1,
           retained?.colorAttachments,
@@ -1109,7 +793,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         const depth = resolveRasterDepth(
           depthAttachment,
           frame,
-          resolved.views.values[this.accessIds[active.accessEnd] as number],
+          this.physical.handle<TextureView>(this.accessIds[active.accessEnd] as number),
           retained?.depthStencilAttachment,
         );
         if (depth instanceof RenderGraphError) throw depth;
@@ -1154,13 +838,18 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         const logicalIndex = indices.next++;
         if (runPass === undefined) encode();
         else {
-          const execution = passExecutionRecord(active, logicalIndex, resolved, this.accessIds);
+          const execution = passExecutionRecord(
+            active,
+            logicalIndex,
+            this.physical,
+            this.accessIds,
+          );
           runPass(execution, encode);
         }
       }
       // The native attachment lifetime ends once, with the final descriptor's
       // store/resolve semantics, even when a diagnostic omits a logical body.
-      if (encoder !== undefined) this.#stagePassTextureWrites(final, resolved, writes);
+      if (encoder !== undefined) this.#stagePassTextureWrites(final, writes);
     } catch (cause) {
       outcome = err(
         new RenderGraphError({
@@ -1192,7 +881,6 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   #observePass(
     pass: CompiledPass<FrameCtx>,
     frame: FrameCtx,
-    resolved: FrameResources,
     resolver: GraphResourceResolver,
     execution: RenderGraphPassExecution,
     runPass: RenderGraphPassRunner,
@@ -1207,7 +895,6 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       encodeResult = this.#encodePass(
         pass,
         frame,
-        resolved,
         resolver,
         execution,
         runPass,
@@ -1218,7 +905,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     });
     if (encoded && encodeResult.ok) {
       indices.pendingPasses?.delete(pass.name);
-      this.#stagePassTextureWrites(pass, resolved, writes);
+      this.#stagePassTextureWrites(pass, writes);
     }
     return encodeResult;
   }
@@ -1226,7 +913,6 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   #encodePass(
     pass: CompiledPass<FrameCtx>,
     frame: FrameCtx,
-    resolved: FrameResources,
     resolver: GraphResourceResolver,
     execution: RenderGraphPassExecution | undefined,
     runPass: RenderGraphPassRunner | undefined,
@@ -1254,7 +940,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           const colorAttachments = resolveRasterColors(
             descriptor.colorAttachments,
             frame,
-            resolved,
+            this.physical,
             this.accessIds,
             pass.accessEnd + 1,
             retained?.colorAttachments,
@@ -1263,7 +949,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           const depthStencilAttachment = resolveRasterDepth(
             descriptor.depthStencilAttachment,
             frame,
-            resolved.views.values[this.accessIds[pass.accessEnd] as number],
+            this.physical.handle<TextureView>(this.accessIds[pass.accessEnd] as number),
             retained?.depthStencilAttachment,
           );
           if (depthStencilAttachment instanceof RenderGraphError)
@@ -1345,7 +1031,6 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           return this.executeSubgraph(
             pass,
             frame,
-            resolved,
             resolver,
             runPass,
             instrumentation,
@@ -1386,7 +1071,6 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   private executeSubgraph(
     pass: CompiledPass<FrameCtx>,
     frame: FrameCtx,
-    parent: FrameResources,
     resolver: GraphResourceResolver,
     runPass: RenderGraphPassRunner | undefined,
     instrumentation: RenderGraphPassInstrumentation<FrameCtx> | undefined,
@@ -1396,47 +1080,40 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     if (pass.pass.kind !== 'subgraph') return this.subgraphError('kind', 'a subgraph pass');
     const descriptor = pass.pass.descriptor;
     if (descriptor.child === undefined) {
-      this.nativeRecorder ??= new NativeCommandRecorder(() => this.retired);
+      this.nativeRecorder ??= new NativeCommandRecorder(() => this.nativeResources.isRetired());
       this.nativeRecorder.run(descriptor, frame, resolver, indices, instrumentation, runPass);
       return ok(undefined);
     }
     const selected = descriptor.child(frame, resolver);
-    if (!compiledGraphs.has(selected))
+    if (selected === null || typeof selected !== 'object' || !(#executeResolved in selected))
       return this.subgraphError('child', 'a graph compiled by RenderGraphBuilder');
     const child = selected as CompiledRenderGraphImpl<FrameCtx>;
     if (child.device !== this.device)
       return this.subgraphError('device', 'the same RHI device for parent and child');
-    if (child.retired || executingGraphs.has(child))
+    if (child.isRetired() || child.nativeResources.isBusy())
       return this.subgraphError('child', 'a live, non-recursive child graph');
     if (!child.acceptsParentPorts)
       return this.subgraphError('resources', 'an import-only child without nested subgraphs');
     const snapshot = child.resolveFrameResources(frame);
     if (!snapshot.ok) return snapshot;
-    const childResources = snapshot.value;
     const ports = descriptor.accesses;
     let grants: ReadonlyMap<number, number> | undefined;
     if (ports.length > LINEAR_PASS_ACCESS_LIMIT) {
-      this.subgraphBindings ??= new SubgraphBindings(
-        this.physical.addressCount,
-        parent.buffers.values,
-        parent.views.values,
-      );
+      this.subgraphBindings ??= new SubgraphBindings(this.physical);
       grants = this.subgraphBindings.grantsFor(ports);
     }
-    const failure = this.checkSubgraphPorts(ports, grants, parent, child, childResources);
+    const failure = this.checkSubgraphPorts(ports, grants, child);
     if (failure !== undefined) return failure;
     // Import callbacks can retire a graph; validation and encoding use this one snapshot.
-    if (this.retired || child.retired)
+    if (this.nativeResources.isRetired() || child.isRetired())
       return this.subgraphError('child', 'parent and child remain live after import resolution');
-    return child.#executeResolved(frame, childResources, runPass, instrumentation, indices, writes);
+    return child.#executeResolved(frame, runPass, instrumentation, indices, writes);
   }
 
   private checkSubgraphPorts(
     ports: readonly GraphAccess[],
     grants: ReadonlyMap<number, number> | undefined,
-    parent: FrameResources,
     child: CompiledRenderGraphImpl<FrameCtx>,
-    childResources: FrameResources,
   ): Result<never, RenderGraphError> | undefined {
     let parentBuffers: Set<Buffer> | undefined;
     for (const pass of child.passes) {
@@ -1445,9 +1122,10 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         if (data === undefined) return this.subgraphError('access', 'a compiled child access');
         if (data.kind !== 'buffer' && data.kind !== 'texture-view')
           return this.subgraphError('access', 'only buffer and texture-view child accesses');
-        const buffer = data.kind === 'buffer' ? childResources.buffers.values[data.id] : undefined;
+        const buffer = data.kind === 'buffer' ? child.physical.handle<Buffer>(data.id) : undefined;
         if (data.kind === 'buffer' && buffer === undefined) continue;
-        const handle = data.kind === 'buffer' ? buffer : childResources.views.values[data.id];
+        const handle =
+          data.kind === 'buffer' ? buffer : child.physical.handle<TextureView>(data.id);
         const bindings = this.subgraphBindings;
         if (this.grantsChildPort(ports, grants, handle, data, access.usage, child)) continue;
         if (buffer === undefined)
@@ -1461,8 +1139,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         } else {
           if (parentBuffers === undefined) {
             parentBuffers = new Set();
-            for (const slot of parent.buffers.values)
-              if (slot !== undefined) parentBuffers.add(slot);
+            for (const slot of this.physical.resources())
+              if (slot.kind === 'buffer' && slot.handle !== undefined)
+                parentBuffers.add(slot.handle);
           }
           if (!parentBuffers.has(buffer)) continue;
         }
@@ -1512,17 +1191,16 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   ): boolean {
     if (data.kind === 'buffer')
       return (
-        this.frameResources.buffers.values[id] === child.frameResources.buffers.values[data.id] &&
+        this.physical.handle<Buffer>(id) === child.physical.handle<Buffer>(data.id) &&
         bufferSize(this.physical.resource(id)) === bufferSize(child.physical.resource(data.id))
       );
     const view = this.physical.view(id);
     if (view === undefined) return false;
-    const textureId = view.record.textureId;
+    const textureId = view.textureId;
     const texture = this.physical.resource(textureId);
     return (
-      this.frameResources.views.values[id] === child.frameResources.views.values[data.id] &&
-      this.frameResources.textures.values[textureId] ===
-        child.frameResources.textures.values[data.textureId] &&
+      view.handle === child.physical.handle<TextureView>(data.id) &&
+      this.physical.handle<Texture>(textureId) === child.physical.handle<Texture>(data.textureId) &&
       sameTexture(texture, child.physical.resource(data.textureId)) &&
       sameView(view, child.physical.view(data.id), texture)
     );
@@ -1530,17 +1208,17 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
 
   retire(): Promise<Result<void, RenderGraphError>> {
     if (this.retireResult !== undefined) return this.retireResult;
-    this.retired = true;
-    this.bindings.revoke();
+    this.nativeResources.revoke();
+    this.resources.attachments.revoke();
     this.subgraphBindings = undefined;
     this.pendingTextureWrites.clear();
-    this.allocationsByTexture.clear();
+    this.resources.persistentTextures?.clear();
     this.retireResult = this.finishRetire();
     return this.retireResult;
   }
 
   private async finishRetire(): Promise<Result<void, RenderGraphError>> {
-    this.allocationLedger.retireAll();
+    this.resources.retireAll();
     try {
       await this.device.queue.onSubmittedWorkDone();
     } catch (cause) {
@@ -1555,26 +1233,19 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     }
 
     let firstFailure: RenderGraphError | undefined;
-    for (const compiled of this.physical.resources()) {
-      if (compiled.record.origin === 'imported' || compiled.borrowedTextureSlot) continue;
-      if (compiled.texture === undefined && compiled.buffer === undefined) continue;
+    for (const compiled of this.resources.owningSlots()) {
       let destroyedSuccessfully = false;
       try {
-        const destroyed =
-          compiled.textureAllocation !== undefined
-            ? releaseGraphTexture(this.device, compiled.textureAllocation)
-            : compiled.record.kind === 'texture'
-              ? this.device.destroyTexture(compiled.texture as Texture)
-              : this.device.destroyBuffer(compiled.buffer as Buffer);
+        const destroyed = releaseBoundResource(this.device, compiled);
         destroyedSuccessfully = destroyed.ok;
         if (!destroyed.ok && firstFailure === undefined) {
           firstFailure = new RenderGraphError({
             code: 'resource-retire-failed',
-            expected: `graph-created resource '${compiled.record.label}' retires exactly once`,
+            expected: `graph-created resource '${compiled.label}' retires exactly once`,
             hint: 'inspect detail.cause for the RHI destroy refusal',
             detail: {
               generation: this.generation,
-              resourceLabel: compiled.record.label,
+              resourceLabel: compiled.label,
               cause: destroyed.error,
             },
           });
@@ -1582,200 +1253,126 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       } catch (cause) {
         firstFailure ??= new RenderGraphError({
           code: 'resource-retire-failed',
-          expected: `graph-created resource '${compiled.record.label}' retires exactly once`,
+          expected: `graph-created resource '${compiled.label}' retires exactly once`,
           hint: 'inspect detail.cause for the RHI destroy failure',
-          detail: { generation: this.generation, resourceLabel: compiled.record.label, cause },
+          detail: { generation: this.generation, resourceLabel: compiled.label, cause },
         });
       } finally {
         // A failed or throwing destroy leaves the handle owned by this
         // graph. Keep its token pending so inspection reflects the
         // retirement failure instead of claiming bytes were released.
-        if (destroyedSuccessfully)
-          this.allocationLedger.release(compiled.texture ?? compiled.buffer);
+        if (destroyedSuccessfully) this.resources.release(compiled.handle);
       }
     }
     return firstFailure === undefined ? ok(undefined) : err(firstFailure);
   }
 
-  private resolveFrameResources(frame: FrameCtx): Result<FrameResources, RenderGraphError> {
-    if (this.retired || this.resolving || executingGraphs.has(this))
+  private resolveFrameResources(frame: FrameCtx): Result<void, RenderGraphError> {
+    if (!this.nativeResources.enter())
       return this.subgraphError('execution', 'a live, non-recursive compiled graph');
-    this.resolving = true;
     try {
       return this.resolveFrameResourceValues(frame);
     } finally {
-      this.resolving = false;
+      this.nativeResources.leave();
     }
   }
 
-  private resolveFrameResourceValues(frame: FrameCtx): Result<FrameResources, RenderGraphError> {
-    const frameResources = this.frameResources;
-    const { buffers, textures, views, accelerationStructures } = frameResources;
+  private resolveFrameResourceValues(frame: FrameCtx): Result<void, RenderGraphError> {
     let resolved = false;
     try {
-      for (const record of this.imports) {
+      for (const record of this.resources.imports) {
         try {
           if (record.kind === 'texture') {
             const texture = record.resolve(frame);
             if (texture === undefined) return err(resolutionError(record.label));
-            if (textures.values[record.id] !== texture) {
+            if (record.handle !== texture) {
               const extent = record.native?.resolvedExtent?.(texture);
               if (extent !== undefined) {
-                const resource = this.physical.resource(record.id);
                 const { width, height, depthOrArrayLayers } = extent;
                 if (
-                  resource?.textureDescriptor === undefined ||
+                  record.textureShape === undefined ||
                   !validPhysicalDimension(width) ||
                   !validPhysicalDimension(height) ||
                   !validPhysicalDimension(depthOrArrayLayers)
                 )
                   return err(resolutionError(record.label, 'invalid physical texture extent'));
                 const size = Object.freeze({ width, height, depthOrArrayLayers });
-                resource.resolvedDescriptor = { ...resource.textureDescriptor, size };
-                resource.resolvedViewExtent = ok(Object.freeze({ width, height }));
+                record.resolvedDescriptor = { ...record.textureShape.descriptor, size };
+                record.resolvedViewExtent = ok(Object.freeze({ width, height }));
               }
-              textures.bind(record.id, texture);
+              bindSlot(record, texture);
               this.inspection = undefined;
             }
           } else if (record.kind === 'buffer') {
             const buffer = record.resolve(frame);
             if (buffer === undefined) return err(resolutionError(record.label));
-            const previous = buffers.values[record.id];
-            if (buffers.bind(record.id, buffer)) {
+            const previous = record.handle;
+            if (bindSlot(record, buffer)) {
               this.subgraphBindings?.replace('buffer', record.id, previous, buffer);
               this.inspection = undefined;
             }
-          } else accelerationStructures.bind(record.id, record.resolve(frame));
+          } else bindSlot(record, record.resolve(frame));
         } catch (cause) {
           return err(resolutionError(record.label, cause));
         }
       }
-      for (const compiled of this.frameViews) {
-        const record = compiled.record;
+      for (const record of this.resources.frameViews) {
         if (record.resolve !== undefined) {
           try {
             const value = record.resolve(frame);
-            const previous = views.values[record.id];
-            if (views.bind(record.id, value))
+            const previous = record.handle;
+            if (bindSlot(record, value))
               this.subgraphBindings?.replace('texture-view', record.id, previous, value);
           } catch (cause) {
             return err(resolutionError(record.label, cause));
           }
         } else {
-          const texture = textures.values[record.textureId];
+          const texture = this.physical.handle<Texture>(record.textureId);
           if (texture === undefined) return err(resolutionError(record.label));
-          const view = this.importedTextureView(compiled, texture);
+          const view = this.nativeResources.importedTextureView(record, texture);
           if (!view.ok) return view;
-          this.subgraphBindings?.replace(
-            'texture-view',
-            record.id,
-            views.values[record.id],
-            view.value,
-          );
-          views.bind(record.id, view.value, view);
+          this.subgraphBindings?.replace('texture-view', record.id, record.handle, view.value);
+          bindSlot(record, view.value, view);
         }
       }
       resolved = true;
-      return ok(frameResources);
+      return ok(undefined);
     } finally {
       if (this.importsResolved !== resolved) this.inspection = undefined;
       this.importsResolved = resolved;
     }
   }
 
-  private importedTextureView(
-    compiled: CompiledView<FrameCtx>,
-    texture: Texture,
-    current?: () => boolean,
-  ): Result<TextureView, RenderGraphError> {
-    if (current?.() === false) return err(this.preparationInvalid());
-    const previous = this.importedViews[compiled.record.id];
-    if (previous?.texture === texture) return previous.view;
-    const created = this.device.createTextureView(texture, compiled.record.descriptor);
-    if (!created.ok) return err(resolutionError(compiled.record.label, created.error));
-    if (current?.() === false || this.retired) return err(this.preparationInvalid());
-    if (previous === undefined) this.importedViews[compiled.record.id] = { texture, view: created };
-    else {
-      previous.texture = texture;
-      previous.view = created;
-    }
-    return created;
-  }
-
-  private *prepareNativeImports(
-    current: () => boolean,
-  ): Generator<GraphPreparationStep, Result<void, RenderGraphError>> {
-    for (const input of this.nativeInputs) {
-      const { record, views } = input;
-      const owner = record.native;
-      if (owner === undefined) continue;
-      try {
-        if (!current()) return err(this.preparationInvalid());
-        const texture = yield* owner.prepare(current);
-        const live = () => current() && owner.current() === texture && !this.retired;
-        if (!live()) return err(this.preparationInvalid());
-        for (const view of views) {
-          const prepared = this.importedTextureView(view, texture, live);
-          if (!prepared.ok) return prepared;
-          yield;
-          if (!live()) return err(this.preparationInvalid());
-        }
-        input.prepared = texture;
-      } catch (cause) {
-        if (cause instanceof RhiError && cause.code === 'rhi-descriptor-invalid' && !current())
-          return err(this.preparationInvalid());
-        return err(resolutionError(record.label, cause));
-      }
-    }
-    return ok(undefined);
-  }
-
-  private nativeImportsCurrent(): boolean {
-    if (this.retired) return false;
-    for (const input of this.nativeInputs) {
-      const { record, views } = input;
-      const actual = record.native?.current();
-      if (actual === undefined || input.prepared !== actual || this.retired) return false;
-      for (const view of views)
-        if (this.importedViews[view.record.id]?.texture !== actual) return false;
-    }
-    return !this.retired;
-  }
-
-  private passResolver(
-    pass: CompiledPass<FrameCtx>,
-    frameResources: FrameResources,
-  ): GraphResourceResolver {
+  private passResolver(pass: CompiledPass<FrameCtx>): GraphResourceResolver {
     let context = this.resolvers[pass.id];
     if (context === undefined) {
-      context = { resolver: this.createPassResolver(pass, frameResources) };
+      context = { resolver: this.createPassResolver(pass) };
       this.resolvers[pass.id] = context;
     }
     return context.resolver;
   }
 
-  /** Resource and view IDs occupy the same builder namespace. A declared view grants its parent. */
-  private grants(pass: CompiledPass<FrameCtx>, id: number): boolean {
-    let lo = pass.accessStart;
-    let hi = pass.accessEnd;
-    if (hi - lo <= LINEAR_PASS_ACCESS_LIMIT) {
-      for (; lo < hi; lo++) if (this.accessIds[lo] === id) return true;
-      return false;
-    }
-    while (lo < hi) {
-      const middle = lo + Math.floor((hi - lo) / 2);
-      const value = this.accessIds[middle] as number;
-      if (value === id) return true;
-      if (value < id) lo = middle + 1;
-      else hi = middle;
-    }
-    return false;
+  private describeViewExtent(view: CompiledView<FrameCtx>): CompiledView<FrameCtx>['extent'] {
+    const resource = this.physical.resource(view.textureId);
+    if (resource === undefined || resource.usage === 0) return undefined;
+    if (
+      resource.kind === 'texture' &&
+      resource.origin === 'imported' &&
+      resource.native?.resolvedExtent !== undefined
+    )
+      return resource;
+    const size = resource.textureShape?.descriptor.size;
+    if (size === undefined) return undefined;
+    const mip = view.descriptor.baseMipLevel ?? 0;
+    return ok(
+      Object.freeze({
+        width: mipDimension(size.width, mip),
+        height: mipDimension(size.height, mip),
+      }),
+    );
   }
 
-  private createPassResolver(
-    pass: CompiledPass<FrameCtx>,
-    frameResources: FrameResources,
-  ): GraphResourceResolver {
+  private createPassResolver(pass: CompiledPass<FrameCtx>): GraphResourceResolver {
     const lookup = (
       resource: GraphBuffer | GraphTexture | GraphTextureView | GraphAccelerationStructure,
       expectedKind: ResourceHandleData['kind'],
@@ -1792,9 +1389,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           }),
         );
       }
-      if (this.grants(pass, data.id)) return data;
-      if (data.kind !== 'texture-view' || !this.grants(pass, data.textureId)) {
-        const label = this.physical.resource(resourceId ?? -1)?.record.label;
+      if (passGrantsAccess(this.accessIds, pass, data.id)) return data;
+      if (data.kind !== 'texture-view' || !passGrantsAccess(this.accessIds, pass, data.textureId)) {
+        const label = this.physical.resource(resourceId ?? -1)?.label;
         return err(
           new RenderGraphError({
             code: 'resource-not-declared-by-pass',
@@ -1804,7 +1401,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           }),
         );
       }
-      const label = this.physical.view(data.id)?.record.label;
+      const label = this.physical.view(data.id)?.label;
       return err(
         new RenderGraphError({
           code: 'resource-not-declared-by-pass',
@@ -1819,27 +1416,24 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       buffer: (resource) => {
         const data = lookup(resource, 'buffer');
         if ('error' in data) return data;
-        const buffer = frameResources.buffers.result(data.id);
+        const buffer = this.physical.result<Buffer>(data.id);
         return buffer === undefined
-          ? err(resolutionError(this.physical.resource(data.id)?.record.label ?? 'buffer'))
+          ? err(resolutionError(this.physical.resource(data.id)?.label ?? 'buffer'))
           : buffer;
       },
       bufferSource: (resource) => {
         const data = lookup(resource, 'buffer');
         if ('error' in data) return data;
         const compiled = this.physical.resource(data.id);
-        const buffer = frameResources.buffers.values[data.id];
-        if (compiled?.record.kind !== 'buffer' || buffer === undefined)
+        const buffer = this.physical.handle<Buffer>(data.id);
+        if (compiled?.kind !== 'buffer' || buffer === undefined)
           return err(resolutionError('buffer source'));
         return ok(
           Object.freeze({
             buffer,
             descriptor: Object.freeze({
-              ...compiled.record.descriptor,
-              usage:
-                compiled.record.origin === 'imported'
-                  ? compiled.record.descriptor.usage
-                  : compiled.usage,
+              ...compiled.descriptor,
+              usage: compiled.origin === 'imported' ? compiled.descriptor.usage : compiled.usage,
             }),
           }),
         );
@@ -1847,9 +1441,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       texture: (resource) => {
         const data = lookup(resource, 'texture');
         if ('error' in data) return data;
-        const texture = frameResources.textures.result(data.id);
+        const texture = this.physical.result<Texture>(data.id);
         return texture === undefined
-          ? err(resolutionError(this.physical.resource(data.id)?.record.label ?? 'texture'))
+          ? err(resolutionError(this.physical.resource(data.id)?.label ?? 'texture'))
           : texture;
       },
       textureViewSource: (resource) => {
@@ -1857,12 +1451,12 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         if ('error' in data) return data;
         if (data.kind !== 'texture-view') return err(resolutionError('texture view source'));
         const compiledTexture = this.physical.resource(data.textureId);
-        if (compiledTexture?.record.kind !== 'texture')
-          return err(resolutionError('texture view source'));
-        const descriptor = compiledTexture.resolvedDescriptor ?? compiledTexture.textureDescriptor;
-        const viewDescriptor = this.physical.view(data.id)?.record.descriptor;
-        const texture = frameResources.textures.values[data.textureId];
-        const view = frameResources.views.values[data.id];
+        if (compiledTexture?.kind !== 'texture') return err(resolutionError('texture view source'));
+        const descriptor =
+          compiledTexture.resolvedDescriptor ?? compiledTexture.textureShape?.descriptor;
+        const viewDescriptor = this.physical.view(data.id)?.descriptor;
+        const texture = this.physical.handle<Texture>(data.textureId);
+        const view = this.physical.handle<TextureView>(data.id);
         if (
           descriptor === undefined ||
           viewDescriptor === undefined ||
@@ -1876,7 +1470,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
             view,
             descriptor: Object.freeze({
               ...descriptor,
-              format: compiledTexture.record.descriptor.format,
+              format: compiledTexture.descriptor.format,
               usage: descriptor.usage ?? compiledTexture.usage,
               size: Object.freeze({
                 width: descriptor.size.width,
@@ -1896,33 +1490,38 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       textureView: (resource) => {
         const data = lookup(resource, 'texture-view');
         if ('error' in data) return data;
-        const view = frameResources.views.result(data.id);
+        const view = this.physical.result<TextureView>(data.id);
         return view === undefined
-          ? err(resolutionError(this.physical.view(data.id)?.record.label ?? 'texture view'))
+          ? err(resolutionError(this.physical.view(data.id)?.label ?? 'texture view'))
           : view;
       },
       textureViewExtent: (resource) => {
         const data = lookup(resource, 'texture-view');
         if ('error' in data) return data;
-        const extent = this.viewExtents[data.id];
-        if (extent !== undefined && 'record' in extent)
-          return extent.resolvedViewExtent ?? err(resolutionError('owner-sized texture view'));
-        return extent ?? err(resolutionError('texture view'));
+        const view = this.physical.view(data.id);
+        if (view === undefined) return err(resolutionError('texture view'));
+        view.extent ??= this.describeViewExtent(view);
+        if (view.extent !== undefined && 'kind' in view.extent)
+          return view.extent.resolvedViewExtent ?? err(resolutionError('owner-sized texture view'));
+        return view.extent ?? err(resolutionError('texture view'));
       },
       accelerationStructure: (resource) => {
         const data = lookup(resource, 'acceleration-structure');
         if ('error' in data) return data;
-        const tlas = frameResources.accelerationStructures.result(data.id);
+        const tlas = this.physical.result<Tlas>(data.id);
         return tlas === undefined
-          ? err(
-              resolutionError(
-                this.physical.resource(data.id)?.record.label ?? 'acceleration structure',
-              ),
-            )
+          ? err(resolutionError(this.physical.resource(data.id)?.label ?? 'acceleration structure'))
           : tlas;
       },
     };
   }
+}
+
+/** The authority used by the physical recorder and its native preparation consumers. */
+export function boundRenderGraphResources<Frame extends RenderGraphFrame>(
+  graph: CompiledRenderGraph<Frame>,
+): BoundRenderGraphResources {
+  return graph instanceof CompiledRenderGraphImpl ? graph.nativeResources : graph;
 }
 
 /** Append the physical graph's declaration order to the owning frame receipt. */
@@ -1979,6 +1578,18 @@ export function compiledRenderGraphHasPass(
     : graph.inspect().passes.some((pass) => pass.name === name);
 }
 
+/** Count declarations without constructing allocation or pass inspection records. */
+export function compiledRenderGraphPassCountByPrefix(
+  graph: { inspect(): { readonly passes: readonly { readonly name: string }[] } },
+  prefix: string,
+): number {
+  return graph instanceof CompiledRenderGraphImpl
+    ? graph.countPassesBeginningWith(prefix)
+    : graph
+        .inspect()
+        .passes.reduce((count, pass) => count + Number(pass.name.startsWith(prefix)), 0);
+}
+
 /** Read physical allocations from their owner. External producers may supply totals without handles. */
 export function compiledRenderGraphAllocation(
   graph: Pick<CompiledRenderGraph<RenderGraphFrame>, 'inspect'>,
@@ -2004,4 +1615,12 @@ export function compiledRenderGraphAllocation(
     }
   }
   return info.resourceAllocation;
+}
+
+/** @internal Attach the view's physical byte counter until the bound allocations release. */
+export function observeCompiledRenderGraphAllocations(
+  graph: Pick<CompiledRenderGraph<RenderGraphFrame>, 'inspect'>,
+  observer: GraphAllocationObserver,
+): boolean {
+  return graph instanceof CompiledRenderGraphImpl && graph.observeAllocations(observer);
 }

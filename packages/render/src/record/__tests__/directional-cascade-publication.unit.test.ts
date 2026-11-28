@@ -27,7 +27,6 @@ import {
   shadowMeshReadsForQuery,
 } from '../directional-shadow-cache';
 import type { InstalledFrameGraph, RenderFrameState } from '../frame-snapshot';
-import type { RenderSystemInternals } from '../render-context';
 
 const lightOwner = renderLightsOf(createRenderWorld());
 const recordingView = {};
@@ -72,22 +71,9 @@ function fixture(staggerCascades = true) {
   const receiver = new RenderPublicationReceiver(identity);
   const scene = new PersistentRenderScene();
   // Narrow record-stage inputs follow the existing terrain shadow-cache fixture.
-  const epochs = { catalogEpoch: 1 };
   const changes = new MeshChanges();
   let mesh = changes.create();
   const roots = new Set<ShadowMeshReads>();
-  const internals = {
-    assets: {
-      get catalogEpoch() {
-        return epochs.catalogEpoch;
-      },
-    },
-    gpuStore: {
-      get meshResidencyEpoch() {
-        return changes.epoch;
-      },
-    },
-  } as unknown as RenderSystemInternals;
   const state = {
     compiledFrameGraph: { topologyKey: 'same-light-graph' },
     installedPipelineHandle: 9,
@@ -130,7 +116,6 @@ function fixture(staggerCascades = true) {
     else roots.add(reads);
     if (reads !== state.directionalShadowCache?.meshReads) reads.add(mesh);
     return prepareDirectionalShadowCache(
-      internals,
       state,
       accepted.resources,
       undefined,
@@ -154,7 +139,6 @@ function fixture(staggerCascades = true) {
     receiver,
     scene,
     state,
-    epochs,
     changes,
     editMesh: () => changes.publish(mesh),
     replaceMesh: () => {
@@ -472,8 +456,6 @@ describe('accepted publication CPU shadow authority', () => {
       f.replaceMesh();
       expect(f.decide(changed).miss).toBe('source-changed');
       f.state.directionalShadowCache = f.decide(changed).next;
-      f.epochs.catalogEpoch += 1;
-      // Unrelated catalog admission does not invalidate accepted shadow content.
       expect(f.decide(changed).miss).toBeUndefined();
       const newBaseline = replacement.publish();
       const previous = requiredSource(f).source;

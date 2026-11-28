@@ -27,7 +27,7 @@ it('clears bounded old/new footprints when a changed source caster leaves the st
     const transform = f.scene.transformBuffer;
     const resourceGeneration = warm.view.inspect().resourceGeneration;
     const delta = f.update(shadowSourceSnapshot(1, -14, 4));
-    const changed = delta.updatedSlots[0]?.slot;
+    const changed = delta.updatedSlots.at(0)?.slot;
     expect(changed).toBeDefined();
     const next = f.input();
     expect(next.sourcePlan).not.toBe(before.sourcePlan);

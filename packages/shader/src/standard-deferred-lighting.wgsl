@@ -307,7 +307,7 @@ fn shadeDeferredSurface(in : FullscreenOutput, surface : DeferredSurface, enviro
   // its emissive and opacity without sampling the active color attachment.
 #ifdef DEFERRED_DIFFUSE_GI_AVAILABLE
   // Match the exact occluded diffuse that this pass routes to SceneColor or SSS.
-  let baseline = clamp(environment.lowFrequency * ao, vec3f(0.0), vec3f(65504.0));
+  let baseline = clamp(environment.diffuse * ao, vec3f(0.0), vec3f(65504.0));
   let weight = environment.diffuseWeight * ao;
   let index = (u32(pixel.y) * textureDimensions(sceneDepth).x + u32(pixel.x)) * 3u;
   diffuseGiBaseline[index] = pack2x16float(vec2f(baseline.x, weight.x)) | (u32(diffuseToSubsurface) << 31u);
@@ -321,7 +321,7 @@ fn shadeDeferredSurface(in : FullscreenOutput, surface : DeferredSurface, enviro
   let bakedSpecular = select(specular, vec3f(0.0), standardDeferredComposeReflection);
   return DeferredOutput(vec4<f32>(sceneDiffuse + bakedSpecular + direct.radiance, 0.0),
     vec4<f32>(specular, 1.0),
-    vec4<f32>(environment.response.rgb * standardSpecularOcclusion(nDotV, response.a, roughness), environment.response.a),
+    vec4<f32>(environment.response.rgb * specularAo, environment.response.a),
     vec4<f32>(subsurface, 0.0));
 }
 

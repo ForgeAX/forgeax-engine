@@ -1,0 +1,91 @@
+{
+ "tests": [
+  "src/__tests__/uv-hygiene.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "458-targets1",
+   "file": "src/seams.ts",
+   "old": "const MERGE_TARGETS = 3;",
+   "new": "const MERGE_TARGETS = 1;"
+  },
+  {
+   "id": "458-isthin-false",
+   "file": "src/seams.ts",
+   "old": "return perimeter > 0 && ((2 * a) / perimeter < minWidth || a < minWidth * minWidth);",
+   "new": "return false;"
+  },
+  {
+   "id": "458-density-sign",
+   "file": "src/uv-textures.ts",
+   "old": "diverging((ratio - 1) / (ratio + 1))",
+   "new": "diverging(-(ratio - 1) / (ratio + 1))"
+  },
+  {
+   "id": "458-stretch-const",
+   "file": "src/uv-textures.ts",
+   "old": "? sequential(Math.max(0, Math.min(1, (stretch - 1) / (limit - 1))))",
+   "new": "? sequential(0)"
+  },
+  {
+   "id": "458-no-dilate",
+   "file": "src/uv-textures.ts",
+   "old": "if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;",
+   "new": "continue;"
+  },
+  {
+   "id": "458-y-flip",
+   "file": "src/uv-textures.ts",
+   "old": "  const ay = (a[1] as number) * size;\n  const bx = (b[0] as number) * size;\n  const by = (b[1] as number) * size;\n  const cx = (c[0] as number) * size;\n  const cy = (c[1] as number) * size;",
+   "new": "  const ay = (1 - (a[1] as number)) * size;\n  const bx = (b[0] as number) * size;\n  const by = (1 - (b[1] as number)) * size;\n  const cx = (c[0] as number) * size;\n  const cy = (1 - (c[1] as number)) * size;"
+  },
+  {
+   "id": "458-density-nomean",
+   "file": "src/compute/uv-ts.ts",
+   "old": "Math.sqrt(areaUv / area3d) / mean;",
+   "new": "Math.sqrt(areaUv / area3d);"
+  },
+  {
+   "id": "458-facestretch-const",
+   "file": "src/compute/uv-ts.ts",
+   "old": "faceStretch[f] = broken ? Number.POSITIVE_INFINITY : stretch;",
+   "new": "faceStretch[f] = broken ? Number.POSITIVE_INFINITY : 1;"
+  },
+  {
+   "id": "458-cuts-none",
+   "file": "src/uv.ts",
+   "old": "for (const f of split) for (const h of mesh.faceHalves(f)) cuts.add(h >> 1);",
+   "new": "for (const f of split) for (const h of mesh.faceHalves(f)) if (h < 0) cuts.add(h >> 1);"
+  },
+  {
+   "id": "458-orient-reverse",
+   "file": "src/uv-overlap.ts",
+   "old": "if (turn < 0) p.reverse();",
+   "new": ""
+  },
+  {
+   "id": "458-overlap-report",
+   "file": "src/uv.ts",
+   "old": "              overlaps: pairs.length,\n              overlapPasses: used,\n              islandsBefore",
+   "new": "              overlaps: 0,\n              overlapPasses: used,\n              islandsBefore"
+  },
+  {
+   "id": "458-unresolved-warn",
+   "file": "src/uv.ts",
+   "old": "if (pairs.length > 0) {\n    diagnostics.push({",
+   "new": "if (false) {\n    diagnostics.push({"
+  },
+  {
+   "id": "458-checker-parity",
+   "file": "src/uv-textures.ts",
+   "old": "data[o + 2] = light ? 200 : 55;",
+   "new": "data[o + 2] = light ? 200 : 200;"
+  },
+  {
+   "id": "458-uvoverlap-skip-same",
+   "file": "src/uv-overlap.ts",
+   "old": "if (a.face === b.face) continue;",
+   "new": ""
+  }
+ ]
+}

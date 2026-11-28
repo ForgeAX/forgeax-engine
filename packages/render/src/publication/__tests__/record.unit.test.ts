@@ -3,9 +3,12 @@ import { Time, World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Camera, MeshFilter, MeshRenderer } from '../../components';
 import { Materials } from '../../materials';
+import { SceneDrawSlot } from '../../scene/mesh-draw';
+import { SceneComposition } from '../../scene/scene-composition';
+import { adoptSceneMaterials, sourcePlanOf } from '../../world/material-systems';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 import {
@@ -59,13 +62,14 @@ function session(epoch: number, count = 4, targets?: RenderPublicationTargetOwne
     const head = header(sent).slice();
     const length = renderPublicationRecordLength(sent);
     const transforms = accepted.ok ? accepted.value.packet.transforms.slice() : undefined;
+    const removals = accepted.ok ? accepted.value.packet.removed.length : undefined;
     if (accepted.ok) {
       const returned = structuredClone(renderPublicationTransfers(sent), {
         transfer: renderPublicationTransfers(sent),
       });
       publisher.recycle(sent.revision, returned).unwrap();
     }
-    return { sent, accepted, head, length, transforms };
+    return { sent, accepted, head, length, transforms, removals };
   };
   const move = (index: number, x: number) => {
     const entity = entities[index];
@@ -74,8 +78,10 @@ function session(epoch: number, count = 4, targets?: RenderPublicationTargetOwne
     world.update(1 / 60).unwrap();
   };
   return {
+    assets,
     world,
     camera,
+    entities,
     publisher,
     receiver,
     frame,
@@ -92,6 +98,47 @@ function header(message: RenderPublicationMessage): Float64Array {
 }
 
 describe('render publication record protocol', () => {
+  it('adopts native material Passes from the captured content without opening draw poses', () => {
+    const s = session(1, 12);
+    const composition = new SceneComposition({ assets: s.assets });
+    const read = vi.spyOn(SceneDrawSlot.prototype, 'authoredSnapshot');
+    try {
+      const { stage } = composition.consume(s.frame().accepted.unwrap());
+      if (stage === undefined) throw new Error('Expected a native Scene publication');
+      read.mockClear();
+      adoptSceneMaterials(stage.entry, stage.change);
+      composition.queryMaterialPasses(stage.entry);
+      const plan = sourcePlanOf(stage.entry);
+      expect(composition.materialPasses(stage.entry).length).toBeGreaterThan(0);
+      expect(plan.candidateCount).toBe(12);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+      composition.dispose();
+      s.dispose();
+    }
+  });
+
+  it('retires material holds from native rows without reading their poses', () => {
+    const s = session(1, 12);
+    const read = vi.spyOn(SceneDrawSlot.prototype, 'authoredSnapshot');
+    try {
+      s.frame().accepted.unwrap();
+      read.mockClear();
+      for (const entity of s.entities) s.world.despawn(entity).unwrap();
+      s.world.update(1 / 60).unwrap();
+      const result = s.frame();
+      const retired = result.accepted.unwrap();
+      expect(result.removals).toBe(12);
+      expect(retired.packet.retiredMaterials.length).toBeGreaterThan(0);
+      expect(retired.scene.rows.capture()).toHaveLength(0);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockRestore();
+      s.dispose();
+    }
+  });
+
   it('releases publication storage under pressure without invalidating a sealed record', () => {
     const s = session(1);
     try {

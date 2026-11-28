@@ -199,6 +199,18 @@ function worldReceiverParameters(receiver: boolean, approximate: boolean): strin
     : ',originHi:vec3u,directionHi:vec3u,contact:SdfSurfaceContact';
 }
 
+function globalSdfVisibilityHelperWgsl(
+  prepared: boolean,
+  receiver: boolean,
+  hinted: boolean,
+): string {
+  if (prepared || receiver || hinted) return '';
+  return `
+fn traceWorldVisibility(ray: Ray, maxSteps: u32, minStepFactor: f32) -> Hit {
+ return traceWorld(ray,maxSteps,minStepFactor);
+}`;
+}
+
 function globalSdfTraversalWgsl(
   prepared = false,
   receiver = false,
@@ -275,7 +287,7 @@ ${
  return Hit(state,surface.metrics,surface.position,surface.normal);
 `
 }\
-}
+}${globalSdfVisibilityHelperWgsl(prepared, receiver, hinted)}
 fn worldHitCandidates(hit: Hit) -> Candidates {
 ${approximate ? ' if(hit.state.x==1u && (hit.state.y&0x60000000u)==0x60000000u){return Candidates(vec4u(1u,0u,hit.state.x,1u),vec4u(hit.state.w,0xffffffffu,0xffffffffu,0xffffffffu));}\n' : ''}\
  if(hit.state.x==${GlobalSdfQueryStatus.hit}u && (hit.state.y&0x80000000u)!=0u){return Candidates(vec4u(1u,0u,hit.state.x,1u),vec4u(hit.state.w,0xffffffffu,0xffffffffu,0xffffffffu));}
@@ -342,7 +354,8 @@ ${hitMotion ? WORLD_RAY_QUERY_HIT_MOTION_WGSL : ''}fn traceWorldRayQuery(ray: Ra
  last=bitcast<f32>(bitcast<u32>(last)+1u);
  var query: ray_query;
  var forceOpaque=allOpaque;
- rayQueryInitialize(&query,tlas,RayDesc(select(0u,RAY_FLAG_FORCE_OPAQUE,forceOpaque),ray.mask.x&0xffu,first,last,ray.origin,ray.direction));
+ let opaqueFlags=select(RAY_FLAG_FORCE_OPAQUE,RAY_FLAG_FORCE_OPAQUE|RAY_FLAG_TERMINATE_ON_FIRST_HIT,opaqueOccluderIsEnough);
+ rayQueryInitialize(&query,tlas,RayDesc(select(0u,opaqueFlags,forceOpaque),ray.mask.x&0xffu,first,last,ray.origin,ray.direction));
  var steps=0u;
  loop {
   if(steps>=maxSteps){result.state.x=${GlobalSdfQueryStatus.missingField}u;return result;}
@@ -362,10 +375,11 @@ ${hitMotion ? WORLD_RAY_QUERY_HIT_MOTION_WGSL : ''}fn traceWorldRayQuery(ray: Ra
   let candidate=rayQueryGetCandidateIntersection(&query);
   if(candidate.kind==RAY_QUERY_INTERSECTION_TRIANGLE && candidate.t>=ray.tMin && candidate.t<=ray.tMax && candidate.geometry_index==0u && worldRayQueryOpaque(candidate.instance_custom_data,candidate.primitive_index)){
    rayQueryConfirmIntersection(&query);
+   if(opaqueOccluderIsEnough){rayQueryTerminate(&query);}
   }
  }
  let c=rayQueryGetCommittedIntersection(&query);
- result.state.z=1u;
+ result.state.z=steps;
  // A shadow needs existence, not the closest hit. A qualified opaque hit
  // already proves zero visibility, even if a nearer MASK candidate is unknown.
  if(!allOpaque && !(opaqueOccluderIsEnough && c.kind==RAY_QUERY_INTERSECTION_TRIANGLE)){
@@ -394,7 +408,7 @@ ${hitMotion ? WORLD_RAY_QUERY_HIT_MOTION_WGSL : ''}fn traceWorldRayQuery(ray: Ra
  let face=faceNormals[row.y+c.primitive_index];
  let local=face.xyz;
  let n=transpose(mat3x3f(c.world_to_object[0],c.world_to_object[1],c.world_to_object[2]))*local;
- result.state=vec4u(${GlobalSdfQueryStatus.hit}u,0u,1u,row.x);
+ result.state=vec4u(${GlobalSdfQueryStatus.hit}u,0u,steps,row.x);
  result.metrics=vec4f(c.t,0,0,1);
  result.position=vec4f(ray.origin+ray.direction*c.t,1);${
    hitMotion
@@ -422,7 +436,7 @@ ${
     : `fn traceWorld(ray: Ray, maxSteps: u32, minStepFactor: f32) -> Hit {
  return traceWorldRayQuery(ray,maxSteps,false);
 }
-fn traceWorldVisibility(ray: Ray, maxSteps: u32) -> Hit {
+fn traceWorldVisibility(ray: Ray, maxSteps: u32, minStepFactor: f32) -> Hit {
  return traceWorldRayQuery(ray,maxSteps,true);
 }
 `

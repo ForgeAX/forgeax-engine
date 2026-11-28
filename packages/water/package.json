@@ -14,7 +14,12 @@
       "types": "./dist/internal.d.ts",
       "import": "./dist/internal.mjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./caustics": {
+      "types": "./dist/caustics.d.ts",
+      "import": "./dist/caustics.mjs"
+    },
+    "./caustics/shaders/*": "./src/caustics/shaders/*"
   },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -69,6 +74,18 @@
         "enabled": false,
         "reason": "This maintained Water library has no spike report."
       }
+    }
+  },
+  "peerDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-render": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@forgeax/engine-assets-runtime": {
+      "optional": true
+    },
+    "@forgeax/engine-render": {
+      "optional": true
     }
   }
 }

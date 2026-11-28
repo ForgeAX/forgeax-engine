@@ -184,54 +184,212 @@ interface OwnedInstance {
 const COPY_DST = 0x8,
   STORAGE = 0x80;
 
+const FACE_BITS_F32 = new Float32Array(1);
+const FACE_BITS_U32 = new Uint32Array(FACE_BITS_F32.buffer);
+
+function canonicalFloatBits(v: number): number {
+  if (v === 0) return 0;
+  FACE_BITS_F32[0] = v;
+  return FACE_BITS_U32[0] ?? 0;
+}
+
+function compareVertexTriple(
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+): number {
+  if (ax !== bx) return ax < bx ? -1 : 1;
+  if (ay !== by) return ay < by ? -1 : 1;
+  return az === bz ? 0 : az < bz ? -1 : 1;
+}
+
+function hashNineWords(keys: Uint32Array, base: number): number {
+  let h = 2166136261;
+  for (let i = 0; i < 9; i++) {
+    h = Math.imul(h ^ (keys[base + i] ?? 0), 16777619);
+  }
+  return h >>> 0;
+}
+
+function sameNineWords(keys: Uint32Array, a: number, b: number): boolean {
+  for (let i = 0; i < 9; i++) {
+    if (keys[a + i] !== keys[b + i]) return false;
+  }
+  return true;
+}
+
+function writeSortedVertexKeys(
+  keys: Uint32Array,
+  base: number,
+  x0: number,
+  y0: number,
+  z0: number,
+  x1: number,
+  y1: number,
+  z1: number,
+  x2: number,
+  y2: number,
+  z2: number,
+): void {
+  let ax = canonicalFloatBits(x0);
+  let ay = canonicalFloatBits(y0);
+  let az = canonicalFloatBits(z0);
+  let bx = canonicalFloatBits(x1);
+  let by = canonicalFloatBits(y1);
+  let bz = canonicalFloatBits(z1);
+  let cx = canonicalFloatBits(x2);
+  let cy = canonicalFloatBits(y2);
+  let cz = canonicalFloatBits(z2);
+  if (compareVertexTriple(ax, ay, az, bx, by, bz) > 0) {
+    let tmp = ax;
+    ax = bx;
+    bx = tmp;
+    tmp = ay;
+    ay = by;
+    by = tmp;
+    tmp = az;
+    az = bz;
+    bz = tmp;
+  }
+  if (compareVertexTriple(bx, by, bz, cx, cy, cz) > 0) {
+    let tmp = bx;
+    bx = cx;
+    cx = tmp;
+    tmp = by;
+    by = cy;
+    cy = tmp;
+    tmp = bz;
+    bz = cz;
+    cz = tmp;
+    if (compareVertexTriple(ax, ay, az, bx, by, bz) > 0) {
+      tmp = ax;
+      ax = bx;
+      bx = tmp;
+      tmp = ay;
+      ay = by;
+      by = tmp;
+      tmp = az;
+      az = bz;
+      bz = tmp;
+    }
+  }
+  keys[base] = ax;
+  keys[base + 1] = ay;
+  keys[base + 2] = az;
+  keys[base + 3] = bx;
+  keys[base + 4] = by;
+  keys[base + 5] = bz;
+  keys[base + 6] = cx;
+  keys[base + 7] = cy;
+  keys[base + 8] = cz;
+}
+
+function markCoincidentOppositeWinding(
+  out: Float32Array,
+  keys: Uint32Array,
+  heads: Int32Array,
+  next: Int32Array,
+  mask: number,
+  t: number,
+): void {
+  const keyBase = t * 9;
+  const outBase = t * 4;
+  const unx = out[outBase] as number;
+  const uny = out[outBase + 1] as number;
+  const unz = out[outBase + 2] as number;
+  const bucket = hashNineWords(keys, keyBase) & mask;
+  let existing = heads[bucket] as number;
+  while (existing !== -1) {
+    if (sameNineWords(keys, existing * 9, keyBase)) {
+      const eBase = existing * 4;
+      const dot =
+        (out[eBase] as number) * unx +
+        (out[eBase + 1] as number) * uny +
+        (out[eBase + 2] as number) * unz;
+      if (dot < 0 || out[eBase + 3] === 1) {
+        out[eBase + 3] = 1;
+        out[outBase + 3] = 1;
+      }
+    }
+    existing = next[existing] as number;
+  }
+  next[t] = heads[bucket] as number;
+  heads[bucket] = t;
+}
+
+function posCoord(positions: Float32Array, index: number): number {
+  return positions[index] ?? 0;
+}
+
 /** Object-space unit normal per triangle, plus exact coincident opposite-winding coverage. */
 export function triangleFaceNormals(
   positions: Float32Array,
   indices: ArrayLike<number>,
 ): Float32Array {
-  const out = new Float32Array((indices.length / 3) * 4);
-  const coincident = new Map<string, number[]>();
-  const p = (i: number, k: number) => positions[(indices[i] ?? 0) * 3 + k] ?? 0;
-  for (let t = 0; t < indices.length / 3; t++) {
-    const e1 = [0, 1, 2].map((k) => p(t * 3 + 1, k) - p(t * 3, k));
-    const e2 = [0, 1, 2].map((k) => p(t * 3 + 2, k) - p(t * 3, k));
-    const [ax = 0, ay = 0, az = 0] = e1;
-    const [bx = 0, by = 0, bz = 0] = e2;
-    const n = [ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx];
-    const length = Math.hypot(...n);
+  const triCount = (indices.length / 3) | 0;
+  const out = new Float32Array(triCount * 4);
+  if (triCount === 0) return out;
+  let tableSize = 16;
+  while (tableSize < triCount * 2) tableSize <<= 1;
+  const mask = tableSize - 1;
+  const heads = new Int32Array(tableSize).fill(-1);
+  const next = new Int32Array(triCount).fill(-1);
+  const keys = new Uint32Array(triCount * 9);
+  for (let t = 0; t < triCount; t++) {
+    const i0 = (indices[t * 3] ?? 0) * 3;
+    const i1 = (indices[t * 3 + 1] ?? 0) * 3;
+    const i2 = (indices[t * 3 + 2] ?? 0) * 3;
+    const x0 = posCoord(positions, i0);
+    const y0 = posCoord(positions, i0 + 1);
+    const z0 = posCoord(positions, i0 + 2);
+    const x1 = posCoord(positions, i1);
+    const y1 = posCoord(positions, i1 + 1);
+    const z1 = posCoord(positions, i1 + 2);
+    const x2 = posCoord(positions, i2);
+    const y2 = posCoord(positions, i2 + 1);
+    const z2 = posCoord(positions, i2 + 2);
+    const ax = x1 - x0;
+    const ay = y1 - y0;
+    const az = z1 - z0;
+    const bx = x2 - x0;
+    const by = y2 - y0;
+    const bz = z2 - z0;
+    const nx = ay * bz - az * by;
+    const ny = az * bx - ax * bz;
+    const nz = ax * by - ay * bx;
+    const length = Math.hypot(nx, ny, nz);
     if (length > 0) {
-      out.set(
-        n.map((v) => v / length),
-        t * 4,
-      );
-      const vertices = [0, 1, 2].map((corner) =>
-        [0, 1, 2].map((axis) => p(t * 3 + corner, axis)).join(','),
-      );
-      const key = vertices.sort().join('|');
-      const group = coincident.get(key);
-      if (group === undefined) coincident.set(key, [t]);
-      else group.push(t);
+      const inv = 1 / length;
+      const outBase = t * 4;
+      out[outBase] = nx * inv;
+      out[outBase + 1] = ny * inv;
+      out[outBase + 2] = nz * inv;
+      writeSortedVertexKeys(keys, t * 9, x0, y0, z0, x1, y1, z1, x2, y2, z2);
+      markCoincidentOppositeWinding(out, keys, heads, next, mask, t);
     }
-  }
-  for (const group of coincident.values()) {
-    const first = (group[0] ?? 0) * 4;
-    if (
-      group.some(
-        (triangle) =>
-          [0, 1, 2].reduce(
-            (dot, axis) => dot + (out[first + axis] ?? 0) * (out[triangle * 4 + axis] ?? 0),
-            0,
-          ) < 0,
-      )
-    )
-      for (const triangle of group) out[triangle * 4 + 3] = 1;
   }
   return out;
 }
 
 /** Column-major affine mat4 to the 3x4 row-major object-to-world rows a TLAS instance takes. */
 export function tlasTransform(transform: ArrayLike<number>): number[] {
-  return [0, 1, 2].flatMap((r) => [0, 4, 8, 12].map((c) => transform[c + r] ?? NaN));
+  return [
+    transform[0] ?? NaN,
+    transform[4] ?? NaN,
+    transform[8] ?? NaN,
+    transform[12] ?? NaN,
+    transform[1] ?? NaN,
+    transform[5] ?? NaN,
+    transform[9] ?? NaN,
+    transform[13] ?? NaN,
+    transform[2] ?? NaN,
+    transform[6] ?? NaN,
+    transform[10] ?? NaN,
+    transform[14] ?? NaN,
+  ];
 }
 
 export function createWorldAcceleration(
@@ -442,7 +600,14 @@ export function createWorldAcceleration(
 
   const build = (
     entry: GeometryEntry,
-  ): Result<{ resident: Resident; build: BlasBuildEntry; bytes: number }, RhiError> => {
+  ): Result<
+    {
+      resident: Resident;
+      build: BlasBuildEntry;
+      bytes: number;
+    },
+    RhiError
+  > => {
     const { geometry, indices } = entry;
     const positions = geometry.positions;
     const blas = device.createBlas({

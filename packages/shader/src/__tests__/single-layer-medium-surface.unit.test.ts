@@ -103,7 +103,7 @@ describe('single-layer medium shader model', () => {
     expect(template).not.toMatch(/words\[11\]/);
     expect(template).toContain('if (surface.coverage <= 0.0 || frame.backgroundAvailable == 0u)');
     expect(template).toContain(
-      'return vec4<f32>(0.0, 0.0, 0.0, clamp(surface.coverage, 0.0, 1.0));',
+      'return vec4<f32>(clipDepth(input), 0.0, 0.0, clamp(surface.coverage, 0.0, 1.0));',
     );
     expect(template).toContain('let skyMissDistance = surfaceSkyMissDistance(surface);');
     expect(template).toContain(

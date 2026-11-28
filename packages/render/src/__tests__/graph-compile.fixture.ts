@@ -12,7 +12,7 @@ import type { RenderPipelineFrame } from '../render-pipeline';
 export function compileAndAdoptViewGraph(
   input: GraphCompileInput,
 ): CompiledRenderGraph<RenderPipelineFrame> | null {
-  return adoptViewGraph(input.internals, input.frameState, compileViewGraph(input));
+  return adoptViewGraph(input.internals, input.frameState, compileViewGraph(input))?.graph ?? null;
 }
 
 /** Introduce a genuine read before initialization in each newly declared main view. */

@@ -252,7 +252,8 @@ export async function verifySubsurface(
     const observed = renderValue(await renderer.observe(receipt, { include: ['linear-hdr'] }));
     const hdr = observed.observations?.find((attachment) => attachment.domain === 'linear-hdr');
     if (!hdr) throw new Error('Missing real HDR observation');
-    const passes = renderer.inspect().perFramePassNames;
+    const inspection = renderer.inspect({ fields: ['featureGraph', 'perFramePassNames'] });
+    const passes = inspection.perFramePassNames;
     expect(hdr.metadata.format).toBe('rgba16float');
     expect(errors).toEqual([]);
     return {
@@ -262,6 +263,7 @@ export async function verifySubsurface(
         halfFloat.f16ToF32,
       ),
       passes,
+      topology: inspection.featureGraph?.last.topologyKey,
     };
   };
   try {
@@ -272,6 +274,7 @@ export async function verifySubsurface(
     expect(equalBytes(disabled.bytes, baseline.bytes)).toBe(true);
     expect(baseline.passes).not.toContain('subsurface-vertical');
     expect(active.passes).toContain('subsurface-vertical');
+    expect(active.topology).toContain('"deferredDisplay"');
     let spread = 0;
     let emissionError = 0;
     for (let index = 0; index < active.pixels.length; index += 4) {

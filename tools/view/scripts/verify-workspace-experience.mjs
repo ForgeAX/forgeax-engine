@@ -45,6 +45,23 @@ const until = async predicate => {
   }
   throw new Error('Workspace experience condition timed out');
 };
+const assertBottomRowLayout = async (page) => {
+  const layout = await page.waitForFunction(() => {
+    const row = document.querySelector('.fx-view-shell-bottom')?.getBoundingClientRect();
+    const tabs = document.querySelector('.fx-view-shell-bottom .dv-groupview-edge > .dv-tabs-and-actions-container')
+      ?.getBoundingClientRect();
+    const version = document.querySelector('.fx-view-version')?.getBoundingClientRect();
+    const drawer = document.querySelector('.fx-edge-drawer-portal-host > .dv-groupview-header-bottom')
+      ?.getBoundingClientRect();
+    return row && tabs && version && drawer
+      && tabs.width > 0 && version.width > 0
+      && version.top >= tabs.top && version.bottom <= tabs.bottom
+      && Math.abs(tabs.right - version.left) <= 1
+      && Math.abs(version.right - row.right) <= 1
+      && Math.abs(drawer.width - (row.width - 12)) <= 2;
+  });
+  await layout.dispose();
+};
 try {
   await mkdir(join(root, 'assets'));
   await cp(join(view, 'scripts/fixtures/scene-triangle-picking.pack.ts'), join(root, 'assets/proof.pack.ts'));
@@ -72,7 +89,7 @@ try {
   await client.call('display.bind', { root, runId: independent.runId });
   assert.equal((await client.getState()).project.root, canonicalRoot, 'CLI admits the explicit project');
   browser = await chromium.launch({
-    executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE ?? '/opt/google/chrome-beta/chrome',
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: false,
     args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist',
       '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--use-vulkan=swiftshader',
@@ -364,6 +381,20 @@ try {
     undefined, { timeout: 180_000 });
   assert.equal(await page.locator('.fx-error-notice').count(), 0);
   await page.screenshot({ path: join(output, 'play-before-refresh.png') });
+  await client.call('presentation.panel.reveal', { panelId: 'content-browser' });
+  const playContentBrowser = page.getByTestId('panel-content-browser');
+  await playContentBrowser.waitFor({ state: 'visible' });
+  assert.equal(await playContentBrowser.evaluate(panel => {
+    const play = document.querySelector('iframe[data-forgeax-scene-play]')?.getBoundingClientRect();
+    if (!play) return false;
+    const drawer = panel.getBoundingClientRect();
+    const left = Math.max(play.left, drawer.left);
+    const right = Math.min(play.right, drawer.right);
+    const top = Math.max(play.top, drawer.top);
+    const bottom = Math.min(play.bottom, drawer.bottom);
+    return right > left && bottom > top
+      && panel.contains(document.elementFromPoint((left + right) / 2, (top + bottom) / 2));
+  }), true, 'Content Browser receives input where it overlaps Play');
   const beforePlayRefresh = await client.getState();
   await page.reload();
   game = await projectDocument(page);
@@ -407,9 +438,17 @@ try {
   assert.equal(await page.locator('.fx-error-notice').count(), 0);
   const contentBrowser = page.getByTestId('panel-content-browser');
   await contentBrowser.waitFor({ state: 'attached' });
+  const bottomTab = page.locator('.fx-view-shell-bottom .dv-tab');
+  const closeBottomTab = bottomTab.locator('.fx-dock-tab-close');
+  await page.mouse.move(2, 2);
+  assert.equal(await closeBottomTab.isVisible(), false, 'A collapsed active edge tab hides its close button');
+  await bottomTab.hover();
+  assert.equal(await closeBottomTab.isVisible(), true, 'Hover reveals the close button');
+  await page.mouse.move(2, 2);
   const revealed = await client.call('presentation.panel.reveal', { panelId: 'content-browser' });
   assert.equal(revealed.panels.find(panel => panel.id === 'content-browser')?.visible, true);
   await contentBrowser.waitFor({ state: 'visible' });
+  assert.equal(await closeBottomTab.isVisible(), true, 'The open active edge tab keeps its close button visible');
   await contentBrowser.locator('.cb-crumb-current').filter({ hasText: /^assets$/ }).waitFor();
   for (const [name, kind] of [['proof-plugins.pack.json', 'Plugin'], ['proof.pack.ts', 'Asset Package']]) {
     const card = contentBrowser.locator('.cb-grid-item').filter({ has: page.getByText(name, { exact: true }) });
@@ -422,6 +461,30 @@ try {
   await pluginOutput.waitFor();
   assert.equal(await pluginOutput.locator('.cb-fe-name').textContent(), 'proof-plugins.pack.json');
   assert.equal(await pluginOutput.locator('.cb-card-meta').textContent(), 'Plugin');
+  await assertBottomRowLayout(page);
+  const drawerResize = await contentBrowser.evaluate(panel => {
+    const row = document.querySelector('.fx-view-shell-bottom');
+    const grip = document.querySelector('.fx-edge-drawer-portal-host > .fx-edge-drawer-grip');
+    const measure = () => [row, panel, grip].map(element => element.getBoundingClientRect().width);
+    const width = row.style.width;
+    const before = measure();
+    let after;
+    try {
+      row.style.width = `${before[0] - 160}px`;
+      after = measure();
+    } finally {
+      row.style.width = width;
+    }
+    return { before, after, restored: measure() };
+  });
+  const changes = drawerResize.before.map((width, index) => width - drawerResize.after[index]);
+  assert.deepEqual(changes, [160, 160, 160], 'The open drawer and resize grip must follow the Shell row immediately');
+  assert.deepEqual(drawerResize.restored, drawerResize.before, 'The open drawer must grow back with the Shell row');
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ ...viewport, width: 480 });
+  await assertBottomRowLayout(page);
+  await page.setViewportSize(viewport);
+  await assertBottomRowLayout(page);
   await page.screenshot({ path: join(output, 'after-play-refresh.png') });
   await writeFile(join(output, 'result.json'), JSON.stringify({ passed: true, scenario, oldTarget,
     newTarget: restored.projectTarget.targetId, finalTarget: (await client.getState()).projectTarget.targetId,

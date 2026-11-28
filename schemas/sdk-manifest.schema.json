@@ -184,7 +184,7 @@
       "properties": {
         "package": {
           "type": "string",
-          "pattern": "^@forgeax/engine-.+$"
+          "pattern": "^@forgeax/(?:engine-.+|modeling-kernel-wasm)$"
         },
         "root": {
           "type": "string",
@@ -236,7 +236,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^@forgeax/(?:engine(?:-.+)?|view)$"
+          "pattern": "^@forgeax/(?:engine(?:-.+)?|modeling-kernel(?:-.+)?|view)$"
         },
         "version": {
           "type": "string",

@@ -103,7 +103,8 @@ it.each([
     const defines = { CLUSTER_FORWARD_AVAILABLE: true, STORAGE_BUFFER_AVAILABLE: storage };
     const code = await composeShader(
       `
-#import forgeax_standard::cluster::{evaluateStandardClusterLights, clusterLookupCount, cluster_uniform}
+#import forgeax_standard::cluster::{evaluateStandardClusterLights, clusterLookupCount}
+#import forgeax_standard::cluster_layout::{cluster_uniform}
 #import forgeax_pbr::lighting_punctual::{evalPoint}
 #import forgeax_pbr::brdf::{prepareDirectMultiScatterView}
 #import forgeax_view::common::{view}
@@ -147,6 +148,7 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
           'forgeax_view::common': common,
           'forgeax_standard::cluster_texture_data': source('cluster-texture-data.wgsl'),
           'forgeax_standard::cluster': countedCluster(),
+          'forgeax_standard::cluster_layout': source('standard-cluster-layout.wgsl'),
           'forgeax_pbr::lighting_punctual': source('lighting-punctual.wgsl'),
           'forgeax_pbr::lighting_spot_modifiers': source('lighting-spot-modifiers.wgsl'),
           'forgeax_pbr::lighting_spot_projector': source('lighting-spot-projector.wgsl'),

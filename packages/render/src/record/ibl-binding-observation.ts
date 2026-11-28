@@ -1,5 +1,5 @@
 import type { BindGroup, BindGroupEntry, BindGroupLayout } from '@forgeax/engine-rhi';
-import type { ParamSchemaEntry } from '@forgeax/engine-types';
+import { getAdmittedParamSchemaInterface, type ParamSchemaEntry } from '@forgeax/engine-types';
 import { preparedMaterialLayoutIdentity } from '../material-layout-facts';
 import type { IblBindingEntryInspection, IblBindingInspection } from '../mesh-material-bindings';
 import { getOpaqueResourceIdentity, type MaterialBgAssemblyCacheEntry } from './frame-snapshot';
@@ -13,6 +13,9 @@ interface MaterialRow extends Writable<Material> {
 }
 
 const NO_ERRORS: readonly string[] = Object.freeze([]);
+const LAYOUT_MISMATCH = 1;
+const GROUP_MISMATCH = 2;
+const RESOURCE_MISMATCH = 4;
 
 function emptyMaterial(): MaterialRow {
   return {
@@ -60,24 +63,27 @@ function writeMaterial(
   return true;
 }
 
-function bindingErrors(
+function bindingMismatchMask(
   material: Material | undefined,
   layout: number,
   group: number,
-  resources: IblBindingInspection['resources'],
-): readonly string[] {
-  if (material === undefined) return NO_ERRORS;
-  let errors: string[] | undefined;
-  if (material.materialBglIdentity !== layout) errors = ['material-pipeline-bgl-identity-mismatch'];
-  if (material.bindGroupIdentity !== group) {
-    errors ??= [];
-    errors.push('material-bind-group-identity-mismatch');
-  }
-  if (!matchesResources(material, resources)) {
-    errors ??= [];
-    errors.push('material-ibl-resource-identity-mismatch');
-  }
-  return errors ?? NO_ERRORS;
+  resourcesMatch: boolean,
+): number {
+  if (material === undefined) return 0;
+  let mask = 0;
+  if (material.materialBglIdentity !== layout) mask |= LAYOUT_MISMATCH;
+  if (material.bindGroupIdentity !== group) mask |= GROUP_MISMATCH;
+  if (!resourcesMatch) mask |= RESOURCE_MISMATCH;
+  return mask;
+}
+
+function bindingErrors(mask: number): readonly string[] {
+  if (mask === 0) return NO_ERRORS;
+  const errors: string[] = [];
+  if (mask & LAYOUT_MISMATCH) errors.push('material-pipeline-bgl-identity-mismatch');
+  if (mask & GROUP_MISMATCH) errors.push('material-bind-group-identity-mismatch');
+  if (mask & RESOURCE_MISMATCH) errors.push('material-ibl-resource-identity-mismatch');
+  return errors;
 }
 
 function matchesResources(
@@ -104,6 +110,9 @@ export class IblBindingObservation {
   private pipeline: Pipeline | undefined;
   private status: IblBindingInspection['status'];
   private errors: readonly string[];
+  private errorMask = 0;
+  private matchesPassResources = true;
+  private layoutSchema: readonly ParamSchemaEntry[] | undefined;
   private lastShader: string | undefined;
   private lastSchema = 0;
   private currentPipeline = false;
@@ -116,12 +125,17 @@ export class IblBindingObservation {
     this.pipeline = pass.pipeline;
     this.status = pass.status;
     this.errors = pass.errors;
+    if (pass.material !== undefined) {
+      this.matchesPassResources = matchesResources(pass.material, pass.resources);
+    }
     this.published = pass;
   }
 
   private bind(material: Material): void {
     this.material = material;
     this.errors = NO_ERRORS;
+    this.errorMask = 0;
+    this.matchesPassResources = matchesResources(material, this.pass.resources);
     this.currentPipeline = false;
     this.published = undefined;
   }
@@ -179,9 +193,14 @@ export class IblBindingObservation {
     materialBglIdentity: number,
     bindGroupIdentity: number,
     shader: string,
-    schema: readonly ParamSchemaEntry[] | undefined,
+    authoredSchema: readonly ParamSchemaEntry[] | undefined,
     drawFrameId: number,
+    selectedSchema?: readonly ParamSchemaEntry[],
   ): void {
+    // Only the shader's admitted physical layout can replace a live authored schema.
+    const selected =
+      selectedSchema !== undefined && getAdmittedParamSchemaInterface(selectedSchema) !== undefined;
+    const schema = selected ? selectedSchema : authoredSchema;
     const schemaId = schema === undefined ? 0 : getOpaqueResourceIdentity(schema);
     const last = this.pipeline;
     if (
@@ -196,7 +215,14 @@ export class IblBindingObservation {
       return;
     this.lastShader = shader;
     this.lastSchema = schemaId;
-    const effectiveMaterialLayoutIdentity = preparedMaterialLayoutIdentity(shader, schema);
+    // An admitted schema is a fixed layout input. Only an explicit inspection
+    // needs its diagnostic string. Borrowed schemas must be read at draw time.
+    this.layoutSchema =
+      selected || (schema !== undefined && getAdmittedParamSchemaInterface(schema) !== undefined)
+        ? schema
+        : undefined;
+    const effectiveMaterialLayoutIdentity =
+      this.layoutSchema === undefined ? preparedMaterialLayoutIdentity(shader, schema) : undefined;
     const row = this.pipelineRow;
     if (row === undefined)
       this.pipelineRow = {
@@ -214,25 +240,38 @@ export class IblBindingObservation {
       row.drawFrameId = drawFrameId;
     }
     this.pipeline = this.pipelineRow;
-    this.errors = bindingErrors(
+    this.errorMask = bindingMismatchMask(
       this.material,
       materialBglIdentity,
       bindGroupIdentity,
-      this.pass.resources,
+      this.matchesPassResources,
     );
-    this.status = this.errors.length === 0 ? 'binding-chain-consistent' : 'binding-chain-mismatch';
+    this.errors = NO_ERRORS;
+    this.status = this.errorMask === 0 ? 'binding-chain-consistent' : 'binding-chain-mismatch';
     this.currentPipeline = true;
     this.published = undefined;
   }
 
   inspect(): IblBindingInspection {
     if (this.published === undefined) {
+      const pipeline = this.pipelineRow;
+      if (
+        pipeline !== undefined &&
+        this.layoutSchema !== undefined &&
+        this.lastShader !== undefined
+      ) {
+        pipeline.effectiveMaterialLayoutIdentity = preparedMaterialLayoutIdentity(
+          this.lastShader,
+          this.layoutSchema,
+        );
+        this.layoutSchema = undefined;
+      }
       this.published = {
         ...this.pass,
         ...(this.material === undefined ? {} : { material: this.material }),
         ...(this.pipeline === undefined ? {} : { pipeline: this.pipeline }),
         status: this.status,
-        errors: this.errors,
+        errors: this.errorMask === 0 ? this.errors : bindingErrors(this.errorMask),
       };
       // Only the reader now owns these mutable rows. A later draw takes fresh storage.
       this.materialRow = undefined;

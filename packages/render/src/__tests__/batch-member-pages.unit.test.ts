@@ -137,6 +137,32 @@ describe('paged batch membership', () => {
     expect(visits).toEqual(Array.from({ length: 60 }, (_, slot) => [slot, true, false]));
   });
 
+  it('passes draw facts for changed and zero-lane members, and addresses for removals', () => {
+    const before = filled(64);
+    const after = before
+      .with(member(100, 4))
+      .with(member(1, 0, 2))
+      .without(2);
+    const changed: number[][] = [];
+    const removed: number[] = [];
+    after.visitMemberEdits(
+      before,
+      (slot, generation, entityKey, count) => changed.push([slot, generation, entityKey, count]),
+      (slot) => removed.push(slot),
+    );
+    expect(changed).toEqual([
+      [1, 2, 3, 0],
+      [100, 1, 300, 4],
+    ]);
+    expect(removed).toEqual([2]);
+    const slots: number[] = [];
+    after.changedSlotsSince(before, (slot) => slots.push(slot));
+    expect(slots).toEqual([1, 2, 100]);
+    const full: number[] = [];
+    after.forEachMemberFacts((slot) => full.push(slot));
+    expect(full).toEqual([...after.membersFrame()].map((member) => member.primitiveIndex));
+  });
+
   it('intersects ascending slots with held members across pages', () => {
     const members = filled(1_000, 3);
     const slots = [0, 1, 3, 190, 191, 192, 1_500, 2_997, 2_998, 5_000];

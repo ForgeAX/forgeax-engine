@@ -3,6 +3,7 @@ import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from '../gpu-driven/d
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, rasterRowsOf } from '../scene/frame-list';
 import { hasRasterDemand } from '../scene/raster-demand';
+import type { ValidatedRenderable } from './frame-snapshot';
 
 /** Immutable execution facts; each presentation callback supplies its own draw identity. */
 export interface RenderableDrawReceipt {
@@ -15,6 +16,21 @@ export interface RenderableDrawReceipt {
   readonly waterBaked?: import('../world/view-draw-receipt').WaterBakedDrawReceiptFact;
   readonly lane: 'cpu' | 'gpu';
   readonly ready: boolean;
+}
+
+/** Actual draw coverage, with optional material lineage for the active consumers. */
+export interface RenderableDrawRecorder {
+  (
+    entry: Pick<ValidatedRenderable, 'source'> & Partial<Pick<ValidatedRenderable, 'mesh'>>,
+    submeshIndex?: number,
+    receipt?: RenderableDrawReceipt,
+  ): void;
+  /** Absent for consumers that always require the owned, immutable receipt. */
+  readonly needsMaterialReceipt?: (material: MaterialSnapshot) => boolean;
+  /** A synchronous recorder can consume a phase's borrowed row without retaining it. */
+  readonly borrowsRows?: true;
+  /** Receipt consumers need source identity and content. Pose travels separately to encoding. */
+  readonly readsCurrentPose?: false;
 }
 
 type PublishedMaterialProgram = NonNullable<

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeSnapshot, encodeSnapshot } from '../fxem';
 import { model } from '../model';
 import { sel } from '../selectors';
+import { mulberry32 } from './support/fuzz';
 
 const HEADER = 64;
 const ENTRY = 24;
@@ -168,13 +169,7 @@ describe('FXEM decoder hardening', () => {
 
   it('survives seeded mutation fuzzing: no throw, bounded time, valid mesh or structured error', () => {
     const seeds = [sample(), boxBytes()];
-    let state = 0x9e3779b9;
-    const next = () => {
-      state = (state + 0x6d2b79f5) | 0;
-      let t = Math.imul(state ^ (state >>> 15), 1 | state);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
+    const next = mulberry32(0x9e3779b9);
     const below = (n: number) => Math.floor(next() * n);
     let accepted = 0;
     let rejected = 0;

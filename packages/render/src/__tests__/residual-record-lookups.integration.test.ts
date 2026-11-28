@@ -13,6 +13,7 @@ import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 interface FrameCounts {
   readonly pipelineRequests: number;
   readonly identityLookups: number;
+  readonly drawClassLookups: number;
 }
 
 /**
@@ -76,15 +77,25 @@ async function residualFrameCounts(count: number): Promise<FrameCounts> {
     draw(frame);
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  let drawClassLookups = 0;
+  const getPipeline = MaterialPipelineRequestCache.prototype.get;
   const pipelineRequests = vi.spyOn(MaterialPipelineRequestCache.prototype, 'get');
+  pipelineRequests.mockImplementation(function (
+    this: MaterialPipelineRequestCache<unknown>,
+    facts,
+  ) {
+    if ((facts.length === 10 || facts.length === 13) && facts[4] === 'triangle-list')
+      drawClassLookups++;
+    return getPipeline.call(this, facts);
+  });
   const frameLookups = vi.spyOn(SceneSlotFrame.prototype, 'identitySlot');
   const sceneLookups = vi.spyOn(SceneSlots.prototype, 'lookup');
   draw(6);
   expect(errors).toEqual([]);
   const counts = {
-    // A per-draw class lookup that hits resolves nothing; a miss is a genuine resolution.
     pipelineRequests: pipelineRequests.mock.results.filter((r) => r.value === undefined).length,
     identityLookups: frameLookups.mock.calls.length + sceneLookups.mock.calls.length,
+    drawClassLookups,
   };
   for (const spy of [pipelineRequests, frameLookups, sceneLookups]) spy.mockRestore();
   renderer.dispose();
@@ -98,5 +109,7 @@ it('resolves residual pipelines and Scene rows without per-row requests or ident
   // Draws sharing a material, Pass and geometry layout share one pipeline
   // resolution per view; rows address their Scene row without an identity search.
   expect(large.pipelineRequests).toBe(small.pipelineRequests);
+  expect(small.drawClassLookups).toBeGreaterThan(0);
+  expect(large.drawClassLookups).toBe(small.drawClassLookups);
   expect(large.identityLookups).toBe(small.identityLookups);
 });

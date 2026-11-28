@@ -2135,3 +2135,86 @@ it('refuses assets without a preview owner before allocating a browser App', asy
     await runtime.dispose();
   }
 });
+
+it('requires targetId and targetGeneration (not projectId) for viewport.output.get and set', async () => {
+  const modes: string[] = [];
+  const runtime = createEngineWorkspaceRuntime({
+    openProject: ({ root, generation }) =>
+      projectSessionFixture(root, generation, { handle: root }),
+    closeProject: () => {},
+    listAssets: () => [{ guid: SCENE_GUID, kind: 'scene', previewable: true }],
+    openPreview: () => ({
+      target: {
+        targetId: 'vp-target',
+        generation: 1,
+        sessionId: 'vp-session',
+        worldId: 'vp-world',
+        headed: true,
+        width: 800,
+        height: 600,
+      },
+      getCamera: () => ({ camera: {}, version: 0 }),
+      tools: {
+        viewportOutput: {
+          get: async () => ({
+            requestedMode: 'lit',
+            activeMode: 'lit',
+            visualizerInstalled: true,
+            activePipelineKind: 'standard-forward',
+            availableModes: ['lit', 'base-color', 'overview'],
+            caveats: [],
+          }),
+          set: async ({ mode }) => {
+            modes.push(mode);
+            return {
+              requestedMode: mode,
+              activeMode: mode,
+              visualizerInstalled: true,
+              activePipelineKind: 'standard-forward',
+              availableModes: ['lit', 'base-color', 'overview'],
+              caveats: [],
+            };
+          },
+        },
+      },
+    }),
+  });
+  const api = createToolApi();
+  const provider = api.registerProvider({
+    providerId: 'vp-output-schema',
+    sourceId: 'engine',
+    realm: 'host',
+    tools: createEngineWorkspaceTools(runtime),
+  });
+  try {
+    const project = await runtime.openProject({ root: '/vp-schema' });
+    await runtime.openPreview({
+      project: project.project,
+      asset: { guid: SCENE_GUID, kind: 'scene' },
+      width: 800,
+      height: 600,
+    });
+    const got = await api.run(
+      'engine.viewport.output.get',
+      { targetId: 'vp-target', targetGeneration: 1 },
+      { sourceId: 'engine' },
+    ).terminal;
+    expect(got).toMatchObject({
+      outcome: 'succeeded',
+      result: { requestedMode: 'lit', activeMode: 'lit', visualizerInstalled: true },
+    });
+    const set = await api.run(
+      'engine.viewport.output.set',
+      { targetId: 'vp-target', targetGeneration: 1, mode: 'base-color' },
+      { sourceId: 'engine' },
+    ).terminal;
+    expect(set).toMatchObject({
+      outcome: 'succeeded',
+      result: { requestedMode: 'base-color', activeMode: 'base-color' },
+    });
+    expect(modes).toEqual(['base-color']);
+  } finally {
+    await provider.revoke();
+    await runtime.dispose();
+  }
+});

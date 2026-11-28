@@ -567,7 +567,7 @@ describe('GpuDrivenView graph projection', () => {
       temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
       temporalView: new TemporalViewHistory(),
       compiledFrameGraph: null,
-      compiledFrameGraphGeneration: 0,
+      graphGeneration: 0,
       retiredCompiledFrameGraphs: new Set(),
       materialBgAssemblyCache: new MaterialBgAssemblyCache(),
       meshBindGroupCache: new WeakMap(),
@@ -625,7 +625,7 @@ describe('GpuDrivenView graph projection', () => {
     const compiledPrevious = compile(preparedFrame(view));
     expect(compiledPrevious).not.toBeNull();
     if (compiledPrevious === null) return;
-    expect(frameState.compiledFrameGraphGeneration).toBe(1);
+    expect(frameState.graphGeneration).toBe(1);
     const initialEncoder = device
       .createCommandEncoder({ label: 'gpu-driven-view-initial' })
       .unwrap();
@@ -672,7 +672,7 @@ describe('GpuDrivenView graph projection', () => {
     expect(view.inspect()).toMatchObject({ candidateCount: 2, candidateCapacity: 2 });
     forceCompileFailure = true;
     expect(compile(preparedFrame(view), 2)).toBe(compiledPrevious);
-    expect(frameState.compiledFrameGraphGeneration).toBe(1);
+    expect(frameState.graphGeneration).toBe(1);
     expect(errors).toHaveLength(1);
     expect(destroyBuffer.mock.calls.some(([buffer]) => buffer === previousVisible)).toBe(false);
     const encoder = device.createCommandEncoder({ label: 'gpu-driven-view-lkg' }).unwrap();
@@ -684,7 +684,7 @@ describe('GpuDrivenView graph projection', () => {
     expect(acceptedGraph).not.toBe(compiledPrevious);
     expect(retirePrevious).not.toHaveBeenCalled();
     expect(destroyBuffer.mock.calls.some(([buffer]) => buffer === previousVisible)).toBe(false);
-    expect(frameState.compiledFrameGraphGeneration).toBe(2);
+    expect(frameState.graphGeneration).toBe(2);
     expect(retirePrevious).not.toHaveBeenCalled();
     const acceptedEncoder = device
       .createCommandEncoder({ label: 'gpu-driven-view-accepted' })
@@ -708,7 +708,7 @@ describe('GpuDrivenView graph projection', () => {
 
     const returnedToPreviousTopology = compile(preparedFrame(view), 1);
     expect(returnedToPreviousTopology).not.toBe(acceptedGraph);
-    expect(frameState.compiledFrameGraphGeneration).toBe(3);
+    expect(frameState.graphGeneration).toBe(3);
 
     view.dispose();
     sceneAvailability.scene.dispose();

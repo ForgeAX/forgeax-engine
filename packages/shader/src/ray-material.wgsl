@@ -156,5 +156,5 @@ fn raySurfaceInput(value: RayMaterialInput) -> SurfaceInput {
     value.tangent, value.outgoing.xyz, value.uvA.xy, value.uvA.zw,
     value.uvB.xy, value.uvB.zw, value.uvC.xy, value.uvC.zw,
     value.uvD.xy, value.uvD.zw, value.color, value.normal.w > 0.0,
-    value.footprintA, value.footprintB, rayObjectToWorld(value), 0.0);
+    value.footprintA, value.footprintB, rayObjectToWorld(value), 0.0, 0.0);
 }

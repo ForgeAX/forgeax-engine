@@ -3,6 +3,8 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { RenderGraphBuilder } from '../builder';
+import { boundRenderGraphResources, CompiledRenderGraphImpl } from '../compiled-graph';
+import type { GraphResourceResolver } from '../types';
 
 it.each([
   false,
@@ -64,8 +66,11 @@ it.each([
     })
     .unwrap();
   const graph = builder.compile({ device, surfaceSize: size }).unwrap();
+  const binding = boundRenderGraphResources(graph);
+  expect(binding).not.toBe(graph);
+  expect(binding.createdTextureView(view)).toBe(graph.createdTextureView(view));
   const creates = vi.spyOn(device, 'createBindGroup');
-  const work = graph.prepareResources(() => true);
+  const work = binding.prepareResources(() => true);
   try {
     expect(work.next().done).toBe(false);
     expect(creates).toHaveBeenCalledTimes(1);
@@ -76,6 +81,8 @@ it.each([
     if (retired) {
       assert(next.done);
       expect(next.value.ok).toBe(false);
+      expect(binding.isRetired()).toBe(true);
+      expect(binding.createdTextureView(view)).toBeUndefined();
       expect(creates).toHaveBeenCalledTimes(1);
     } else {
       expect(next.done).toBe(false);
@@ -185,7 +192,9 @@ it('prepares an explicit native import through the original imported-view cache 
     .importTexture('persistent', descriptor, resolve, { prepare, current: () => actual })
     .unwrap();
   const view = builder.view(texture, { dimension: '2d' }).unwrap();
-  const encoded = vi.fn();
+  const encoded = vi.fn((_pass: unknown, _frame: unknown, resources: GraphResourceResolver) =>
+    resources.textureView(view),
+  );
   builder
     .addComputePass('read', {
       accesses: [{ resource: view, usage: 'sampled-read' }],
@@ -205,6 +214,8 @@ it('prepares an explicit native import through the original imported-view cache 
     assert(done.done);
     done.value.unwrap();
     expect(graph.preparedResourcesCurrent()).toBe(true);
+    assert(graph instanceof CompiledRenderGraphImpl);
+    expect(graph.getColorTargetView('persistent')).toBeUndefined();
     const execute = () => {
       const encoder = device.createCommandEncoder().unwrap();
       graph.execute({ encoder }).unwrap();
@@ -213,11 +224,30 @@ it('prepares an explicit native import through the original imported-view cache 
     execute();
     expect(creates).toHaveBeenCalledTimes(1);
     expect(resolve).toHaveBeenCalledTimes(1);
+    const firstReceipt = encoded.mock.results.at(-1)?.value;
+    assert(firstReceipt?.ok);
+    execute();
+    expect(encoded.mock.results.at(-1)?.value).toBe(firstReceipt);
     actual = second;
     expect(graph.preparedResourcesCurrent()).toBe(false);
     execute();
     expect(creates).toHaveBeenCalledTimes(2);
-    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(resolve).toHaveBeenCalledTimes(3);
+    const secondReceipt = encoded.mock.results.at(-1)?.value;
+    assert(secondReceipt?.ok);
+    expect(secondReceipt.value).not.toBe(firstReceipt.value);
+    actual = first;
+    const next = graph.prepareResources(() => true);
+    expect(next.next().done).toBe(false);
+    const prepared = next.next();
+    assert(prepared.done);
+    prepared.value.unwrap();
+    expect(graph.getColorTargetView('persistent')).toBe(secondReceipt.value);
+    execute();
+    expect(creates).toHaveBeenCalledTimes(3);
+    expect(graph.getColorTargetView('persistent')).toBe(
+      encoded.mock.results.at(-1)?.value.unwrap(),
+    );
   } finally {
     creates.mockRestore();
     (await graph.retire()).unwrap();

@@ -78,6 +78,8 @@ export interface ProjectCommandOptions {
   readonly root?: string;
   readonly json?: boolean;
   readonly port?: number;
+  /** Opt in to including the viewport debug output visualizer. Default false. */
+  readonly viewportDebugView?: boolean;
 }
 
 export interface PreviewOptions extends ProjectCommandOptions {

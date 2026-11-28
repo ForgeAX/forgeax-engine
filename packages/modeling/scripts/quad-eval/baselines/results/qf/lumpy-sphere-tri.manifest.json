@@ -1,0 +1,33 @@
+{
+  "tool": "qf",
+  "case": "lumpy-sphere-tri",
+  "available": true,
+  "toolCommit": "810b7a0967c35b0dc85b4464e3835e26a756c967",
+  "inputSha256": "8ac420666e6cac0d65c57ff52b312f6d6f2f939f960e01a2c9fde6aba65f539c",
+  "inputFaces": 3968,
+  "targetFaces": 800,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-i", "<in.obj>", "-o", "<out.obj>", "-f", "800", "-sharp", "-seed", "1"],
+      "cwd": null,
+      "wallSeconds": 17.600985442,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 800,
+        "sharp": "on (threshold fixed at 60 deg in upstream source)",
+        "seed": 1
+      }
+    }
+  ],
+  "wallSeconds": 17.600985442,
+  "outcome": "ok",
+  "outputSha256": "e577d2b6a0dcf66afe7e48a0a7c5a82d0240df4067ffebe2f0692ac850e842c6",
+  "rawOutputSha256": "5cec478317a3e09fdc98c6c01027a0b133ac564744fe0e69c5c4d37b7f0626bc",
+  "outputFaces": 812,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

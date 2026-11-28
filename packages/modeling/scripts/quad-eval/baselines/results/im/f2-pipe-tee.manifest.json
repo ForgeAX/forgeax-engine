@@ -1,0 +1,33 @@
+{
+  "tool": "im",
+  "case": "f2-pipe-tee",
+  "available": true,
+  "toolCommit": "7b3160864a2e1025af498c84cfed91cbfb613698",
+  "inputSha256": "03e7c0439b5a86368c0f1f38fa3a6d70dc242828f19e09b32de8b1771e7c7be1",
+  "inputFaces": 1372,
+  "targetFaces": 3000,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-f", "750", "-c", "30", "-d", "-t", "1", "-o", "<out.obj>", "<in.obj>"],
+      "cwd": null,
+      "wallSeconds": 0.64295391,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 750,
+        "crease": 30,
+        "mode": "pure quad, -f target/4 (pure-quad 2x2 subdivision)"
+      }
+    }
+  ],
+  "wallSeconds": 0.64295391,
+  "outcome": "ok",
+  "outputSha256": "590716bf24c044ce00b0bba7c731423cd96e00266c6edb977422ed2e6771ef5a",
+  "rawOutputSha256": "68775d8b793610e9db723ab152a8099e95a16c8f69d315c9b14aa56c81af472a",
+  "outputFaces": 3116,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

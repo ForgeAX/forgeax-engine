@@ -142,6 +142,30 @@ describe('surface seams', () => {
     expect(ends.every((d) => Math.abs((d.detail?.move as number) - 1e-4) < 1e-9)).toBe(true);
   });
 
+  it('reports cells whose corners snap together instead of silently making triangles', () => {
+    const narrow = (w: number) => {
+      const grid = samples(6).map((a) => samples(6).map((b): Tuple3 => [a * w, b * 0.4, 0]));
+      const s = nurbs.grid(grid);
+      if (!s.ok) throw s.error;
+      return s.value;
+    };
+    const wide = model();
+    expect(
+      wide.surface({ patches: [{ name: 'p', surface: narrow(0.4) }], chord: 0.001 }).diagnostics ??
+        [],
+    ).toEqual([]);
+    const m = model();
+    const report = m.surface({ patches: [{ name: 'p', surface: narrow(0.0004) }], chord: 0.001 });
+    expect(report.status).toBe('ok');
+    const mesh = m.editMesh;
+    const triangles = mesh.faces().filter((f) => mesh.faceVertices(f).length === 3).length;
+    expect(triangles).toBeGreaterThan(0);
+    const warn = report.diagnostics?.find(
+      (d) => d.severity === 'warn' && d.message.includes('lost a corner'),
+    );
+    expect(warn?.detail?.cells).toBe(triangles);
+  });
+
   it('rejects a sew that is not a positive finite number', () => {
     const m = model();
     m.surface({ patches: pair(0), sew: -1 });

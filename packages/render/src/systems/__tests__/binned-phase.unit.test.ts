@@ -1,27 +1,29 @@
 import { expect, it } from 'vitest';
-import { type BinnedItem, BinnedPhase, type BinPlacement } from '../binned-phase';
+import { type BinnedItem, BinnedPhase } from '../binned-phase';
 
 interface Item extends BinnedItem {
   readonly name: string;
 }
 
-const at = (key: number, member: number, rank = member): BinPlacement<Item> => ({
-  key,
-  major: key,
-  minor: 0,
-  item: { rank, member, name: `${key}:${member}` },
+const at = (key: number, member: number, rank = member): Item => ({
+  bin: key,
+  binMajor: key,
+  rank,
+  member,
+  name: `${key}:${member}`,
 });
 
 const names = (phase: BinnedPhase<Item>) =>
   phase.orderedBins().map((bin) => bin.items.map((item) => item.name));
 
-it('orders bins by (major, minor) and items by (rank, member)', () => {
+it('orders bins by (major, key) and items by (rank, member)', () => {
   const phase = new BinnedPhase<Item>();
   phase.queue(3, [at(20, 3)]);
   phase.queue(1, [at(10, 1, 5)]);
   phase.queue(2, [at(10, 2, 4)]);
-  expect(names(phase)).toEqual([['10:2', '10:1'], ['20:3']]);
-  expect(phase.ordinalOf(20)).toBe(1);
+  phase.queue(4, [{ ...at(30, 4), binMajor: 10 }]);
+  expect(names(phase)).toEqual([['10:2', '10:1'], ['30:4'], ['20:3']]);
+  expect(phase.ordinalOf(20)).toBe(2);
 });
 
 it('dequeues a member from its old bin before enqueueing it into the new one', () => {
@@ -62,4 +64,13 @@ it('applies bulk replacements equivalently to single queues', () => {
   bulk.queueMany(moved.map((member) => [member, member % 7 === 0 ? [] : placements(member, 1)]));
   expect(names(bulk)).toEqual(names(single));
   expect(bulk.size).toBe(single.size);
+});
+
+it('removes each tied item of one member while retaining the other members', () => {
+  const phase = new BinnedPhase<Item>();
+  const second = { ...at(10, 1), name: 'same pass for another section' };
+  phase.queue(1, [at(10, 1), second]);
+  phase.queue(2, [at(10, 2)]);
+  expect(phase.dequeue(1)).toBe(true);
+  expect(names(phase)).toEqual([['10:2']]);
 });

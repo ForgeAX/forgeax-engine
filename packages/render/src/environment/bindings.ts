@@ -136,7 +136,9 @@ const ATMOSPHERE_VIEW_TEXTURES = [
   [23, 'distantSkyLight', '2d'],
 ] as const;
 type AtmosphereViewTexture = (typeof ATMOSPHERE_VIEW_TEXTURES)[number];
-export type AtmosphereViews = Partial<Record<AtmosphereViewTexture[1], TextureView>>;
+export type AtmosphereViews = Partial<Record<AtmosphereViewTexture[1], TextureView>> & {
+  readonly distantSkyBuffer?: Buffer | undefined;
+};
 type ViewReads = ReadonlyMap<number, number>;
 
 export function hasStandardViewReads(reads: ViewReads | undefined): boolean {
@@ -280,14 +282,29 @@ function viewTexture(
   return view;
 }
 
+const ATMOSPHERE_DISTANT_SKY_BUFFER_SLOT = 25;
+
+function viewDistantSkyBuffer(
+  state: PipelineState,
+  views?: AtmosphereViews,
+  layout?: BindGroupLayout,
+) {
+  if (state.atmosphereAvailable !== true) return undefined;
+  const slots = layout === undefined ? undefined : viewLayoutSlots(layout);
+  if (slots !== undefined && !slots.has(ATMOSPHERE_DISTANT_SKY_BUFFER_SLOT)) return undefined;
+  return views?.distantSkyBuffer ?? state.atmosphereDistantSkyFallback;
+}
+
 /** Bind-group entries and their cache keys use the same slot projection. */
 export function pushAtmosphereBindingResources(
-  out: TextureView[] | object[],
+  out: object[],
   state: PipelineState,
   views?: AtmosphereViews,
   layout?: BindGroupLayout,
 ): void {
   for (const texture of viewTextures(state, layout)) out.push(viewTexture(state, views, texture));
+  const distant = viewDistantSkyBuffer(state, views, layout);
+  if (distant !== undefined) out.push(distant);
 }
 
 export function atmosphereBindings(
@@ -295,18 +312,32 @@ export function atmosphereBindings(
   views?: AtmosphereViews,
   layout?: BindGroupLayout,
 ): BindGroupEntry[] {
-  return viewTextures(state, layout).map((texture) => ({
+  const entries: BindGroupEntry[] = viewTextures(state, layout).map((texture) => ({
     binding: texture[0],
     resource: { kind: 'textureView', value: viewTexture(state, views, texture) },
   }));
+  const distant = viewDistantSkyBuffer(state, views, layout);
+  if (distant !== undefined)
+    entries.push({
+      binding: ATMOSPHERE_DISTANT_SKY_BUFFER_SLOT,
+      resource: { kind: 'buffer', value: { buffer: distant, size: 16 } },
+    });
+  return entries;
 }
 
 export function atmosphereViewLayoutEntries(): GPUBindGroupLayoutEntry[] {
-  return ATMOSPHERE_VIEW_TEXTURES.map(([binding, , viewDimension]) => ({
-    binding,
-    visibility: 2,
-    texture: { sampleType: 'float', viewDimension },
-  }));
+  return [
+    ...ATMOSPHERE_VIEW_TEXTURES.map(([binding, , viewDimension]) => ({
+      binding,
+      visibility: GPU_SHADER_STAGE_FRAGMENT,
+      texture: { sampleType: 'float' as const, viewDimension },
+    })),
+    {
+      binding: ATMOSPHERE_DISTANT_SKY_BUFFER_SLOT,
+      visibility: GPU_SHADER_STAGE_FRAGMENT,
+      buffer: { type: 'read-only-storage', minBindingSize: 16 },
+    },
+  ];
 }
 
 /** Depth-aware material programs also evaluate the shared single-scattering visibility. */

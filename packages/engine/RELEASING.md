@@ -1,7 +1,7 @@
 # Engine npm releases
 
 Engine releases publish one npm package, `@forgeax/engine`, with development
-builds under `next` and test builds under `rc`. The tarball contains the runtime,
+builds under `next`, test builds under `rc`, and stable builds under `latest`. The tarball contains the runtime,
 CLI, View, templates and authoring skills. Its compressed size must be at most
 64,000,000 bytes.
 
@@ -10,6 +10,7 @@ CLI, View, templates and authoring skills. Its compressed size must be at most
 | Local Linux | `NPM_TOKEN_FILE=/secure/npm-token node scripts/forgeax/local-sdk-release.mjs --stage all` |
 | GitHub Actions, development | `gh workflow run engine-development-release.yml --ref main` |
 | GitHub Actions, RC | `gh workflow run engine-rc-release.yml --ref main -f version=<rc-version> -f source_sha=<full-rc-sha>` |
+| GitHub Actions, stable | `gh workflow run engine-rc-release.yml --ref main -f version=<published-rc-version> -f source_sha=<exact-rc-tip-sha> -F promote_stable=true` |
 | Package a build for local inspection | `pnpm engine:pack --output <directory>` |
 
 Both release entry points use the same producer and consumer checks. Provide
@@ -32,6 +33,15 @@ mirror when `ENGINE_SOURCE_MIRROR_ENABLED` is enabled. RC Promotion uses
 Engine-only GitHub prerelease and advances the `rc` tag. RC sources are private
 to the test branch and skip the source mirror.
 
+Stable release requires the published RC's exact source at the `rc` tip and a
+fast-forward from the current `stable` tip. The workflow checks the RC tag and
+its Candidate receipt, then builds and seals the stable version from that source.
+Promotion advances `stable` by fast-forward and verifies the public source
+export before publishing the package. After a fresh npm install passes,
+Promotion advances `latest`, verifies and merges the public source snapshot,
+and copies the internal Engine Release assets to the public GitHub Release.
+Local stable publication takes an explicit stable version and full RC tip SHA.
+
 ## Repairing publication after immutable bytes exist
 
 > [!IMPORTANT]
@@ -43,7 +53,7 @@ Local `--stage candidate`, `--stage preflight` and `--stage promote` can run
 separately. The default output is `artifacts/engine-release/<version>/`.
 `--output` and `--worktrees` may point to a data disk. Local builds share the
 host task gate. The release needs the repository's pinned Node/npm/pnpm versions,
-Git/LFS, Xvfb, Chrome Beta, Mesa lavapipe and access to the pinned inputs.
+Git/LFS, Xvfb, Chrome, Mesa lavapipe and access to the pinned inputs.
 
 Use a private mode `0600` `NPM_TOKEN_FILE`. GitHub uses `NPM_TOKEN` and its
 repository token. Public source mirroring may also need the publisher token via

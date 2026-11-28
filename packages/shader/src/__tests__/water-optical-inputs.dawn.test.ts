@@ -583,7 +583,7 @@ ${standardLookup}
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('Water optical regression requires Dawn');
   const device = await adapter.requestDevice();
-  const view = device.createBuffer({ size: 1392, usage: GPUBufferUsage.UNIFORM });
+  const view = device.createBuffer({ size: 1408, usage: GPUBufferUsage.UNIFORM });
   const local = directionAtlas(device, 0);
   try {
     const actual = await dispatch(
@@ -654,7 +654,7 @@ struct Input { positionWS: vec3<f32> }
 ${solar}
   let ground = atmosphere_solar_transmittance(view.atmosphere, vec3<f32>(0.0, 6360.5, 0.0), vec3<f32>(0.8, 0.6, 0.0), atmosphereTransmittance, viewLinearSampler);
   let expectedAtmosphere = select(vec3<f32>(1.0), ground, atmosphereEnabled);
-  let expectedCloud = cloud_direct_solar_factor(input.positionWS, view.cloudShadowOrigin.xyz, view.cloudShadowRight.xyz, view.cloudShadowUp.xyz, view.cloudShadowProjection);
+  let expectedCloud = cloud_direct_solar_factor(input.positionWS, view.cloudShadowOrigin, view.cloudShadowRight.xyz, view.cloudShadowUp.xyz, view.cloudShadowProjection);
   result[id.x * 2u] = vec4<f32>(scattered, 1.0);
   result[id.x * 2u + 1u] = vec4<f32>(integral * (ambient + view.lightColor * shadow * phase * expectedAtmosphere * expectedCloud), 1.0);
 }`,

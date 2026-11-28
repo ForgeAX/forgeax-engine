@@ -301,7 +301,6 @@ Effects unwind when their Fiber exits. ECS schedules frame work; plugin assembly
 | **Networking** | Sessions own replication, ACKs, retries, baselines/deltas, and connection recovery; WebSocket supplies transport | [Net](packages/net/README.md) · [WebSocket](packages/net-websocket/README.md) |
 | **Physics** | ECS physics contracts separated from Rapier 2D / 3D backends; input synchronization, simulation stepping, and state writeback | [Physics](packages/physics/README.md) |
 | **Animation / Skinning** | Renderer-independent animation graphs, clips, and playback; Skin binding and joint-path resolution | [Animation](packages/animation/README.md) · [Skinning](packages/skinning/README.md) |
-| **Runtime intelligence** | Optional provider-neutral Activity / Session; bounded output, cancellation, and polling; asynchronous services stay outside the ECS frame loop | [Intelligence](packages/intelligence/README.md) |
 | **Input / UI / Audio** | Frozen frame-start input snapshots; Shadow DOM UI; realm-neutral audio intents played by Host Web Audio | [Input](packages/input/README.md) · [UI](packages/ui/README.md) · [Audio](packages/audio/README.md) |
 
 </details>

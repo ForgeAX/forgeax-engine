@@ -10,6 +10,7 @@ import {
 import type { RenderFeature } from '../features/types';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
+import { materialColorTarget } from '../material-render-state';
 import { FXAA_POST_PROCESS_ID } from '../render-contract';
 import {
   invokeDeviceCreateShaderModule,
@@ -56,6 +57,45 @@ export async function prewarmFullscreenFeatureModules(
   return ok(undefined);
 }
 
+/** Only the renderer's own deferred sources can bypass the async module wait. */
+export function createFullscreenPipelineBuilder(input: {
+  readonly device: () => RhiDevice;
+  readonly adapter: (mode?: 'validated' | 'immediate') => ShaderDeviceAdapterInternal;
+  readonly nativeImmediate: boolean;
+  readonly errorRegistry: { fire(error: RhiError): void };
+  readonly viewLayout: () => BindGroupLayout | undefined;
+  readonly emptyLayout: () => BindGroupLayout | null;
+  readonly publishEmptyLayout: (layout: BindGroupLayout) => void;
+}) {
+  return (
+    entry: PostProcessShaderEntry,
+    bgl: BindGroupLayout,
+    colorFormats: readonly GPUTextureFormat[],
+    label: string,
+    colorState?: import('@forgeax/engine-types').MaterialRenderState,
+    rendererOwnedSource = false,
+  ): RenderPipeline | null => {
+    const device = input.device();
+    const immediate =
+      rendererOwnedSource && input.nativeImmediate && device.caps.backendKind === 'webgpu';
+    return buildFullscreenFeaturePipeline(
+      entry,
+      bgl,
+      colorFormats,
+      label,
+      {
+        device,
+        modules: input.adapter(immediate ? 'immediate' : 'validated'),
+        errorRegistry: input.errorRegistry,
+        viewLayout: input.viewLayout(),
+        emptyLayout: input.emptyLayout(),
+        publishEmptyLayout: input.publishEmptyLayout,
+      },
+      colorState,
+    );
+  };
+}
+
 /** Assemble a fullscreen native pipeline through the current generation's shader/layout owners. */
 function fullscreenDepthStencil(entry: PostProcessShaderEntry): GPUDepthStencilState | undefined {
   if (entry.stencilMask === undefined) {
@@ -91,6 +131,7 @@ export function buildFullscreenFeaturePipeline(
     readonly emptyLayout: BindGroupLayout | null;
     readonly publishEmptyLayout: (layout: BindGroupLayout) => void;
   },
+  colorState?: import('@forgeax/engine-types').MaterialRenderState,
 ): RenderPipeline | null {
   let emptyLayout = context.emptyLayout;
   const isFxaaPipeline = label.startsWith(`post-process-${FXAA_POST_PROCESS_ID}-pso-`);
@@ -149,25 +190,29 @@ export function buildFullscreenFeaturePipeline(
       // point; forcing fs_main encodes the linear-LDR intermediate a second
       // time and breaks the Three.js stage contract.
       entryPoint: entry.fragmentEntryPoint ?? 'fs_main',
-      targets: colorFormats.map((format) => ({
-        format,
-        ...(entry.vertexLayout === undefined
-          ? {}
-          : {
-              blend: {
-                color: {
-                  operation: 'add' as const,
-                  srcFactor: 'src-alpha' as const,
-                  dstFactor: 'one-minus-src-alpha' as const,
-                },
-                alpha: {
-                  operation: 'add' as const,
-                  srcFactor: 'one' as const,
-                  dstFactor: 'one-minus-src-alpha' as const,
-                },
-              },
-            }),
-      })),
+      targets: colorFormats.map((format, index) =>
+        colorState === undefined
+          ? {
+              format,
+              ...(entry.vertexLayout === undefined
+                ? {}
+                : {
+                    blend: {
+                      color: {
+                        operation: 'add' as const,
+                        srcFactor: 'src-alpha' as const,
+                        dstFactor: 'one-minus-src-alpha' as const,
+                      },
+                      alpha: {
+                        operation: 'add' as const,
+                        srcFactor: 'one' as const,
+                        dstFactor: 'one-minus-src-alpha' as const,
+                      },
+                    },
+                  }),
+            }
+          : materialColorTarget(format, colorState, index),
+      ),
     },
     primitive: { topology: 'triangle-list', cullMode: 'none', frontFace: 'ccw' },
     depthStencil: fullscreenDepthStencil(entry),

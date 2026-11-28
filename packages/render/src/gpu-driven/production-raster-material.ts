@@ -56,7 +56,7 @@ import type {
   SurfaceDynamicInputFrame,
 } from '../surface/dynamic-input';
 import type { GpuDrivenBatch, SubmissionPlan } from './batch-topology';
-import type { GpuDrivenPbrProgram } from './pbr-program';
+import type { GpuDrivenPbrPrograms } from './pbr-program';
 import { resolveStandardPbrProgram } from './pbr-program';
 import type { GpuDrivenPrepareInput } from './production-raster';
 import type { FilteredProductionPlan } from './production-raster-prepare';
@@ -641,7 +641,7 @@ export class MaterialAbiRasterAdapter {
     private readonly meshLayout: BindGroupLayout,
     private readonly instancesBindGroupLayout: BindGroupLayout,
     private readonly surfaceDirectInstancesBindGroupLayout: BindGroupLayout | null,
-    private readonly programs: ReadonlyMap<string, GpuDrivenPbrProgram> | undefined,
+    private readonly programs: GpuDrivenPbrPrograms | undefined,
     private instancesBindGroup: BindGroup,
     private readonly instanceBuffer: Buffer,
     private readonly instanceBufferSize: number,
@@ -756,12 +756,11 @@ export class MaterialAbiRasterAdapter {
     const programs = input.pipelineState.gpuDrivenPbrPrograms;
     if (
       input.pipelineFactory === undefined &&
-      (programs === undefined ||
-        resolveStandardPbrProgram(
-          programs,
-          input.artifact.material,
-          input.artifact.receipt?.vertexInputs.some((attribute) => attribute.semantic === 'color'),
-        ) === undefined)
+      resolveStandardPbrProgram(
+        programs,
+        input.artifact.material,
+        receipt.vertexInputs.some((attribute) => attribute.semantic === 'color'),
+      )?.module === undefined
     ) {
       return err(
         new RhiError({
@@ -2008,23 +2007,6 @@ export class MaterialAbiRasterAdapter {
         }),
       );
     }
-    const program =
-      this.programs === undefined
-        ? undefined
-        : resolveStandardPbrProgram(
-            this.programs,
-            this.artifact.material,
-            vertexLayoutHasColor(layoutProjection),
-          );
-    if (this.pipelineFactory === undefined && program === undefined) {
-      return err(
-        new RhiError({
-          code: 'rhi-not-available',
-          expected: 'producer-owned Standard PBR program matching the geometry vertex layout',
-          hint: 'publish both vertex-color variants for the current device generation',
-        }),
-      );
-    }
     // Discards are a compile-time program axis. The factory compiles the
     // selected program; the fixed legacy module is the discard-free program
     // and has no pipeline constant to carry them.
@@ -2108,8 +2090,13 @@ export class MaterialAbiRasterAdapter {
       this.pipelines.set(key, pipelineEntry.pipeline);
       return ok(pipelineEntry.pipeline);
     }
+    const module = resolveStandardPbrProgram(
+      this.programs,
+      this.artifact.material,
+      vertexLayoutHasColor(layoutProjection),
+    )?.module;
     if (
-      program === undefined ||
+      module === undefined ||
       selectedArtifact.material !== this.artifact.material ||
       selectedArtifact.layoutIdentity !== this.artifact.layoutIdentity ||
       selectedArtifact.receipt?.receiptIdentity !== this.artifact.receipt?.receiptIdentity
@@ -2132,13 +2119,13 @@ export class MaterialAbiRasterAdapter {
       label: `standard-pbr-gpu-driven.${key}`,
       layout: this.pipelineLayout,
       vertex: {
-        module: program.module,
+        module,
         entryPoint: selectedArtifact.vertexEntry ?? sceneEntry,
         ...(vertexConstants === undefined ? {} : { constants: vertexConstants }),
         buffers: [...toGpuVertexBufferLayouts(vertexLayouts)],
       },
       ...legacyFragmentState(
-        program.module,
+        module,
         fragmentEntry,
         constants,
         format === null ? [] : [format, ...additionalColorFormats],

@@ -1,8 +1,20 @@
 import type { CanvasInputBoundary } from '@forgeax/engine-input';
 import { pickDisplay, pickTriangleDisplay } from '@forgeax/engine-picking';
 import type { Plugin } from '@forgeax/engine-plugin';
-import type { RenderInspection } from '@forgeax/engine-render';
-import { editorAssistance, readEditorAssistance } from '@forgeax/engine-render';
+import type {
+  RenderInspection,
+  ViewportOutputInspection,
+  ViewportOutputMode,
+} from '@forgeax/engine-render';
+
+export type { ViewportOutputInspection, ViewportOutputMode };
+
+import {
+  defaultViewportOutputInspection,
+  editorAssistance,
+  isViewportOutputMode,
+  readEditorAssistance,
+} from '@forgeax/engine-render';
 import { readBrowserFrameSubmitted } from './browser-frame-signal';
 import type { GameProjectionValue, GameReadDef } from './game-context';
 import type { AppObservation } from './observation';
@@ -143,6 +155,12 @@ export interface EngineWorkspaceTargetTools {
   }) => unknown | Promise<unknown>;
   assistance?: (input: EngineWorkspaceAssistanceRequest) => unknown | Promise<unknown>;
   highlight?: (input: { entityId?: string }) => unknown | Promise<unknown>;
+  viewportOutput?: {
+    get(): ViewportOutputInspection | Promise<ViewportOutputInspection>;
+    set(input: {
+      mode: ViewportOutputMode;
+    }): ViewportOutputInspection | Promise<ViewportOutputInspection>;
+  };
   control?: {
     mode(): 'player' | 'observer';
     set(input: { mode: 'player' | 'observer'; connectionId?: string }): unknown;
@@ -360,6 +378,29 @@ export const engineWorkspaceTargetToolsPlugin: Plugin.Object<{
               }
               editor?.observe();
               return { entityId: input.entityId ?? null };
+            },
+            viewportOutput: {
+              get(): ViewportOutputInspection {
+                assertAvailable();
+                return (
+                  display.app.renderer.getViewportOutput?.() ??
+                  defaultViewportOutputInspection(false)
+                );
+              },
+              set(input: { mode: ViewportOutputMode }): ViewportOutputInspection {
+                assertAvailable();
+                if (!isViewportOutputMode(input.mode))
+                  throw new TypeError(`Unsupported viewport output mode: ${String(input.mode)}`);
+                const setter = display.app.renderer.setViewportOutput;
+                if (setter === undefined)
+                  throw new EngineWorkspaceError(
+                    'engine-workspace-capability-unavailable',
+                    'Viewport output visualization tools',
+                  );
+                const result = setter.call(display.app.renderer, input.mode);
+                if (!result.ok) throw result.error;
+                return result.value;
+              },
             },
           }
         : {}),

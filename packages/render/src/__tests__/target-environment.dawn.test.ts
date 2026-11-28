@@ -4,7 +4,7 @@ import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as backend from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
-import { setIblComposedShaders } from '../ibl/IblPipelineCache';
+import { publishIblProgramDeclarations } from '../ibl/IblPipelineCache';
 import { filterTargetEnvironment, resolveTargetEnvironment } from '../targets/environment';
 import { createRenderTargetPhysical, destroyRenderTargetPhysical } from '../targets/physical';
 
@@ -21,7 +21,7 @@ it('filters a completed HDR cube on the GPU and publishes retained native lighti
     'forgeax_pbr::pmrem': source('ibl-pmrem'),
     'forgeax_pbr::brdf': source('brdf'),
   };
-  const shaders: Record<string, string> = {};
+  const shaders: Record<string, import('@forgeax/engine-types').ManifestEntry> = {};
   for (const [name, file] of [
     ['equirectToCube', 'ibl-equirect-to-cube'],
     ['prefilter', 'ibl-prefilter'],
@@ -32,9 +32,8 @@ it('filters a completed HDR cube on the GPU and publishes retained native lighti
       imports,
     });
     if (!compiled.ok) throw compiled.error;
-    shaders[name as string] = compiled.value.wgsl;
+    shaders[name as string] = compiled.value.manifestEntry;
   }
-  setIblComposedShaders(shaders as unknown as Parameters<typeof setIblComposedShaders>[0]);
   const recorder = attachRecorder(backend).unwrap();
   const device = (
     await (
@@ -59,6 +58,10 @@ it('filters a completed HDR cube on the GPU and publishes retained native lighti
   );
   if (!physical.ok) throw physical.error;
   const scope = DeviceScope.create(0, 'target-environment-dawn');
+  const { equirectToCube, prefilter, brdfLut } = shaders;
+  if (equirectToCube === undefined || prefilter === undefined || brdfLut === undefined)
+    throw new Error('Missing compiled IBL fixture programs');
+  publishIblProgramDeclarations(scope, { equirectToCube, prefilter, brdfLut });
   const tape = recorder.captureFrame();
   (await recorder.frameBoundary()).unwrap();
   try {

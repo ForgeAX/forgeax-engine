@@ -27,6 +27,7 @@ import {
 } from './protocol';
 import { MODEL_VALIDATE_REPORT_SCHEMA, validateReport } from './report';
 import { modelSynthesizeTool } from './synthesize-tool';
+import { visualFeedbackTools } from './visual-tools';
 
 export {
   BAKE_COMPARE_VIEWS,
@@ -37,6 +38,7 @@ export {
   type ModelBakeReport,
 } from './bake-tool';
 export { type BakeWorkersOptions, bakeWorkers } from './bake-workers';
+export { moduleDigest } from './build-identity';
 export { confineToRoot } from './confine';
 export {
   type DiffRenderArgs,
@@ -114,6 +116,57 @@ export {
   type SelectorStability,
   type StabilityCheck,
 } from './synthesize-tool';
+export {
+  ACCEPT_LEVELS,
+  type AcceptCode,
+  type AcceptLevel,
+  accept,
+  type ContractEntry,
+  type GateResult,
+  type GateRow,
+  type GateStatus,
+  type LevelRow,
+  type LevelStatus,
+  MODEL_ACCEPT_REPORT,
+  type ModelAcceptReport,
+  type PartRow,
+} from './visual-accept';
+export {
+  type CompareCode,
+  type CompareOptions,
+  type CompareResult,
+  type CompareVerdict,
+  compareImages,
+  MODEL_COMPARE_REPORT,
+  type ModelCompareReport,
+} from './visual-compare';
+export {
+  type ConvergeAction,
+  type ConvergeCode,
+  type ConvergeEntry,
+  type ConvergeOptions,
+  type ConvergeRule,
+  converge,
+  MODEL_CONVERGE_REPORT,
+  type ModelConvergeReport,
+} from './visual-converge';
+export {
+  type Feature,
+  type FeatureScore,
+  type FeatureTier,
+  type MicroscopeCode,
+  MODEL_MICROSCOPE_REPORT,
+  type ModelMicroscopeReport,
+  scoreFeatures,
+} from './visual-microscope';
+export {
+  evaluateTurntable,
+  MODEL_TURNTABLE_REPORT,
+  type ModelTurntableReport,
+  type TurntableCapture,
+  type TurntableCode,
+  type TurntableOptions,
+} from './visual-turntable';
 
 export interface ModelingToolOptions {
   /** Project root that `source` paths are resolved against and confined to. */
@@ -134,6 +187,11 @@ export const MODELING_OPERATION_IDS = [
   'model.interference',
   'model.synthesize',
   'model.bake',
+  'model.compare',
+  'model.microscope',
+  'model.turntable',
+  'model.converge',
+  'model.accept',
 ] as const;
 
 const common = {
@@ -466,7 +524,14 @@ export function createModelingTools(options: ModelingToolOptions): readonly Tool
   const tool = (
     id: Exclude<
       (typeof MODELING_OPERATION_IDS)[number],
-      'model.diff' | 'model.synthesize' | 'model.bake'
+      | 'model.diff'
+      | 'model.synthesize'
+      | 'model.bake'
+      | 'model.compare'
+      | 'model.microscope'
+      | 'model.turntable'
+      | 'model.converge'
+      | 'model.accept'
     >,
     title: string,
     summary: string,
@@ -695,5 +760,6 @@ export function createModelingTools(options: ModelingToolOptions): readonly Tool
       options.projectRoot,
       (value) => relativeSources(value, options.projectRoot),
     ),
+    ...visualFeedbackTools(options.projectRoot),
   ];
 }

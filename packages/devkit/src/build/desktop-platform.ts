@@ -23,6 +23,17 @@ import { writeFileAtomic } from '../filesystem-path.js';
 import { createDesktopRecordStore } from './desktop-storage.js';
 
 export { desktopDeviceFacts, validateDesktopStartup } from './desktop-configuration.js';
+export {
+  createNativeKernelDesktopHost,
+  type NativeKernelDesktopCanvas,
+  type NativeKernelDesktopHost,
+  type NativeKernelDesktopHostOptions,
+} from './desktop-native-host.js';
+export {
+  createForgeaxDesktopNativeRenderer,
+  ForgeaxDesktopNativeRenderer,
+  type ForgeaxDesktopNativeRendererOptions,
+} from './desktop-native-kernel.js';
 export { createDesktopRuntimePackCache } from './desktop-runtime-pack-cache.js';
 export { createDesktopFileStore } from './desktop-storage.js';
 

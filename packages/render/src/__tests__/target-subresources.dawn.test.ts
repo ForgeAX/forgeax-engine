@@ -60,7 +60,8 @@ it.each([
         ],
       });
       pass.end();
-      host.encodePendingReadbacks(encoder, [{ target: target.value, layer, mipLevel: mip }]);
+      host.stageRenderTargetWrite({ target: target.value, physical, layer, mipLevel: mip });
+      host.encodePendingReadbacks(encoder);
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
       host.markTargetSubmitted(target.value, physical);
       const completed = device.queue

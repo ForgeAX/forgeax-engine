@@ -158,3 +158,53 @@ it('keeps the insertion order and physical versions of each issued binding table
   expect(reordered.get(a)?.contentEpoch).toBe(1);
   expect(original.get(b)?.contentEpoch).toBe(2);
 });
+
+it('reissues changed physical meshes without recreating the retained partial binding index', () => {
+  const scope = worldRenderResources(new World());
+  const meshes = new Map([[1, { contentEpoch: 1 } as MeshGpuHandles]]);
+  const [a, b, c, d] = [1, 2, 1, 3].map(
+    (assetHandle) => ({ assetHandle }) as GpuDrivenBatchBinding,
+  );
+  assert(a && b && c && d);
+  const internals = {
+    gpuStore: { getMeshGpuHandles: (handle: number) => meshes.get(handle) },
+  } as unknown as RenderSystemInternals;
+  const scene = {
+    plan: { batches: [a, b, c, d].map((binding) => ({ binding })) },
+  } as unknown as PersistentGpuDrivenState;
+  const read = () => gpuDrivenMeshesForFrame(internals, scope, scene, 'resident-only');
+  const original = read();
+  expect([...original.keys()]).toEqual([a, c]);
+
+  const writes = vi.spyOn(Map.prototype, 'set');
+  let admitted: ReturnType<typeof read>;
+  let swapped: ReturnType<typeof read>;
+  try {
+    for (let version = 2; version < 62; version++) {
+      meshes.set(1, { contentEpoch: version } as MeshGpuHandles);
+      const frame = read();
+      expect(frame.get(a)?.contentEpoch).toBe(version);
+      expect(frame.get(a)).toBe(frame.get(c));
+      expect(frame.has(b)).toBe(false);
+    }
+    const bindingWrites = () =>
+      writes.mock.calls.filter(([key]) => key === a || key === b || key === c || key === d);
+    expect(bindingWrites()).toHaveLength(0);
+
+    meshes.set(2, { contentEpoch: 62 } as MeshGpuHandles);
+    admitted = read();
+    expect([...admitted.keys()]).toEqual([a, b, c]);
+
+    // Equal cardinality is not proof of equal membership.
+    meshes.delete(2);
+    meshes.set(3, { contentEpoch: 63 } as MeshGpuHandles);
+    swapped = read();
+    expect([...swapped.keys()]).toEqual([a, c, d]);
+  } finally {
+    writes.mockRestore();
+  }
+
+  expect(admitted.get(b)?.contentEpoch).toBe(62);
+  expect(swapped.has(b)).toBe(false);
+  expect(original.get(a)?.contentEpoch).toBe(1);
+});

@@ -201,15 +201,14 @@ function addDepthOfFieldComputeTiles(
 /** Apply spatial DoF to the current scene at the internal render extent. */
 export function addDepthOfFieldPasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  params: DepthOfFieldParams | undefined,
+  topology: DepthOfFieldTopology | undefined,
   fullSize: { readonly width: number; readonly height: number },
   input: RenderPipelineTarget,
   depth: RenderPipelineTarget,
   cocFormat: 'rg16float' | 'rgba16float',
   lane: Pick<RenderPipelineTopology['lane'], 'compute' | 'storageTexture'>,
 ): Result<RenderPipelineTarget, RenderGraphError> {
-  const topology = depthOfFieldTopology(params);
-  if (params === undefined || topology === undefined) return ok(input);
+  if (topology === undefined) return ok(input);
 
   // The graph texture is the contract. Never select the multisampled shader
   // from a camera flag while the bound depth target is single-sample.

@@ -48,7 +48,7 @@ import type { DeviceScope } from '../device/device-scope';
 import type { EngineMetrics } from '../engine-metrics';
 import type { RenderFeatureHost } from '../features/host';
 import type { RenderFeatureShaderModuleMode } from '../features/types';
-import type { GpuDrivenPbrProgram } from '../gpu-driven/pbr-program';
+import type { GpuDrivenPbrPrograms } from '../gpu-driven/pbr-program';
 import type { GpuDrivenShadowBatchProjection } from '../gpu-driven/production-raster';
 import type { ShadowViewStatePool } from '../gpu-driven/shadow-views';
 import {
@@ -270,6 +270,9 @@ export interface RenderSystemRuntime {
   readonly outputColorSpace?: OutputColorSpaceState | undefined;
   readonly errorRegistry: RhiErrorListenerRegistry;
   readonly debugOverlay?: RenderDebugOverlay | undefined;
+  readonly viewportOutput?:
+    | import('../viewport-output-contract').ViewportOutputExtension
+    | undefined;
   readonly healthRegistry: HealthListenerRegistry;
   readonly getMaterialProjectionForPayload?: (
     material: MaterialAsset,
@@ -383,6 +386,8 @@ export interface RenderSystemRuntime {
     bgl: BindGroupLayout,
     colorFormats: readonly GPUTextureFormat[],
     entry?: import('../fullscreen-post-process-pass').PostProcessShaderEntry,
+    fragmentEntryPoint?: string,
+    colorState?: import('@forgeax/engine-types').MaterialRenderState,
   ) => RhiRenderPipeline | null;
   /** Candidate-owned post-process pipelines transferred at publication. */
   readonly getRecoveryPostProcessPipelines?: () => ReadonlyMap<string, RhiRenderPipeline>;
@@ -393,6 +398,8 @@ export interface RenderSystemRuntime {
   readonly resolveRenderTargetTextureSource?: (
     source: import('../targets/contracts').RenderTargetTextureSource,
   ) => import('../targets/material-source').RenderTargetMaterialSourceBinding | undefined;
+  /** Renderer-owned switchable TS / Rust-WASM RenderKernel bridge and retained pass pipeline caches. */
+  readonly renderKernel?: import('./render-kernel-bridge').RenderKernelBridge | undefined;
   /** Renderer-owned external texture sources (GPUTexture import and per-frame video). */
   readonly externalTextures?:
     | import('../textures/external-texture').ExternalTextureBinder
@@ -407,8 +414,43 @@ export interface PointsLinesPreparedRows {
   slot(entry: Pick<ValidatedRenderable, 'source'>): number;
 }
 
+export type FxaaPassResources = Pick<
+  PerPassResources,
+  'fxaaPipeline' | 'fxaaBindGroupLayout' | 'fxaaSampler'
+>;
+
+export type SkyboxPassResources = Pick<
+  PerPassResources,
+  | 'skyboxPipeline'
+  | 'skyboxPipelineMsaa'
+  | 'skyboxScenePipeline'
+  | 'skyboxBindGroupLayout'
+  | 'skyboxSampler'
+  | 'skyboxRotationBuffer'
+>;
+
+export type LegacySsaoResources = Pick<
+  PerPassResources,
+  | 'ssaoCalcPipeline'
+  | 'ssaoBlurPipeline'
+  | 'ssaoBgl'
+  | 'ssaoDepthCalcPipeline'
+  | 'ssaoDepthBlurPipeline'
+  | 'ssaoDepthBgl'
+  | 'ssaoGBufferPipelines'
+>;
+
+export type LegacyGtaoResources = Pick<
+  PerPassResources,
+  'gtaoComputePipeline' | 'gtaoComputeBgl' | 'gtaoGBufferComputePipeline'
+>;
+
 export interface PerPassResources {
   configured: boolean;
+  readonly getFxaaResources?: (() => FxaaPassResources | undefined) | undefined;
+  readonly getSkyboxResources?: (() => SkyboxPassResources | undefined) | undefined;
+  readonly getLegacySsaoResources?: (() => LegacySsaoResources) | undefined;
+  readonly getLegacyGtaoResources?: (() => LegacyGtaoResources) | undefined;
   readonly fxaaPipeline: RhiRenderPipeline | null;
   readonly fxaaBindGroupLayout: BindGroupLayout | null;
   readonly fxaaSampler: Sampler | null;
@@ -549,7 +591,7 @@ export interface PipelineState {
   readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
   readonly gpuDrivenPbrPipelineLayout?: PipelineLayout | null;
   /** Device-owned shader modules paired with their exact Standard PBR receipts. */
-  readonly gpuDrivenPbrPrograms?: ReadonlyMap<string, GpuDrivenPbrProgram>;
+  readonly gpuDrivenPbrPrograms?: GpuDrivenPbrPrograms;
   readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
   /** Clustered group(2) layouts paired with the scene-index slot(3). */
   readonly pbrProbePipelineLayout?: PipelineLayout | null;
@@ -583,6 +625,7 @@ export interface PipelineState {
   readonly atmosphereAvailable?: boolean;
   readonly viewLinearSampler?: Sampler;
   readonly atmosphereFallbackView?: TextureView | undefined;
+  readonly atmosphereDistantSkyFallback?: Buffer | undefined;
   readonly iesProfileTexture?: Texture;
   readonly cookieTexture?: Texture;
   readonly cookieMatrixBuffer?: Buffer;
@@ -677,6 +720,8 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
         bgl: BindGroupLayout,
         colorFormats: readonly GPUTextureFormat[],
         label: string,
+        colorState?: import('@forgeax/engine-types').MaterialRenderState,
+        rendererOwnedSource?: boolean,
       ) => RhiRenderPipeline | null)
     | undefined;
   rendererFrameNumber?: number | undefined;
@@ -713,18 +758,20 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
     target: RenderTarget,
     physical: RenderTargetPhysical,
   ) => void;
-  readonly encodeRenderTargetReadbacks?: (
-    encoder: RhiCommandEncoder,
-    written?: readonly import('../assembly/render-target-host').RenderTargetLayerWrite[],
+  readonly stageRenderTargetWrite?: (
+    write: import('../assembly/render-target-host').RenderTargetPhysicalWrite,
   ) => void;
+  readonly encodeRenderTargetReadbacks?: (encoder: RhiCommandEncoder) => void;
   readonly encodeFramebufferSnapshots?:
     | ((
         encoder: RhiCommandEncoder,
         source: import('../targets/framebuffer-snapshot').FramebufferSnapshotSource,
       ) => void)
     | undefined;
-  /** Composed renderer utility sources installed atomically at build-ready. */
+  /** Device-owned volume programs are published together after first demand. */
   volumetricFogShaders?: VolumetricFogShaderSources | undefined;
+  /** Start or join the current generation's volume preparation. True while pending. */
+  readonly requestVolumetricFogPrograms?: () => boolean;
   /** Composed renderer utility sources installed atomically at build-ready. */
   ssrShaders?: SsrShaderSources | undefined;
   depthPyramidShaders?: DepthPyramidShaderSources | undefined;
@@ -757,6 +804,7 @@ export interface _StandardForwardSceneView {
   readonly assets: AssetRegistry;
   readonly store: import('../device/gpu-residency').GpuResidencyCache;
   readonly planarReflectionView?: TextureView;
+  readonly planarReflectionPhysical?: import('../targets/physical').RenderTargetPhysical;
   /** A target-writing capture explicitly disables sampling its own planar output. */
   readonly planarReflectionAllowed?: boolean;
   /** Records this frame's planar mirror on the display view's resolved shadow layers. */
@@ -903,14 +951,11 @@ export interface _StandardForwardSceneView {
   /** Shadow row base in materialSlotIndices; physical mesh addresses live on each draw. */
   readonly shadowMaterialRowBase?: number;
   readonly shadowCasterBounds?: PersistentShadowCasterProjection['worldBoundsOf'];
+  readonly shadowCasterRecordingBounds?: PersistentShadowCasterProjection['recordingWorldBoundsOf'];
   readonly pointsLines: PointsLinesPreparedRows | undefined;
   readonly materialBgAssemblyCache: MaterialBgAssemblyCache;
   /** Record-stage proof callback; invoked only after a real draw command is encoded. */
-  readonly onRenderableDraw?: (
-    entry: Pick<ValidatedRenderable, 'source'>,
-    submeshIndex?: number,
-    receipt?: import('./gpu-draw-receipts').RenderableDrawReceipt,
-  ) => void;
+  readonly onRenderableDraw?: import('./gpu-draw-receipts').RenderableDrawRecorder;
   readonly reflectionProbes?: ReflectionProbeRecordState;
   /** Physical filter and array-migration work owned by this recording's probe producer. */
   readonly probeFilterWork?: ReflectionProbeRecordState['graph'] | undefined;

@@ -43,7 +43,7 @@ setFlagsFromString('--expose-gc');
 const gc = runInNewContext('gc') as () => void;
 
 it('does not pin the preparing frame or graph through a prepared candidate that outlives it', async () => {
-  let graph: object | undefined = { scenePipelinePreparations: [() => true] };
+  let graph: object | undefined = { scenePasses: [], scenePipelinePreparations: [() => true] };
   const preparingGraph = new WeakRef(graph);
   const owner = new CandidatePipelinePreparationOwner(() => graph as never);
   const input = {
@@ -76,7 +76,7 @@ it('does not pin the preparing frame or graph through a prepared candidate that 
   expect(result.value.isCurrent()).toBe(true);
   expect(released.deref()).toBeUndefined();
   // A rebuilt graph replaces the preparing one, which must not stay reachable.
-  graph = { scenePipelinePreparations: [] };
+  graph = { scenePasses: [], scenePipelinePreparations: [] };
   expect(result.value.isCurrent()).toBe(false);
   await new Promise((resolve) => setTimeout(resolve, 0));
   gc();
@@ -91,7 +91,7 @@ it('excludes explicit utility programs from candidate raster matching without ac
     { kind: 'utility' as const },
   );
   const material = vi.fn(() => true);
-  const graph = { scenePipelinePreparations: [utility, material] };
+  const graph = { scenePasses: [], scenePipelinePreparations: [utility, material] };
   const readDemand = vi.fn(() => undefined);
   const owner = new CandidatePipelinePreparationOwner(() => graph as never, readDemand);
   const input = {
@@ -122,7 +122,7 @@ it('does not treat a utility-only graph as a candidate material raster authority
     vi.fn(() => true),
     { kind: 'utility' as const },
   );
-  const graph = { scenePipelinePreparations: [utility] };
+  const graph = { scenePasses: [], scenePipelinePreparations: [utility] };
   const readDemand = vi.fn(() => undefined);
   const owner = new CandidatePipelinePreparationOwner(() => graph as never, readDemand);
   const input = {

@@ -319,7 +319,7 @@ function compare(
   const near = drawn.map((p) => minOf(measured.map((m) => outlineDeviation([p], m, false))));
   const back = spanDeviation(measured.flat(), drawn, reach);
   return {
-    max: Math.max(0, ...near),
+    max: Math.max(0, maxOf(near)),
     back,
     outside: near.filter((d) => d > tolerance).length / Math.max(1, near.length),
   };

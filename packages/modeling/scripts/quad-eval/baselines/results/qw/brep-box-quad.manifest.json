@@ -1,0 +1,47 @@
+{
+  "tool": "qw",
+  "case": "brep-box-quad",
+  "available": true,
+  "toolCommit": "9d1f27ad3c6e8b2800df27e2c14f70c5baf0250e",
+  "inputSha256": "ad9979905850dad451dc0030bfc5fbd5431c579cb9a76c30ddf1e48f0a56e576",
+  "inputFaces": 12,
+  "targetFaces": 600,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["quadwild", "input.obj"],
+      "cwd": "<run dir with basic_setup.txt>",
+      "wallSeconds": 2.815650027,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "do_remesh": 1,
+        "sharp_feature_thr": 30,
+        "alpha": 0.01,
+        "scaleFact": 1
+      }
+    },
+    {
+      "argv": ["quadwild", "input.obj"],
+      "cwd": "<run dir with basic_setup.txt>",
+      "wallSeconds": 2.2266953,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "do_remesh": 1,
+        "sharp_feature_thr": 30,
+        "alpha": 0.01,
+        "scaleFact": 2.6
+      }
+    }
+  ],
+  "wallSeconds": 5.042345327,
+  "outcome": "ok",
+  "outputSha256": "725c7adcb85b2b8b410af7d2f9661f9f260bd308e3e77971fd0367545bff786d",
+  "rawOutputSha256": "a4fa256fbd561d3cb27478e87e5f4b9321ac6910ce15547d4fccc8e7807c95b6",
+  "outputFaces": 600,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

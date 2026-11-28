@@ -2,7 +2,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { type Affine, applyPoint, invertRigid, multiply } from './affine';
 import { maxOf } from './arrays';
 import { type ModelingError, modelingError } from './errors';
-import { add, facePoints, sub, type Tuple3, windingNumber } from './geom';
+import { add, facePoints, facesArea, sub, type Tuple3, windingNumber } from './geom';
 import type { EditMesh } from './mesh';
 import type {
   ActuationOptions,
@@ -23,6 +23,8 @@ const XYZ = [0, 1, 2] as const;
 export interface MassProperties {
   /** Enclosed volume (m^3). */
   readonly volume: number;
+  /** Surface area (m^2) of the closed shells in scope: the selected faces, or every face. */
+  readonly area: number;
   /** volume x density (kg). */
   readonly mass: number;
   /** Centre of mass (m). */
@@ -190,7 +192,14 @@ export function solidProperties(
       return atOrigin - shift;
     }),
   ) as unknown as [Tuple3, Tuple3, Tuple3];
-  return ok({ volume, mass, centroid, inertia, shells: shells.length });
+  return ok({
+    volume,
+    area: facesArea(mesh, faces),
+    mass,
+    centroid,
+    inertia,
+    shells: shells.length,
+  });
 }
 
 /**

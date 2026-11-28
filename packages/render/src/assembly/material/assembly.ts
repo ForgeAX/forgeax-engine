@@ -221,6 +221,7 @@ function selectedMaterialShaderEntry(
 // when either owner identity changes; old registrations remain weakly held.
 // A request with no published variant or artifact stays absent until the owner identity changes.
 const ABSENT = Symbol('absent material artifact');
+const VARIANT_NOT_READ = Symbol('variant not read');
 const publishedArtifacts = new WeakMap<
   MaterialShaderEntry,
   {
@@ -247,6 +248,34 @@ function materialArtifactRequestFlags(options: MaterialShaderArtifactRequest): n
     (optionalBooleanKey(options.leanInputs) << 18) |
     (optionalBooleanKey(options.tangentFrame32) << 20)
   );
+}
+
+function materialArtifactRequestKey(options: MaterialShaderArtifactRequest): number | string {
+  const flags = materialArtifactRequestFlags(options);
+  const { deformation, address, pass } = options;
+  // Preserve distinct keys for JavaScript callers outside the closed unions.
+  if (
+    (deformation === undefined || deformation === 'rigid' || deformation === 'skin') &&
+    (address === undefined || address === 'direct' || address === 'scene-index') &&
+    (pass === undefined || pass === 'forward' || pass === 'shadow' || pass === 'depth')
+  ) {
+    return (
+      flags |
+      ((deformation === undefined ? 0 : deformation === 'rigid' ? 1 : 2) << 10) |
+      ((address === undefined ? 0 : address === 'direct' ? 1 : 2) << 12) |
+      ((pass === undefined ? 0 : pass === 'forward' ? 1 : pass === 'shadow' ? 2 : 3) << 14)
+    );
+  }
+  return rawMaterialArtifactRequestKey(flags, deformation, address, pass);
+}
+
+function rawMaterialArtifactRequestKey(
+  flags: number,
+  deformation: string | undefined,
+  address: string | undefined,
+  pass: string | undefined,
+): string {
+  return `${flags}:${deformation ?? ''}:${address ?? ''}:${pass ?? ''}`;
 }
 
 type PublishedVariant = MaterialShaderManifestEntry['variants'][number];
@@ -281,7 +310,7 @@ export function materialRasterSourceFacts(
   materialShaderId: string,
   options: MaterialShaderArtifactRequest,
 ): BatchArtifactFacts | undefined {
-  options = resolvedRasterArtifactRequest(options);
+  options = withRasterVariant(options, rasterArtifactVariant(options, VARIANT_NOT_READ));
   const variant = selectedFamilyVariant(
     shader.materialShaderManifestEntry(materialShaderId),
     options,
@@ -322,7 +351,10 @@ export function resolveMaterialShaderArtifact(
   options: MaterialShaderArtifactRequest = {},
   prepare?: (identifier: string) => boolean,
 ): MaterialShaderArtifact | undefined {
-  options = resolvedRasterArtifactRequest(options);
+  // A source lookup reads the variant to identify its artifact. A byte-backed
+  // lookup first preserves the registry's miss or error, then reads the variant.
+  let variant: string | undefined | typeof VARIANT_NOT_READ = VARIANT_NOT_READ;
+  let rasterOptions: MaterialShaderArtifactRequest | undefined;
   const shadowLookup =
     options.pass === 'shadow' && isCanonicalStandardPbrMaterialShader(materialShaderId);
   const firstLookupId = shadowLookup ? SHADOW_CASTER_SHADER_ID : materialShaderId;
@@ -343,7 +375,9 @@ export function resolveMaterialShaderArtifact(
     let sourceVariant: PublishedVariant | undefined;
     let preparedId = lookupId;
     if (sourceBacked) {
-      const selected = selectedFamilyVariant(manifestEntry, options);
+      variant = rasterArtifactVariant(options, variant);
+      rasterOptions ??= withRasterVariant(options, variant);
+      const selected = selectedFamilyVariant(manifestEntry, rasterOptions);
       if (selected === null) continue;
       sourceVariant = selected;
       preparedId = sourceArtifactIdentifier(lookupId, sourceVariant, shader);
@@ -351,41 +385,27 @@ export function resolveMaterialShaderArtifact(
     }
     const lookup = shader.findMaterialArtifact(preparedId, 'optional');
     if (!lookup?.ok) continue;
+    variant = rasterArtifactVariant(options, variant);
     let cache = publishedArtifacts.get(lookup.value);
     if (cache === undefined || cache.manifest !== manifestEntry) {
       cache = { manifest: manifestEntry, requests: new Map() };
       publishedArtifacts.set(lookup.value, cache);
     }
-    const flags = materialArtifactRequestFlags(options);
-    const variant = options.variantSet;
-    const deformation = options.deformation;
-    const address = options.address;
-    const pass = options.pass;
-    const packedKey =
-      flags |
-      ((deformation === undefined ? 0 : deformation === 'rigid' ? 1 : 2) << 10) |
-      ((address === undefined ? 0 : address === 'direct' ? 1 : 2) << 12) |
-      ((pass === undefined ? 0 : pass === 'forward' ? 1 : pass === 'shadow' ? 2 : 3) << 14);
-    // Keep coercion and distinct keys for raw JavaScript callers outside the closed unions.
-    const requestKey =
-      (deformation === undefined || deformation === 'rigid' || deformation === 'skin') &&
-      (address === undefined || address === 'direct' || address === 'scene-index') &&
-      (pass === undefined || pass === 'forward' || pass === 'shadow' || pass === 'depth')
-        ? packedKey
-        : `${flags}:${deformation ?? ''}:${address ?? ''}:${pass ?? ''}`;
+    const requestKey = materialArtifactRequestKey(options);
     const shaderRequests = cache.requests.get(materialShaderId);
     const variantRequests = shaderRequests?.get(variant);
     const cached = variantRequests?.get(requestKey);
     if (cached === ABSENT) continue;
     if (cached !== undefined) return cached;
+    rasterOptions ??= withRasterVariant(options, variant);
     const artifact = assembleRequestedArtifact(
       materialShaderId,
       lookupId,
       lookup.value,
       shader,
       manifestEntry,
-      options,
-      sourceBacked ? sourceVariant : selectedFamilyVariant(manifestEntry, options),
+      rasterOptions,
+      sourceBacked ? sourceVariant : selectedFamilyVariant(manifestEntry, rasterOptions),
     );
     const shaders = shaderRequests ?? new Map();
     const variants = variantRequests ?? new Map();
@@ -397,14 +417,23 @@ export function resolveMaterialShaderArtifact(
   return undefined;
 }
 
-function resolvedRasterArtifactRequest(
+function rasterArtifactVariant(
   options: MaterialShaderArtifactRequest,
+  current: string | undefined | typeof VARIANT_NOT_READ,
+): string | undefined {
+  if (current !== VARIANT_NOT_READ) return current;
+  return options.surfaceDiscards === undefined
+    ? options.variantSet
+    : variantSetForSurfaceDiscards(options.variantSet, options.surfaceDiscards);
+}
+
+function withRasterVariant(
+  options: MaterialShaderArtifactRequest,
+  variantSet: string | undefined,
 ): MaterialShaderArtifactRequest {
-  if (options.surfaceDiscards === undefined) return options;
-  return {
-    ...options,
-    variantSet: variantSetForSurfaceDiscards(options.variantSet, options.surfaceDiscards),
-  };
+  return variantSet === undefined || variantSet === options.variantSet
+    ? options
+    : { ...options, variantSet };
 }
 
 /** Source lookup and PSO construction consume the same declared-axis key. */

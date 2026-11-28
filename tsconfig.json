@@ -24,6 +24,15 @@
       "path": "./packages/ecs"
     },
     {
+      "path": "./packages/modeling-kernel-wasm"
+    },
+    {
+      "path": "./packages/modeling-kernel"
+    },
+    {
+      "path": "./packages/modeling-kernel-three"
+    },
+    {
       "path": "./packages/geometry"
     },
     {
@@ -43,6 +52,9 @@
     },
     {
       "path": "./packages/render"
+    },
+    {
+      "path": "./packages/render-kernel"
     },
     {
       "path": "./packages/scene"
@@ -165,22 +177,7 @@
       "path": "./packages/vfx-render"
     },
     {
-      "path": "./packages/npc"
-    },
-    {
       "path": "./packages/profiler"
-    },
-    {
-      "path": "./packages/intelligence"
-    },
-    {
-      "path": "./packages/intelligence-fake"
-    },
-    {
-      "path": "./packages/intelligence-dsh"
-    },
-    {
-      "path": "./packages/dsh"
     },
     {
       "path": "./packages/interaction"
@@ -205,6 +202,9 @@
     },
     {
       "path": "./packages/three"
+    },
+    {
+      "path": "./packages/water/tsconfig.caustics.json"
     }
   ]
 }

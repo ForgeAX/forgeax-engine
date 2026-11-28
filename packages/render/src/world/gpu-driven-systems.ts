@@ -3,6 +3,7 @@ import type { RhiError } from '@forgeax/engine-rhi';
 import type { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import type { GpuDrivenLaneReason } from '../inspection-types';
+import { sceneIndexProgramsDeferred } from '../material-program-selection';
 import {
   buildFrameGpuDrivenInput,
   type FrameGpuDrivenInput,
@@ -123,6 +124,33 @@ export function storeViewGpuDrivenOutcome(
   state.outcome = outcome;
 }
 
+function requestSourceSceneIndex(
+  sources: FrameGpuDrivenSources,
+  frame: FrameGpuDrivenSources['gpuDriven'] | undefined,
+): void {
+  const onDemand = sources.onSourceSceneIndexDemand;
+  const scene = frame?.scene;
+  if (
+    onDemand === undefined ||
+    scene === undefined ||
+    !(scene.plan.candidateCount > 0) ||
+    frame?.geometryLane === 'direct'
+  )
+    return;
+  onDemand();
+  // The source widens its next publication. Only views with missing
+  // programs hold their current picture while that publication arrives.
+  const materialPrograms =
+    scene.materialPrograms ?? sources.shadowCasterProjection?.materialPrograms;
+  for (const { binding } of scene.plan.batches) {
+    if (binding === undefined) continue;
+    const snapshot = materialPrograms?.get(binding.material)?.snapshot;
+    if (snapshot === undefined || !sceneIndexProgramsDeferred(snapshot)) continue;
+    markPipelinePreparationPending(sources.frameState, { code: 'material-residency' });
+    return;
+  }
+}
+
 /** Prepare only from this frame's staged facts; all failures remain view data. */
 function prepareViewGpuDriven(
   world: World,
@@ -148,6 +176,7 @@ function prepareViewGpuDriven(
       return { kind: 'unavailable', code: 'ssr-admission-unavailable' };
     const gpuDriven = withScene(sources.gpuDriven, outcome.scene?.queried);
     const frame = outcome.gpuLane ? gpuDriven : undefined;
+    requestSourceSceneIndex(sources, frame);
     const input = buildFrameGpuDrivenInput(
       sources,
       gpuDriven,

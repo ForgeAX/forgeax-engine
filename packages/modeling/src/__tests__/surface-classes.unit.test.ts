@@ -32,13 +32,16 @@ function plate(x0: number, x1: number, tilt = 0, bend = 0): NurbsSurface {
 }
 
 describe('continuity classes and G3', () => {
-  it('falsifier: a 0.3 degree kink fails as a primary edge and passes the old 0.5 degree default', () => {
+  it('falsifier: a 0.3 degree kink fails as a primary edge and passes the loose 0.5 degree limits', () => {
     const surfaces = [
       { name: 'a', surface: plate(0, 1) },
       { name: 'b', surface: plate(1, 2, 0.3) },
     ];
-    const old = unwrap(checkSurfaceQuality({ surfaces }, { isoparms: 0 }));
+    const old = unwrap(
+      checkSurfaceQuality({ surfaces }, { isoparms: 0, position: 1e-4, angle: 0.5 }),
+    );
     expect(old.pass).toBe(true);
+    expect(unwrap(checkSurfaceQuality({ surfaces }, { isoparms: 0 })).pass).toBe(false);
     expect(old.edges[0]?.class).toBe('primary');
     const d09 = unwrap(checkSurfaceQuality({ surfaces }, { isoparms: 0, classes: D09_CLASSES }));
     expect(d09.pass).toBe(false);
@@ -127,7 +130,10 @@ describe('continuity classes and G3', () => {
     const base = m.diagnostics().surfaces.find((s) => s.name === 'base');
     expect(base?.trims?.length).toBe(1);
     const old = unwrap(
-      checkSurfaceQuality({ surfaces: m.diagnostics().surfaces }, { isoparms: 0 }),
+      checkSurfaceQuality(
+        { surfaces: m.diagnostics().surfaces },
+        { isoparms: 0, position: 1e-4, angle: 0.5 },
+      ),
     );
     const trim = old.edges.filter((e) => e.sideA === 'trim');
     expect(trim.map((e) => [e.a, e.b, e.sideB, e.class])).toEqual([['base', 'wing', 'u0', 'trim']]);

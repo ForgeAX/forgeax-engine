@@ -2,10 +2,13 @@ import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import { mat4 } from '@forgeax/engine-math';
 import { type PhysicsWorld, PhysicsWorldResource } from '@forgeax/engine-physics';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
+import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { ok } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { err, ok } from '@forgeax/engine-types';
+import { describe, expect, it, vi } from 'vitest';
 import { advancedWaterFixture } from '../../__tests__/advanced-water-fixture';
+import { selectTestStandardClusterTransport } from '../../__tests__/cluster-test-abi';
 import {
   abortFeatureFrame,
   prepareFeatureFrame,
@@ -13,6 +16,7 @@ import {
 } from '../../__tests__/feature-frame-driver';
 import { compileAndAdoptViewGraph } from '../../__tests__/graph-compile.fixture';
 import { compileSharedFeatureGraph } from '../../assembly/feature-frame-graph';
+import { BLOOM_QUALITY_HIGH, BLOOM_QUALITY_LOW, type BloomQuality } from '../../components/camera';
 import { DeviceScope } from '../../device/device-scope';
 import {
   createRenderFeatureHost,
@@ -21,11 +25,15 @@ import {
 } from '../../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../../features/prepared-gpu-work';
 import type { RenderFeature } from '../../features/types';
+import { settleViewFeatures, viewFeaturesOf } from '../../features/view-feature-work';
 import { RhiErrorListenerRegistry } from '../../lifecycle';
+import { deriveRenderExtent } from '../../pipeline/render-extent';
 import { createPremultipliedForwardPipeline } from '../../pipeline/standard-forward-output';
 import { prepareStandardLighting } from '../../pipeline/standard-lighting/prepare';
+import * as lightingTopology from '../../pipeline/standard-lighting/topology';
 import { DEFAULT_STANDARD_PROFILE, standardPipeline } from '../../pipeline/standard-pipeline';
 import type { RenderPipeline } from '../../render-pipeline';
+import type { AmbientOcclusionSettings } from '../../ssao-config';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../../temporal/frame';
 import { createStandardSceneSurfaceAdmission } from '../../temporal/standard-scene-data-admission';
 import { createWaterAdvancedFeature } from '../../water/advanced-feature';
@@ -36,18 +44,18 @@ import type { ReflectionProbeGraphWork } from '../frame-graph-history';
 import type { RenderFrameState } from '../frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { buildFramePostProcessParams } from '../frame-temporal';
+import { adoptViewGraph, holdPreparedViewGraph } from '../graph-adoption';
 import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../render-context';
+import { scenePassRequests } from '../scene-pass-work';
 import type { CubeCaptureGraphWork } from '../target-capture-graph';
 import {
   compileViewGraph,
   ensureShadowDepthLayers,
   getRenderFeatureGraphInspection,
-  getRenderFeatureGraphState,
   mutableFeatureGraphInspection,
   promoteGraphCandidate,
   rollbackGraphCandidate,
-  settleFeatureGraphState,
 } from '../typed-frame-graph';
 
 async function harness(retainBuildBinding = false) {
@@ -73,8 +81,6 @@ async function harness(retainBuildBinding = false) {
     temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     graphGeneration: 0,
-    compiledFrameGraphGeneration: 0,
-    standardLightingGraphSignature: '',
     retiredCompiledFrameGraphs: new Set(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     meshBindGroupCache: new WeakMap(),
@@ -159,14 +165,14 @@ it('uses current fullscreen uniforms across graph reuse and retains accepted uni
       { historyValid: false } as never,
       1,
       undefined,
-      getRenderFeatureGraphState(h.internals).fullscreenEffects,
+      viewFeaturesOf(h.frameState).fullscreenEffects,
     ).get(id);
   const firstInput = { ...h.input(), featurePlan: { candidate: candidate(1) } };
   const graph = compileAndAdoptViewGraph(firstInput);
   if (!graph) throw new Error('missing view graph');
   try {
     h.accept();
-    settleFeatureGraphState(h.internals, true);
+    settleViewFeatures(h.frameState, true);
     expect(currentParams()?.[0]).toBe(1);
     const secondInput = { ...h.input(), featurePlan: { candidate: candidate(2) } };
     expect(compileViewGraph(secondInput).kind).toBe('reused');
@@ -174,11 +180,13 @@ it('uses current fullscreen uniforms across graph reuse and retains accepted uni
     expect(currentParams()?.[0]).toBe(2);
     expect(currentParams(new Map([[id, new Uint8Array(16).fill(7)]]))?.[0]).toBe(7);
     h.accept();
-    settleFeatureGraphState(h.internals, true);
+    settleViewFeatures(h.frameState, true);
     h.setFail(true);
     const rejectedInput = { ...h.input(2), featurePlan: { candidate: candidate(3) } };
+    const fullInspection = vi.spyOn(graph, 'inspect');
     expect(compileViewGraph(rejectedInput).kind).toBe('retained');
     expect(compileAndAdoptViewGraph(rejectedInput)).toBe(graph);
+    expect(fullInspection).not.toHaveBeenCalled();
     expect(currentParams()?.[0]).toBe(2);
   } finally {
     await graph.retire();
@@ -204,6 +212,49 @@ function unlitDisplayGraphInput(h: Harness) {
     standardLighting: { kind: 'no-local-lights' as const, prepared },
   };
 }
+
+it('serializes Feature topology only for the authored graph route', async () => {
+  const ordered = await harness();
+  const authored = await harness();
+  ordered.frameState.activePipeline = standardPipeline;
+  const input = { ...unlitDisplayGraphInput(ordered), clearOnly: false };
+  const authoredBuild = vi.spyOn(authored.frameState.activePipeline, 'build');
+  const stringify = vi.spyOn(JSON, 'stringify');
+  const totalBefore = renderGraphCompileCount();
+  const orderedBefore = renderOrderedViewBindCount();
+  const signatures = () =>
+    stringify.mock.calls.filter(
+      ([value]) =>
+        value !== null &&
+        typeof value === 'object' &&
+        Object.hasOwn(value, 'planRevision') &&
+        Object.hasOwn(value, 'fullscreenEffects'),
+    );
+
+  try {
+    for (const width of [1, 1, 2]) {
+      expect(compileAndAdoptViewGraph({ ...input, surface: { width, height: 1 } })).not.toBeNull();
+      expect(ordered.frameState.compiledFrameGraph?.displayPorts?.width).toBe(width);
+      ordered.accept();
+    }
+    expect(signatures()).toHaveLength(0);
+    expect(renderGraphCompileCount()).toBe(totalBefore + 2);
+    expect(renderOrderedViewBindCount()).toBe(orderedBefore + 2);
+
+    expect(authored.compile()).not.toBeNull();
+    authored.accept();
+    expect(signatures()).toHaveLength(1);
+    expect(renderGraphCompileCount()).toBe(totalBefore + 3);
+    expect(renderOrderedViewBindCount()).toBe(orderedBefore + 2);
+    const topology = authoredBuild.mock.calls[0]?.[1];
+    expect(topology?.featureTopologySignature).toBe(JSON.stringify(signatures()[0]?.[0]));
+  } finally {
+    stringify.mockRestore();
+    authoredBuild.mockRestore();
+    await ordered.frameState.compiledFrameGraph?.graph.retire();
+    await authored.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
 
 it('binds resolved Forward color to Bloom across MSAA, fog and output changes', async () => {
   const h = await harness();
@@ -236,6 +287,135 @@ it('binds resolved Forward color to Bloom across MSAA, fog and output changes', 
     expect(unfiltered).not.toBe(single);
     expect(unfiltered.inspect().passes.some((pass) => pass.name.includes('bloom'))).toBe(false);
   } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('rejects an ordered Forward allocation failure and retries the requested attachment extent', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const first = compileAndAdoptViewGraph(input);
+  if (first === null) throw new Error('missing initial Forward execution');
+  h.accept();
+  const installed = h.frameState.compiledFrameGraph;
+  const generation = h.frameState.graphGeneration;
+  expect(installed?.displayPorts?.lane).toBe('forward');
+  const capture = vi.spyOn(first, 'inspect');
+  const allocationError = new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'allocate the new Forward view attachments',
+    hint: 'retry the same extent on the live device',
+  });
+  const allocate = vi
+    .spyOn(h.internals.device, 'createTexture')
+    .mockReturnValueOnce(err(allocationError));
+  const resized = { ...input, surface: { width: 2, height: 2 } };
+  try {
+    expect(compileAndAdoptViewGraph(resized)).toBeNull();
+    expect(allocate).toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+    expect(h.frameState.compiledFrameGraph).toBe(installed);
+    expect(h.frameState.graphGeneration).toBe(generation);
+    expect(h.errors).toHaveLength(1);
+    const retried = compileAndAdoptViewGraph(resized);
+    expect(retried).not.toBeNull();
+    expect(retried).not.toBe(first);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.width).toBe(2);
+    expect(h.frameState.compiledFrameGraph?.retainedPolicy).toBeUndefined();
+    h.accept();
+  } finally {
+    allocate.mockRestore();
+    capture.mockRestore();
+    await first.retire();
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('keeps the submitted Forward picture while a new post chain is pending', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const first = compileAndAdoptViewGraph(input);
+  if (first === null) throw new Error('missing initial Forward execution');
+  h.accept();
+  const installed = h.frameState.compiledFrameGraph;
+  expect(installed?.displayPorts?.lane).toBe('forward');
+  h.frameState.installedPipelineConfig = { postEffects: ['test.pending-post'] };
+  Object.assign(h.internals, {
+    lookupPostProcess: () => ({ source: 'fn fs_main() -> vec4f { return vec4f(1); }' }),
+    buildPostProcessPipeline: () => null,
+  });
+  try {
+    expect(compileViewGraph(input)).toMatchObject({
+      kind: 'rejected',
+      code: 'post-chain-pending',
+    });
+    expect(compileAndAdoptViewGraph(input)).toBeNull();
+    expect(h.frameState.compiledFrameGraph).toBe(installed);
+    expect(h.errors).toEqual([]);
+    expect(first.isRetired()).toBe(false);
+  } finally {
+    await first.retire();
+  }
+});
+
+it.each([
+  'forward',
+  'deferred',
+] as const)('checks the actual %s Cluster binding while light grid dimensions change', async (renderPath) => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = { ...DEFAULT_STANDARD_PROFILE, renderPath };
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const draw = (layers: number) => {
+    const prepared = prepareStandardLighting({
+      directional: undefined,
+      local: [],
+      view: mat4.identity(mat4.create()),
+      projection: mat4.identity(mat4.create()),
+      near: 0.1,
+      far: 10,
+      grid: { x: 1, y: 1, z: layers },
+      lightCount: 256,
+      renderPath,
+    }).unwrap();
+    const transport = selectTestStandardClusterTransport(
+      { compute: true, storageBuffer: true, membershipPipelineReady: true },
+      prepared,
+    ).unwrap();
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      standardLighting: { kind: 'clustered', prepared, transport },
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  const signature = vi.spyOn(lightingTopology, 'standardLightingTopologySignature');
+  try {
+    const first = draw(1);
+    const installed = h.frameState.compiledFrameGraph;
+    expect(installed?.displayPorts?.lane).toBe(renderPath);
+    expect(installed?.scenePasses.length).toBeGreaterThan(0);
+    expect(scenePassRequests(first)).toEqual([]);
+    expect(draw(1)).toBe(first);
+    const changed = draw(2);
+    expect(signature).not.toHaveBeenCalled();
+    if (renderPath === 'forward') {
+      expect(changed).toBe(first);
+      expect(h.frameState.compiledFrameGraph?.standardLighting).toBe('current');
+    } else {
+      expect(changed).not.toBe(first);
+      expect(h.frameState.compiledFrameGraph?.standardLighting).toMatchObject({
+        layout: { grid: { z: 2 } },
+      });
+      expect(h.frameState.compiledFrameGraph?.displayPorts?.lighting).toBe(
+        h.frameState.compiledFrameGraph?.standardLighting,
+      );
+    }
+  } finally {
+    signature.mockRestore();
     await h.frameState.compiledFrameGraph?.graph.retire();
   }
 });
@@ -291,6 +471,102 @@ it('records changing Standard exposures and probe faces into the same physical d
     );
     expect(install(camera)).not.toBe(undithered);
     expect(h.frameState.compiledFrameGraph?.displayPorts?.standardPost).toBeUndefined();
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+const SIMPLE_OUTLINE = {
+  entities: [1],
+  visibleColor: [1, 0, 0, 1],
+  hiddenColor: [0, 0, 1, 1],
+  width: 2,
+  occlusion: 0,
+};
+
+it.each([
+  'forward',
+  'deferred',
+] as const)('binds changing built-in output stages directly on %s', async (renderPath) => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = { ...DEFAULT_STANDARD_PROFILE, renderPath };
+  h.frameState.installedPipelineConfig = { outputContract: 'standard-output-v2' };
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const camera = { ...input.camera, tonemap: 'aces-filmic' as const };
+  const lensFlare = {
+    intensity: 1,
+    threshold: 1,
+    bokehSize: 2,
+    tint: [1, 1, 1],
+    ghostTints: [1, 1, 1],
+    ghostScales: [0.5],
+  };
+  const total = renderGraphCompileCount();
+  const direct = renderOrderedViewBindCount();
+  const bind = (value: typeof input.camera, width = 16) => {
+    const result = compileViewGraph({ ...input, camera: value, surface: { width, height: 16 } });
+    expect(result.kind).toBe('ordered-display');
+    const installed = adoptViewGraph(h.internals, h.frameState, result);
+    if (installed === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    expect(installed.displayPorts?.lane).toBe(renderPath);
+    return installed.graph;
+  };
+  try {
+    const plain = bind(camera);
+    const smaa = bind({ ...camera, antialias: 'smaa' });
+    expect(smaa.inspect().passes.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(['smaa-edges', 'smaa-weights', 'smaa-blend']),
+    );
+    const optical = { ...camera, antialias: 'smaa' as const, outline: SIMPLE_OUTLINE, lensFlare };
+    const active = bind(optical);
+    expect(active.inspect().passes.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(['outline-composite', 'standard-lens-flare', 'smaa-edges']),
+    );
+    expect(bind({ ...optical, outline: { ...SIMPLE_OUTLINE, entities: [2], width: 3 } })).toBe(
+      active,
+    );
+    const resized = bind({ ...optical, lensFlare: { ...lensFlare, intensity: 2 } }, 32);
+    expect(resized).not.toBe(active);
+    const back = bind({ ...optical, postProcessing: false }, 32);
+    expect(back.inspect().passes.map(({ name }) => name)).toEqual(
+      plain.inspect().passes.map(({ name }) => name),
+    );
+    expect(renderOrderedViewBindCount() - direct).toBe(5);
+    expect(renderGraphCompileCount() - total).toBe(5);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('binds a premultiplied display when its inline outline changes admission', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = createPremultipliedForwardPipeline(
+    'rgba16float',
+    'external-output',
+  );
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const total = renderGraphCompileCount();
+  const direct = renderOrderedViewBindCount();
+  const draw = (camera: typeof input.camera) => {
+    const built = compileViewGraph({ ...input, camera });
+    expect(built.kind).toBe('ordered-display');
+    const installed = adoptViewGraph(h.internals, h.frameState, built);
+    if (installed === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return installed.graph;
+  };
+  try {
+    const plain = draw(input.camera);
+    const outline = draw({ ...input.camera, outline: SIMPLE_OUTLINE });
+    expect(outline).not.toBe(plain);
+    expect(outline.inspect().passes.some(({ name }) => name === 'outline-composite')).toBe(true);
+    expect(draw({ ...input.camera, postProcessing: false, outline: SIMPLE_OUTLINE })).not.toBe(
+      outline,
+    );
+    expect(renderGraphCompileCount() - total).toBe(3);
+    expect(renderOrderedViewBindCount() - direct).toBe(3);
   } finally {
     await h.frameState.compiledFrameGraph?.graph.retire();
   }
@@ -426,6 +702,68 @@ it('records Forward AO from the current depth before lighting', async () => {
   }
 });
 
+it('only rebinds Deferred GTAO when a physical pass or attachment changes', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' };
+  h.frameState.standardSceneSurfaceAdmission = createStandardSceneSurfaceAdmission({
+    viewIdentity: 'camera:0',
+    generation: 0,
+    deviceGeneration: 0,
+    standardPipeline: true,
+    cameraAvailable: true,
+    lane: 'clustered',
+    renderPath: 'deferred',
+    contributors: [],
+  });
+  Object.assign(h.internals, { depthPyramidShaders: { seed: {} } });
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  Object.assign(input.pipelineState, { perPassResources: { ssaoScreenPipeline: () => undefined } });
+  const install = (options: Partial<AmbientOcclusionSettings> = {}) => {
+    h.frameState.installedPipelineConfig = {
+      ambientOcclusion: { enabled: true, method: 'gtao', quality: 80, ...options },
+    };
+    const next = compileViewGraph(input);
+    if (next.kind !== 'ordered-display') throw new Error(JSON.stringify(next));
+    adoptViewGraph(h.internals, h.frameState, next);
+    h.accept();
+    return next.installed.graph;
+  };
+  const count = renderGraphCompileCount();
+  const bindings = renderOrderedViewBindCount();
+  try {
+    const baseline = install();
+    const passes = baseline.inspect().passes.map(({ name }) => name);
+    const raw = passes.indexOf('gtao-calc-compute');
+    expect(raw).toBeGreaterThan(passes.indexOf('g-buffer'));
+    expect(passes.indexOf('gtao-temporal')).toBeGreaterThan(raw);
+    expect(passes.indexOf('lighting')).toBeGreaterThan(passes.indexOf('gtao-resolve'));
+    for (let i = 0; i < 32; i++) {
+      expect(install({ intensity: 0.2 + i / 100, quality: 80 + (i % 8) })).toBe(baseline);
+    }
+    // The step count changes here, while both permutations use the same depth levels.
+    expect(install({ quality: 65 })).toBe(baseline);
+    const lower = install({ quality: 15 });
+    expect(lower).not.toBe(baseline);
+    const half = install({ quality: 15, gtao: { downsample: true, useNormals: true } });
+    expect(half).not.toBe(lower);
+    const rawOnly = install({
+      quality: 15,
+      gtao: { downsample: true, useNormals: true, spatialFilter: false, temporalFilter: false },
+    });
+    const rawPasses = rawOnly.inspect().passes.map(({ name }) => name);
+    expect(rawPasses).not.toContain('gtao-spatial');
+    expect(rawPasses).not.toContain('gtao-temporal');
+    const disabled = install({ intensity: 0 });
+    expect(disabled.inspect().passes.map(({ name }) => name)).not.toContain('gtao-resolve');
+    expect(install()).not.toBe(disabled);
+    expect(renderGraphCompileCount() - count).toBe(6);
+    expect(renderOrderedViewBindCount() - bindings).toBe(6);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
 it('records current GBuffer, light, blended and output stages for an ordinary Deferred view', async () => {
   const h = await harness();
   h.frameState.activePipeline = standardPipeline;
@@ -464,12 +802,110 @@ it('records current GBuffer, light, blended and output stages for an ordinary De
   }
 });
 
+it.each([
+  'forward',
+  'deferred',
+] as const)('rebinds %s temporal producers on algorithm changes and keeps current motion parameters', async (renderPath) => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = { ...DEFAULT_STANDARD_PROFILE, renderPath };
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const totalBefore = renderGraphCompileCount();
+  const directBefore = renderOrderedViewBindCount();
+  const install = (antialias: 'none' | 'taa' | 'tsr', shutterAngle = 0) => {
+    const camera = {
+      ...input.camera,
+      antialias,
+      ...(shutterAngle === 0
+        ? {}
+        : { motionBlur: { shutterAngle, maxRadiusPixels: 16, sampleCount: 8 } }),
+    };
+    const graph = compileAndAdoptViewGraph({ ...input, camera });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.lane).toBe(renderPath);
+    return graph;
+  };
+  const passNames = (graph: ReturnType<typeof install>) =>
+    graph.inspect().passes.map((pass) => pass.name);
+  try {
+    const taa = install('taa');
+    expect(passNames(taa)).toContain('taa-resolve');
+    expect(install('taa')).toBe(taa);
+    const tsr = install('tsr');
+    expect(tsr).not.toBe(taa);
+    expect(passNames(tsr)).toEqual(expect.arrayContaining(['tsr-measure-opaque', 'tsr-analyze']));
+    const motion = install('none', 90);
+    expect(passNames(motion)).toEqual(
+      expect.arrayContaining(['motion-blur-tile-summary', 'motion-blur']),
+    );
+    expect(install('none', 180)).toBe(motion);
+    expect(passNames(install('none'))).not.toContain('motion-blur');
+    expect(renderOrderedViewBindCount() - directBefore).toBe(4);
+    expect(renderGraphCompileCount() - totalBefore).toBe(4);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it.each([
+  'forward',
+  'deferred',
+] as const)('rebinds %s reduced scene dimensions and TSR capacity independently of GPU budget', async (renderPath) => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = { ...DEFAULT_STANDARD_PROFILE, renderPath };
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const before = renderGraphCompileCount();
+  const ordered = renderOrderedViewBindCount();
+  const install = (scale: number, maxScale: number, targetGpuMs: number) => {
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      surface: { width: 128, height: 96 },
+      camera: {
+        ...input.camera,
+        antialias: 'tsr',
+        dynamicResolution: { minScale: 0.5, maxScale, targetGpuMs },
+      },
+      renderExtent: deriveRenderExtent({
+        outputWidth: 128,
+        outputHeight: 96,
+        requestedScale: scale,
+        minScale: 0.5,
+        maxScale,
+        generation: 0,
+      }),
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    const half = install(0.5, 1, 12);
+    expect(half.inspect().passes.map((pass) => pass.name)).toContain('standard-scene-coverage');
+    expect(install(0.5, 1, 8)).toBe(half);
+    const reducedCapacity = install(0.5, 0.75, 8);
+    expect(reducedCapacity).not.toBe(half);
+    expect(install(0.75, 0.75, 8)).not.toBe(reducedCapacity);
+    expect(renderOrderedViewBindCount() - ordered).toBe(3);
+    expect(renderGraphCompileCount() - before).toBe(3);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
 it('issues current camera selection and five Bloom levels while the scene and lens values change', async () => {
   const h = await harness();
   h.frameState.activePipeline = standardPipeline;
   const input = { ...unlitDisplayGraphInput(h), clearOnly: false, currentGpuCamera: true };
   const camera = { ...input.camera, tonemap: 'reinhard-extended' as const, bloom: 'on' as const };
-  const install = (bloomIntensity: number, frameNumber: number, currentGpuCamera = true) => {
+  const install = (
+    bloomIntensity: number,
+    frameNumber: number,
+    currentGpuCamera = true,
+    bloomQuality: BloomQuality = BLOOM_QUALITY_HIGH,
+    prefilter = true,
+  ) => {
     const graph = compileAndAdoptViewGraph({
       ...input,
       currentGpuCamera,
@@ -477,7 +913,8 @@ it('issues current camera selection and five Bloom levels while the scene and le
         ...camera,
         exposure: 1 + frameNumber / 60,
         bloomIntensity,
-        bloomThreshold: 0.5 + frameNumber / 20,
+        bloomQuality,
+        bloomThreshold: prefilter ? 0.5 + frameNumber / 20 : -1,
       },
     });
     if (graph === null) throw new Error(h.errors.map(String).join('\n'));
@@ -488,13 +925,21 @@ it('issues current camera selection and five Bloom levels while the scene and le
     const graph = install(1, 0);
     const ports = h.frameState.compiledFrameGraph?.displayPorts;
     expect(ports?.geometry).toBe('selection');
-    expect(ports?.standardPost?.bloom).toBe(true);
+    expect(ports?.bloomLevels).toBe(BLOOM_QUALITY_HIGH);
     expect(typeof h.frameState.compiledFrameGraph?.prepareGpuDrivenPipelines).toBe('function');
     const declared = graph.inspect().passes.map((pass) => pass.name);
     expect(declared).toContain('camera-gpu-selection');
     expect(declared).toContain('forward-display-draws');
     expect(declared.filter((name) => /^bloom-(horizontal|vertical)-/.test(name))).toHaveLength(10);
     for (let frame = 1; frame <= 60; frame++) expect(install(frame / 60, frame)).toBe(graph);
+    const low = install(1, 61, true, BLOOM_QUALITY_LOW);
+    expect(low).not.toBe(graph);
+    expect(
+      low.inspect().passes.filter(({ name }) => /^bloom-(horizontal|vertical)-/.test(name)),
+    ).toHaveLength(6);
+    const noPrefilter = install(1, 61, true, BLOOM_QUALITY_LOW, false);
+    expect(noPrefilter).not.toBe(low);
+    expect(noPrefilter.inspect().passes.some(({ name }) => name === 'bloom-prefilter')).toBe(false);
     const withoutBloom = install(0, 61);
     expect(withoutBloom).not.toBe(graph);
     expect(withoutBloom.inspect().passes.some((p) => p.name.startsWith('bloom-'))).toBe(false);
@@ -672,6 +1117,101 @@ it('keeps the display graph across independent capture target, face and roster c
   }
 });
 
+it('hands over one ordered binding through cold, rolled back, and reused submissions', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const totalBefore = renderGraphCompileCount();
+  const orderedBefore = renderOrderedViewBindCount();
+  const cold = compileViewGraph(input);
+  expect(cold).toMatchObject({ kind: 'ordered-display', operation: 'bind', metrics: undefined });
+  if (cold.kind !== 'ordered-display') throw new Error('Expected an ordered display binding');
+  try {
+    const key = cold.installed.topologyKey;
+    if (typeof key === 'string' || !('forwardDisplay' in key))
+      throw new Error('Expected ordered Forward inspection');
+    expect(key.forwardDisplay).toBe(cold.installed.displayPorts);
+    expect(cold.installed.targets).toBe(cold.installed.graph);
+    expect(cold.installed.targets.graphGeneration).toBe(cold.installed.graph.inspect().generation);
+    expect(h.frameState.compiledFrameGraph).toBeNull();
+    expect(getRenderFeatureGraphInspection(h.internals).compileAttempts).toBe(0);
+    expect(adoptViewGraph(h.internals, h.frameState, cold)).toBe(cold.installed);
+    h.stash();
+    expect(h.frameState.compiledFrameGraph).toBeNull();
+
+    const promoted = compileViewGraph(input);
+    expect(promoted).toMatchObject({
+      kind: 'ordered-display',
+      operation: 'promote',
+      installed: cold.installed,
+      metrics: undefined,
+    });
+    expect(adoptViewGraph(h.internals, h.frameState, promoted)).toBe(cold.installed);
+    h.accept();
+
+    const reused = compileViewGraph(input);
+    expect(reused).toMatchObject({
+      kind: 'ordered-display',
+      operation: 'reuse',
+      installed: cold.installed,
+      metrics: undefined,
+    });
+    expect(adoptViewGraph(h.internals, h.frameState, reused)).toBe(cold.installed);
+    h.accept();
+    expect(getRenderFeatureGraphInspection(h.internals)).toMatchObject({
+      compileAttempts: 1,
+      compileSuccesses: 1,
+      unsubmittedGraphReuses: 1,
+      reuseHits: 1,
+      signatureValidationCalls: 0,
+    });
+    expect(renderGraphCompileCount()).toBe(totalBefore + 1);
+    expect(renderOrderedViewBindCount()).toBe(orderedBefore + 1);
+  } finally {
+    await cold.installed.graph.retire();
+  }
+});
+
+it.each([
+  'accepted',
+  'stashed',
+] as const)('rebinds a %s display on a different device scope with the same generation', async (state) => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const original = compileViewGraph(input);
+  if (original.kind !== 'ordered-display') throw new Error('Expected an ordered display binding');
+  const first = original.installed;
+  adoptViewGraph(h.internals, h.frameState, original);
+  if (state === 'accepted') {
+    h.accept();
+    expect(h.frameState.compiledFrameGraph).toBe(first);
+  } else {
+    h.stash();
+    expect(h.frameState.unsubmittedCompiledFrameGraph).toBe(first);
+  }
+
+  const replacementScope = DeviceScope.create(h.internals.deviceScope.generation, 'replacement');
+  const replacementInternals = { ...h.internals, deviceScope: replacementScope };
+  const prepared = holdPreparedViewGraph(replacementInternals, h.frameState, first);
+  try {
+    expect(prepared.accept().ok).toBe(false);
+    const replacement = compileViewGraph({ ...input, internals: replacementInternals });
+    if (replacement.kind !== 'ordered-display')
+      throw new Error('Expected a new ordered display binding');
+    expect(replacement.operation).toBe('bind');
+    expect(replacement.installed.deviceScope).toBe(replacementScope);
+    expect(replacement.installed.graph).not.toBe(first.graph);
+    adoptViewGraph(replacementInternals, h.frameState, replacement);
+    h.accept();
+    expect(h.frameState.unsubmittedCompiledFrameGraph).toBeUndefined();
+    expect(first.graph.isRetired()).toBe(true);
+  } finally {
+    await prepared.retire();
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
 it('rejects a failed capsule-consumer switch instead of recording a graph with the old caster policy', async () => {
   const h = await harness();
   h.compile();
@@ -750,8 +1290,7 @@ function observe(h: Harness) {
   const metrics = getRenderFeatureGraphInspection(h.internals);
   return {
     graphGeneration: h.frameState.graphGeneration,
-    compiledFrameGraphGeneration: h.frameState.compiledFrameGraphGeneration,
-    standardLightingGraphSignature: h.frameState.standardLightingGraphSignature,
+    standardLighting: h.frameState.compiledFrameGraph?.standardLighting,
     unsubmitted: h.frameState.unsubmittedCompiledFrameGraph !== undefined,
     candidate: h.frameState.compiledFrameGraphCandidate !== undefined,
     barrel: h.frameState.barrelDistortionGraphResolution,
@@ -788,8 +1327,7 @@ const GOLDENS = {
   compiled: {
     identity: 'replacement',
     graphGeneration: 1,
-    compiledFrameGraphGeneration: 1,
-    standardLightingGraphSignature: 'missing',
+    standardLighting: 'missing',
     unsubmitted: false,
     candidate: true,
     barrel: 'accepted',
@@ -805,8 +1343,7 @@ const GOLDENS = {
   reused: {
     identity: 'installed',
     graphGeneration: 1,
-    compiledFrameGraphGeneration: 1,
-    standardLightingGraphSignature: 'missing',
+    standardLighting: 'missing',
     unsubmitted: false,
     candidate: false,
     barrel: 'accepted',
@@ -823,8 +1360,7 @@ const GOLDENS = {
   promoted: {
     identity: 'replacement',
     graphGeneration: 2,
-    compiledFrameGraphGeneration: 2,
-    standardLightingGraphSignature: 'missing',
+    standardLighting: 'missing',
     unsubmitted: false,
     candidate: true,
     barrel: 'accepted',
@@ -844,8 +1380,7 @@ const GOLDENS = {
   retained: {
     identity: 'installed',
     graphGeneration: 1,
-    compiledFrameGraphGeneration: 1,
-    standardLightingGraphSignature: 'missing',
+    standardLighting: 'missing',
     unsubmitted: false,
     candidate: false,
     barrel: 'retained',
@@ -863,8 +1398,7 @@ const GOLDENS = {
   rejected: {
     identity: 'null',
     graphGeneration: 0,
-    compiledFrameGraphGeneration: 0,
-    standardLightingGraphSignature: '',
+    standardLighting: undefined,
     unsubmitted: false,
     candidate: false,
     barrel: 'retained',

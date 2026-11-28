@@ -1,13 +1,24 @@
-import { relative, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine/types';
 import { assetLibrarySourceIdentity, readProjectFacts } from '@forgeax/engine-devkit';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
-import { createMaterialPackCooker, createTextureGeneratorPackCooker } from '@forgeax/engine-shader-compiler';
+import {
+  createMaterialPackCooker,
+  createTextureGeneratorPackCooker,
+  materialShaderSourceRoots,
+} from '@forgeax/engine-shader-compiler';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { defineConfig } from 'vite';
+
+const require = createRequire(import.meta.url);
+const causticsShaders = resolve(
+  dirname(require.resolve('@forgeax/engine-water/package.json')),
+  'src/caustics/shaders',
+);
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const root = resolve(here, '../../..');
@@ -24,7 +35,7 @@ export default defineConfig(async ({ command }) => {
       __WATER_R3_SSR_IDENTITY__: JSON.stringify(validateIdentity(identity).valid ? identity : null),
     },
     plugins: [
-      forgeaxShader(),
+      forgeaxShader({ engineShaderRoots: [...materialShaderSourceRoots(), causticsShaders] }),
       pluginPack({
         roots: [
           resolve(here, '../presentation-assets.pack.ts'),
@@ -36,7 +47,10 @@ export default defineConfig(async ({ command }) => {
           relative(facts.root, path).replaceAll('\\', '/'),
         runtimeBinding: createStandaloneRuntimeAssetBinding('water-r3-slw-reflection-underwater'),
         ddc: { projectDdcRoot: resolve(here, '.forgeax/ddc/v2') },
-        cookers: [createMaterialPackCooker(), createTextureGeneratorPackCooker()],
+        cookers: [
+          createMaterialPackCooker([causticsShaders]),
+          createTextureGeneratorPackCooker([resolve(here, 'assets')]),
+        ],
         importers: [imageImporter],
       }),
       ...(command === 'serve'
@@ -50,6 +64,11 @@ export default defineConfig(async ({ command }) => {
         : []),
     ],
     server: { port: 5381, strictPort: true, fs: { allow: [root] } },
-    build: { target: 'esnext' },
+    build: {
+      target: 'esnext',
+      rollupOptions: {
+        input: { main: resolve(here, 'index.html'), pool: resolve(here, 'pool.html') },
+      },
+    },
   };
 });

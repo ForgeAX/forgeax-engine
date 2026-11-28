@@ -1,5 +1,7 @@
 import { accessResourceId, type CompiledPass } from './kernel-internal.js';
 import type {
+  GraphAccessUsage,
+  GraphPass,
   RasterColorAttachment,
   RasterDepthStencilAttachment,
   RasterGraphPass,
@@ -32,48 +34,98 @@ function joinDepth<Frame>(
   );
 }
 
-function eligible<Frame extends RenderGraphFrame>(pass: CompiledPass<Frame>): boolean {
-  if (pass.pass.kind !== 'raster') return false;
-  const descriptor = pass.pass.descriptor;
-  if (descriptor.executeIf !== undefined || descriptor.occlusionQuerySet !== undefined)
-    return false;
-  // A native pass has one resource-usage scope. Do not turn an inter-pass
-  // storage barrier into simultaneous read/write usage or writable aliasing.
-  return descriptor.accesses.every(
-    (access) =>
-      ![
-        'storage-write',
-        'storage-read-write',
-        'sampled-storage-write',
-        'sampled-storage-read-write',
-        'copy-dst',
-        'acceleration-structure-build',
-      ].includes(access.usage),
+const BATCH_BARRIERS: ReadonlySet<GraphAccessUsage> = new Set([
+  'storage-write',
+  'storage-read-write',
+  'sampled-storage-write',
+  'sampled-storage-read-write',
+  'copy-dst',
+  'acceleration-structure-build',
+]);
+
+function eligible<Frame>(descriptor: RasterGraphPass<Frame>): boolean {
+  return (
+    descriptor.executeIf === undefined &&
+    descriptor.occlusionQuerySet === undefined &&
+    descriptor.accesses.every((access) => !BATCH_BARRIERS.has(access.usage))
   );
 }
 
-function adjacentAttachments<Frame extends RenderGraphFrame>(
+/** Undefined breaks the run. A true result leaves a store or resolve decision open. */
+function consecutiveAttachments<Frame>(
   previous: RasterGraphPass<Frame>,
   next: RasterGraphPass<Frame>,
-): boolean {
+): boolean | undefined {
   if (
     previous.colorAttachments.length !== next.colorAttachments.length ||
     !joinDepth(previous.depthStencilAttachment, next.depthStencilAttachment)
   )
-    return false;
-  for (const [i, a] of previous.colorAttachments.entries()) {
+    return undefined;
+  let checkPlacement = false;
+  for (let i = 0; i < previous.colorAttachments.length; i++) {
+    const a = previous.colorAttachments[i];
     const b = next.colorAttachments[i];
     if (
+      a === undefined ||
       b === undefined ||
       a.view !== b.view ||
       a.depthSlice !== b.depthSlice ||
-      a.resolveTarget !== undefined ||
-      a.storeOp !== 'store' ||
+      (a.storeOp !== 'store' && a.storeOp !== 'auto') ||
       b.loadOp !== 'load'
     )
-      return false;
+      return undefined;
+    checkPlacement ||= a.resolveTarget !== undefined || a.storeOp === 'auto';
   }
-  return true;
+  return checkPlacement;
+}
+
+interface RasterCandidate {
+  readonly first: number;
+  readonly end: number;
+  readonly checkPlacement: boolean;
+}
+
+/** Find possible native runs as passes are declared. Color store and
+ * resolve placement may still change, so only immutable boundaries split a candidate. */
+export class RasterBatchCandidates<Frame extends RenderGraphFrame> {
+  private previous: RasterGraphPass<Frame> | undefined;
+  private previousId = -1;
+  private first: number | undefined;
+  private checkPlacement = false;
+  private ranges: RasterCandidate[] | undefined;
+
+  append(id: number, current: RasterGraphPass<Frame>): void {
+    const previous = this.previous;
+    const previousId = this.previousId;
+    this.previous = current;
+    this.previousId = id;
+    if (previous !== undefined && previousId + 1 === id) {
+      const placement = consecutiveAttachments(previous, current);
+      if (
+        placement !== undefined &&
+        (this.first !== undefined || eligible(previous)) &&
+        eligible(current)
+      ) {
+        this.first ??= previousId;
+        this.checkPlacement ||= placement;
+        return;
+      }
+    }
+    this.endRun(previousId + 1);
+  }
+
+  finish(): readonly RasterCandidate[] | undefined {
+    this.endRun(this.previousId + 1);
+    return this.ranges;
+  }
+
+  private endRun(end: number): void {
+    if (this.first === undefined) return;
+    this.ranges ??= [];
+    this.ranges.push({ first: this.first, end, checkPlacement: this.checkPlacement });
+    this.first = undefined;
+    this.checkPlacement = false;
+  }
 }
 
 /** Other uses of an attachment's backing, even from a different mip, cannot share its pass. */
@@ -102,83 +154,99 @@ function admitRasterUses<Frame extends RenderGraphFrame>(
   return true;
 }
 
-/** Build only consecutive, unconditional groups; never reorder feature work. */
+const NO_RASTER_BATCHES = Object.freeze([]);
+
+type RasterEntry<Frame extends RenderGraphFrame> = CompiledPass<Frame> & {
+  readonly pass: Extract<GraphPass<Frame>, { kind: 'raster' }>;
+};
+
+function batchFromRange<Frame extends RenderGraphFrame>(
+  passes: readonly CompiledPass<Frame>[],
+  first: number,
+  last: number,
+  initial: RasterGraphPass<Frame>,
+  final: RasterGraphPass<Frame>,
+): RasterBatch<Frame> {
+  const names: string[] = [];
+  for (let i = first; i <= last; i++) names.push((passes[i] as CompiledPass<Frame>).name);
+  const depth = initial.depthStencilAttachment;
+  return Object.freeze({
+    first,
+    last,
+    names: Object.freeze(names),
+    name: names.join(' + '),
+    colorAttachments: Object.freeze(
+      initial.colorAttachments.map((attachment, i) =>
+        Object.freeze({
+          ...attachment,
+          storeOp: final.colorAttachments[i]?.storeOp ?? attachment.storeOp,
+          resolveTarget: final.colorAttachments[i]?.resolveTarget,
+        }),
+      ),
+    ),
+    depthStencilAttachment:
+      depth === undefined
+        ? undefined
+        : Object.freeze({
+            ...depth,
+            depthStoreOp: final.depthStencilAttachment?.depthStoreOp,
+            stencilStoreOp: final.depthStencilAttachment?.stencilStoreOp,
+          }),
+  });
+}
+
+/** Use only the stream's candidate runs and the final attachment placement. */
 export function planRasterBatches<Frame extends RenderGraphFrame>(
   passes: readonly CompiledPass<Frame>[],
+  candidates: readonly RasterCandidate[] | undefined,
 ): readonly (RasterBatch<Frame> | undefined)[] {
+  if (candidates === undefined) return NO_RASTER_BATCHES;
   const batches: (RasterBatch<Frame> | undefined)[] = [];
   const attachments = new Set<number | undefined>();
   const reads = new Set<number | undefined>();
-  let first = 0;
-  while (first < passes.length) {
-    const start = passes[first];
-    if (start === undefined || start.pass.kind !== 'raster' || !eligible(start)) {
-      first++;
-      continue;
-    }
-    let last = first;
-    while (last + 1 < passes.length) {
-      const previous = passes[last],
-        next = passes[last + 1];
-      if (
-        previous?.pass.kind !== 'raster' ||
-        next?.pass.kind !== 'raster' ||
-        !eligible(next) ||
-        !adjacentAttachments(previous.pass.descriptor, next.pass.descriptor)
-      )
-        break;
-      if (last === first) {
-        reads.clear();
-        attachments.clear();
-        const initial = start.pass.descriptor;
-        for (const attachment of initial.colorAttachments)
-          attachments.add(
-            accessResourceId({ resource: attachment.view, usage: 'color-attachment' }),
-          );
-        if (initial.depthStencilAttachment !== undefined)
-          attachments.add(
-            accessResourceId({
-              resource: initial.depthStencilAttachment.view,
-              usage: 'depth-stencil-read',
-            }),
-          );
-        if (!admitRasterUses(initial, attachments, reads)) break;
-      }
-      if (!admitRasterUses(next.pass.descriptor, attachments, reads)) break;
-      last++;
-    }
-    const end = passes[last];
-    if (last > first && end?.pass.kind === 'raster') {
-      const initial = start.pass.descriptor,
-        final = end.pass.descriptor;
-      const names = Object.freeze(passes.slice(first, last + 1).map((p) => p.name));
-      const depth = initial.depthStencilAttachment;
-      const batch: RasterBatch<Frame> = Object.freeze({
-        first,
-        last,
-        names,
-        name: names.join(' + '),
-        colorAttachments: Object.freeze(
-          initial.colorAttachments.map((attachment, i) =>
-            Object.freeze({
-              ...attachment,
-              storeOp: final.colorAttachments[i]?.storeOp ?? attachment.storeOp,
-              resolveTarget: final.colorAttachments[i]?.resolveTarget,
-            }),
-          ),
-        ),
-        depthStencilAttachment:
-          depth === undefined
-            ? undefined
-            : Object.freeze({
-                ...depth,
-                depthStoreOp: final.depthStencilAttachment?.depthStoreOp,
-                stencilStoreOp: final.depthStencilAttachment?.stencilStoreOp,
+
+  for (const candidate of candidates) {
+    let first = candidate.first;
+    while (first + 1 < candidate.end) {
+      const initial = (passes[first] as RasterEntry<Frame>).pass.descriptor;
+      let final = initial;
+      let last = first;
+      while (last + 1 < candidate.end) {
+        if (
+          candidate.checkPlacement &&
+          final.colorAttachments.some(
+            (attachment) =>
+              attachment.resolveTarget !== undefined || attachment.storeOp !== 'store',
+          )
+        )
+          break;
+        if (last === first) {
+          reads.clear();
+          attachments.clear();
+          for (const attachment of initial.colorAttachments)
+            attachments.add(
+              accessResourceId({ resource: attachment.view, usage: 'color-attachment' }),
+            );
+          if (initial.depthStencilAttachment !== undefined)
+            attachments.add(
+              accessResourceId({
+                resource: initial.depthStencilAttachment.view,
+                usage: 'depth-stencil-read',
               }),
-      });
-      for (let i = first; i <= last; i++) batches[i] = batch;
+            );
+          if (!admitRasterUses(initial, attachments, reads)) break;
+        }
+        const next = (passes[last + 1] as RasterEntry<Frame>).pass.descriptor;
+        if (!admitRasterUses(next, attachments, reads)) break;
+        final = next;
+        last++;
+      }
+      if (last > first) {
+        const batch = batchFromRange(passes, first, last, initial, final);
+        for (let i = first; i <= last; i++) batches[i] = batch;
+      }
+      first = last + 1;
     }
-    first = last + 1;
   }
   return batches;
 }

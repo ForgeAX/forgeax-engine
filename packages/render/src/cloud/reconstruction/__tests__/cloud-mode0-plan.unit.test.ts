@@ -4,6 +4,7 @@ import { selectEnvironment } from '../../../environment/frame';
 import type { AtmosphereParameters } from '../../../extract/environment';
 import { withBuiltinRenderFeatures } from '../../../features/builtins';
 import type { RenderFeaturePlanContext } from '../../../features/plan';
+import { resolveStandardRenderFeatureTargets } from '../../../features/targets';
 import type { RenderFeatureExtractView } from '../../../features/types';
 import { createSceneDataCatalog } from '../../../temporal/scene-data-catalog';
 import type { ExtractedAnalyticCloudLayer } from '../../extract';
@@ -82,6 +83,30 @@ function fixture() {
   };
   return { feature, data, params, context };
 }
+
+it.each([
+  true,
+  false,
+])('binds the quarter scene depth range only when RG16F is available: %s', (supported) => {
+  const { feature, context, data } = fixture();
+  const plan = feature
+    .plan(data(), {
+      ...context,
+      caps: { ...context.caps, rg16floatRenderable: supported },
+    })
+    .unwrap();
+  const trace = plan.work.find(({ passes }) =>
+    passes.some(({ name }) => name === 'cloud-analytic-trace'),
+  );
+  const shader = trace?.resources.find(({ kind }) => kind === 'fullscreen-program');
+  expect(shader).toMatchObject({
+    fragmentEntryPoint: supported ? 'fs_trace_mode_zero_depth_range' : 'fs_trace_mode_zero',
+  });
+  const pass = trace?.passes.find(({ name }) => name === 'cloud-analytic-trace');
+  expect(
+    pass?.kind === 'raster' && pass.sampledTargets?.includes('cloud-scene-depth-minmax-quarter'),
+  ).toBe(supported);
+});
 
 it('skips clouds with a clear reason when the backend cannot run the cloud trace', () => {
   const { feature, context, data } = fixture();
@@ -323,4 +348,83 @@ it.each([
       mode === 1 ? ['lighting-changed'] : [],
     );
   }
+});
+
+it('keeps the UE desktop trace and history formats and clears in one Mode 0 contract', () => {
+  const { feature, context, data } = fixture();
+  const formatTargets = resolveStandardRenderFeatureTargets({
+    tonemap: 'none',
+    antialias: 'none',
+    colorAttachmentFormat: 'rgba16float',
+    storageBuffer: true,
+    multisample: false,
+    cloudHistory: true,
+    analyticCloud: true,
+    cloudTransportFormat: 'rgba32float',
+    cloudDepthFormat: 'rgba16float',
+  });
+  for (const target of formatTargets.filter(
+    ({ name }) => name.startsWith('cloud-mode0-trace-') || name.startsWith('cloud-history-'),
+  )) {
+    expect(target.format, target.name).toBe('rgba16float');
+  }
+  const plan = feature
+    .plan(data(), {
+      ...context,
+      caps: { ...context.caps, rg16floatRenderable: true },
+      views: context.views.map((view) => ({ ...view, targets: formatTargets })),
+    })
+    .unwrap();
+  const resources = plan.work.flatMap((work) => work.resources);
+  expect(
+    resources.find(
+      (resource) =>
+        resource.kind === 'fullscreen-program' && resource.name === 'cloud-layer-transport',
+    ),
+  ).toMatchObject({ fragmentEntryPoint: 'fs_ue_mode' });
+  const resolve = resources.find(
+    (resource) => resource.kind === 'fullscreen-program' && resource.name === 'cloud-layer-resolve',
+  );
+  expect(resolve).toMatchObject({ fragmentEntryPoint: 'fs_ue_blend' });
+  expect(resolve?.kind === 'fullscreen-program' && resolve.reads).not.toContain('motion-input');
+  expect(resources).toContainEqual(
+    expect.objectContaining({
+      kind: 'graphics-program',
+      name: 'cloud-layer-resolve.pipeline',
+      program: expect.objectContaining({
+        colorFormats: ['rgba16float'],
+        renderState: expect.objectContaining({
+          blend: {
+            color: { operation: 'add', srcFactor: 'one', dstFactor: 'src-alpha' },
+            alpha: { operation: 'add', srcFactor: 'zero', dstFactor: 'one' },
+          },
+        }),
+      }),
+    }),
+  );
+  const passes = plan.work.flatMap((work) => work.passes);
+  expect(passes).toContainEqual(
+    expect.objectContaining({
+      name: 'cloud-layer-resolve',
+      colorAttachments: [{ target: 'motion-output', loadOp: 'load', storeOp: 'store' }],
+      sampledTargets: [
+        'cloud-history-radiance-current',
+        'cloud-history-transmittance-current',
+        'cloud-history-depth-current',
+        'depth',
+      ],
+    }),
+  );
+  expect(passes).toContainEqual(
+    expect.objectContaining({
+      name: 'cloud-analytic-trace',
+      sampledTargets: expect.arrayContaining(['cloud-scene-depth-minmax-quarter']),
+      colorAttachments: expect.arrayContaining([
+        expect.objectContaining({
+          target: 'cloud-mode0-trace-depth',
+          clearValue: { r: 63000, g: 63000, b: 63000, a: 63000 },
+        }),
+      ]),
+    }),
+  );
 });

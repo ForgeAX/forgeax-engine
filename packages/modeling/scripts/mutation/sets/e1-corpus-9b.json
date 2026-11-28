@@ -1,0 +1,30 @@
+{
+	"tests": ["src/brep/__tests__/e1/e1-corpus.unit.test.ts"],
+	"mutations": [
+		{
+			"id": "a14-seam-last-segment-dropped",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "for (let k = 0; k + 1 < line.length; k++) {",
+			"new": "for (let k = 0; k + 2 < line.length; k++) {"
+		},
+		{
+			"id": "a14-stability-off-grid-dropped",
+			"file": "src/brep/__tests__/e1/e1-corpus.unit.test.ts",
+			"old": "for (const n of [4096, 8192, 4097, 3001, 5003]) {",
+			"new": "for (const n of [4096, 8192]) {",
+			"survives": "Equivalent for the committed corpus: a probe over all 40 pairs at 4097, 3001, 5003 and 8192 samples gives the same seam counts as 4096, so dropping the off-grid sizes changes no assertion the corpus can fail. The guard is kept as a regression against a future seam-sensitive pair, not counted as a kill."
+		},
+		{
+			"id": "a14-sign-graze-counted",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "if (!(f0 * f1 < 0)) return;",
+			"new": "if (!(f0 * f1 <= 0)) return;"
+		},
+		{
+			"id": "a9c-crossings-closing-segment-dropped",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "for (let i = 0; i + 1 < pts.length; i++) {",
+			"new": "for (let i = 0; i + 2 < pts.length; i++) {"
+		}
+	]
+}

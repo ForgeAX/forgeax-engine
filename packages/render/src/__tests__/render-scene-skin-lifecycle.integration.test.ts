@@ -83,7 +83,7 @@ function position(scene: PersistentRenderScene, entity: EntityHandle): number {
   const frame = required(scene.skinRecordingFrame()),
     slot = required(scene.compositionSlot(entity));
   const matrix = mat4.create();
-  expect(frame.current.matrix(slot.slot, 0, matrix, mat4.create())).toBe(true);
+  expect(frame.current.matrix(slot.slot, 0, matrix)).toBe(true);
   return matrix[12] as number;
 }
 

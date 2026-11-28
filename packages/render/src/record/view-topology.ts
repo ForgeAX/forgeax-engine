@@ -1,3 +1,7 @@
+import {
+  type CloudShadowSpatialLayout,
+  cloudShadowSpatialLayout,
+} from '../cloud/lighting/shadow-spatial-layout';
 import { cloudForQuality } from '../quality';
 // The graph-topology inputs of one view that depend on its lights, scene
 // roster and device: shadow map sizes, terrain receivers, the cloud shadow
@@ -19,7 +23,7 @@ import type {
 import type { ExtractedVolumetricFog, RenderableSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
 import { type TerrainShadowReceiver, terrainShadowReceivers } from '../terrain/shadow-family';
-import { hasVolumetricFogCapability } from '../volume/capability';
+import { hasSelectedVolumeLight, hasVolumetricFogCapability } from '../volume/capability';
 import type { ViewLights } from '../world/render-lights';
 import { recordContext } from '../world/view-record-context';
 import { clusterLocalLights } from './cluster-local-lights';
@@ -35,26 +39,35 @@ export function cloudShadowProjectionFor(cloudLayer: ExtractedCloudLayer | undef
       readonly baseHeight: number;
       readonly thickness: number;
       readonly beerMap?: boolean;
+      readonly ue5ReferenceFarDepthMeters?: number;
       readonly surfaceStrength?: number;
       readonly atmosphereStrength?: number;
       readonly rawResolution: number;
+      readonly spatialLayout: CloudShadowSpatialLayout;
     })
   | undefined {
   if (cloudLayer !== undefined && cloudLayer.shadowMap !== undefined) {
     const map = cloudLayer.shadowMap;
+    const spatialLayout = cloudShadowSpatialLayout(
+      map.resolution,
+      map.spatialPasses,
+      map.ue5Reference,
+    );
     return {
       ...createCloudShadowProjection({
         center: map.origin,
         sunDirection: map.directionToLight,
         range: map.extentMeters,
-        resolution: Math.ceil(map.resolution / 2),
+        resolution: spatialLayout.filteredResolution,
       }),
       origin: map.origin,
       rawResolution: map.resolution,
+      spatialLayout,
       right: map.right,
       up: map.up,
       lowSun: false,
       beerMap: true,
+      ...(map.ue5Reference ? { ue5ReferenceFarDepthMeters: map.depthMeters } : {}),
       surfaceStrength: map.cast ? map.surfaceStrength : 0,
       atmosphereStrength: map.cast ? (map.atmosphereStrength ?? 1) : 0,
       baseHeight: cloudLayer.bottomMeters,
@@ -166,6 +179,39 @@ function stageAcceptedVolumetricFogFrame(
   return { ...accepted, paramsBuffer };
 }
 
+function selectViewVolumePrograms(
+  internals: RenderSystemInternals,
+  camera: CameraSnapshot,
+  lights: ViewLights,
+  volumetricFog: ExtractedVolumetricFog | undefined,
+) {
+  const capability = hasVolumetricFogCapability(
+    internals.device.caps,
+    internals.volumetricFogShaders,
+  );
+  const requestPrograms = internals.requestVolumetricFogPrograms;
+  const mayPrepare =
+    requestPrograms !== undefined &&
+    internals.device.caps.compute &&
+    internals.device.caps.storageTexture;
+  const viewFog =
+    capability || mayPrepare
+      ? volumetricFogForView(
+          volumetricFog,
+          camera,
+          recordContext(internals).canvas.width,
+          recordContext(internals).canvas.height,
+        )
+      : volumetricFog;
+  const preparingPrograms =
+    !capability &&
+    mayPrepare &&
+    viewFog?.status === 'available' &&
+    hasSelectedVolumeLight(lights, viewFog) &&
+    requestPrograms();
+  return { capability, viewFog, preparingPrograms };
+}
+
 /** The volume projection this frame renders and the accepted state it may replace. */
 export function prepareFrameVolumetricFog(
   internals: RenderSystemInternals,
@@ -176,18 +222,12 @@ export function prepareFrameVolumetricFog(
   lights: ViewLights,
   volumetricFog: ExtractedVolumetricFog | undefined,
 ) {
-  const capability = hasVolumetricFogCapability(
-    internals.device.caps,
-    internals.volumetricFogShaders,
+  const { capability, viewFog, preparingPrograms } = selectViewVolumePrograms(
+    internals,
+    camera,
+    lights,
+    volumetricFog,
   );
-  const viewFog = capability
-    ? volumetricFogForView(
-        volumetricFog,
-        camera,
-        recordContext(internals).canvas.width,
-        recordContext(internals).canvas.height,
-      )
-    : volumetricFog;
   const spotLightProjector = prepareSpotLightProjectorFrame(
     internals,
     world,
@@ -226,6 +266,7 @@ export function prepareFrameVolumetricFog(
   const graphFog = capability ? (prepared === undefined ? acceptedFallback : viewFog) : undefined;
   return {
     capability,
+    preparingPrograms,
     viewFog,
     viewCulled: volumetricFog?.status === 'available' && viewFog === undefined,
     spotLightProjector,

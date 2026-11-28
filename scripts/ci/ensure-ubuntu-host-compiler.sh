@@ -11,7 +11,7 @@ if [ "${ID:-}" != 'ubuntu' ]; then
   exit 1
 fi
 
-if ! command -v cc >/dev/null 2>&1; then
+if ! command -v cc >/dev/null 2>&1 || ! command -v c++ >/dev/null 2>&1; then
   command -v sudo >/dev/null
   command -v apt-get >/dev/null
 
@@ -46,3 +46,5 @@ fi
 
 command -v cc
 cc --version | head -1
+command -v c++
+c++ --version | head -1

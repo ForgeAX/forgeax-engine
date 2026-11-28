@@ -19,6 +19,14 @@ over the weld distance apart. A seam that stays open is retried once at a finer 
 once at a coarser tolerance band. `native` is unavailable until a Host
 injects a backend (`model({ native })`) and fails with `model-capability-unavailable`.
 
+- `details: 'weld' | 'float' | 'omit'` (union and difference, a session or FXEM operand only)
+  acts when every face of the operand is `detail` (`m.markRole`) and the target is not:
+  `float` (union) adds it as separate shells flagged floating, `omit` leaves it out (the
+  report counts `omitted` faces), and a difference treats `float` as `weld`. Floating shells
+  are carried untouched by later booleans (a union also brings the operand's), so a host
+  that holds only floating shells fails `union` and `difference` with `model-precondition`
+  and a hint naming them; `m.markFloat(sel.all(), false)` unfloats. Without a detail operand
+  or floating faces, every `details` value equals the plain boolean.
 - Provenance maps every result face to its source face: material, origin, tags and
   flags come from it, corner values by barycentric position in its source triangle,
   and target edge intent along source edges is kept. The cut curve is sharp where the
@@ -46,6 +54,11 @@ injects a backend (`model({ native })`) and fails with `model-capability-unavail
   lost their source face. An open, non-manifold or out-of-bounds result always fails.
   A difference that removes nothing, an empty intersection or split piece is
   `model-op-no-effect`.
+- Locality: no result vertex lies outside the target's bounding box (the union of both boxes
+  for `union`), widened by ten tolerances. A backend that returns displaced geometry fails with
+  `model-internal` and `detail.guard: 'locality'`, and the session rolls back. For grid-snapped
+  operands the volume identities `V(A+B) + V(A*B) = V(A) + V(B)` and `V(A-B) = V(A) - V(A*B)`
+  hold to about 1e-7 of the larger operand where a curved cut is welded.
 - Each call reports an info diagnostic: backend, backend identity, quality, the DDC
   cache key (sha256 of kind, inputs, params and backend identity) and metrics. The TS
   backend identity is `forgeax-modeling-ts@<digest>`, a content digest of the kernel
@@ -53,6 +66,9 @@ injects a backend (`model({ native })`) and fails with `model-capability-unavail
   changes every cache key. The file also records each closure file's hash; a stale digest
   fails naming the changed, added and removed files and the regenerate command
   (`FORGEAX_UPDATE_GOLDEN=1`), and the PR body says why the kernel identity changed.
+  Both digests cover kernel sources only (this package's relative-import closure under `src/`); an
+  Engine-package change (types, geometry, math) does not move them. This is a known limitation: the
+  Engine side would have to contribute its own key part.
 - n-gon bound (reported, not a postcondition): `metrics.resultFaces` against
   `inputFaces` (operand faces with at least one surviving piece) plus `cutFaces`
   (surviving faces the cut curve touches), counted per output shell (a split's pieces are
@@ -83,12 +99,24 @@ injects a backend (`model({ native })`) and fails with `model-capability-unavail
   leaves no needle for `shell` to trip on. The width test is purely geometric: dense pole
   fans and narrow but intended strips (a lip or flange no wider than `width` on an open
   boundary) qualify too, so pass the faces to clean rather than the whole part.
-- Several overlapping parts that will be triangulated and baked as one surface are combined with `m.lowpoly(faces, { targetFaces, quads: false })` (the exact union, [Voxels](voxels-remesh.md)), not `append`ed; `validate({ shells })` reports the crossings that remain (`shell-overlap`).
+- Several overlapping parts that will be triangulated and baked as one surface are combined with `m.lowpoly(faces, { targetFaces, quads: false })` (the mesh boolean union, [Voxels](voxels-remesh.md)); this is the mesh boolean, not the B-rep `booleanSolids`, not `append`ed; `validate({ shells })` reports the crossings that remain (`shell-overlap`).
+- Many cutters on one target are one batched boolean, not a loop of booleans: collect
+  the cutters in one session (`all.append(tool)` per cutter) and call
+  `target.difference(all)` once. Tool components are taken one at a time inside the job
+  either way, but the batched call classifies and writes the target once instead of once
+  per cutter, so the cost grows with the result instead of with cutters x current faces.
+  The two forms give the same solid, not the same bytes (face and vertex order differ),
+  so pick one and keep it. Cutters that overlap each other and should merge first are a
+  `union` of the cutters, then one `difference`. On a 100 x 10 x 100 plate with 8 x 8
+  cylindrical holes (same volume 82055.9144 and 7500 triangles either way) the 64
+  sequential `difference` calls took about 8.0 s and the single batched call about
+  0.9 s; with 4 x 4 holes about 0.79 s against 0.15 s. Nothing here is lazy: every call
+  still returns its finished result.
 - A snapshot of a poisoned session is a failing operand: `append`, `array`, the
   booleans, `shrinkwrap` and `bakeMaps` report `model-precondition` with `detail.cause`
   instead of adding its partial geometry.
 
 The spike gate set (`src/__tests__/boolean-cases.ts`, report
-`reports/boolean-spike.json`) holds 290 parametric parts, including 30 wheel-style
+`reports/boolean-spike.json`, written by `src/__tests__/boolean-spike.unit.test.ts`, which asserts at least 200 cases) holds 290 parametric parts, including 30 wheel-style
 spoke windows cut into revolved discs (`radial-windows`); see the report for the
 legality rate, provenance completeness, n-gon bound and timing.

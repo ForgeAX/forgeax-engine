@@ -5,6 +5,24 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 
+test('panel dependency path resolution is build-only', async () => {
+  const { panelDependencyResolver } = await import('../scripts/build-inputs.mjs');
+  assert.equal(panelDependencyResolver.apply, 'build');
+});
+
+test('Engine integration sources resolve View workspace exports through the selected checkout', async () => {
+  const { createViewWorkspaceSourceResolver } = await import('../scripts/build-inputs.mjs');
+  const root = resolve(new URL('../../../tools/view-plugins', import.meta.url).pathname);
+  const resolver = createViewWorkspaceSourceResolver([root]);
+  assert.equal(resolver.apply, 'serve');
+  assert.equal(
+    resolver.resolveId('@forgeax/view-workspace-core/contract', resolve(root, 'modeling/frontend.ts')),
+    resolve(new URL('../packages/view-workspace-core/src/contract.ts', import.meta.url).pathname),
+  );
+  assert.equal(resolver.resolveId('react', resolve(root, 'modeling/frontend.ts')), undefined);
+  assert.equal(resolver.resolveId('@forgeax/view-workspace-core/contract', '/other/source.ts'), undefined);
+});
+
 test('panel graph bytes survive workspace relocation, including external and virtual modules', async (t) => {
   const temporary = await realpath(await mkdtemp(resolve(tmpdir(), 'view-panel-graph-')));
   t.after(() => rm(temporary, { recursive: true, force: true }));

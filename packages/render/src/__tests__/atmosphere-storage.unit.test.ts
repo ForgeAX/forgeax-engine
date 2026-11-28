@@ -4,7 +4,11 @@ import { err } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import { selectEnvironment } from '../environment/frame';
-import { releaseAtmosphere, retainAtmosphere } from '../environment/storage';
+import {
+  prepareAtmosphereStorage,
+  releaseAtmosphere,
+  retainAtmosphere,
+} from '../environment/storage';
 import { earthAtmosphere } from './atmosphere-fixture';
 
 function environment(sun = 1, mie = earthAtmosphere.mieScattering, backgroundOnly = false) {
@@ -96,4 +100,28 @@ it('refuses background-only environment captures before allocating physical capt
   ).toThrow('full Atmosphere for environment, cube and planar captures');
   expect(allocate).not.toHaveBeenCalled();
   runtime.deviceScope.retire();
+});
+
+it('reuses static payloads and only advances the optical tables when their coefficients change', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const runtime = { device, deviceScope: DeviceScope.create(1, 'atmosphere-update') };
+  const uploads = vi.spyOn(device.queue, 'writeBuffer');
+  try {
+    const first = prepareAtmosphereStorage(runtime, environment());
+    const initialUploads = uploads.mock.calls.length;
+    expect(initialUploads).toBeGreaterThan(1);
+    const initialRevision = first.mediumRevision;
+    const firstMedium = first.transmittance;
+    const skyEdit = prepareAtmosphereStorage(runtime, environment(2));
+    expect(skyEdit).toBe(first);
+    expect(skyEdit.mediumRevision).toBe(initialRevision);
+    const mediumEdit = prepareAtmosphereStorage(runtime, environment(3, 12e-6));
+    expect(mediumEdit.transmittance).toBe(firstMedium);
+    expect(mediumEdit.mediumRevision).toBe(initialRevision + 1);
+    expect(uploads).toHaveBeenCalledTimes(initialUploads);
+  } finally {
+    releaseAtmosphere(runtime);
+    await device.queue.onSubmittedWorkDone();
+    runtime.deviceScope.retire();
+  }
 });

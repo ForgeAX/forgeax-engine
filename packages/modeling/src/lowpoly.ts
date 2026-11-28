@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { maxOf, minOf } from './arrays';
 import { type BooleanContext, booleanOp, extractFaces } from './boolean';
 import { hausdorff, signedDeviation } from './compute/mesh-query';
 import { append } from './connect';
@@ -7,7 +8,7 @@ import { silhouetteIoU } from './drawing-check';
 import { type ModelingError, modelingError } from './errors';
 import { encodeSnapshot } from './fxem';
 import { facesVolume, type Tuple3 } from './geom';
-import { EDGE_SHARP, type EditMesh } from './mesh';
+import { EDGE_SEAM, EDGE_SHARP, type EditMesh, partRole } from './mesh';
 import {
   type Attribution,
   deleteFaces,
@@ -27,10 +28,12 @@ import { type ProcessContext, voxelRebuild } from './voxel';
 /** `m.lowpoly`: one unioned, simplified, mostly-quad shell per rigid part set. */
 export interface LowpolyOptions {
   /**
-   * How parts join (default mode 'auto': the exact boolean in part order; a part that fails
+   * How parts join (default mode 'auto': the mesh boolean (`'exact'`) in part order; a part that fails
    * against the partial shell retries against the finished one, and only a part that still
    * fails `model-partial` or a precondition is voxel-unioned with the shells it touches
    * (`union: 'mixed'`, reported `fallback`); mode 'voxel' rebuilds the whole set).
+   * "Exact" means the mesh boolean on the triangle meshes (BSP CSG), not the B-rep boolean in
+   * `@forgeax/engine-modeling/brep`; mode 'exact' returns the first failure instead of voxel-unioning.
    * `voxelSize` defaults to half the thinnest part's shortest bounds side, clamped to
    * [longest / 64, longest / 16] of the whole set: two voxels across the thinnest plate.
    */
@@ -55,19 +58,33 @@ export interface LowpolyOptions {
   readonly quads?: QuadOptions | false;
   /** uv.auto options (sharp edges are always seams); omitted: no UVs. */
   readonly uv?: Omit<AutoUvOptions, 'respectSharp'>;
-  /** Tag each output component `groupPrefix + k` (the shape `bakeMaps` reads). */
-  readonly tags?: { readonly groupPrefix: string };
+  /**
+   * Tag each output component `groupPrefix + k` (the shape `bakeMaps` reads). When
+   * `preserveGroups` is true and input faces already carry `groupPrefix + <id>` tags,
+   * each group unions and simplifies within itself so `bake:<id>` correspondences match
+   * the high-poly groups before all groups are UV-unwrapped together into one atlas.
+   */
+  readonly tags?: { readonly groupPrefix: string; readonly preserveGroups?: boolean };
+  /**
+   * `'form'` derives the low by part role (`m.markRole`): every part whose faces are all
+   * `detail` or `tool` (floating details, separate fittings) is dropped before the union; a
+   * part with any `form` face is kept whole. Omitted: every part joins.
+   */
+  readonly roles?: 'form';
 }
 
 /**
- * What the voxel union rebuilt away, by face count (labels, materials) and set corner
- * count (channels). `bySource` splits the same counts by the input tag of each face
+ * What the voxel union rebuilt away, as a net count (input minus rebuilt output, so an
+ * attribute the output still carries is not lost): faces per label, material and non-form
+ * role, set corners per channel, and seam edges. `bySource` splits the same counts by the input tag of each face
  * (`untagged` for none); sources and names with no loss are absent, keys ascend.
  */
 export interface LowpolyLost {
   readonly labels: Readonly<Record<string, number>>;
   readonly materials: Readonly<Record<string, number>>;
   readonly corners: Readonly<Record<string, number>>;
+  readonly roles: Readonly<Record<string, number>>;
+  readonly seams: number;
   readonly bySource: Readonly<
     Record<
       string,
@@ -173,8 +190,8 @@ function bounds(mesh: EditMesh): { longest: number; shortest: number; diagonal: 
   }
   const d = [0, 1, 2].map((i) => (hi[i] as number) - (lo[i] as number));
   return {
-    longest: Math.max(...d),
-    shortest: Math.min(...d),
+    longest: maxOf(d),
+    shortest: minOf(d),
     diagonal: hypot3(d[0] as number, d[1] as number, d[2] as number),
   };
 }
@@ -202,28 +219,43 @@ function defaultVoxelSize(mesh: EditMesh, parts: readonly number[][]): number {
   return Math.min(longest / 16, Math.max(longest / 64, thinnest / 2));
 }
 
-/** Labels, materials and corner values that `voxelRebuild` drops from `mesh`. */
-function voxelLoss(mesh: EditMesh): LowpolyLost {
-  const labels = new Map<string, number>();
-  const materials = new Map<string, number>();
-  const corners = new Map<string, number>();
-  const sources = new Map<string, { labels: number; materials: number; corners: number }>();
+interface Census {
+  readonly labels: Map<string, number>;
+  readonly materials: Map<string, number>;
+  readonly corners: Map<string, number>;
+  readonly roles: Map<string, number>;
+  readonly owners: Map<string, { labels: number; materials: number; corners: number }>;
+  seams: number;
+}
+
+/** Face counts of non-default labels, materials and roles, set corners and seam edges. */
+function census(mesh: EditMesh): Census {
+  const out: Census = {
+    labels: new Map(),
+    materials: new Map(),
+    corners: new Map(),
+    roles: new Map(),
+    owners: new Map(),
+    seams: 0,
+  };
   const bump = (m: Map<string, number>, key: string, n: number) =>
     m.set(key, (m.get(key) ?? 0) + n);
   for (const f of mesh.faces()) {
     const label = mesh.fLabel[f] as number;
     const material = mesh.fMaterial[f] as number;
+    const role = partRole(mesh, f);
     let cornerCount = 0;
     for (const [name, channel] of mesh.channels) {
       let n = 0;
       for (const h of mesh.faceHalves(f)) if ((channel.set[h] as number) !== 0) n++;
-      if (n > 0) bump(corners, name, n);
+      if (n > 0) bump(out.corners, name, n);
       cornerCount += n;
     }
     const lostLabel = label !== 0 ? 1 : 0;
     const lostMaterial = material !== 0 ? 1 : 0;
-    if (lostLabel === 1) bump(labels, mesh.labelNames[label] as string, 1);
-    if (lostMaterial === 1) bump(materials, mesh.materialNames[material] as string, 1);
+    if (lostLabel === 1) bump(out.labels, mesh.labelNames[label] as string, 1);
+    if (lostMaterial === 1) bump(out.materials, mesh.materialNames[material] as string, 1);
+    if (role !== 'form') bump(out.roles, role, 1);
     if (lostLabel + lostMaterial + cornerCount === 0) continue;
     const owners: string[] = [];
     for (let t = 0; t < mesh.tagNames.length; t++) {
@@ -231,18 +263,49 @@ function voxelLoss(mesh: EditMesh): LowpolyLost {
     }
     if (owners.length === 0) owners.push('untagged');
     for (const owner of owners) {
-      const entry = sources.get(owner) ?? { labels: 0, materials: 0, corners: 0 };
+      const entry = out.owners.get(owner) ?? { labels: 0, materials: 0, corners: 0 };
       entry.labels += lostLabel;
       entry.materials += lostMaterial;
       entry.corners += cornerCount;
-      sources.set(owner, entry);
+      out.owners.set(owner, entry);
     }
   }
+  for (const e of mesh.edges()) if (((mesh.eFlags[e] as number) & EDGE_SEAM) !== 0) out.seams++;
+  return out;
+}
+
+function shortfall(before: ReadonlyMap<string, number>, after: ReadonlyMap<string, number>) {
+  const out = new Map<string, number>();
+  for (const [key, n] of before) {
+    const missing = n - (after.get(key) ?? 0);
+    if (missing > 0) out.set(key, missing);
+  }
+  return sortedRecord(out);
+}
+
+/**
+ * What a voxel rebuild of `mesh` dropped, by net count: the input's census minus the rebuilt
+ * mesh's, so an attribute the rebuild carried over is not reported lost.
+ */
+function voxelLoss(before: Census, rebuilt: EditMesh): LowpolyLost {
+  const after = census(rebuilt);
+  const by = new Map<string, { labels: number; materials: number; corners: number }>();
+  for (const [owner, was] of before.owners) {
+    const now = after.owners.get(owner) ?? { labels: 0, materials: 0, corners: 0 };
+    const entry = {
+      labels: Math.max(0, was.labels - now.labels),
+      materials: Math.max(0, was.materials - now.materials),
+      corners: Math.max(0, was.corners - now.corners),
+    };
+    if (entry.labels + entry.materials + entry.corners > 0) by.set(owner, entry);
+  }
   return {
-    labels: sortedRecord(labels),
-    materials: sortedRecord(materials),
-    corners: sortedRecord(corners),
-    bySource: sortedRecord(sources),
+    labels: shortfall(before.labels, after.labels),
+    materials: shortfall(before.materials, after.materials),
+    corners: shortfall(before.corners, after.corners),
+    roles: shortfall(before.roles, after.roles),
+    seams: Math.max(0, before.seams - after.seams),
+    bySource: sortedRecord(by),
   };
 }
 
@@ -269,6 +332,8 @@ function sumLost(a: LowpolyLost | undefined, b: LowpolyLost): LowpolyLost {
     labels: sumRecords(a.labels, b.labels),
     materials: sumRecords(a.materials, b.materials),
     corners: sumRecords(a.corners, b.corners),
+    roles: sumRecords(a.roles, b.roles),
+    seams: a.seams + b.seams,
     bySource: sortedRecord(by),
   };
 }
@@ -296,7 +361,8 @@ function boxOf(mesh: EditMesh, faces: readonly number[]): { min: Tuple3; max: Tu
 }
 
 /**
- * Union the parts of `work` in place. 'exact' joins part by part with the exact boolean.
+ * Union the parts of `work` in place. 'exact' joins part by part with the mesh boolean (BSP CSG over
+ * the triangle meshes, `booleanOp` in boolean.ts), not the B-rep exact boolean in brep/boolean.ts.
  * A part that fails (`model-partial`, `model-precondition`) is deferred and retried once
  * against the finished shell (the order that failed is often not the order that works);
  * in 'auto' mode a part that still fails is voxel-unioned with only the shell components
@@ -365,8 +431,8 @@ function unionParts(
     const parts = vertexComponents(cluster, cluster.faces());
     const sized = size ?? options.union?.voxelSize ?? defaultVoxelSize(cluster, parts);
     voxelSize = Math.max(voxelSize ?? 0, sized);
-    lost = sumLost(lost, voxelLoss(cluster));
-    return voxelRebuild(
+    const before = census(cluster);
+    const rebuilt = voxelRebuild(
       cluster,
       cluster.faces(),
       'union',
@@ -376,6 +442,8 @@ function unionParts(
       context.remesh,
       inner,
     );
+    if (rebuilt.ok) lost = sumLost(lost, voxelLoss(before, cluster));
+    return rebuilt;
   };
   if (running === undefined) {
     const rebuilt = rebuild(work, undefined);
@@ -461,6 +529,96 @@ function clearSlivers(
  * uv.auto with sharp seams and one tag per output component. The selected faces are
  * replaced; one info diagnostic carries the verdict and issues.
  */
+/** The faces of every part with at least one `form` face (deriveLowByRole). */
+function formParts(
+  mesh: EditMesh,
+  faces: readonly number[],
+  diagnostics: OpDiagnostic[],
+): number[] {
+  const kept: number[] = [];
+  const dropped: Record<string, number> = { detail: 0, tool: 0 };
+  for (const part of vertexComponents(mesh, faces)) {
+    if (part.some((f) => partRole(mesh, f) === 'form')) {
+      for (const f of part) kept.push(f);
+      continue;
+    }
+    for (const f of part) {
+      const role = partRole(mesh, f);
+      dropped[role] = (dropped[role] ?? 0) + 1;
+    }
+  }
+  if (dropped.detail !== 0 || dropped.tool !== 0) {
+    diagnostics.push({
+      severity: 'info',
+      message: `lowpoly drops the detail and tool parts (faces by role: ${JSON.stringify(dropped)})`,
+      detail: { dropped },
+    });
+  }
+  return kept.sort((a, b) => a - b);
+}
+
+type UnionOutcome = Extract<ReturnType<typeof unionParts>, { ok: true }>['value'];
+
+function unionAndSimplifyShell(
+  work: EditMesh,
+  parts: readonly number[][],
+  targetFaces: number,
+  hardAngle: number,
+  weight: number,
+  options: LowpolyOptions,
+  context: LowpolyContext,
+  inner: OpDiagnostic[],
+): Result<{ readonly joined: UnionOutcome; readonly slivers?: LowpolySlivers }, ModelingError> {
+  const joined = unionParts(work, parts, options, context, inner);
+  if (!joined.ok) return joined;
+
+  // A smooth part (a dome, a sphere) has no hard edge; that is not an empty-selection error.
+  const hard = sel.edges.dihedral('>', hardAngle).atLeast(0).resolve(work);
+  if (!hard.ok) return hard;
+  markEdges(work, hard.value, EDGE_SHARP, true);
+
+  const scale = bounds(work).diagonal;
+  const before = exportTriangles(work);
+  if (before > targetFaces) {
+    const simplified = simplifyFaces(
+      work,
+      work.faces(),
+      {
+        targetFaces,
+        ...(options.silhouette === undefined
+          ? {}
+          : { silhouette: { views: options.silhouette.views, weight } }),
+      },
+      context.remesh,
+      inner,
+    );
+    if (!simplified.ok) return simplified;
+  }
+  if (options.quads !== false) {
+    // QEM leaves triangle fans on flat faces; Delaunay flips (no surface change) dissolve
+    // their poles before pairing, so the quads follow the faces' edges.
+    const tiled = cleanupTiling(
+      work,
+      work.faces(),
+      { maxError: TILING_ERROR * scale },
+      context.remesh,
+      inner,
+    );
+    if (!tiled.ok && tiled.error.code !== 'model-op-no-effect') return tiled;
+    const paired = cleanupQuads(work, work.faces(), options.quads ?? {}, inner);
+    if (!paired.ok && paired.error.code !== 'model-op-no-effect') return paired;
+  }
+  const slivers =
+    options.slivers === undefined
+      ? undefined
+      : clearSlivers(work, options.slivers, context.boolean.tolerance);
+  if (slivers !== undefined && !slivers.ok) return slivers;
+  return ok({
+    joined: joined.value,
+    ...(slivers === undefined ? {} : { slivers: slivers.value }),
+  });
+}
+
 export function lowpolyFaces(
   mesh: EditMesh,
   faces: readonly number[],
@@ -502,7 +660,23 @@ export function lowpolyFaces(
       }),
     );
   }
-  const input = extractFaces(mesh, faces);
+  if (options.roles !== undefined && options.roles !== 'form') {
+    return err(
+      modelingError('model-invalid-argument', "roles is 'form'", { roles: options.roles }),
+    );
+  }
+  const kept = options.roles === 'form' ? formParts(mesh, faces, diagnostics) : faces;
+  if (kept.length === 0) {
+    return err(
+      modelingError(
+        'model-precondition',
+        "lowpoly({ roles: 'form' }) keeps at least one part with a form face",
+        { faces: faces.length },
+        "mark the body's faces 'form' (m.markRole), or omit roles",
+      ),
+    );
+  }
+  const input = extractFaces(mesh, kept);
   const parts = vertexComponents(input, input.faces());
   for (const [index, part] of parts.entries()) {
     const volume = facesVolume(input, part);
@@ -520,54 +694,102 @@ export function lowpolyFaces(
     }
   }
   const partVolumes = parts.map((p) => facesVolume(input, p));
-  const work = input.clone();
   const inner: OpDiagnostic[] = [];
-  const joined = unionParts(work, parts, options, context, inner);
-  if (!joined.ok) return joined;
 
-  const shell = work.clone();
-  // A smooth part (a dome, a sphere) has no hard edge; that is not an empty-selection error.
-  const hard = sel.edges.dihedral('>', hardAngle).atLeast(0).resolve(work);
-  if (!hard.ok) return hard;
-  markEdges(work, hard.value, EDGE_SHARP, true);
+  // Optional group-preserving mode: union + simplify per existing `<prefix><id>` group
+  // so multi-part `bake:<id>` tags remain aligned with high-poly before shared UV packing.
+  const preservedGroups = new Map<string, number[]>();
+  if (prefix !== undefined && options.tags?.preserveGroups === true) {
+    const matchingTags = input.tagNames
+      .map((name, idx) => ({ name, idx }))
+      .filter((t) => t.name.startsWith(prefix));
+    for (const f of input.faces()) {
+      const hit = matchingTags.find((t) => input.hasTag(f, t.idx));
+      const key = hit?.name ?? '';
+      const arr = preservedGroups.get(key);
+      if (arr === undefined) preservedGroups.set(key, [f]);
+      else arr.push(f);
+    }
+  }
+
+  let work: EditMesh;
+  let unionOutcome: UnionOutcome;
+  let sliversOutcome: LowpolySlivers | undefined;
+  let shell: EditMesh;
+  const preserveTagged =
+    preservedGroups.size > 0 && !(preservedGroups.size === 1 && preservedGroups.has(''));
+
+  if (!preserveTagged) {
+    work = input.clone();
+    const res = unionAndSimplifyShell(
+      work,
+      parts,
+      options.targetFaces,
+      hardAngle,
+      weight,
+      options,
+      context,
+      inner,
+    );
+    if (!res.ok) return res;
+    unionOutcome = res.value.joined;
+    sliversOutcome = res.value.slivers;
+    // Clone input before simplification for Hausdorff comparison? Wait: existing code compared against unioned shell!
+    shell = input.clone();
+    const shellUnion = unionParts(shell, parts, options, context, []);
+    if (!shellUnion.ok) shell = input.clone();
+  } else {
+    shell = extractFaces(input, []);
+    work = extractFaces(input, []);
+    const entries = [...preservedGroups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const totalGroupFaces = Math.max(
+      1,
+      entries.reduce((s, [, fs]) => s + fs.length, 0),
+    );
+    let remainingBudget = Math.max(options.targetFaces, entries.length * 4);
+    let combinedUnion: UnionOutcome = { union: 'none' };
+    for (const [idx, [tagName, groupFaceIds]] of entries.entries()) {
+      const sub = extractFaces(input, groupFaceIds);
+      const subParts = vertexComponents(sub, sub.faces());
+      const subShell = sub.clone();
+      const su = unionParts(subShell, subParts, options, context, []);
+      if (su.ok) append(shell, subShell, {}, NO_ATTRIBUTION);
+      else append(shell, sub.clone(), {}, NO_ATTRIBUTION);
+
+      const leftGroups = entries.length - idx - 1;
+      const proportional = Math.max(
+        4,
+        Math.round((options.targetFaces * groupFaceIds.length) / totalGroupFaces),
+      );
+      const groupTarget =
+        idx === entries.length - 1
+          ? Math.max(4, remainingBudget)
+          : Math.min(proportional, Math.max(4, remainingBudget - leftGroups * 4));
+      remainingBudget = Math.max(4 * leftGroups, remainingBudget - groupTarget);
+
+      const res = unionAndSimplifyShell(
+        sub,
+        subParts,
+        groupTarget,
+        hardAngle,
+        weight,
+        options,
+        context,
+        inner,
+      );
+      if (!res.ok) return res;
+      if (res.value.joined.union !== 'none') combinedUnion = res.value.joined;
+      if (tagName !== '') {
+        const tagIdx = sub.tagIndex(tagName, true);
+        for (const f of sub.faces()) sub.addTag(f, tagIdx);
+      }
+      const appended = append(work, sub, {}, NO_ATTRIBUTION);
+      if (!appended.ok) return appended;
+    }
+    unionOutcome = combinedUnion;
+  }
 
   const scale = bounds(shell).diagonal;
-  const before = exportTriangles(work);
-  if (before > options.targetFaces) {
-    const simplified = simplifyFaces(
-      work,
-      work.faces(),
-      {
-        targetFaces: options.targetFaces,
-        ...(options.silhouette === undefined
-          ? {}
-          : { silhouette: { views: options.silhouette.views, weight } }),
-      },
-      context.remesh,
-      inner,
-    );
-    if (!simplified.ok) return simplified;
-  }
-  if (options.quads !== false) {
-    // QEM leaves triangle fans on flat faces; Delaunay flips (no surface change) dissolve
-    // their poles before pairing, so the quads follow the faces' edges.
-    const tiled = cleanupTiling(
-      work,
-      work.faces(),
-      { maxError: TILING_ERROR * scale },
-      context.remesh,
-      inner,
-    );
-    if (!tiled.ok && tiled.error.code !== 'model-op-no-effect') return tiled;
-    const paired = cleanupQuads(work, work.faces(), options.quads ?? {}, inner);
-    if (!paired.ok && paired.error.code !== 'model-op-no-effect') return paired;
-  }
-  const slivers =
-    options.slivers === undefined
-      ? undefined
-      : clearSlivers(work, options.slivers, context.boolean.tolerance);
-  if (slivers !== undefined && !slivers.ok) return slivers;
-
   if (options.uv !== undefined) {
     const mapped = autoUv(
       work,
@@ -596,7 +818,10 @@ export function lowpolyFaces(
       }
     }
     let tag: string | undefined;
-    if (prefix !== undefined) {
+    if (preserveTagged && prefix !== undefined) {
+      tag = [...sources].find((s) => s.startsWith(prefix));
+      if (tag !== undefined) groupNames.add(tag);
+    } else if (prefix !== undefined) {
       tag = `${prefix}${k}`;
       groupNames.add(tag);
       const t = work.tagIndex(tag, true);
@@ -656,12 +881,12 @@ export function lowpolyFaces(
     detail: {
       pass: issues.length === 0,
       issues,
-      union: joined.value.union,
-      fallback: joined.value.union !== 'exact' && joined.value.exactError !== undefined,
-      ...(joined.value.exactError === undefined ? {} : { exactError: joined.value.exactError }),
-      ...(joined.value.voxelSize === undefined ? {} : { voxelSize: joined.value.voxelSize }),
-      ...(joined.value.clusters === undefined ? {} : { clusters: joined.value.clusters }),
-      ...(joined.value.lost === undefined ? {} : { lost: joined.value.lost }),
+      union: unionOutcome.union,
+      fallback: unionOutcome.union !== 'exact' && unionOutcome.exactError !== undefined,
+      ...(unionOutcome.exactError === undefined ? {} : { exactError: unionOutcome.exactError }),
+      ...(unionOutcome.voxelSize === undefined ? {} : { voxelSize: unionOutcome.voxelSize }),
+      ...(unionOutcome.clusters === undefined ? {} : { clusters: unionOutcome.clusters }),
+      ...(unionOutcome.lost === undefined ? {} : { lost: unionOutcome.lost }),
       parts: parts.length,
       partVolumes,
       components: groups,
@@ -675,7 +900,7 @@ export function lowpolyFaces(
       signed,
       ...(views.length === 0 ? {} : { iou: views }),
       simplify: info(inner, 'simplify'),
-      ...(slivers === undefined ? {} : { slivers: slivers.value }),
+      ...(sliversOutcome === undefined ? {} : { slivers: sliversOutcome }),
     },
   });
 

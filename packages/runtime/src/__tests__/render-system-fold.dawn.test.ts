@@ -41,12 +41,16 @@
 
 import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { MaterialResource } from '../../../render/src/material-resource';
 import {
   buildFoldDispatchPlan,
   type FoldRenderableLike,
   foldDispatchBuckets,
 } from '../../../render/src/record/mesh-ssbo';
-import type { DispatchEntry } from '../../../render/src/render-system-extract';
+import {
+  type DispatchEntry,
+  defaultMaterialSnapshot,
+} from '../../../render/src/render-system-extract';
 import {
   TRANSPARENT_SORT_MODE_DISTANCE,
   TRANSPARENT_SORT_MODE_LAYER_Y,
@@ -78,6 +82,12 @@ function mockDispatchEntry(opts: {
   };
 }
 
+const spriteMaterial = new MaterialResource({
+  ...defaultMaterialSnapshot(),
+  transparent: true,
+  passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
+});
+
 function mockRenderable(tz: number, tx = 0, ty = 0): FoldRenderableLike {
   const world = new Float32Array(16);
   world[0] = 1;
@@ -87,20 +97,7 @@ function mockRenderable(tz: number, tx = 0, ty = 0): FoldRenderableLike {
   world[12] = tx;
   world[13] = ty;
   world[14] = tz;
-  // PR #502 fix + feat-20260625 R2 fix-up: foldDispatchBuckets gates fold to
-  // `transparent === true`; these dawn integration tests assume fold-eligible
-  // behavior so default to `transparent: true` (the M3 ablation collapsed the
-  // sprite shadingModel discriminator into the generic transparent flag).
-  return {
-    transform: { world },
-    material: {
-      transparent: true,
-      passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
-      baseColor: [1, 1, 1],
-      metallic: 0,
-      roughness: 1,
-    },
-  };
+  return { transform: { world }, material: spriteMaterial };
 }
 
 describe('fold operator dawn integration (w7) — drawIndexed count drops to bucket count', () => {
@@ -115,7 +112,11 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
       renderables.push(mockRenderable(0.5, i * 1.0, 0));
     }
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
     expect(buckets).toHaveLength(1);
     const [bucket] = buckets;
     expect(bucket?.bucketSize).toBe(N);
@@ -165,7 +166,11 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
       renderableIndex += 1;
     }
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
     expect(buckets).toHaveLength(2);
     expect(buckets[0]?.bucketSize).toBe(PER_MATERIAL);
     expect(buckets[0]?.materialHandle).toBe(11);
@@ -211,7 +216,11 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
       }
     }
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
     expect(buckets).toHaveLength(CHUNKS);
     for (let c = 0; c < CHUNKS; c++) {
       expect(buckets[c]?.bucketSize).toBe(CELLS_PER_CHUNK);
@@ -243,7 +252,7 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
     for (let i = 0; i < N; i++) renderableToValidated.set(i, i);
 
     for (const mode of [TRANSPARENT_SORT_MODE_LAYER_YZ, TRANSPARENT_SORT_MODE_DISTANCE] as const) {
-      const buckets = foldDispatchBuckets(entries, mode, renderables);
+      const buckets = foldDispatchBuckets(entries, mode, (index) => renderables[index]);
       // Mode bypass: each entry is its own direct draw.
       expect(buckets).toEqual([]);
 
@@ -271,7 +280,11 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
     const renderableToValidated = new Map<number, number>();
     for (let i = 0; i < N; i++) renderableToValidated.set(i, i);
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Y, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Y,
+      (index) => renderables[index],
+    );
     expect(buckets).toHaveLength(1);
     const [bucket] = buckets;
     expect(bucket?.bucketSize).toBe(N);
@@ -301,7 +314,11 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
       mockRenderable(0.3),
     ];
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
     expect(buckets).toEqual([]);
 
     const renderableToValidated = new Map<number, number>([

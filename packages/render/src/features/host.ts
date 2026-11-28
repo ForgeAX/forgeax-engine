@@ -7,7 +7,7 @@ import type { Buffer, RhiCaps, Sampler, TextureFormat, TextureView } from '@forg
 import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
 
 import { featureRecordsInCapture } from '../capture/feature-policy';
-
+import { standardCloudProducers } from '../cloud/standard-cloud-owner';
 import {
   type RenderError,
   RenderFeatureCapabilityMissingError,
@@ -15,22 +15,16 @@ import {
   RenderFeatureRegistrationConflictError,
   RenderFeatureStageFailedError,
 } from '../errors/render';
-
 import { renderMaterialContext } from '../extract/material-context';
-
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
-
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_COPY_SRC } from '../gpu-usage';
-
 import type { RenderFeatureHostInspection } from '../inspection-types';
-
 import type {
   PreparedGraphicsReference,
   PreparedGraphicsResolvedSnapshot,
   PreparedGraphicsResolver,
   PreparedGraphicsResourceLease,
 } from '../prepare/prepared-graphics-resolver';
-
 import type {
   CameraSnapshot,
   FrameDomainObservation,
@@ -38,14 +32,13 @@ import type {
   FrameReceipt,
   RenderResult,
 } from '../render-contract';
-
 import {
   isSceneDataTarget,
   type SceneDataTarget,
   type StandardSceneSurfaceAdmission,
 } from '../temporal/scene-data';
-
 import type { SceneDataCatalog } from '../temporal/scene-data-catalog';
+import { standardWaterProducers } from '../water/standard-water-owner';
 import { releaseSharedFeatureGraphHistory } from '../world/feature-graph-systems';
 import {
   addRenderFeatureSystem,
@@ -201,6 +194,14 @@ export function findRenderFeatureExecutionPass(
   name: string,
 ): RenderFeaturePlanExecutionPass | undefined {
   return AcceptedRenderFeatureExecution.find(execution, name);
+}
+
+export function isStandardCloudPlan(planned: RenderFeaturePlannedFrame): boolean {
+  return planExecutionProjections.get(planned)?.standardCloud === true;
+}
+
+export function isStandardWaterPlan(planned: RenderFeaturePlannedFrame): boolean {
+  return planExecutionProjections.get(planned)?.standardWater === true;
 }
 
 const preparedResourceKeyPlans = new WeakSet<RenderFeaturePlannedFrame>();
@@ -1394,6 +1395,7 @@ function projectPlanPasses(
       resource: targetHandle(attachment.target, targets),
       format: targetFormat(attachment.target, logical, fallbackFormat),
       loadOp: attachment.loadOp,
+      ...(attachment.clearValue === undefined ? {} : { clearValue: attachment.clearValue }),
       storeOp: attachment.storeOp,
     }));
     const depth =
@@ -2723,7 +2725,8 @@ class FeatureFramePreparation {
     const planned: RenderFeaturePlanView[] = [];
     const feature = this.feature;
     const generation = this.transaction.generation;
-    const scenePlacement = this.feature.placement === 'scene';
+    const scenePlacement =
+      this.feature.placement === 'scene' || this.feature.placement === 'before-medium';
     for (let index = 0; index < views.length; index++) {
       // The batch constructs plan views from these same indexed input rows.
       const input = inputs[index] as RenderFeatureFrameInput;
@@ -2751,7 +2754,8 @@ class FeatureFramePreparation {
   }
 
   private postScopeEnabled(scope: RenderFeatureWorkScope): boolean {
-    if (this.feature.placement === 'scene') return true;
+    if (this.feature.placement === 'scene' || this.feature.placement === 'before-medium')
+      return true;
     if (scope === 'frame')
       return this.batch.inputs.some(
         (view) => view.render && view.selectedCamera?.postProcessing !== false,
@@ -2762,7 +2766,11 @@ class FeatureFramePreparation {
 
   /** Drop a view's complete GPU chain while retaining its source-selection receipt. */
   private admittedPostWork(work: readonly RenderFeatureWork[]): readonly RenderFeatureWork[] {
-    if (this.feature.placement === 'scene' || work.every((row) => this.postScopeEnabled(row.scope)))
+    if (
+      this.feature.placement === 'scene' ||
+      this.feature.placement === 'before-medium' ||
+      work.every((row) => this.postScopeEnabled(row.scope))
+    )
       return work;
     return work.flatMap((row): readonly RenderFeatureWork[] =>
       this.postScopeEnabled(row.scope)
@@ -3493,6 +3501,8 @@ class FeatureFramePreparation {
       planExecutionProjections.set(planned, {
         execution: projected,
         ...(this.nativeWork === undefined ? {} : { nativeSignature: planned.signature }),
+        ...(standardCloudProducers.has(this.feature) ? { standardCloud: true } : {}),
+        ...(standardWaterProducers.has(this.feature) ? { standardWater: true } : {}),
       });
       if (isSubmissionSensitive(this.feature, planned, sourcePlan))
         submissionSensitivePlans.add(planned);

@@ -200,7 +200,10 @@ export function waterInfoMaterialBindingSnapshots(
     snapshots.push(snapshot.value);
   }
   const independent = publication.waveBodies.filter(
+    // Fixed geometry can be read without the optional WaterInfo texture even
+    // while another accepted draw retains a target row for this same Body.
     (body) =>
+      body.heightSource.kind === 'fixed' ||
       !publication.rows.has(
         waterBodyOwnerKey(
           body.worldIdentity,

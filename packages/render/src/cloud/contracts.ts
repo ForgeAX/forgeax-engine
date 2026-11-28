@@ -1,6 +1,7 @@
 import type { AssetGuid, BindGroupLayoutDescriptor } from '@forgeax/engine-types';
 
 export const CLOUD_LAYER_FEATURE_IDENTITY = 'forgeax.cloud-layer';
+export const CLOUD_DEPTH_RANGE_QUARTER = 'cloud-scene-depth-minmax-quarter';
 
 export const CLOUD_REFERENCE_TEXTURE_ROLES = [
   ['layoutPattern', '2d'],

@@ -265,6 +265,36 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     });
   }
 
+  private projectColorAttachments(
+    name: string,
+    featureIdentity: string,
+    order: number,
+    descriptor: RenderFeatureGraphicsPassDescriptor,
+    accesses: GraphAccess[],
+  ) {
+    const colors = [];
+    for (const attachment of descriptor.attachments.colors) {
+      const target = this.resolveTarget(attachment.resource);
+      if (target === undefined)
+        return err(
+          missingTarget(featureIdentity, order, name, 'color attachment', attachment.resource),
+        );
+      accesses.push({ resource: target.view, usage: 'color-attachment' } as const);
+      if (target.resolveTarget !== undefined) {
+        accesses.push({ resource: target.resolveTarget, usage: 'color-attachment' } as const);
+      }
+      colors.push({
+        view: target.view,
+        ...(target.resolveTarget === undefined ? {} : { resolveTarget: target.resolveTarget }),
+        loadOp: attachment.loadOp,
+        ...(attachment.clearValue === undefined ? {} : { clearValue: attachment.clearValue }),
+        storeOp: attachment.storeOp,
+      });
+    }
+
+    return ok(colors);
+  }
+
   addPass(
     name: string,
     featureIdentity: string,
@@ -287,24 +317,8 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
       })
     )
       accesses.push(...this.standardSurfaceAccesses);
-    const colors = [];
-    for (const attachment of descriptor.attachments.colors) {
-      const target = this.resolveTarget(attachment.resource);
-      if (target === undefined)
-        return err(
-          missingTarget(featureIdentity, order, name, 'color attachment', attachment.resource),
-        );
-      accesses.push({ resource: target.view, usage: 'color-attachment' } as const);
-      if (target.resolveTarget !== undefined) {
-        accesses.push({ resource: target.resolveTarget, usage: 'color-attachment' } as const);
-      }
-      colors.push({
-        view: target.view,
-        ...(target.resolveTarget === undefined ? {} : { resolveTarget: target.resolveTarget }),
-        loadOp: attachment.loadOp,
-        storeOp: attachment.storeOp,
-      });
-    }
+    const colors = this.projectColorAttachments(name, featureIdentity, order, descriptor, accesses);
+    if (!colors.ok) return colors;
 
     let depthStencilAttachment: RasterDepthStencilAttachment | undefined;
     let sampledDepth: RenderFeatureGraphTarget | undefined;
@@ -468,7 +482,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
       accesses,
       executeIf: (frame) =>
         currentRenderFeaturePass(frame, featureIdentity, name, scope)?.enabled ?? enabled,
-      colorAttachments: colors,
+      colorAttachments: colors.value,
       ...(depthStencilAttachment === undefined ? {} : { depthStencilAttachment }),
       encodeDirect: (pass, frame, resources) => {
         try {
@@ -525,6 +539,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           ? {}
           : { resolveTarget: resources.textureView(target.resolveTarget).unwrap() }),
         loadOp: attachment.loadOp,
+        ...(attachment.clearValue === undefined ? {} : { clearValue: attachment.clearValue }),
         storeOp: attachment.storeOp,
       };
     });

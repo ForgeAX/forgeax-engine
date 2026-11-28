@@ -123,10 +123,9 @@ describe('GPU-driven Standard surface discard specialization', () => {
       materialPipelineState: {
         ...state,
         gpuDrivenPbrPrograms: new Map(
-          [...(state.gpuDrivenPbrPrograms ?? [])].map(([key, program]) => [
-            key,
-            { ...program, artifact },
-          ]),
+          [...(state.gpuDrivenPbrPrograms instanceof Map ? state.gpuDrivenPbrPrograms : [])].map(
+            ([key, program]) => [key, { ...program, artifact }],
+          ),
         ),
       } as PipelineState,
     };

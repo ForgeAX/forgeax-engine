@@ -19,8 +19,8 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
   constructRuntimeRendererHost,
   loadRhiPack: vi.fn(),
 }));
-vi.mock('../execution', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../execution')>()),
+vi.mock('../execution/capabilities', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../execution/capabilities')>()),
   probeExecutionCapabilities: executionHostTestDoubles.probeCapabilities,
 }));
 vi.mock('../execution/host-controller', () => ({

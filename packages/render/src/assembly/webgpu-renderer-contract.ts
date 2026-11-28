@@ -19,7 +19,6 @@ import type {
   RenderPassCpuIdentityCapture,
   RenderPipelineObservationCaptureOwner,
   SsrShaderSources,
-  VolumetricFogShaderSources,
 } from '../render-contract';
 import type { RhiBackendPack } from './backend-contract';
 import type { RendererHostBundlerOptions } from './bundler-contract';
@@ -55,7 +54,7 @@ export interface WebGPURendererInternals {
   meshSsboState?: MeshSsboState;
   featureHost?: RenderFeatureHost;
   debugOverlay?: RenderDebugOverlay;
-  volumetricFogShaders?: VolumetricFogShaderSources | undefined;
+  viewportOutput?: import('../viewport-output-contract').ViewportOutputExtension | undefined;
   ssrShaders?: SsrShaderSources | undefined;
   depthPyramidShaders?: DepthPyramidShaderSources | undefined;
   atmosphereShaders?: AtmosphereShaderSources | undefined;

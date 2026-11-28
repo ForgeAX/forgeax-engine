@@ -6,6 +6,8 @@ import {
   consumeNativeWindowEvents,
   createRoamCamera,
   initialHardwareRayTracing,
+  initialReflections,
+  initialSkyEnvironment,
   roamCameraPose,
 } from '../native-sponza-controls.mjs';
 
@@ -15,6 +17,17 @@ test('initial native hardware RT defaults on and accepts only the closed CLI req
   assert.equal(initialHardwareRayTracing('off'), false);
   for (const value of ['', 'false', 'true', 'OFF', '0', 'auto', null, 0])
     assert.throws(() => initialHardwareRayTracing(value), /must be on or off/);
+});
+
+test('initial reflections and sky environment accept only closed CLI values', () => {
+  assert.equal(initialReflections(), true);
+  assert.equal(initialReflections('on'), true);
+  assert.equal(initialReflections('off'), false);
+  assert.throws(() => initialReflections('yes'), /must be on or off/);
+  assert.equal(initialSkyEnvironment(), 'legacy');
+  assert.equal(initialSkyEnvironment('sun'), 'sun');
+  assert.equal(initialSkyEnvironment('legacy'), 'legacy');
+  assert.throws(() => initialSkyEnvironment('auto'), /must be sun or legacy/);
 });
 
 test('native key edges remain visible and focus loss clears held movement', () => {

@@ -51,8 +51,8 @@ type ActivationWitness = {
 function browserExecutable(): string | undefined {
   const candidates = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,
-    '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
-    '/opt/google/chrome-beta/chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/opt/google/chrome/chrome',
     '/usr/bin/google-chrome',
     '/usr/bin/chromium',
     typeof chromium.executablePath === 'function' ? chromium.executablePath() : undefined,

@@ -93,7 +93,10 @@ function validPublicationProjectionShape(
   return true;
 }
 
-function validPublicationSourceTemplate(projection: PublishedMaterialProjection): boolean {
+function validPublicationSourceTemplate(
+  projection: PublishedMaterialProjection,
+  verifiedSources: Map<string, string>,
+): boolean {
   const input = projection.sourceTemplate;
   if (input === undefined) return true;
   if (input === null || typeof input !== 'object') return false;
@@ -104,10 +107,15 @@ function validPublicationSourceTemplate(projection: PublishedMaterialProjection)
     checked.value.sourceArtifact.digest !== projection.artifactHash
   )
     return false;
-  return readMaterialTemplateSources(
-    new TextEncoder().encode(JSON.stringify(input.sources)),
-    projection.artifactHash,
-  ).ok;
+  // A packet can carry the same library with different material definitions.
+  // Compare the exact serialized bytes before reusing its digest and shape proof.
+  const digest = projection.artifactHash;
+  const serialized = JSON.stringify(input.sources);
+  if (serialized === undefined) return false;
+  if (verifiedSources.get(digest) === serialized) return true;
+  if (!readMaterialTemplateSources(new TextEncoder().encode(serialized), digest).ok) return false;
+  verifiedSources.set(digest, serialized);
+  return true;
 }
 
 /** The receiver-state and material checks every admission repeats, even for interned content. */
@@ -152,8 +160,8 @@ function programId(value: PublishedMaterialProjectionProgram): string {
  * row's content under that identity; the receiver validates and owns a row the
  * first time it sees the id, and every projection after that references the
  * table entry. Projections themselves carry per-material values, so each is
- * validated for shape and owned once per publication; nothing is interned or
- * compared structurally.
+ * validated for shape and owned once per publication. Identical serialized
+ * source libraries share a proof within one staged packet.
  */
 export class PublicationMaterialProjectionAdmission {
   readonly #programs = new Map<string, PublishedMaterialProjectionProgram>();
@@ -163,11 +171,18 @@ export class PublicationMaterialProjectionAdmission {
     return { programs: this.#programs.size };
   }
 
-  /** Validate and own one received projection; undefined when it is invalid. */
-  admit(
+  /** Validate and own each received projection against one packet's available programs. */
+  stage(available: (key: string) => boolean) {
+    const verifiedSources = new Map<string, string>();
+    return (input: unknown, material: MaterialAsset) =>
+      this.admit(input, material, available, verifiedSources);
+  }
+
+  private admit(
     input: unknown,
     material: MaterialAsset,
     available: (key: string) => boolean,
+    verifiedSources: Map<string, string>,
   ): PublishedMaterialProjection | undefined {
     if (input === null || typeof input !== 'object') return undefined;
     const reused = new Map<object, PublishedMaterialProjectionProgram>();
@@ -186,7 +201,7 @@ export class PublicationMaterialProjectionAdmission {
       return true;
     };
     if (!validPublicationProjectionShape(input, validProgram)) return undefined;
-    if (!validPublicationSourceTemplate(input)) return undefined;
+    if (!validPublicationSourceTemplate(input, verifiedSources)) return undefined;
     const owned = ownRenderFeatureProgramDataWith(input as PublishedMaterialProjection, (node) =>
       reused.get(node),
     );

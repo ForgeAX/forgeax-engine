@@ -53,7 +53,7 @@ import {
 } from '@forgeax/engine-render/internal';
 import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
-import { createDevImportTransport } from '@forgeax/engine-runtime';
+import { createDevImportTransport } from '@forgeax/engine-runtime/internal/dev-import-transport';
 import {
   type AssetRegistry,
   type BundlerOptions,
@@ -61,6 +61,7 @@ import {
   type RendererHostAssembly,
   stagePublicationAssets,
 } from '@forgeax/engine-runtime/internal/renderer-host';
+import { stagePublicationShaders } from '@forgeax/engine-runtime/internal/shader-publication';
 import {
   AudioError,
   addLoadWork,
@@ -117,6 +118,7 @@ import type {
   RetainedExecutionInit,
 } from './protocol';
 import { browserRenderWorkerSource } from './render-worker-browser-channel';
+import type { RenderWorkerPreload } from './render-worker-preload';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
 import {
@@ -812,11 +814,21 @@ function stageRealmAssets(
   init: ExecutionInitMessage,
   host: RendererHostAssembly | undefined,
   bundler: BundlerOptions | undefined,
+  shaderPublication: ReturnType<typeof stagePublicationShaders> | undefined,
 ) {
   if (host !== undefined) return { assets: host.assets, ready: undefined };
-  return stagePublicationAssets(
-    bundler,
-    init.assetBudgetBytes === undefined ? {} : { assetBudgetBytes: init.assetBudgetBytes },
+  return stagePublicationAssets(bundler, {
+    ...(init.assetBudgetBytes === undefined ? {} : { assetBudgetBytes: init.assetBudgetBytes }),
+    ...(shaderPublication === undefined ? {} : { shaderPublication }),
+  });
+}
+
+function stageProjectSourceShaders(init: ExecutionInitMessage) {
+  if (!init.workers.render.enabled || init.startup === undefined || init.assetCatalog === undefined)
+    return undefined;
+  const { shaderManifestUrl } = init;
+  return stagePublicationShaders(
+    shaderManifestUrl === undefined ? undefined : { shaderManifestUrl },
   );
 }
 
@@ -824,12 +836,14 @@ function admitRealmAssetAssembly(
   init: ExecutionInitMessage,
   assets: AssetRegistry,
   catalogSource: ReturnType<typeof createCatalogSource> | undefined,
+  runtimePacks: PreparedExecutionBootstrap['runtimePacks'],
 ): AssetRuntimeAssembly {
   const runtimeBinding = init.assetCatalog?.runtimeBinding;
   try {
     const assembly = createAssetRuntimeAssembly(assets, {
       ...(catalogSource === undefined ? {} : { catalogSource }),
       ...(runtimeBinding === undefined ? {} : { runtimeBinding }),
+      ...(runtimePacks === undefined ? {} : { catalogOwner: 'runtime-packs' }),
     });
     if (!assembly.ok) throw assembly.error;
     return assembly.value;
@@ -1027,9 +1041,10 @@ function stageSourceRenderWorker(
 // Retain the original root/commit failure order before the start boundary.
 function preloadStagedRenderWorker(
   stagedRenderWorker: SourceRenderWorker | undefined,
+  takePreload: (() => RenderWorkerPreload | undefined) | undefined,
 ): { readonly cause: unknown } | undefined {
   try {
-    stagedRenderWorker?.preloadModule();
+    stagedRenderWorker?.preloadModule(takePreload?.());
   } catch (cause) {
     return { cause };
   }
@@ -1071,17 +1086,22 @@ function ownRealmPipelineInputs(startup: ExecutionInitMessage): ExecutionInitMes
   };
 }
 
-async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
+async function createRealm(
+  startup: ExecutionInitMessage,
+  takePreload?: () => RenderWorkerPreload | undefined,
+): Promise<boolean> {
   startup = ownRealmPipelineInputs(startup);
   // Realm-owned facts exclude the library forwarded to the renderer for this start.
   const { pipelineLibrary, backgroundPipelineLibrary, ...init } = startup;
   const endImport = beginLoadTimeline('boot', 'bootstrap-import');
-  const preparedResult = await prepareBootstrapEntry(
+  const bootstrap = prepareBootstrapEntry(
     init.bootstrapUrl,
     init.bootstrapData,
     undefined,
     init.startup,
   );
+  const shaderPublication = stageProjectSourceShaders(init);
+  const preparedResult = await bootstrap;
   endImport();
   if (!preparedResult.ok) {
     postBootstrapFault(preparedResult.error);
@@ -1138,15 +1158,25 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     endRenderer();
     sceneWork = beginLoadWork('scene');
     const catalogSource = realmCatalogSource(init);
-    const { assets, ready: assetReadiness } = stageRealmAssets(init, host, bundler);
-    candidate.assetAssembly = admitRealmAssetAssembly(init, assets, catalogSource);
+    const { assets, ready: assetReadiness } = stageRealmAssets(
+      init,
+      host,
+      bundler,
+      shaderPublication,
+    );
+    candidate.assetAssembly = admitRealmAssetAssembly(
+      init,
+      assets,
+      catalogSource,
+      prepared.runtimePacks,
+    );
     stagedRenderWorker = stageSourceRenderWorker(
       candidate,
       assets,
       sourceFeatures,
       candidateRenderer,
     );
-    const stagedRenderFailure = preloadStagedRenderWorker(stagedRenderWorker);
+    const stagedRenderFailure = preloadStagedRenderWorker(stagedRenderWorker, takePreload);
     if (assetReadiness !== undefined) await assetReadiness;
     const endPlugins = beginLoadTimeline('boot', 'plugin-bootstrap');
     const pluginContext = await createWorldContext(
@@ -1243,12 +1273,15 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
   }
 }
 
-async function initialize(message: ExecutionInitMessage): Promise<void> {
+async function initialize(
+  message: ExecutionInitMessage,
+  takePreload?: () => RenderWorkerPreload | undefined,
+): Promise<void> {
   try {
     if (message.loadProgressScope !== undefined) bindLoadProgressScope(message.loadProgressScope);
     addLoadWork('workers', { done: 1 });
     installCarriedGpuStub(message);
-    if (!(await createRealm(message))) return;
+    if (!(await createRealm(message, takePreload))) return;
     scope.postMessage({
       kind: 'ready',
       worldIdentity: realm?.world.identity ?? '',
@@ -1263,6 +1296,9 @@ async function initialize(message: ExecutionInitMessage): Promise<void> {
       'inspect the worker bootstrap cause and module URL',
       cause,
     );
+  } finally {
+    // A project bootstrap failure can occur before the source service takes ownership.
+    takePreload?.()?.worker?.terminate();
   }
 }
 
@@ -1775,7 +1811,10 @@ async function rebuild(message: ExecutionRebuildMessage): Promise<void> {
   }
 }
 
-function receiveWorkerLifecycle(message: HostToEngineMessage | FrameRequest): boolean {
+function receiveWorkerLifecycle(
+  message: HostToEngineMessage | FrameRequest,
+  takePreload: (() => RenderWorkerPreload | undefined) | undefined,
+): boolean {
   switch (message.kind) {
     case 'browser-render-error':
       browserRenderWorkers.failed(message.workerId, message.message);
@@ -1785,7 +1824,7 @@ function receiveWorkerLifecycle(message: HostToEngineMessage | FrameRequest): bo
       return true;
     case 'init':
       if (message.workers.render.enabled) nativeFrames = createWorkerFrameResponder(scope);
-      void withRealmTransition(() => initialize(message));
+      void withRealmTransition(() => initialize(message, takePreload));
       return true;
     case 'dispose':
       nativeFrames?.dispose();
@@ -1850,9 +1889,12 @@ async function applyRealmConfiguration(message: ConfigurationApplyRequest): Prom
   );
 }
 
-scope.onmessage = (event): void => {
+export function receiveEngineWorkerInput(
+  event: MessageEvent<HostToEngineMessage | FrameRequest>,
+  takePreload?: () => RenderWorkerPreload | undefined,
+): void {
   const message = event.data;
-  if (receiveWorkerLifecycle(message)) return;
+  if (receiveWorkerLifecycle(message, takePreload)) return;
   switch (message.kind) {
     case 'surface-result': {
       const target = realm;
@@ -1922,7 +1964,9 @@ scope.onmessage = (event): void => {
       receiveProfileFinish(message);
       return;
   }
-};
+}
+
+scope.onmessage = receiveEngineWorkerInput;
 
 function receiveMemoryPressure(): void {
   realm?.assetAssembly?.registry.trimReadCache();

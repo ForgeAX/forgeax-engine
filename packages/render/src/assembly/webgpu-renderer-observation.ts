@@ -293,7 +293,7 @@ async function observeReceiptColorDomains(
     );
   }
   const capturesResult = await readCaptures();
-  const receiptCaptures = receiptObservationBuffers.get(receipt);
+  const receiptCaptures = receiptObservationBuffers.get(receipt)?.captures;
   if (receiptCaptures?.every((capture) => destroyedObservationBuffers.has(capture.buffer))) {
     receiptObservationBuffers.delete(receipt);
   }

@@ -16,6 +16,8 @@ export const VolumetricCloudLayer = defineComponent('VolumetricCloudLayer', {
   entryLimitMeters: { type: 'f32', default: 350000 },
   traceLimitMeters: { type: 'f32', default: 200000 },
   viewSampleCountScale: { type: 'f32', default: 1 },
+  /** Spatial blue-noise jitter for the UE desktop view trace. */
+  viewBlueNoise: { type: 'bool', default: true },
   stopTransmittance: { type: 'f32', default: 0.005 },
   layoutWeight: { type: 'f32', default: -1 },
   maskWeight: { type: 'f32', default: -1 },
@@ -49,6 +51,10 @@ export const VolumetricCloudLayer = defineComponent('VolumetricCloudLayer', {
   /** Raw BSM side length; encoded 2x2 filtering produces ceil(N/2) receiver texels. */
   shadowResolution: { type: 'u32', default: 128 },
   shadowMapSamples: { type: 'u32', default: 64 },
+  /** Use UE world-grid snapping and treat shadowMapSamples as the base budget. */
+  shadowMapUe5Reference: { type: 'bool', default: false },
+  /** Number of 2x2 spatial reductions, from zero to four. */
+  shadowMapSpatialPasses: { type: 'u32', default: 1 },
   phaseG: { type: 'f32', default: 0.15 },
   phaseG2: { type: 'f32', default: -0.2 },
   phaseBlend: { type: 'f32', default: 0 },

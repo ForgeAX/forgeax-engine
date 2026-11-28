@@ -3,6 +3,7 @@ import type { ProfileFrameToken } from '@forgeax/engine-profiler';
 import { type Buffer, err, ok, textureReadbackLayout } from '@forgeax/engine-rhi';
 import { textureFormatBlock } from '@forgeax/engine-types';
 import {
+  FrameReceiptStaleError,
   type RenderError,
   RendererContractFailureError,
   RendererOperationError,
@@ -74,6 +75,11 @@ export type ObservationCaptureRead = () => Promise<
   >
 >;
 
+interface ReceiptObservationBuffers {
+  readonly captures: readonly RenderPipelineObservationCapture[];
+  retire(): void;
+}
+
 export interface RendererObservationCaptureOwner {
   readonly observationCaptureOwner: RenderPipelineObservationCaptureOwner;
   readonly stats: {
@@ -86,10 +92,7 @@ export interface RendererObservationCaptureOwner {
   };
   expectedGraphGeneration: number | undefined;
   readonly receiptObservationCaptures: WeakMap<FrameReceipt, ObservationCaptureRead>;
-  readonly receiptObservationBuffers: Map<
-    FrameReceipt,
-    readonly RenderPipelineObservationCapture[]
-  >;
+  readonly receiptObservationBuffers: Map<FrameReceipt, ReceiptObservationBuffers>;
   readonly destroyedObservationBuffers: WeakSet<Buffer>;
   readonly observationBufferCleanupFailures: WeakMap<Buffer, RendererContractFailureError>;
   readonly failedObservationCaptures: Map<Buffer, RenderPipelineObservationCapture>;
@@ -472,6 +475,7 @@ export function createRendererObservationCaptureOwner(
   };
   const readObservationCapture = async (
     capture: RenderPipelineObservationCapture,
+    retired?: () => FrameReceiptStaleError | undefined,
   ): Promise<RenderResult<Uint8Array, RenderError>> => {
     try {
       if (typeof capture.buffer.mapAsync !== 'function') {
@@ -486,6 +490,11 @@ export function createRendererObservationCaptureOwner(
       }
       stats.mapCount += 1;
       const mapped = await capture.buffer.mapAsync(1);
+      const stale = retired?.();
+      if (stale !== undefined) {
+        if (mapped.ok && mapped.value.mapState === 'mapped') mapped.value.unmap();
+        return err(stale);
+      }
       if (!mapped.ok) {
         const cleanupFailure = disposeObservationCaptures([capture]);
         return err(
@@ -515,6 +524,8 @@ export function createRendererObservationCaptureOwner(
       if (cleanupFailure !== undefined) return err(cleanupFailure);
       return ok(bytes);
     } catch (cause) {
+      const stale = retired?.();
+      if (stale !== undefined) return err(stale);
       const cleanupFailure = disposeObservationCaptures([capture]);
       return err(
         cleanupFailure ??
@@ -528,25 +539,26 @@ export function createRendererObservationCaptureOwner(
     }
   };
   const receiptObservationCaptures = new WeakMap<FrameReceipt, ObservationCaptureRead>();
-  const receiptObservationBuffers = new Map<
-    FrameReceipt,
-    readonly RenderPipelineObservationCapture[]
-  >();
+  const receiptObservationBuffers = new Map<FrameReceipt, ReceiptObservationBuffers>();
   const registerReceiptReads: RendererObservationCaptureOwner['registerReceiptReads'] = (
     receipt,
     { captures, graphGenerations },
   ) => {
+    let retired: FrameReceiptStaleError | undefined;
+    let settle: ((value: Awaited<ReturnType<ObservationCaptureRead>>) => void) | undefined;
     const performRead: ObservationCaptureRead = async () => {
       let unreadExplicitCapture = false;
       try {
         const completion = await receipt.completed;
+        if (retired !== undefined) return err(retired);
         if (!completion.ok) {
           const failure = disposeOwnedObservationCaptures(captures);
           return failure === undefined ? completion : err(failure);
         }
         const read = [];
         for (const capture of captures) {
-          const bytes = await readObservationCapture(capture);
+          const bytes = await readObservationCapture(capture, () => retired);
+          if (retired !== undefined) return err(retired);
           if (!bytes.ok) {
             const failure = disposeOwnedObservationCaptures(captures);
             return failure === undefined ? bytes : err(failure);
@@ -564,8 +576,31 @@ export function createRendererObservationCaptureOwner(
       }
     };
     let pendingRead: ReturnType<ObservationCaptureRead> | undefined;
-    const read: ObservationCaptureRead = () => (pendingRead ??= performRead());
-    receiptObservationBuffers.set(receipt, captures);
+    const read: ObservationCaptureRead = () =>
+      (pendingRead ??= new Promise((resolve, reject) => {
+        if (retired !== undefined) {
+          resolve(err(retired));
+          return;
+        }
+        settle = resolve;
+        void performRead()
+          .then(resolve, reject)
+          .finally(() => {
+            settle = undefined;
+          });
+      }));
+    receiptObservationBuffers.set(receipt, {
+      captures,
+      retire() {
+        retired ??= new FrameReceiptStaleError({
+          frameId: receipt.frameId,
+          receiptGeneration: receipt.deviceGeneration,
+          currentGeneration: receipt.deviceGeneration,
+        });
+        settle?.(err(retired));
+        settle = undefined;
+      },
+    });
     receiptObservationCaptures.set(receipt, read);
     return read;
   };
@@ -584,7 +619,8 @@ export function createRendererObservationCaptureOwner(
     registerReceiptReads,
     disposeReceiptObservationCaptures: () => {
       let firstFailure: RendererContractFailureError | undefined;
-      for (const [receipt, captures] of receiptObservationBuffers) {
+      for (const [receipt, { captures, retire }] of receiptObservationBuffers) {
+        retire();
         const failure = disposeObservationCaptures(captures);
         firstFailure ??= failure;
         if (captures.every((capture) => destroyedObservationBuffers.has(capture.buffer))) {

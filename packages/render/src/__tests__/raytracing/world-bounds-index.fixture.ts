@@ -25,7 +25,6 @@ interface Variant {
   readonly bytes: Uint8Array;
   readonly bindingSize?: number;
   readonly instancesSize?: number;
-  readonly guardMutant?: boolean;
   readonly edit?: 'apply' | 'omit-disable' | 'small';
 }
 interface EditWrite {
@@ -338,11 +337,18 @@ function variants(original: Uint8Array): Variant[] {
       instancesSize: (COUNT - 1) * 144,
     },
     { name: 'mutant-row-omission', bytes: mutant },
-    { ...copy('mutant-canonical-guard', 0, 0), guardMutant: true },
+    copy('mutant-canonical-guard', 0, 0),
   ];
 }
 
-export async function runWorldBoundsIndexCases(scope: 'all' | 'retained-move' = 'all') {
+export async function runWorldBoundsIndexCases(scope: 'strict' | 'retained-move' | 'guard-mutant') {
+  const start = performance.now();
+  const mark = (phase: string) => {
+    if (process.env.CI) {
+      const elapsedMs = Math.round(performance.now() - start);
+      process.stderr.write(`[world-bounds-index] ${scope} ${phase} ${elapsedMs}\n`);
+    }
+  };
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) throw Error('Real GPU required');
   const device = await adapter.requestDevice(),
@@ -360,6 +366,7 @@ export async function runWorldBoundsIndexCases(scope: 'all' | 'retained-move' = 
     const input = await scenario(),
       storage = GPUBufferUsage.STORAGE,
       data = input.composition.data;
+    mark('scenario-ready-ms');
     const instanceBytes = new Uint8Array(CAPACITY * 144);
     instanceBytes.set(data.instances);
     const common = [
@@ -370,10 +377,12 @@ export async function runWorldBoundsIndexCases(scope: 'all' | 'retained-move' = 
     ];
     const probes = make(input.bytes, storage),
       code = worldTraversalWgsl('global-sdf') + WORLD_BOUNDS_INDEX_QUERY_WGSL;
+    const queryCode = scope === 'guard-mutant' ? withoutCanonicalGuard(code) : code;
     const pipeline = await device.createComputePipelineAsync({
       layout: 'auto',
-      compute: { module: device.createShaderModule({ code }), entryPoint: 'main' },
+      compute: { module: device.createShaderModule({ code: queryCode }), entryPoint: 'main' },
     });
+    mark('query-pipeline-ready-ms');
     const compose = await device.createComputePipelineAsync({
       layout: 'auto',
       compute: {
@@ -381,36 +390,32 @@ export async function runWorldBoundsIndexCases(scope: 'all' | 'retained-move' = 
         entryPoint: 'main',
       },
     });
-    const guardCode = scope === 'all' ? withoutCanonicalGuard(code) : undefined;
-    const guardPipeline = guardCode
-      ? await device.createComputePipelineAsync({
-          layout: 'auto',
-          compute: { module: device.createShaderModule({ code: guardCode }), entryPoint: 'main' },
-        })
-      : pipeline;
-    const validCompose = await runCompose(
-      device,
-      make,
-      compose,
-      common,
-      make(data.bounds, storage),
-      { name: 'baseline', bytes: data.bounds },
-      data.voxels.byteLength,
-    );
+    mark('compose-pipeline-ready-ms');
+    const validCompose =
+      scope === 'strict'
+        ? await runCompose(
+            device,
+            make,
+            compose,
+            common,
+            make(data.bounds, storage),
+            { name: 'baseline', bytes: data.bounds },
+            data.voxels.byteLength,
+          )
+        : undefined;
+    if (validCompose) mark('baseline-readback-ms');
     const rows = [];
-    const selected = variants(data.bounds).filter((variant) =>
-      scope === 'all'
-        ? variant.name !== 'edited-retained'
-        : variant.name === 'edited-retained' ||
-          variant.name === 'edited-disabled' ||
-          variant.name === 'mutant-edit-without-disable',
-    );
-    for (const variant of selected)
+    const selected = variants(data.bounds).filter(({ name }) => {
+      if (scope === 'guard-mutant') return name === 'mutant-canonical-guard';
+      if (scope === 'retained-move') return name === 'edited-retained';
+      return name !== 'edited-retained' && name !== 'mutant-canonical-guard';
+    });
+    for (const variant of selected) {
       rows.push(
         await runVariant(
           device,
           make,
-          variant.guardMutant ? guardPipeline : pipeline,
+          pipeline,
           common,
           probes,
           variant,
@@ -424,6 +429,8 @@ export async function runWorldBoundsIndexCases(scope: 'all' | 'retained-move' = 
           data.settings,
         ),
       );
+      if (rows.length === 1) mark('first-variant-readback-ms');
+    }
     await device.queue.onSubmittedWorkDone();
     const { candidates, headers } = input.composition.surface;
     const result = {
@@ -450,19 +457,23 @@ export async function runWorldBoundsIndexCases(scope: 'all' | 'retained-move' = 
       initialCapacity: CAPACITY,
       initialCount: COUNT,
       rows,
-      baselineComposeBytes: Array.from(validCompose.bytes),
+      baselineComposeBytes: validCompose && Array.from(validCompose.bytes),
     };
     const directory = process.env.FORGEAX_GI_SCENE_ARTIFACTS;
     if (directory) {
       mkdirSync(directory, { recursive: true });
-      writeFileSync(`${directory}/bounds-index.json`, JSON.stringify(result, null, 2));
-      writeFileSync(`${directory}/bounds-index-production.wgsl`, code);
-      writeFileSync(`${directory}/bounds-index-compose.wgsl`, GLOBAL_SDF_COMPOSE_WGSL);
-      if (guardCode) writeFileSync(`${directory}/bounds-index-guard-mutant.wgsl`, guardCode);
-      writeFileSync(`${directory}/bounds-index-valid-compose.bin`, validCompose.bytes);
-      writeFileSync(`${directory}/bounds-index-input.bin`, input.bytes);
-      writeFileSync(`${directory}/bounds-index-pool.bin`, data.bounds);
-      saveImage(directory, rows, input.probes.length);
+      const suffix = scope === 'strict' ? '' : `-${scope}`;
+      writeFileSync(`${directory}/bounds-index${suffix}.json`, JSON.stringify(result, null, 2));
+      if (scope === 'guard-mutant')
+        writeFileSync(`${directory}/bounds-index-guard-mutant.wgsl`, queryCode);
+      if (validCompose) {
+        writeFileSync(`${directory}/bounds-index-production.wgsl`, code);
+        writeFileSync(`${directory}/bounds-index-compose.wgsl`, GLOBAL_SDF_COMPOSE_WGSL);
+        writeFileSync(`${directory}/bounds-index-valid-compose.bin`, validCompose.bytes);
+        writeFileSync(`${directory}/bounds-index-input.bin`, input.bytes);
+        writeFileSync(`${directory}/bounds-index-pool.bin`, data.bounds);
+        saveImage(directory, rows, input.probes.length);
+      }
     }
     return result;
   } finally {

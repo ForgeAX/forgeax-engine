@@ -511,7 +511,9 @@ export function simplifyFaces(
           ? 'maxError'
           : (metrics.clearanceBlocked ?? 0) > 0
             ? 'constraints, normal-flip and clearance checks'
-            : 'constraints and normal-flip checks'
+            : options.maxAspect !== undefined
+              ? `constraints, normal-flip and maxAspect ${options.maxAspect} checks`
+              : 'constraints and normal-flip checks'
       } blocked further collapses`,
       detail: {
         trianglesAfter: metrics.trianglesAfter,

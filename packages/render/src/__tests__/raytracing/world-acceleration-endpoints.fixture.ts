@@ -332,6 +332,7 @@ export function executeHardwareQueryControl(
     ],
     tlas: {},
     RAY_FLAG_FORCE_OPAQUE: 1,
+    RAY_FLAG_TERMINATE_ON_FIRST_HIT: 4,
     RAY_QUERY_INTERSECTION_TRIANGLE: 1,
     rayQueryInitialize: initialise,
     rayQueryProceed: proceed,
@@ -340,6 +341,7 @@ export function executeHardwareQueryControl(
     rayQueryConfirmIntersection: (q: Query) => {
       if (q.committed.kind === 0 || q.candidate.t < q.committed.t) q.committed = q.candidate;
     },
+    rayQueryTerminate: () => {},
     RayDesc: (flags: number, _mask: number, first: number, last: number) => ({
       flags,
       first,

@@ -155,3 +155,15 @@ it('binds the canonical uint projection from the same packed source and accepted
     control.dispose();
   }
 });
+
+it('keeps canonical source readiness budget independent of segment step budget for large scenes', async () => {
+  const { FIELD_VISIBILITY_BOUNDS_WGSL } = await import(
+    '../../../../shader/src/field-visibility-wgsl'
+  );
+  expect(FIELD_VISIBILITY_BOUNDS_WGSL).toContain(
+    'var readyRemaining=max(budget,sdfSceneRowLimit()+1u);',
+  );
+  expect(FIELD_VISIBILITY_BOUNDS_WGSL).toContain(
+    'if(!fieldCanonicalSourceReady(&readyRemaining)){return -1.0;}',
+  );
+});

@@ -10,8 +10,8 @@ import { quat } from '@forgeax/engine/math';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import physics3d from '@forgeax/engine/physics-rapier3d';
 import {
-  ANTIALIAS_NONE,
   ANTIALIAS_MSAA,
+  ANTIALIAS_NONE,
   ANTIALIAS_TAA,
   ANTIALIAS_TSR,
   Camera,
@@ -42,11 +42,25 @@ import {
 import { Terrain } from '@forgeax/engine/terrain';
 import { type AssetHandle, err, ok } from '@forgeax/engine/types';
 import type { WaterSystem } from '@forgeax/engine/water';
+import {
+  type WaterCausticsMode as CausticsMode,
+  createWaterCausticsReceiverFeature,
+  createWaterGerstnerCausticsFeature,
+} from '@forgeax/engine/water/caustics';
+import causticsCopyShader from '@forgeax/engine-water/caustics/shaders/copy.wgsl';
+import causticsReceiverShader from '../assets/shaders/caustics-receiver.wgsl';
 import { type CameraPose, createWaterCameraControls } from '../../camera-controls';
 import { dressWaterStage, stageRuntimePanel } from '../../presentation';
 import { requireDemoValue } from '../../runtime-input';
 import { arrangeWaterSettings, waterQualityControl } from '../../settings-panel';
 import { waterStageNavigation } from '../../stage-catalog';
+import {
+  CAUSTICS_FIELD,
+  CAUSTICS_PLANE_Y,
+  CAUSTICS_SUN_DIRECTION,
+  CAUSTICS_SUN_INTENSITY,
+} from './caustics-policy';
+import { causticsTextureWaveSet, createCausticsTextureClock } from './caustics-texture-clock';
 import { WATER_R3_PACKAGE } from './identity';
 import { createMaterialPanel } from './material-panel';
 import { createSceneControls } from './scene-controls';
@@ -65,7 +79,7 @@ const required = <T>(value: T | undefined): T => {
 type BodyType = 'lake' | 'river' | 'ocean' | 'custom';
 type ViewPreset = 'overview' | 'surface' | 'waterline' | 'underwater';
 type View = ViewPreset | 'manual';
-type Scenario = 'baseline' | 'river-lake' | 'river-ocean' | 'shared';
+type Scenario = 'baseline' | 'river-lake' | 'river-ocean' | 'shared' | 'caustics';
 const bodyLabels: Record<BodyType, string> = {
   lake: '湖畔',
   river: '河道',
@@ -120,14 +134,26 @@ async function main() {
   const canvas = element<HTMLCanvasElement>('#scene');
   const panel = element<HTMLElement>('#controls-panel');
   const panelToggle = element<HTMLButtonElement>('#panel-toggle');
-  const { initialAa, temporal, reflections, renderPath, startView } = waterDemoOptions(location.search);
+  const { initialAa, temporal, reflections, renderPath, startView } = waterDemoOptions(
+    location.search,
+  );
   element<HTMLInputElement>('#taa').checked = temporal;
   element<HTMLInputElement>('#ssr').checked = reflections;
+  const caustics = createWaterGerstnerCausticsFeature({
+    identity: 'water-r3-caustics',
+    field: CAUSTICS_FIELD,
+  });
+  const causticsReceivers = createWaterCausticsReceiverFeature({
+    producerIdentity: 'water-r3-caustics',
+    field: CAUSTICS_FIELD.name,
+    shaders: { composite: causticsReceiverShader.wgsl, copy: causticsCopyShader.wgsl },
+  });
   const createStageApp = () =>
     createApp(
       canvas,
       {
         plugins: [physics3d],
+        features: [caustics.feature, causticsReceivers.feature],
         standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath },
         uiRoot: panel,
         pointerLockAllowed: () => false,
@@ -183,43 +209,45 @@ async function main() {
       { component: WaterTerrainProvider, data: { terrain } },
     )
     .unwrap();
-  for (let i = 0; i < 11; i++) {
-    spawn('box', 'white', [-14 + i * 2.8, -4.05, 0], [0.045, 0.025, 28]);
-    spawn('box', 'white', [0, -4.05, -14 + i * 2.8], [28, 0.025, 0.045]);
-  }
-  for (let j = 0; j < 48; j++) spawn('box', 'pier', [15, 0.6, -9.75 + j * 0.5], [4, 0.25, 0.44]);
-  for (const side of [-1, 1]) {
-    spawn('box', 'mirror', [15 + side * 1.8, 1.65, 2], [0.07, 0.07, 24]);
-    for (let j = 0; j < 7; j++)
-      spawn('box', 'pier', [15 + side * 1.8, 1.15, -9 + j * 3.6], [0.14, 1.2, 0.14]);
-  }
-  for (const x of [13.6, 16.4])
-    for (const z of [-7, 0, 9]) spawn('box', 'stone', [x, -1.7, z], [0.35, 4.4, 0.35]);
-  for (let i = 0; i < 5; i++) {
-    const x = -8 + i * 3.7;
-    spawn('box', 'stone', [x, -0.6, -7 - (i % 2)], [2.15, 0.7, 2.15]);
-    for (const side of [-1, 1])
-      spawn('box', 'mirror', [x + side * 0.83, 1.2, -7 - (i % 2)], [0.1, 6.2, 0.28]);
-    spawn(
-      'box',
-      required(['red', 'yellow', 'white', 'teal', 'red'][i]),
-      [x, 1.2, -7 - (i % 2)],
-      [1.5, 6, 0.12],
-    );
-    // Retain optical calibration faces, with a substantial instrument frame and divided backing.
-    for (const y of [-1.5, 0, 1.5, 3, 4.1]) {
-      spawn('box', 'stone', [x, y, -7 - (i % 2) - 0.13], [1.65, 0.08, 0.12]);
-      spawn('box', 'mirror', [x + 0.56, y + 0.12, -7 - (i % 2) + 0.075], [0.22, 0.035, 0.02]);
+  const spawnReceiverCalibration = () => {
+    for (let i = 0; i < 11; i++) {
+      spawn('box', 'white', [-14 + i * 2.8, -4.05, 0], [0.045, 0.025, 28]);
+      spawn('box', 'white', [0, -4.05, -14 + i * 2.8], [28, 0.025, 0.045]);
     }
-    spawn('box', 'stone', [x, 4.28, -7 - (i % 2)], [2, 0.24, 0.5]);
-    spawn('box', 'pier', [x, -1.8, -7 - (i % 2)], [2.1, 0.18, 2.1]);
-    spawn(
-      'sphere',
-      required(['yellow', 'red', 'teal', 'white', 'yellow'][i]),
-      [x, -2.6, 0],
-      [0.8, 0.8, 0.8],
-    );
-  }
+    for (let j = 0; j < 48; j++) spawn('box', 'pier', [15, 0.6, -9.75 + j * 0.5], [4, 0.25, 0.44]);
+    for (const side of [-1, 1]) {
+      spawn('box', 'mirror', [15 + side * 1.8, 1.65, 2], [0.07, 0.07, 24]);
+      for (let j = 0; j < 7; j++)
+        spawn('box', 'pier', [15 + side * 1.8, 1.15, -9 + j * 3.6], [0.14, 1.2, 0.14]);
+    }
+    for (const x of [13.6, 16.4])
+      for (const z of [-7, 0, 9]) spawn('box', 'stone', [x, -1.7, z], [0.35, 4.4, 0.35]);
+    const sphereReceivers: { entity: ReturnType<typeof spawn>; base: string }[] = [];
+    for (let i = 0; i < 5; i++) {
+      const x = -8 + i * 3.7;
+      spawn('box', 'stone', [x, -0.6, -7 - (i % 2)], [2.15, 0.7, 2.15]);
+      for (const side of [-1, 1])
+        spawn('box', 'mirror', [x + side * 0.83, 1.2, -7 - (i % 2)], [0.1, 6.2, 0.28]);
+      spawn(
+        'box',
+        required(['red', 'yellow', 'white', 'teal', 'red'][i]),
+        [x, 1.2, -7 - (i % 2)],
+        [1.5, 6, 0.12],
+      );
+      // Retain optical calibration faces, with a substantial instrument frame and divided backing.
+      for (const y of [-1.5, 0, 1.5, 3, 4.1]) {
+        spawn('box', 'stone', [x, y, -7 - (i % 2) - 0.13], [1.65, 0.08, 0.12]);
+        spawn('box', 'mirror', [x + 0.56, y + 0.12, -7 - (i % 2) + 0.075], [0.22, 0.035, 0.02]);
+      }
+      spawn('box', 'stone', [x, 4.28, -7 - (i % 2)], [2, 0.24, 0.5]);
+      spawn('box', 'pier', [x, -1.8, -7 - (i % 2)], [2.1, 0.18, 2.1]);
+      const base = required(['yellow', 'red', 'teal', 'white', 'yellow'][i]);
+      const sphere = spawn('sphere', base, [x, -2.6, 0], [0.8, 0.8, 0.8]);
+      sphereReceivers.push({ entity: sphere, base });
+    }
+    return sphereReceivers;
+  };
+  const sphereReceivers = spawnReceiverCalibration();
   const moving = spawn('ring', 'yellow', [1, 1.6, -2], [1.7, 1.7, 1.7]);
   spawn('box', 'mirror', [-6, 0.9, 2], [3, 0.25, 3]);
   const zoneGuid = guid('zone/main');
@@ -241,6 +269,14 @@ async function main() {
       return { type, handle, entity, guid: guid(`body/${type}`) };
     }),
   );
+  const causticsHandle = (await assets.load(guid('body/caustics'), 'water-body')).unwrap();
+  const opticalLake = {
+    type: 'lake' as const,
+    handle: causticsHandle,
+    guid: guid('body/caustics'),
+    entity: world.spawn({ component: Transform, data: { pos: [0, 0, 0] } }).unwrap(),
+  };
+  const fieldMaterial = (await assets.load(guid('material/caustics-field'), 'material')).unwrap();
   const peerHandle = (await assets.load(guid('body/lake-peer'), 'water-body')).unwrap();
   const peer = {
     type: 'lake' as const,
@@ -248,13 +284,13 @@ async function main() {
     guid: guid('body/lake-peer'),
     entity: world.spawn({ component: Transform, data: { pos: [32, 0, 0] } }).unwrap(),
   };
-  world
+  const sunlight = world
     .spawn({
       component: DirectionalLight,
       data: {
-        direction: [-0.45, -0.8, -0.3],
+        direction: CAUSTICS_SUN_DIRECTION,
         color: [1, 0.96, 0.88],
-        intensity: 2.6,
+        intensity: CAUSTICS_SUN_INTENSITY,
         castShadow: false,
       },
     })
@@ -263,11 +299,102 @@ async function main() {
     .spawn({ component: Skylight, data: { color: [0.65, 0.82, 0.92], intensity: 1.3 } })
     .unwrap();
   let selectedBody: BodyType = 'lake';
-  let scenario: Scenario = 'baseline';
+  let scenario: Scenario =
+    new URLSearchParams(location.search).get('scenario') === 'caustics' ? 'caustics' : 'baseline';
+  let causticsMode: CausticsMode =
+    new URLSearchParams(location.search).get('caustics') === 'texture' ? 'texture' : 'dynamic';
+  let causticsStrength = 0.7;
+  let causticsDiagnostic = false;
+  const causticsParameters = { scale: 1, width: 0.25, softness: 0.25, distanceM: 40, depthM: 6 };
+  const sunParameters = {
+    azimuth: (Math.atan2(0.3, 0.45) * 180) / Math.PI,
+    elevation: (Math.atan2(0.8, Math.hypot(0.45, 0.3)) * 180) / Math.PI,
+    intensity: CAUSTICS_SUN_INTENSITY,
+  };
+  const applySun = () => {
+    const active = scenario === 'caustics' && causticsMode !== 'off';
+    const azimuth = (sunParameters.azimuth * Math.PI) / 180;
+    const elevation = (sunParameters.elevation * Math.PI) / 180;
+    const direction = active
+      ? [
+          -Math.cos(elevation) * Math.cos(azimuth),
+          -Math.sin(elevation),
+          -Math.cos(elevation) * Math.sin(azimuth),
+        ]
+      : [...CAUSTICS_SUN_DIRECTION];
+    world
+      .set(sunlight, DirectionalLight, {
+        direction,
+        intensity: active ? sunParameters.intensity : CAUSTICS_SUN_INTENSITY,
+        castShadow: active,
+      })
+      .unwrap();
+    const light = world.get(sunlight, DirectionalLight).unwrap();
+    assets
+      .update(fieldMaterial, {
+        values: {
+          ...assets.read(fieldMaterial).unwrap().values,
+          causticsIncident: [...light.direction],
+          causticsLight: light.intensity,
+          causticsPlaneY: CAUSTICS_PLANE_Y,
+          causticsMode: causticsMode === 'texture' ? 1 : 2,
+        },
+      })
+      .unwrap();
+    element<HTMLOutputElement>('#caustics-sun-direction').value = [...light.direction]
+      .map((value) => value.toFixed(2))
+      .join(', ');
+  };
+  const syncCausticsWaves = () => {
+    const active = scenario === 'caustics' && causticsMode !== 'off';
+    const waveSetGuid = guid(active ? 'waves/caustics' : 'waves/basin');
+    const source = assets.read(causticsHandle).unwrap();
+    if (source.waveSetGuid !== waveSetGuid) assets.update(causticsHandle, { waveSetGuid }).unwrap();
+  };
+  caustics.configure({
+    assets,
+    material: fieldMaterial,
+    body: (context) =>
+      scenario === 'caustics'
+        ? waterSceneSnapshot(context.world, Number(opticalLake.entity))
+        : undefined,
+    mode: () => causticsMode,
+    sunActive: () => {
+      const light = world.get(sunlight, DirectionalLight).unwrap();
+      return light.intensity > 0 && (light.direction[1] ?? 0) < -0.01;
+    },
+  });
+  const textureClock = createCausticsTextureClock();
+  causticsReceivers.configure(() => {
+    if (scenario !== 'caustics' || causticsMode === 'off') return undefined;
+    const light = world.get(sunlight, DirectionalLight).unwrap();
+    const timeSeconds = world.getResource(Time).elapsed;
+    const phase = textureClock.sample(
+      causticsTextureWaveSet(waterSceneSnapshot(world, Number(opticalLake.entity))),
+      timeSeconds,
+    );
+    return {
+      mode: causticsMode,
+      gain: causticsStrength,
+      scale: causticsParameters.scale,
+      lineWidth: causticsParameters.width,
+      softness: causticsParameters.softness,
+      visibleDistanceM: causticsParameters.distanceM,
+      maximumDepthM: causticsParameters.depthM,
+      incidentDirection: light.direction,
+      lightIntensity: light.intensity,
+      referencePlaneY: CAUSTICS_PLANE_Y,
+      // This R3-supplied shader owns the scalar slot: texture phase, otherwise scene time.
+      timeSeconds: causticsMode === 'texture' ? phase : timeSeconds,
+      visibilityDiagnostic: causticsDiagnostic,
+    };
+  });
   const currentBody = () =>
-    scenario === 'shared' && element<HTMLSelectElement>('#body-instance').value === 'peer'
-      ? peer
-      : required(bodies.find((body) => body.type === selectedBody));
+    scenario === 'caustics'
+      ? opticalLake
+      : scenario === 'shared' && element<HTMLSelectElement>('#body-instance').value === 'peer'
+        ? peer
+        : required(bodies.find((body) => body.type === selectedBody));
   let selectedView: View = startView;
   let pose = {
     eye: [...poses[startView].eye] as [number, number, number],
@@ -443,6 +570,7 @@ async function main() {
       applyCamera();
     });
   const mountScenario = () => {
+    syncCausticsWaves();
     const types: readonly BodyType[] =
       scenario === 'river-lake'
         ? ['river', 'lake']
@@ -452,8 +580,15 @@ async function main() {
             ? ['lake']
             : [selectedBody];
     if (!types.includes(selectedBody)) selectedBody = required(types[0]);
-    for (const body of [...bodies, peer]) {
-      const mounted = body === peer ? scenario === 'shared' : types.includes(body.type);
+    for (const body of [...bodies, peer, opticalLake]) {
+      const mounted =
+        body === opticalLake
+          ? scenario === 'caustics'
+          : scenario === 'caustics'
+            ? false
+            : body === peer
+              ? scenario === 'shared'
+              : types.includes(body.type);
       if (mounted && !world.hasComponent(body.entity, WaterBodyInstance))
         world
           .addComponent(body.entity, { component: WaterBodyInstance, data: { body: body.handle } })
@@ -466,10 +601,48 @@ async function main() {
       button.disabled = scenario !== 'baseline' && !types.includes(button.dataset.body as BodyType);
     }
     element<HTMLElement>('#body-instance-field').hidden = scenario !== 'shared';
+    element<HTMLSelectElement>('#scenario').value = scenario;
+    element<HTMLElement>('#caustics-controls').hidden = scenario !== 'caustics';
+    applyCaustics();
     materialPanel.refresh();
     sceneControls.selectedChanged();
     applyCamera();
   };
+  const applyCaustics = () => {
+    syncCausticsWaves();
+    applySun();
+    element<HTMLSelectElement>('#caustics-mode').value = causticsMode;
+    element<HTMLOutputElement>('#caustics-strength-value').value = causticsStrength.toFixed(2);
+  };
+  element<HTMLSelectElement>('#caustics-mode').addEventListener('change', (event) => {
+    causticsMode = (event.currentTarget as HTMLSelectElement).value as CausticsMode;
+    applyCaustics();
+  });
+  element<HTMLInputElement>('#caustics-strength').addEventListener('input', (event) => {
+    causticsStrength = Number((event.currentTarget as HTMLInputElement).value);
+    applyCaustics();
+  });
+  for (const [id, key] of [
+    ['caustics-scale', 'scale'],
+    ['caustics-width', 'width'],
+    ['caustics-softness', 'softness'],
+    ['caustics-distance', 'distanceM'],
+    ['caustics-depth', 'depthM'],
+  ] as const)
+    element<HTMLInputElement>(`#${id}`).addEventListener('input', (event) => {
+      causticsParameters[key] = Number((event.currentTarget as HTMLInputElement).value);
+      applyCaustics();
+    });
+  for (const [id, key] of [
+    ['caustics-sun-azimuth', 'azimuth'],
+    ['caustics-sun-elevation', 'elevation'],
+    ['caustics-sun-intensity', 'intensity'],
+  ] as const)
+    element<HTMLInputElement>(`#${id}`).addEventListener('input', (event) => {
+      sunParameters[key] = Number((event.currentTarget as HTMLInputElement).value);
+      applyCaustics();
+    });
+  applyCaustics();
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-body]'))
     button.addEventListener('click', () => {
       selectedBody = button.dataset.body as BodyType;
@@ -564,7 +737,7 @@ async function main() {
     const water = world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE);
     const view = water.viewState(viewIdentity);
     const mesh = waterSceneMeshView(world, zoneGuid, viewIdentity);
-    const scene = [...bodies, peer].flatMap((body) => {
+    const scene = [...bodies, peer, opticalLake].flatMap((body) => {
       const snapshot = waterSceneSnapshot(world, Number(body.entity));
       return snapshot === undefined
         ? []
@@ -576,6 +749,8 @@ async function main() {
               sourceVersion: snapshot.sourceVersion,
               sceneGeneration: snapshot.sceneGeneration,
               type: snapshot.asset.type,
+              waveSetGuid: snapshot.asset.waveSetGuid,
+              maxWaveHeightM: snapshot.asset.maxWaveHeightM,
               surfaceMaterialGuid: snapshot.asset.surfaceMaterialGuid,
               lodMaterialGuid: snapshot.asset.lodMaterialGuid,
               underwaterPostProcessMaterialGuid: snapshot.asset.underwaterPostProcessMaterialGuid,
@@ -598,6 +773,23 @@ async function main() {
       cameraPose: { eye: [...pose.eye], target: [...pose.target] },
       manualCameraEnabled: cameraControls.enabled,
       scenario,
+      caustics: {
+        mode: causticsMode,
+        textureClock: textureClock.readState(),
+        strength: causticsStrength,
+        sunDirection: [...world.get(sunlight, DirectionalLight).unwrap().direction],
+        receivers: {
+          terrainSections: assets.read(terrain).unwrap().sections.length,
+          path: 'before-medium-scene-data',
+          spheres: sphereReceivers.map((receiver) => Number(receiver.entity)),
+        },
+        parameters: { ...causticsParameters },
+        sunIntensity: world.get(sunlight, DirectionalLight).unwrap().intensity,
+        shadowEnabled: world.get(sunlight, DirectionalLight).unwrap().castShadow,
+        requestedWaveSetGuid: assets.read(causticsHandle).unwrap().waveSetGuid,
+        receiverHeightM: CAUSTICS_PLANE_Y,
+        ...caustics.readState(),
+      },
       selectedEntity: Number(currentBody().entity),
       materialOperations: materialPanel.operations,
       material: materialPanel.readState(),
@@ -711,11 +903,14 @@ async function main() {
       world,
       camera,
       zoneGuid,
-      bodies: [...bodies, peer],
+      bodies: [...bodies, peer, opticalLake],
       errors,
       readState,
       setCameraPose,
       setManualCameraEnabled: cameraControls.setEnabled,
+      setCausticsVisibilityDiagnostic: (enabled: boolean) => {
+        causticsDiagnostic = enabled;
+      },
     },
   });
   window.addEventListener('beforeunload', () => {
@@ -770,14 +965,20 @@ async function main() {
       })
       .unwrap();
   }, 1);
-  const sections = [...panel.querySelectorAll<HTMLElement>(':scope > section')];
+  const sections = [...panel.querySelectorAll<HTMLElement>(':scope > section')].filter(
+    (section) => section.id !== 'caustics-controls',
+  );
   arrangeWaterSettings({
     panel,
     hero: panel.querySelector<HTMLElement>('.panel-heading') ?? undefined,
     title: '反射与水下',
     description: '从湖畔走到水线，再潜入水下。观察倒影、折射与水色随视角和水深的变化。',
     dimensions: [
-      { title: '展示场景', elements: sections.slice(0, 1), open: true },
+      {
+        title: '展示场景',
+        elements: [...sections.slice(0, 1), element<HTMLElement>('#caustics-controls')],
+        open: true,
+      },
       { title: '相机与水线', elements: sections.slice(1, 2), open: true },
       { title: '水色与折射', elements: sections.slice(2, 3) },
       { title: '画质与动画', elements: [quality, ...sections.slice(4, 5)] },

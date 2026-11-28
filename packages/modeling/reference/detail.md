@@ -13,6 +13,20 @@ The skeleton follows four phases: every position is computed first (as linear
 forms of the per-edge widths), then the touched faces are disconnected, the new points
 placed and the gaps filled, so a failure leaves the mesh unchanged.
 
+`width` may also be a list of `{ edges, width }` entries: each selected edge takes the width
+of the first entry whose `edges` contain it, and selected edges no entry contains stay
+unbevelled. An entry holding no selected edge is `model-selection-empty` (`detail.entry`),
+an empty list or a width that is not positive `model-invalid-argument`. One width applies on
+both sides of its edge. Positions are linear forms of the per-edge widths, so mixed widths
+change no topology: a chamfered corner of three widths a, b, c is the exact intersection of
+the offset planes (one triangle), and a round corner keeps the 3- or 4-edge patch, projected
+on the sphere about the mean profile centre while its arc radii stay within 3x of each other.
+A list whose widths are all equal gives the same bytes as the scalar width. Change the width
+at a sharp corner rather than along a smooth rim: where offset lines meet almost parallel
+the corner point moves by the width difference over the sine of their angle, and the chain
+clamps together. The [shaping](../examples/shaping/) example bevels a saw plate with a
+gradient over its teeth and a box with one width per edge direction.
+
 Around each vertex of a selected edge, every unbevelled edge gets a point sliding along
 it where the offset line of a neighbouring bevel crosses it (edges no offset line reaches
 slide like the reachable edges of their run, unless that runs off the edge where the line,
@@ -81,7 +95,7 @@ Known limits: a bevel clamps rather than consuming a short unbevelled edge or an
 wedge narrower than its width, so it fails as `model-degenerate` where such features are
 below about 1/400 of the width; a mixed convex/concave corner (a rounded pocket rim meeting a filleted
 wall) gets a relaxed patch that follows the sharp rail corner rather than a toroidal
-sweep; widths are uniform per call (no per-edge or vertex-only bevel); new faces get no UVs.
+sweep; there is no vertex-only bevel; new faces get no UVs.
 
 ## Fillets, blends and support loops
 
@@ -315,6 +329,32 @@ thickness`, or `round`) fails with the shell's no-clamp precondition. In zone A 
 `m.shutLines` a fold radius whose skin round (`radius + thickness`) exceeds the zone's edge
 radius fails `visual-gap`; a `round` of 1 mm passes.
 
+## Holes and threads
+
+`m.hole(faces, options)` cuts one revolved cutter per center with a single difference, so a
+plate takes a whole pattern in one operation. `faces` are coplanar planar faces; `centers`
+are `[u, v]` pairs in the face frame: `u` is the next world axis after the normal's
+dominant one (X, Y, Z cyclic) made perpendicular to the normal, `v = normal x u`, and the
+origin is the world origin projected onto the face, so a +Z face reads centers as world
+`(x, y)`. Kinds: `simple`, `counterbore { diameter, depth }`, `countersink { diameter,
+angle? }` (rim diameter at the face, 90 degrees included by default) and `tapped { thread }`,
+which bores the thread's tap drill. `depth` is below the face, or `'through'`.
+
+`threads.lookup(designation)` returns the typed facts of a catalogue thread (ISO metric
+coarse M1.6 to M64, UNC and UNF #2 to 1-1/2, pipe G and Rp 1/16 to 4: major diameter, pitch,
+tap drill, flank angle in meters and degrees); `threads.all()` lists every designation. The
+tap drill is major - pitch for metric, about major - 0.9743 pitch for UN, the minor
+diameter for pipe threads. Considerations:
+
+- A cut whose face leaves no material around the thread major diameter is `tap-wall`; move the centre inward or pick a smaller thread rather than a smaller tap.
+- Several centers cut a plate that already has holes more reliably in one call than one centre at a time; a part with many holes in many faces cuts each in its own session and appends.
+- A `through` cut reaches past every solid along its axis, including other components in the same session; cut a part alone and append it.
+- Counterbores and countersinks keep the op label; ask `sel.createdBy(label, 'countersink')` for the cone and `'hole-wall'` for the bore.
+- Cosmetic thread rings (`hexBolt` default) cost a handful of faces; a modeled helix costs hundreds per turn, so reserve it for a close-up or an interference check.
+- `threadGeometry: 'modeled'` on a tapped hole sweeps a real helical groove into the bore (role `hole-thread`); the hole must be at least one pitch long (`thread-length`) and the cut leaves a margin of two pitches, so a through cut of a 20 mm plate takes about a second and a half per 12 mm of thread and adds on the order of 500 faces at 4 mm, 1600 at 12 mm and 2700 through.
+- A modeled bolt fits a modeled hole of the same size when both use the same `segments`; at a seat height `y` above the hole's face the bolt turns `360 y / pitch` degrees about Y, and a seat of a whole number of pitches needs no turn. Check the fit with `rig` interference rather than by eye.
+- A `through` bore cuts every component along its axis, so add an upper plate after the hole, not before.
+
 ## Mechanical recipes
 
 `recipes.*` (also exported as plain functions) build parametric parts as ordinary
@@ -332,15 +372,22 @@ an assembly appends parts with `append(part.model, { translate, tag })` and turn
 | `rack({ module, teeth, width, height?, pressureAngle?, backlash?, chamfer? })` | involute spur rack along X (straight flanks, pitch pi x module, teeth toward +Y, pitch line y = 0, each tooth thinned by `backlash`), chamfered tooth rims, caps cut at every tooth gap so a turned rack exports without slivers; pairs with `gear` of the same module: gear centre at ((k + 1/2) x pitch, module x teeth / 2), turned -90 degrees about Z, and a turn of theta rad moves the rack by r x theta along +X | `<name>`, `-chamfer` (`steel`) |
 | `hydraulicCylinder({ bore, rod, stroke, extension?, pin? })` | barrel with gland and seam groove, piston and rod at the extension, clevis eyes with pin holes along Z | `-barrel` (`paint`), `-rod` (`chrome`), `-eye`, `-rod-eye` (`steel`) |
 | `ballBearing({ bore, outer, width, balls? })` | deep-groove races and balls with 3 % groove clearance | `-inner`, `-outer` (`steel`), `-ball` (`chrome`) |
-| `hexBolt({ size, length, thread? })`, `hexNut({ size })`, `washer({ size })` | ISO M3 to M24: chamfered hex head welded to the shank, cosmetic V thread rings (`panelLine`), chamfered nut, plain washer | `-head`, `-shank`, `-thread`, `-chamfer` (`steel`) |
+| `hexBolt({ size, length, thread?, threadGeometry?, segments? })`, `hexNut({ size })`, `washer({ size })` | ISO M3 to M24 (diameter and pitch from the thread catalogue): chamfered hex head welded to the shank, cosmetic V thread rings (`panelLine`) or, with `threadGeometry: 'modeled'`, a swept helical ridge on a root-diameter shank (`-thread`), chamfered nut, plain washer | `-head`, `-shank`, `-thread`, `-chamfer` (`steel`) |
 | `coilSpring({ radius, wire, pitch, turns })` | helical wire: the section is extruded a little and screwed to every station | `<name>` (`spring`) |
-| `hinge({ length, leafWidth, thickness, pin, knuckles?, holes?, openAngle?, pinOverhang? })` | butt hinge: leaves with countersunk screw holes, alternating knuckles, headed pin; leaf B side tagged `<name>-b` | `-leaf-a`, `-leaf-b` (countersinks: role `bevel`), `-knuckle-a`, `-knuckle-b` (`steel`), `-pin` (`chrome`) |
+| `hinge({ length, leafWidth, thickness, pin, knuckles?, holes?, openAngle?, pinOverhang? })` | butt hinge: leaves with countersunk screw holes (`m.hole`, a true cone), alternating knuckles, headed pin; leaf B side tagged `<name>-b` | `-leaf-a`, `-leaf-b` (countersinks: role `countersink`), `-knuckle-a`, `-knuckle-b` (`steel`), `-pin` (`chrome`) |
 | `slideRail({ length, width, height?, carriage?, position?, holePitch? })` | rail with chamfered mounting holes and U ball tracks (`panelLine`), carriage with clearance and end seals | `-rail` (hole chamfers: role `bevel`), `-track` (`steel`), `-carriage` (`paint`), `-seal-a`, `-seal-b` (`rubber`) |
 | `pinJoint({ d, fit?, shear?, lug?: { e?, thickness?, length? }, wall?, gap?, retainer?, segments? })` | double-shear pin joint about +Y: a lug (body +X, rounded at `e` D, at least 1.5 D) in a clevis (cheeks and bridge, body -X; one cheek for `shear: 'single'`), a headed pin and, with `retainer: 'ring'`, a washer and a DIN 471-style ring in a pin groove; returns `contacts` (every pair a `fit`) | `-lug`, `-clevis`, `-washer`, `-ring` (`steel`), `-pin` (`chrome`) |
 | `lug({ d, fit?, e?, thickness?, length? })`, `clevis({ d, fit?, e?, wall?, slot?, shear? })` | the joint's lug and clevis alone | `<name>` (`steel`) |
 | `bushing({ d, fit?, outer?, length?, flange? })` | plain sleeve along +Y, bore at the fit's hole mid size, outside flats at `outer` / 2 for a line-to-line housing bore; length over diameter at most 2 | `<name>` (`bronze`) |
 | `rodEnd({ d, fit?, clearance?, shank? })` | spherical plain bearing: ball with bore in a housing whose race keeps `clearance` across facets at any tilt, shank along -X; returns the ball-housing `fit` | `-ball` (`chrome`), `-housing` (`steel`) |
+| `ratchet({ teeth, tipRadius, toothDepth, width, toothLand?, bore?, direction? })`, `pawl({ length, width, thickness, pivotRadius? })` | ratchet wheel about +Z with a radial locking face, a tip land and a ramp per tooth, and its pawl at the seated pose (tangent at the locking face, pivot one pawl length away); `direction` is the free drive; the pawl bar's reach past the face must fit within one pitch minus the land, otherwise `model-invalid-argument` (detail `clearance`, degrees). Anchors `hub`, `pawlPivot`, `pawlTip`; the wheel and pawl seat in `contacts` | `-wheel`, `-pawl` (`steel`) |
+| `sprocket({ teeth, pitch, width, rollerDiameter?, bore? })`, `chainLink({ pitch, kind, width, rollerDiameter?, plateThickness? })`, `chainPlacements({ links, pitch })`, `chainClosure(placements)` | sprocket with one roller seat per tooth on the pitch circle (radius p / (2 sin(pi / teeth))), each seat 1.05 x roller radius, a tip circle at seat/2 beyond the pitch circle (a simplified outline, not the ANSI topping curve); `chainLink` is an outer link (pins pressed in outer plates) or an inner link (rollers on clear pins between inner plates) along +X with pins at +-pitch/2; `chainPlacements` returns pin positions and link angles for a closed loop of N links on an N-tooth sprocket and returns placements only; `chainClosure` measures the pitch-polygon gap. Dimensions include `pitchRadius`, `outerRadius`, `seatRadius`, `toothHalfAngle`. Link parts `-plate-a`, `-plate-b`, `-pin-a`/`-pin-b` or `-roller-a`/`-roller-b`, contacts `fit`/`seat` | `<name>` (`steel`); link parts `-plate-*` (`steel`) |
+| `cam({ baseRadius, lift, motionShare, width, follower, rollerRadius?, maxPressureAngle?, bore? })` | translating cam about +Z on a cycloidal rise-dwell-return-dwell law (`motionShare` = rise and return share each, dwells fill the rest); `follower` is `flat` (face contact) or `roller` (pitch curve offset inward by `rollerRadius`). Pressure angle and radius of curvature are derived from the closed-form law, not the mesh; an undercut (`minCurvature <= 0`) or a pressure angle above `maxPressureAngle` (default 30) is refused with `model-invalid-argument` (detail `pressureAngle` or `minCurvature`). Dimensions include `maxPressureAngle`, `minCurvature`, `maxLift`. `cycloidal(t, motionShare)` exposes the lift fraction for tests and layout | `<name>` (`steel`) |
+| `escapementWheel({ scoops, outerRadius, rimWidth, hubRadius, spokeWidth, width, scoopDepth?, bore? })`, `steelyardStop({ scoops, armTrip, thickness, torque, width? })` | Su Song-style bucket wheel: one extruded face set with a scalloped rim (one cup per scoop) and `scoops` spoke openings as holes, no booleans; `stepAngle` = 360 / scoops per beat. The steelyard stop is the `pawl` bar with its trip mass from the moment balance `tripMass = torque / (g * armTrip)`, g = 9.80665 (`STANDARD_GRAVITY`). Refused with `model-invalid-argument` when the spoke openings leave less than 0.02 rad each or the hub reaches the rim. Anchors `hub`; stop anchors `pivot`, `trip` | `<name>` (`steel`) |
 | `overCenterLock({ span, overCentre, width, thickness, stopGap? })` | over-centre (toggle) lock at its locked pose: link A from pivot A (origin) to the middle pivot M, which rests `overCentre` past the line A-B (-Y), link B from M to B one thickness above, and a ground stop `stopGap` (0.2 mm) under link A; `overCentre <= 0` is refused (a toggle at or before its centre line is pushed open). Anchors `a`, `m`, `b`, `stop`; dimensions `linkLength`, `lockAngle`; the links' seat in `contacts` | `-a`, `-b`, `-stop` (`steel`) |
+| `pushClip(options)`, `weldNut(options)`, `blindRivet(options)`, `grommet(options)` | Panel hardware: a fir-tree trim clip, hex or square projection weld nut, installed blind rivet, and grooved rubber grommet or blanking plug. Linear dimensions are meters; counts are integers and the weld-nut `size` is a metric designation. Feature and dependent ranges are checked. Weld-nut height defaults to nominal size and projections to 3 hex / 4 square; its optional pilot locates the nut. Rivet head diameter, head height and upset bulb default to 2, 0.5 and 1.5 x shank diameter. Grommet flange diameter defaults to 1.8 x hole diameter and thickness to half the panel thickness; `bore: 0` makes a plug. | `<name>` (`nylon`: push clip; `steel`: weld nut and rivet; `rubber`: grommet) |
+| `tyreSize(code)`, `tyre(options)`, `wheelRim(options)` | Parses ISO metric tyre designations to meter dimensions, builds a hollow grooved tyre, or builds a barrel, drilled hub and straight-spoke rim. Both tyre and rim use axle +Y with contact at -Z. `tyreSize` accepts forms such as `225/45R17`; recipe dimensions are meters and tyre aspect ratio is a fraction. `wheelRim.offset` is ET toward the outboard/street side (+Y); `backspacing` is measured from the inboard flange inner face to the mounting plane. | `-tread`, `-sidewall`, `-bead`; `-barrel`, `-hub`, `-spoke-*` |
+| `catenary(a, b, { sag } \| { length }, options?)`, `cable(options)` | Computes a catenary from either positive sag or cable length and builds a cable bundle along a polyline, optionally with twisted strands, wrap and end fittings. Lengths are meters; catenary `down` defaults to `[0, -1, 0]` and sampling to 33 points. `cable` uses 16 polygon sides by default; strand counts 8 to 19 remain a single ring, leaving a central lumen rather than adding inner layers. | `-strand`, `-wrap`, `-fitting-*` |
 
 Multi-body parts keep their bodies apart by clearances (pins in bores, balls in grooves,
 eyes stand off their faces), so each recipe validates without errors or warnings across
@@ -360,3 +407,20 @@ before its corners reach the bridge). `contacts` declares the joint's own pairs 
 bind each label as a rig part of the same name (the lug on the moving joint) and pass them
 to `scan` and `validate`. A lug below e/D = 1.5 is refused: shear-out and hoop tension
 would govern it.
+
+## Timber construction
+
+Traditional Chinese timber parts (营造法式 卷四, 卷五) are sized in 分, the fen unit of
+the 材分制. `caiFen(grade)` (grades 1 to 8) returns the fen length and the 材, 栔 and 足材
+sizes in meters. The 15-fen 广 and the 10-fen 厚 are verified against 卷四; the eight-grade
+寸 table is secondary (zh.wikipedia 材分制) and the metric scale assumes 1 cun of 0.0316 m,
+which no checked source states. Every ratio is exact.
+
+| Helper | Output | Notes |
+|:--|:--|:--|
+| `caiFen(grade)` | `fen`, `width` (广, 15 fen), `depth` (厚, 10 fen), `xieWidth` / `xieDepth` (栔, 6 by 4 fen), `zuCai` (足材, 21 fen) | `CAI_GRADES` holds the 寸 table; grades outside 1..8 are refused with `model-invalid-argument` |
+| `timberJoint({ postWidth, kind?, beamHeight?, tenonLength?, clearance? })` | Post `<name>-post` (mortise cut) and beam tenon `<name>-beam`; `fit` contact band [clearance / 2, 2 clearance]; dimensions include `measuredClearance` from `partDistance` | `kind`: `through` or `blind` only; `dovetail` and `shoulder` are refused as not modeled. Default clearance 0.5 mm; `TIMBER_JOINT_RANGES` bounds every option; a blind tenon that would break the post's back is refused |
+| `dougong({ puzuo?, grade?, juanshaFen? })` | Lu dou `ludou`, per step `xie-hua-<k>-<±x>`, `huagong-<k>-<±x>`, `nidaogong-<k>-<±z>`, `san-dou-<k>-*`, `jiao-hu-dou-<k>`, then `xie-man` and `mangong`; anchors per placement and `seat-<k>`, `top` | `puzuo` 4 or 5 sets `steps = puzuo - 3`. Lu dou is 32 by 20 fen, huagong 72, nidaogong 62, mangong 92 fen (verified, vol. 4). San dou and jiao hu dou reuse the lu dou size (design choice). Stack height is 41 + 41 * steps fen. Members touch on coplanar faces and are declared `seat` contacts; no interior boolean |
+| `juzheRoof({ kind?, run?, spans?, length? })` | Closed prism `<name>` over the purlin polyline, ridge along Z from z = 0 to `length`; anchors `ridge`, `ridge-end`, `purlin-<p>-right` / `purlin-<p>-left` at z = 0 | `kind`: `pavilion` (ridge rise 1/3 of the run) or `hall` (1/4), both secondary. Each lower 架 has twice the rise of the one above (`juzhePurlins`, secondary zh.wikipedia summary). Equal runs per 架 are a design choice. Hip (歇山) ends and eave upturn (起翘, recorded as `eaveUpturn` 0) are not modeled; the 起翘 value is not located in the checked sources |
+| `tileRows({ purlins, length?, tileWidth?, exposure?, lap?, thickness?, ridgeHalf?, ridgeHeight?, coverWidth? })` | Pan plates `<name>-<R\|L><facet>-r<row>-c<col>` in sawtooth rows (bedding, head at one thickness, butt at two), mitred at every fold by the bisector of the two outward normals; cover strips `<name>-<R\|L><facet>-r<row>-k<col>` (loft of two planar end rings, half-round top); ridge cap `<name>-ridge`; `seat` contacts between neighbours | Input is one roof side from `juzhePurlins`. Closed form only: no tilted plates and no boolean. Row pitch is at most `exposure`; `lap` is the covered tail, a layout dimension, not a stacked volume, so overlapping shells are never modeled (`tileLength = pitchMax + lap`). Tile sizes are design choices. Eave end caps (瓦当, 滴水) are not modelled |
+| `latticePattern({ pattern?, width?, height?, thickness?, cell?, bar?, border?, seed? })` | Rectangular panel `<name>` extruded from z = 0, pierced by one lattice; anchors `origin` and `center` | `pattern`: `bubujin` (stepped squares, four corner notches), `guibeijin` (flat-top hexagons), `binglie` (seeded irregular rectangles; `seed` is required), `huiwen` (stepped squares with alternating diagonal notches). Openings sit `border + bar/2` inside the outline and share `bar` between neighbours. Dimensions include `openArea`, `openRatio` and `minBar`. Pattern names are design choices, not source values. Open area matches the kernel's volume-based measure within a relative 1e-9 of the panel area on every pattern (tests). |

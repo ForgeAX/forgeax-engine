@@ -32,6 +32,13 @@ export function cloudSampleBudget(rayClass: CloudRayClass, budget: CloudRayBudge
   );
 }
 
+/** UE's default shadow-map horizon multiplier, applied after the base cap. */
+export function ue5CloudShadowTraceSamples(baseSamples: number, sunUpDot: number): number {
+  const base = Math.min(128, Math.max(4, baseSamples));
+  const horizon = 0.2 / Math.max(0.2, Math.abs(sunUpDot));
+  return base * (1 + horizon);
+}
+
 /** Upper view budget packed into both cooked cloud transport shaders. */
 export function cookedCloudViewSampleBudget(scale: number): number {
   return cloudSampleBudget('view', {

@@ -96,7 +96,9 @@ async function fixture(
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const executablePath = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,
-    '/opt/google/chrome-beta/chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/google-chrome',
     chromium.executablePath(),
   ].find((path): path is string => path !== undefined && existsSync(path));
   const browser = await chromium

@@ -118,7 +118,7 @@ const evidence = {
   backend: 'browser-webgpu',
   runner: {
     kind: 'playwright',
-    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome-beta',
+    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome',
     headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
   },
   requestedFrames: frames,

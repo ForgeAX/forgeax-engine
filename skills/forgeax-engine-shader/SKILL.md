@@ -21,6 +21,14 @@ and execute the nearest production Dawn gate before claiming pixels accepted.
 
 ## Contract index
 
+For geometric refraction and caustic concentration, import the pure optical
+primitives from `forgeax_optics::interface`; read the [Shader contract](../../packages/shader/README.md#geometric-optical-interface).
+Use `sampleWaterGerstnerSurface` only with the qualified `gerstner-fixed/1`
+source and shared receiving Water binding. Its coordinates precede horizontal
+displacement; a displaced world-XZ lookup needs its own inverse mapping.
+Keep field encoding, overlapping energy accumulation and material response in
+the effect; these primitives do not select receivers or lighting.
+
 For draw-varying numeric values in a custom direct mesh shader, use
 `MeshDrawParameters` from `@forgeax/engine/render`. Use the render components
 plugin or register it directly in a standalone World. Read its two float vectors through `meshes[0]`
@@ -81,6 +89,9 @@ accepted Body clocks and publish shading reactivity separately from geometry
 velocity. Use `SingleLayerWaterSurfaceInput.frameTime` for authored animation;
 frozen clocks and static normals retain accumulation. This comparison cannot
 recover old contents of a producer texture that has already advanced.
+Standard Surface modules that sample textures themselves under TAA/TSR should pass
+`SurfaceInput.materialTextureMipBias` (UE View.MaterialTextureMipBias, negative on the display
+view, zero for shadow/ray/card) to `sampleSurfaceTexture` or `textureSampleBias`.
 Stock Water keeps near-wave current/previous deformation and fragment normals
 at far boundaries. The retained versioned adjacency bits do not automatically
 flatten the surface to a mean plane. Preserve the far material's independent

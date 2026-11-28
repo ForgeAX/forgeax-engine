@@ -1232,6 +1232,7 @@ beforeAll(async () => {
     'forgeax_pbr::lighting_spot_projector': readSrc('lighting-spot-projector.wgsl'),
     'forgeax_standard::cluster_texture_data': readSrc('cluster-texture-data.wgsl'),
     'forgeax_standard::cluster': STANDARD_CLUSTER,
+    'forgeax_standard::cluster_layout': readSrc('standard-cluster-layout.wgsl'),
     'forgeax_pbr::shadow_pcf': SHADOW_PCF,
     'forgeax_skin::task': readSrc('skin-task.wgsl'),
     'forgeax_pbr::clearcoat': readSrc('material/physical/clearcoat.wgsl'),
@@ -1260,6 +1261,7 @@ beforeAll(async () => {
     'forgeax_material::alpha_hash': readSrc('alpha-hash.wgsl'),
     'forgeax_material::oit': readSrc('oit.wgsl'),
     'forgeax_shadow::surface': readSrc('shadow-surface.wgsl'),
+    'forgeax_depth_pyramid::sample': readSrc('depth-pyramid-sample.wgsl'),
     'forgeax_skin::task': readSrc('skin-task.wgsl'),
     'forgeax_view::common': COMMON,
     forgeax_scene_temporal: SCENE_TEMPORAL,
@@ -1411,7 +1413,7 @@ describe('standard clustered projector composition', () => {
         ).toBe(true);
         if (result.ok) {
           const clusterUniform = result.value.manifestEntry.reflection?.boundGlobals.find(
-            (global) => global.name === 'cluster_uniform',
+            (global) => global.group === 0 && global.binding === 33,
           );
           expect(clusterUniform?.span).toBe(96);
           expect(clusterUniform?.members?.map(({ name, offset }) => [name, offset])).toEqual([
@@ -1442,7 +1444,7 @@ describe('standard clustered projector composition', () => {
     ).toBe(true);
     if (textureVariant.ok) {
       const clusterUniform = textureVariant.value.manifestEntry.reflection?.boundGlobals.find(
-        (global) => global.name === 'cluster_uniform',
+        (global) => global.group === 0 && global.binding === 33,
       );
       expect(clusterUniform?.span).toBe(96);
       expect(clusterUniform?.members?.find(({ name }) => name === 'texture')).toMatchObject({

@@ -2,7 +2,11 @@ import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import { recordClusterWorkGraphTargetCopyForConformance } from './cluster-work-conformance';
-import { getTextureIdentity, type RenderFrameState } from './frame-snapshot';
+import {
+  type FrameGraphTargets,
+  getTextureIdentity,
+  type RenderFrameState,
+} from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 
 type TargetCopyGraphCaptureRequest = Exclude<
@@ -46,17 +50,17 @@ function matchesCaptureIdentity(
 export function encodeGraphTargetCapture(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
+  graphAccess: FrameGraphTargets,
   encoder: RhiCommandEncoder,
   graphCapture: TargetCopyGraphCaptureRequest,
 ): void {
-  const graphAccess = frameState.compiledFrameGraph?.targets;
-  const graphTexture = graphAccess?.getColorTargetTexture(graphCapture.name);
-  const descriptor = graphAccess?.getColorTargetDescriptor(graphCapture.name);
+  const graphTexture = graphAccess.getColorTargetTexture(graphCapture.name);
+  const descriptor = graphAccess.getColorTargetDescriptor(graphCapture.name);
   const layer = graphCapture.layer ?? 0;
   const targetLayers = descriptor?.size.depthOrArrayLayers ?? 1;
   const recordFrameNumber = frameState.frameNumber;
   const actualIdentity =
-    graphAccess !== undefined && graphAccess !== null && graphTexture !== undefined
+    graphTexture !== undefined
       ? {
           graphGeneration: graphAccess.graphGeneration,
           recordFrameNumber,
@@ -92,16 +96,11 @@ export function encodeGraphTargetCapture(
       }),
     );
   };
-  if (
-    graphAccess === undefined ||
-    graphAccess === null ||
-    graphTexture === undefined ||
-    descriptor === undefined
-  ) {
+  if (graphTexture === undefined || descriptor === undefined) {
     captureFailure(
       JSON.stringify({
         target: graphCapture.name,
-        graphGeneration: graphAccess?.graphGeneration,
+        graphGeneration: graphAccess.graphGeneration,
         recordFrameNumber,
         textureIdentity: graphTexture === undefined ? undefined : getTextureIdentity(graphTexture),
         reason: 'target-not-present-in-current-graph',
@@ -200,17 +199,15 @@ export function encodeGraphTargetCapture(
 
 export function encodeReflectionFallbackReadback(
   frameState: RenderFrameState,
+  graphAccess: FrameGraphTargets,
   encoder: RhiCommandEncoder,
 ): void {
   const fallbackReadback = frameState.reflectionFallbackReadback;
   frameState.reflectionFallbackReadback = undefined;
   if (fallbackReadback === undefined) return;
-  const graphAccess = frameState.compiledFrameGraph?.targets;
-  const graphTexture = graphAccess?.getColorTargetTexture(fallbackReadback.name);
-  const descriptor = graphAccess?.getColorTargetDescriptor(fallbackReadback.name);
+  const graphTexture = graphAccess.getColorTargetTexture(fallbackReadback.name);
+  const descriptor = graphAccess.getColorTargetDescriptor(fallbackReadback.name);
   const matches =
-    graphAccess !== undefined &&
-    graphAccess !== null &&
     graphTexture !== undefined &&
     descriptor !== undefined &&
     descriptor.format === fallbackReadback.expected.format &&

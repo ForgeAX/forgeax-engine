@@ -2,7 +2,7 @@ import type { RendererOptions } from '@forgeax/engine-render';
 import {
   loadRhiPack as loadRenderRhiPack,
   type RhiBackendPack,
-} from '@forgeax/engine-render/internal/construct-renderer';
+} from '@forgeax/engine-render/internal/backend-contract';
 import { RhiError } from '@forgeax/engine-rhi';
 import * as rhiWebgpu from '@forgeax/engine-rhi-webgpu';
 

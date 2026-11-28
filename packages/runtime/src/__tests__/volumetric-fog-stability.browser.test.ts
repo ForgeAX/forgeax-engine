@@ -111,6 +111,7 @@ it('stabilizes animated fog through normal ticks and history resets and rejects 
   const surface = new OffscreenCanvas(size, size);
   const context = surface.getContext('2d', { willReadFrequently: true });
   if (!context) throw new Error('fog stability readback unavailable');
+  let coldVolumePreparationObserved = false;
   const frame = async (read = false) => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     world.update(1 / 60).unwrap();
@@ -118,6 +119,11 @@ it('stabilizes animated fog through normal ticks and history resets and rejects 
     await completeReadyFrame(() => {
       const drawn = renderer.draw({ source: lease });
       if (!drawn.ok) throw drawn.error;
+      if (drawn.value.presentationPendingReason?.pass === 'volumetric-fog') {
+        expect(drawn.value.presentation).toBe('pending');
+        expect(drawn.value.preparationCompleted).toBeDefined();
+        coldVolumePreparationObserved = true;
+      }
       // Borrow the current WebGPU canvas image before the browser presents it.
       if (read && drawn.value.presentation === 'ready') context.drawImage(canvas, 0, 0);
       return drawn.value;
@@ -136,6 +142,7 @@ it('stabilizes animated fog through normal ticks and history resets and rejects 
   };
   const sequence = async (invalidate: boolean) => {
     let previous = await frame(true);
+    expect(coldVolumePreparationObserved).toBe(true);
     const differences: number[] = [];
     for (let i = 0; i < 16; i += 1) {
       // Public author edit: negligible optical change, real history reset.

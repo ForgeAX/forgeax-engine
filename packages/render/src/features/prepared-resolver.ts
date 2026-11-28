@@ -15,6 +15,7 @@ import {
   preparedMaterialBindings,
 } from '../record/prepared-material-bindings';
 import type { RenderSystemInternals } from '../record/render-context';
+import { waterGerstnerSurfacePublicationMatches } from '../water/surface-source';
 import { waterMaterialEntryPointsUseWaterInfo } from '../water/wave-material';
 import { recordContext } from '../world/view-record-context';
 import type { RenderFeaturePreparedGraphicsResolverInput } from './host';
@@ -39,6 +40,7 @@ function preparedWaterInfoFormat(
   input: RenderFeaturePreparedGraphicsResolverInput,
   pipeline: RenderFeaturePreparedRef<'pipeline'>,
   contract: RenderFeatureMaterialShaderContract | undefined,
+  surfaceBodyKeys?: () => ReadonlySet<string>,
 ): Result<'rgba16float' | 'rgba32float' | undefined, RhiError> {
   if (contract?.systemInputs?.water !== 'water-frame/3') return ok(undefined);
   const unavailable = preparedWaterFrameUnavailable;
@@ -70,6 +72,8 @@ function preparedWaterInfoFormat(
     contract.entryPoints === undefined
   )
     return unavailable();
+  if (selected.surfaceSource !== undefined && surfaceBodyKeys?.().has(selected.bodyKey) !== true)
+    return pendingWaterSurfaceFrame();
   return resolvePreparedWaterPublication(
     runtime,
     selected,
@@ -86,7 +90,8 @@ function resolvePreparedWaterPublication(
   deviceGeneration: number,
   entryPoints: NonNullable<RenderFeatureMaterialShaderContract['entryPoints']>,
 ): Result<'rgba16float' | 'rgba32float' | undefined, RhiError> {
-  const unavailable = preparedWaterFrameUnavailable;
+  const unavailable =
+    selected.surfaceSource === undefined ? preparedWaterFrameUnavailable : pendingWaterSurfaceFrame;
   const publication = runtime.getWaterMaterialFramePublication?.(
     selected.viewIdentity,
     frameGeneration,
@@ -106,6 +111,7 @@ function resolvePreparedWaterPublication(
     publication.waveUploadPlan.bodyZoneGenerations.get(selected.bodyKey) !== selected.zoneGeneration
   )
     return unavailable();
+  if (!waterGerstnerSurfacePublicationMatches(publication, selected)) return unavailable();
   const row = publication.rows.get(selected.bodyKey);
   if (row === undefined) {
     if (!waterMaterialEntryPointsUseWaterInfo(entryPoints)) return ok(undefined);
@@ -133,6 +139,17 @@ function resolvePreparedWaterPublication(
   return ok(row.targetFormat);
 }
 
+function pendingWaterSurfaceFrame() {
+  return err(
+    new RhiError({
+      code: 'rhi-not-available',
+      expected:
+        'the selected native surface branch and its exact receiving Water frame are admitted',
+      hint: 'retry after the current Body geometry and same-generation frame inputs are published',
+    }),
+  );
+}
+
 function preparedWaterFrameUnavailable() {
   return err(
     new RhiError({
@@ -153,6 +170,7 @@ export interface PreparedResolverDeps {
   readonly skylightResources: () => SkylightBindGroupResources | undefined;
   /** Receiver-owned fact of this View's accepted native lighting projection. */
   readonly leanLighting?: boolean;
+  readonly waterSurfaceBodyKeys?: () => ReadonlySet<string>;
 }
 
 export function createPreparedResolver(
@@ -206,7 +224,13 @@ export function createPreparedResolver(
           );
         },
       );
-      const waterInfoFormat = preparedWaterInfoFormat(runtime, input, reference, materialContract);
+      const waterInfoFormat = preparedWaterInfoFormat(
+        runtime,
+        input,
+        reference,
+        materialContract,
+        deps.waterSurfaceBodyKeys,
+      );
       if (!waterInfoFormat.ok) return waterInfoFormat;
       const resolvePreparedPipelineEntry = (
         waterInfoFormat: Extract<ReturnType<typeof preparedWaterInfoFormat>, { ok: true }>,
@@ -350,9 +374,11 @@ export function createPreparedResolver(
               );
         }
         if (
-          bindingContract === 'post-process' &&
           descriptor.values.group === 2 &&
-          descriptor.values.waterMaterial !== undefined
+          descriptor.values.waterMaterial !== undefined &&
+          materialShaderId !== undefined &&
+          runtime.getMaterialShaderBindingContract?.(materialShaderId)?.systemInputs?.water ===
+            'water-frame/3'
         )
           return ok(undefined);
         if (
@@ -511,6 +537,8 @@ function resolveInlinePipeline(
     fullscreen.bindGroupLayout,
     descriptor.colorFormats as readonly GPUTextureFormat[],
     postProcessEntry,
+    undefined,
+    descriptor.renderState,
   );
   if (pipeline !== null && pipeline !== undefined) {
     preparedPipelineIds.set(pipeline as object, descriptor.shader);

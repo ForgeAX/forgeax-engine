@@ -10,14 +10,20 @@ import type { RenderableDrawReceipt } from '../gpu-draw-receipts';
 import { emitGpuDrivenDrawReceipts } from '../gpu-draw-receipts';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
 
-it('allocates submit callbacks per geometry pass while preserving every direct draw', async () => {
+it('allocates binding and submit callbacks per geometry pass while preserving every direct draw', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
   const f = cpuSetupFixture(device, module);
   for (let entity = 1; entity <= 129; entity++) f.add({ entity, submeshes: 1 });
   const actions = new Set<() => unknown>();
+  const bindings = new Set<() => unknown>();
+  let bound = 0;
   const profile: NonNullable<typeof f.c.profilePhase> = (phase, action) => {
     if (phase === 'record/graph-execute/forward/draw-submit') actions.add(action);
+    if (phase === 'record/graph-execute/forward/material-bind-groups') {
+      bindings.add(action);
+      bound++;
+    }
     return action();
   };
   Object.assign(f.c, { profilePhase: profile });
@@ -26,10 +32,14 @@ it('allocates submit callbacks per geometry pass while preserving every direct d
   try {
     f.record(pass);
     expect(actions.size).toBe(1);
+    expect(bindings.size).toBe(1);
+    expect(bound).toBe(129);
     expect(draw).toHaveBeenCalledTimes(129);
     expect(f.receipts).toHaveLength(129);
     f.record(pass);
     expect(actions.size).toBe(2);
+    expect(bindings.size).toBe(2);
+    expect(bound).toBe(258);
     expect(draw).toHaveBeenCalledTimes(258);
     expect(f.receipts).toHaveLength(258);
     expect(f.errors).toEqual([]);
@@ -83,6 +93,40 @@ it('shares immutable CPU facts without dropping draws or retaining changed mater
     expect(observed.at(-1)?.material).toBe(replacement.source.material.snapshot);
     expect(observed.at(-1)).not.toBe(held);
     expect(held?.material).toBe(first.source.material.snapshot);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it('keeps draw coverage when a material receipt consumer closes during recording', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const first = f.add({ entity: 1, submeshes: 1 }).source.material.snapshot;
+  for (let entity = 2; entity <= 128; entity++) f.add({ entity, submeshes: 1 });
+  const last = f.add({ entity: 129, submeshes: 1 }).source.material.snapshot;
+  const receipts: RenderableDrawReceipt[] = [];
+  const original = f.c.onRenderableDraw;
+  let collecting = true;
+  const consume = Object.assign(
+    (...args: Parameters<NonNullable<typeof original>>) => {
+      original?.(...args);
+      if (args[2] !== undefined) receipts.push(args[2]);
+      collecting = false;
+    },
+    { needsMaterialReceipt: (material: typeof first) => collecting || material === last },
+  );
+  Object.assign(f.c, { onRenderableDraw: consume });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const draw = vi.spyOn(pass, 'drawIndexed');
+  try {
+    f.record(pass);
+    expect(draw).toHaveBeenCalledTimes(129);
+    expect(receipts.map((receipt) => receipt.material)).toEqual([first, last]);
+    expect(receipts.every(Object.isFrozen)).toBe(true);
+    expect(f.receipts).toHaveLength(129);
     expect(f.errors).toEqual([]);
   } finally {
     pass.end();

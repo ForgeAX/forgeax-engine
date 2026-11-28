@@ -15,7 +15,7 @@ import type { ArtifactDescriptor, AssetArtifactError, PackageRequest } from '@fo
 import { beginLoadTimeline, err, ok, type Result } from '@forgeax/engine-types';
 import { sha256 as hashSha256 } from '@noble/hashes/sha2.js';
 import type { BundleTransferObservation } from '../internal/bundle-diagnostics.js';
-import type { BundleStore } from '../internal/bundle-store.js';
+import type { BundleRead, BundleStore } from '../internal/bundle-store.js';
 import {
   bytesOf,
   type PackageFetcher,
@@ -232,20 +232,14 @@ export interface BundledArtifactRead<Failure> {
   invalid(reason: string): Failure;
 }
 
-/** Read one Bundle entry through the resident Bundle store and verify it for `request`. */
-export async function readBundledArtifact<Failure>(
+function bundleRead<Failure>(
   bundles: BundleStore<Failure>,
   request: ArtifactReadRequest,
   read: BundledArtifactRead<Failure>,
-): Promise<Result<Uint8Array, Failure>> {
-  const { descriptor } = request;
-  const range = descriptor.byteRange;
-  if (range === undefined) return err(read.invalid('no Bundle window'));
+  range: NonNullable<ArtifactDescriptor['byteRange']>,
+): BundleRead<Failure> {
   const { url, fetcher } = read;
-  const grouped = descriptor.decodedRange !== undefined;
-  const rejected = (result: Result<Uint8Array, AssetArtifactError>) =>
-    result.ok ? result : err(read.rejected(result.error));
-  const entry = await bundles.read({
+  return {
     url,
     range,
     fetch: async (window) => {
@@ -263,17 +257,45 @@ export async function readBundledArtifact<Failure>(
             response,
           ),
       );
+      if (read.init?.signal?.aborted) return err(read.invalid('Bundle read cancelled'));
       return fetched.ok ? fetched : err(read.unreadable(fetched.error));
     },
+    invalid: read.invalid,
+  };
+}
+
+/** Start the verified transport without claiming a decoded artifact window. */
+export async function prefetchArtifactBundle<Failure>(
+  bundles: BundleStore<Failure>,
+  request: ArtifactReadRequest,
+  read: BundledArtifactRead<Failure>,
+): Promise<void> {
+  const range = request.descriptor.byteRange;
+  if (range !== undefined) await bundles.prefetch(bundleRead(bundles, request, read, range));
+}
+
+/** Read one Bundle entry through the resident Bundle store and verify it for `request`. */
+export async function readBundledArtifact<Failure>(
+  bundles: BundleStore<Failure>,
+  request: ArtifactReadRequest,
+  read: BundledArtifactRead<Failure>,
+): Promise<Result<Uint8Array, Failure>> {
+  const { descriptor } = request;
+  const range = descriptor.byteRange;
+  if (range === undefined) return err(read.invalid('no Bundle window'));
+  const grouped = descriptor.decodedRange !== undefined;
+  const rejected = (result: Result<Uint8Array, AssetArtifactError>) =>
+    result.ok ? result : err(read.rejected(result.error));
+  const entry = await bundles.read({
+    ...bundleRead(bundles, request, read, range),
     finish: async (stored) =>
       rejected(
         grouped
           ? await decodeArtifactTransport(stored, request)
-          : await readArtifact(request, fetcher, async () => ok(stored)),
+          : await readArtifact(request, read.fetcher, async () => ok(stored)),
       ),
     reuse: async (copy) =>
       grouped ? ok(copy) : rejected(await verifyArtifactBytes(copy, request)),
-    invalid: read.invalid,
     // A decoded group is read only to select and verify a private member.
     shared: grouped,
     ...(descriptor.integrity === undefined || grouped

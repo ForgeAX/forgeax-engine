@@ -3,16 +3,77 @@ import { isTemporalAntialias } from '../components/camera';
 
 type Jitter = readonly [number, number];
 
-export const HALTON_23_8 = Object.freeze([
-  Object.freeze([0, -1 / 6]),
-  Object.freeze([-1 / 4, 1 / 6]),
-  Object.freeze([1 / 4, -5 / 18]),
-  Object.freeze([-3 / 8, -1 / 18]),
-  Object.freeze([1 / 8, 5 / 18]),
-  Object.freeze([-1 / 8, -7 / 54]),
-  Object.freeze([3 / 8, 11 / 54]),
-  Object.freeze([-7 / 16, 7 / 18]),
-] as const);
+function halton(index: number, base: number): number {
+  let result = 0;
+  let fraction = 1 / base;
+  let value = index;
+  while (value > 0) {
+    result += fraction * (value % base);
+    value = Math.floor(value / base);
+    fraction /= base;
+  }
+  return result;
+}
+
+/** Subpixel offset of one temporal sample, `Halton(i + 1, 2|3) - 0.5` in input pixels. */
+export function temporalJitterSample(sampleIndex: number): Jitter {
+  const index = Math.trunc(sampleIndex) + 1;
+  return Object.freeze([halton(index, 2) - 0.5, halton(index, 3) - 0.5]) as Jitter;
+}
+
+// UE 5.8.1 SceneVisibility.cpp:5276-5281.
+const FIRST_PRIMES = Object.freeze([
+  2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
+  101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193,
+  197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
+]);
+
+/**
+ * Temporal sequence length, following UE 5.8.1 SceneVisibility.cpp:5252-5296
+ * with r.TemporalAASamples=8 and r.TemporalAAScaleSamples=1: scale by the
+ * inverse squared resolution fraction so every output pixel keeps a constant
+ * sample density, and for TSR round up to a prime to break coherence with
+ * power-of-two frame-index sequences.
+ */
+export function temporalJitterSampleCount(mode: 'taa' | 'tsr', resolutionFraction: number): number {
+  const count = Math.round(8 * Math.max(1, 1 / (resolutionFraction * resolutionFraction)));
+  if (mode === 'taa') return count;
+  for (let id = Math.max(4, Math.trunc((count - 1) / 5)); id < FIRST_PRIMES.length; id++) {
+    const prime = FIRST_PRIMES[id] as number;
+    if (prime >= count) return prime;
+  }
+  return count;
+}
+
+/**
+ * Automatic view material texture mip bias, following UE 5.8.1
+ * SceneVisibility.cpp:5336-5351 with r.ViewTextureMipBias.Offset=-0.3,
+ * .Min=-2 and .Quantization=1024. Temporal accumulation integrates the
+ * jittered samples, so surface textures are sampled sharper than the input
+ * pixel footprint: -0.296875 at 100%, -1.296875 at 50%.
+ */
+export function temporalMaterialTextureMipBias(resolutionFraction: number): number {
+  const bias = -Math.max(-Math.log2(resolutionFraction), 0) - 0.3;
+  const clamped = Math.min(Math.max(Math.max(bias, -2), -4), 4);
+  const step = 8 / 1024;
+  return Math.ceil(clamped / step) * step;
+}
+
+function temporalJitter(
+  mode: 'off' | 'taa' | 'tsr',
+  frameIndex: number,
+  resolutionFraction: number,
+): Jitter | undefined {
+  if (mode === 'off') return undefined;
+  return temporalJitterSample(frameIndex % temporalJitterSampleCount(mode, resolutionFraction));
+}
+
+function viewMaterialTextureMipBias(
+  mode: 'off' | 'taa' | 'tsr',
+  resolutionFraction: number,
+): number {
+  return mode === 'off' ? 0 : temporalMaterialTextureMipBias(resolutionFraction);
+}
 
 export type TemporalResetReason =
   | 'first-frame'
@@ -80,6 +141,8 @@ export interface TemporalView {
   readonly jitter: readonly [number, number] | undefined;
   readonly jitterCancellationUv: readonly [number, number] | undefined;
   readonly currentJitterUv: readonly [number, number] | undefined;
+  /** Surface texture mip bias of the display view; zero without temporal AA. */
+  readonly materialTextureMipBias: number;
   readonly historyValid: boolean;
   readonly temporalFrameIndex: number;
   /** Unjittered matrices are supplied by the renderer projection owner. */
@@ -143,9 +206,9 @@ export function createTemporalView(input: TemporalViewInput): TemporalView {
   });
   const mode = isTemporalAntialias(input.antialias) ? input.antialias : 'off';
   const taa = mode !== 'off';
-  const jitter: Jitter | undefined = taa
-    ? (HALTON_23_8[frameIndex % HALTON_23_8.length] as Jitter)
-    : undefined;
+  // UE measures the fraction horizontally (ViewRect / SecondaryViewRectSize).
+  const resolutionFraction = internalWidth / width;
+  const jitter = temporalJitter(mode, frameIndex, resolutionFraction);
   const jitterUv: Jitter | undefined =
     jitter === undefined
       ? undefined
@@ -157,6 +220,7 @@ export function createTemporalView(input: TemporalViewInput): TemporalView {
     jitter,
     jitterCancellationUv: jitterUv,
     currentJitterUv: jitterUv,
+    materialTextureMipBias: viewMaterialTextureMipBias(mode, resolutionFraction),
     historyValid: normalized.historyValid,
     temporalFrameIndex: frameIndex,
     currentUnjitteredViewProjection: input.currentUnjitteredViewProjection,

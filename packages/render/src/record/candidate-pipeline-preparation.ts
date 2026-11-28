@@ -18,7 +18,6 @@ import type { CandidateViewDemand } from './candidate-view-demand';
 import type { InstalledFrameGraph, ValidatedRenderable } from './frame-snapshot';
 import type { PipelineRequestRuntime } from './geometry-pipeline-requests';
 import type { _InternalRenderPipelineContext } from './render-context';
-import { scenePassRequests } from './scene-pass-work';
 import {
   prepareHiddenShadowMaterialPipelines,
   prepareShadowMaterialPipelines,
@@ -433,7 +432,7 @@ export class CandidatePipelinePreparationOwner {
       passes === undefined ||
       passes.length === 0 ||
       passes.some((pass) => pass.kind !== 'utility' && pass.demand === undefined) ||
-      scenePassRequests(graph.graph).some((pass) => pass.capture || pass.camera !== undefined)
+      graph.scenePasses.some((pass) => pass.capture || pass.camera !== undefined)
     ) {
       if (observe) this.unsupportedGraph++;
       return false;

@@ -71,3 +71,36 @@ export function bilateralCloudUpsample(
     ? (result.map((v) => v / total) as [number, number, number, number])
     : [0, 0, 0, 1];
 }
+
+/** Reference for the UE desktop Min/Max resolve. Depth tuples are R/G/B/A in km. */
+export function selectUeCloudUpsample(
+  depthsKm: readonly [number, number, number, number][],
+  sceneKm: number,
+  disableDisocclusionKm: number,
+): { kind: 'occluded' | 'bilinear' } | { kind: 'near' | 'far'; index: number } {
+  if (depthsKm.length !== 4) throw new RangeError('UE cloud upsample needs four depth samples');
+  if (depthsKm.every(([cloud]) => cloud > sceneKm + 0.001)) return { kind: 'occluded' };
+  if (depthsKm.every(([cloud, , near]) => cloud <= near)) {
+    const sceneDepthsKm = depthsKm.flatMap(([, , near, far]) => [near, far]);
+    const rangeKm = Math.max(...sceneDepthsKm) - Math.min(...sceneDepthsKm);
+    const allDistant = depthsKm.every(([, ...scene]) =>
+      scene.every((depth) => depth >= disableDisocclusionKm),
+    );
+    if (rangeKm < 1 || allDistant) return { kind: 'bilinear' };
+  }
+  let closest = Number.POSITIVE_INFINITY;
+  let result: { kind: 'near' | 'far'; index: number } = { kind: 'far', index: 0 };
+  for (const [index, [, , near, far]] of depthsKm.entries()) {
+    for (const [kind, depthKm] of [
+      ['far', far],
+      ['near', near],
+    ] as const) {
+      const delta = Math.abs(sceneKm - depthKm);
+      if (delta < closest) {
+        closest = delta;
+        result = { kind, index };
+      }
+    }
+  }
+  return result;
+}

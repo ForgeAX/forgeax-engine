@@ -1,0 +1,20 @@
+{
+  "tests": [
+    "src/brep/__tests__/quad.unit.test.ts",
+    "src/brep/__tests__/quad-metric-parity.unit.test.ts"
+  ],
+  "mutations": [
+    {
+      "id": "quad-scaled-jacobian-halved",
+      "file": "src/brep/quad.ts",
+      "old": "dot3(cross3(unit3(d1), unit3(d2)), normal)",
+      "new": "0.5 * dot3(cross3(unit3(d1), unit3(d2)), normal)"
+    },
+    {
+      "id": "l4-scaled-jacobian-halved",
+      "file": "scripts/quad-eval/metrics.ts",
+      "old": "return dot(cross(a, b), nhat);",
+      "new": "return 0.5 * dot(cross(a, b), nhat);"
+    }
+  ]
+}

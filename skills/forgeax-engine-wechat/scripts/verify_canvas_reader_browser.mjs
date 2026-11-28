@@ -31,7 +31,7 @@ const inspectionBundle = await build({
   globalName: 'EngineUiInspection',
 });
 const browser = await chromium.launch({
-  channel: 'chrome-beta',
+  channel: 'chrome',
   headless: true,
   args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
   chromiumSandbox: true,

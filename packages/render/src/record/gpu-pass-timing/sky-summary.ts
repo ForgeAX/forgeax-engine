@@ -1,3 +1,4 @@
+import { CLOUD_SHADOW_SPATIAL_PASSES } from '../../cloud/lighting/shadow-spatial-layout';
 import { pmremLevelCount } from '../../ibl/pmrem';
 import type { GpuPassTimingEntry, GpuPassTimingFrame } from './contract';
 import { summarizeGpuPassTimingIntervals } from './parser';
@@ -24,7 +25,7 @@ export interface SkyGpuPassTimingSummary {
 
 const cloudPasses: ReadonlySet<string> = new Set([
   SkyPass.cloudShadow,
-  SkyPass.cloudShadowFilter,
+  ...CLOUD_SHADOW_SPATIAL_PASSES,
   SkyPass.cloudAnalyticTrace,
   SkyPass.cloudSampledTrace,
   SkyPass.cloudHistoryClear,

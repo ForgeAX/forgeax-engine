@@ -99,7 +99,7 @@ try {
   while (url === undefined && Date.now() < deadline) await delay(100);
   if (url === undefined) throw new Error(`TAA Vite server did not publish a URL: ${outputText}`);
   browser = await chromium.launch({
-    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome-beta',
+    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome',
     headless: true,
     args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
     chromiumSandbox: true,

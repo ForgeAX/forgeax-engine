@@ -209,13 +209,7 @@ it('charges one retained revision through release grace and recovers its capacit
   const f = fixture();
   const bytes = assetDataBytes(f.input.mesh);
   const { source, epoch } = f.input;
-  const receiver = new RenderPublicationReceiver(
-    { source, epoch },
-    undefined,
-    undefined,
-    undefined,
-    bytes,
-  );
+  const receiver = new RenderPublicationReceiver({ source, epoch }, undefined, undefined, bytes);
   try {
     const first = receiver.prepareMesh(f.input).unwrap();
     const duplicate = receiver.prepareMesh(f.input).unwrap();
@@ -253,7 +247,6 @@ it('holds superseded preparation bytes past release grace until the physical lea
     { source, epoch },
     undefined,
     undefined,
-    undefined,
     2 * bytes,
   );
   try {
@@ -286,13 +279,7 @@ it('charges a transferred mesh for the whole retained backing without counting s
   const mesh = { ...f.input.mesh, vertices, aabb };
   const minimum = assetDataBytes(mesh) - vertices.byteLength - aabb.byteLength + backing.byteLength;
   const { source, epoch } = f.input;
-  const receiver = new RenderPublicationReceiver(
-    { source, epoch },
-    undefined,
-    undefined,
-    undefined,
-    minimum,
-  );
+  const receiver = new RenderPublicationReceiver({ source, epoch }, undefined, undefined, minimum);
   try {
     const prepared = receiver
       .prepareMesh({ ...f.input, mesh }, undefined, undefined, 'received')

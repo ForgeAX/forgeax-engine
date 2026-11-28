@@ -141,7 +141,7 @@ export async function verifyRetainedRasterRouting(input: {
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
     temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
-    compiledFrameGraphGeneration: 0,
+    graphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     meshBindGroupCache: new WeakMap(),
@@ -244,7 +244,7 @@ export async function verifyRetainedRasterRouting(input: {
         expect(graph).toBe(frame < 30 ? firstGraph : secondGraph);
         expect(pipelines.mock.calls.length).toBe(pipelineCount);
       }
-      expect(state.compiledFrameGraphGeneration).toBe(frame < 30 ? 1 : 2);
+      expect(state.graphGeneration).toBe(frame < 30 ? 1 : 2);
       const encoder = device.createCommandEncoder().unwrap();
       graph.execute({ encoder } as RenderPipelineFrame).unwrap();
       device.queue.submit([encoder.finish().unwrap()]).unwrap();

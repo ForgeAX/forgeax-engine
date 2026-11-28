@@ -50,3 +50,49 @@ describe('a poisoned session snapshot is a failing operand (B11b R-1)', () => {
     expect(m.append(healthy.snapshot()).status).toBe('ok');
   });
 });
+
+describe('a poisoned session gates its read paths (FR-D07 counter-example)', () => {
+  // The README contract: the first failure poisons the session and finish() returns it.
+  const failed = () => {
+    const m = model();
+    m.box({ size: [1, 1, 1], label: 'a' });
+    m.tag(sel.createdBy('missing'), 'x');
+    return m;
+  };
+
+  it('validate() on a poisoned session fails with session-poisoned first, nothing else run', () => {
+    const report = failed().validate();
+    expect(report.pass).toBe(false);
+    expect(report.issues[0]).toMatchObject({
+      code: 'session-poisoned',
+      severity: 'error',
+      detail: { cause: 'model-selection-empty', opIndex: 1 },
+    });
+    expect(report.issues).toHaveLength(1);
+    const leftOut = report.coverage.unchecked.filter((u) => u.reason === 'session-poisoned');
+    expect(leftOut.length).toBeGreaterThan(0);
+    expect(report.coverage.checked).toEqual([]);
+  });
+
+  it('auditVisibility() on a poisoned session returns the first failure', () => {
+    const r = failed().auditVisibility();
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe('model-selection-empty');
+  });
+
+  it('seamVisibility() and shutLines() on a poisoned session return the first failure', () => {
+    const m = failed();
+    const seam = m.seamVisibility();
+    const shut = m.shutLines({ table: [] });
+    expect([seam.ok, shut.ok]).toEqual([false, false]);
+    if (!seam.ok) expect(seam.error.code).toBe('model-selection-empty');
+    if (!shut.ok) expect(shut.error.code).toBe('model-selection-empty');
+  });
+
+  it('count and bounds already return the poison (control)', () => {
+    const m = failed();
+    expect(m.count(sel.all())).toBe(0);
+    const b = m.bounds(sel.all());
+    expect(b.ok).toBe(false);
+  });
+});

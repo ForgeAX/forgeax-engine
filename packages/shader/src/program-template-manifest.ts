@@ -1,10 +1,16 @@
 import {
+  isMaterialProgramAbi,
   isShaderBuiltinRole,
+  isShaderCompilerProfile,
+  isShaderEntryPointReads,
   isShaderProgramContract,
+  isShaderReflection,
   type ManifestEntry,
+  type ParamSchemaEntry,
   type ShaderBuiltinRole,
   type ShaderProgramContract,
-  type ShaderSource,
+  type ShaderReflection,
+  ShaderSource,
 } from '@forgeax/engine-types';
 import { err, manifestMalformed, ok, type Result, type ShaderError } from './errors.js';
 import {
@@ -14,10 +20,13 @@ import {
 } from './manifest-publication.js';
 import {
   type AdmittedShaderProgramTemplate,
+  readOwnedShaderProgramTemplates,
   readShaderProgramTemplates,
   type ShaderProgramCompilation,
   type ShaderTemplateLibrary,
   selectShaderProgramDefines,
+  shaderCompilerProfilesEqual,
+  verifyOwnedShaderDigests,
 } from './program-template.js';
 import { ShaderVariantDomain, type VariantPreference } from './supported-variant-defines.js';
 import type { MaterialShaderManifestEntry, MaterialShaderManifestVariant } from './types.js';
@@ -25,9 +34,28 @@ import type { MaterialShaderManifestEntry, MaterialShaderManifestVariant } from 
 export const SHADER_TEMPLATE_MANIFEST_VERSION = '7.0.0' as const;
 export const SHADER_PROJECT_MANIFEST_VERSION = '8.0.0' as const;
 
+/** A producer-compiled layout for one exact source recipe and selection. */
+interface PreparedTemplateReflection {
+  readonly programIdentity: string;
+  readonly selectionKey: string;
+  readonly sourceDigest: string;
+  readonly reflection: ShaderReflection;
+}
+
+/** Optional compiler output for one exact recipe and complete variant selection. */
+export interface PreparedTemplateProgram {
+  readonly program: string;
+  readonly programIdentity: string;
+  readonly selection: Readonly<Record<string, boolean>>;
+  readonly selectionKey: string;
+  readonly sourceDigest: string;
+  readonly artifact: ShaderProgramCompilation;
+}
+
 export interface ShaderTemplateManifest {
   readonly schemaVersion: typeof SHADER_TEMPLATE_MANIFEST_VERSION;
   readonly library: ShaderTemplateLibrary;
+  readonly preparedPrograms?: readonly PreparedTemplateProgram[];
   readonly entries: readonly {
     readonly hash: string;
     readonly role?: ShaderBuiltinRole;
@@ -35,6 +63,7 @@ export interface ShaderTemplateManifest {
     readonly program: string;
     readonly selection: Readonly<Record<string, boolean>>;
     readonly programContract?: ShaderProgramContract;
+    readonly preparedReflection?: PreparedTemplateReflection;
   }[];
   readonly materialShaders: readonly {
     readonly identifier: string;
@@ -48,6 +77,10 @@ export interface ShaderTemplateManifest {
 export interface AdmittedShaderTemplateManifest {
   readonly wire: ShaderTemplateManifest;
   readonly programs: ReadonlyMap<string, AdmittedShaderProgramTemplate>;
+  readonly preparedPrograms: ReadonlyMap<
+    string,
+    { readonly artifact: ShaderProgramCompilation; readonly source: ShaderSource }
+  >;
 }
 
 type CompiledProgram = ShaderProgramCompilation & {
@@ -71,6 +104,9 @@ const familyReaders = new WeakMap<
   object,
   {
     readonly axes: readonly string[];
+    readonly program: string;
+    readonly engineSchema: readonly ParamSchemaEntry[] | undefined;
+    readonly offersPointShadows: boolean;
     readonly domain: () => ShaderVariantDomain;
     readonly variant: (defines: Readonly<Record<string, boolean>>) => MaterialShaderManifestVariant;
     readonly select: (key: string) => MaterialShaderManifestVariant | undefined;
@@ -92,6 +128,15 @@ export function templateManifestVariant(
   key: string,
 ): MaterialShaderManifestVariant | undefined {
   return familyReaders.get(row)?.select(key);
+}
+/** Source program and schema from the same admitted material declaration. */
+export function templateManifestMaterial(row: object):
+  | {
+      readonly program: string;
+      readonly engineSchema: readonly ParamSchemaEntry[] | undefined;
+    }
+  | undefined {
+  return familyReaders.get(row);
 }
 export function templateManifestVariantByDefines(
   row: object,
@@ -209,19 +254,84 @@ function validMaterialParameterDeclaration(
   }
 }
 
+function validPreparedReflection(
+  value: unknown,
+  program: AdmittedShaderProgramTemplate,
+  selectionKey: string,
+): boolean {
+  return (
+    value === undefined ||
+    (record(value) &&
+      value.programIdentity === program.identity &&
+      value.selectionKey === selectionKey &&
+      typeof value.sourceDigest === 'string' &&
+      /^[a-f0-9]{64}$/.test(value.sourceDigest) &&
+      isShaderReflection(value.reflection))
+  );
+}
+
+type TemplateManifestHeader = {
+  readonly library: unknown;
+  readonly entries: readonly unknown[];
+  readonly materialShaders: readonly unknown[];
+};
+
+function templateManifestHeader(input: unknown): input is TemplateManifestHeader {
+  return (
+    record(input) &&
+    input.schemaVersion === SHADER_TEMPLATE_MANIFEST_VERSION &&
+    Array.isArray(input.entries) &&
+    Array.isArray(input.materialShaders)
+  );
+}
+
 /** Source and all references are admitted before any compiler or device work. */
 export function admitShaderTemplateManifest(
   input: unknown,
 ): Result<AdmittedShaderTemplateManifest, ShaderError> {
-  if (
-    !record(input) ||
-    input.schemaVersion !== SHADER_TEMPLATE_MANIFEST_VERSION ||
-    !Array.isArray(input.entries) ||
-    !Array.isArray(input.materialShaders)
-  )
-    return malformed('invalid version or row arrays');
+  if (!templateManifestHeader(input)) return malformed('invalid version or row arrays');
   const programs = readShaderProgramTemplates(input.library);
   if (!programs.ok) return programs;
+  const wire = validateManifestRows(input, programs.value, false);
+  if (!wire.ok) return wire;
+  const selections = preparedProgramSelections(wire.value.preparedPrograms, programs.value);
+  if (!selections.ok) return selections;
+  const preparedPrograms = materializePreparedPrograms(selections.value, false);
+  if (!preparedPrograms.ok) return preparedPrograms;
+  return finishTemplateManifest(wire.value, programs.value, preparedPrograms.value);
+}
+
+/** The registry owns the sole object produced by JSON.parse. */
+export async function admitOwnedShaderTemplateManifest(
+  input: unknown,
+): Promise<Result<AdmittedShaderTemplateManifest, ShaderError>> {
+  if (!templateManifestHeader(input)) return malformed('invalid version or row arrays');
+  const programs = await readOwnedShaderProgramTemplates(input.library);
+  if (!programs.ok) return programs;
+  const wire = validateManifestRows(input, programs.value, true);
+  if (!wire.ok) return wire;
+  const selections = preparedProgramSelections(wire.value.preparedPrograms, programs.value);
+  if (!selections.ok) return selections;
+  const sources = new Map<string, string>();
+  for (const { artifact, digest } of selections.value.values()) {
+    const source = artifact.manifestEntry.wgsl;
+    const previous = sources.get(digest);
+    if (previous !== undefined && previous !== source)
+      return malformed('conflicting sources for one prepared program digest');
+    sources.set(digest, source);
+  }
+  if (!(await verifyOwnedShaderDigests(sources)))
+    return malformed('invalid prepared program source digest');
+  const preparedPrograms = materializePreparedPrograms(selections.value, true);
+  if (!preparedPrograms.ok) return preparedPrograms;
+  return finishTemplateManifest(wire.value, programs.value, preparedPrograms.value);
+}
+
+function validateManifestRows(
+  input: TemplateManifestHeader,
+  programs: ReadonlyMap<string, AdmittedShaderProgramTemplate>,
+  owned: boolean,
+): Result<ShaderTemplateManifest, ShaderError> {
   const names = new Set<string>();
   const hashes = new Set<string>();
   const validate = (row: unknown, material: boolean): boolean => {
@@ -233,12 +343,10 @@ export function admitShaderTemplateManifest(
       !record(row.selection)
     )
       return false;
-    const program = programs.value.get(row.program);
-    if (
-      program === undefined ||
-      !selectShaderProgramDefines(program, row.selection as Record<string, boolean>).ok
-    )
-      return false;
+    const program = programs.get(row.program);
+    if (program === undefined) return false;
+    const selected = selectShaderProgramDefines(program, row.selection as Record<string, boolean>);
+    if (!selected.ok) return false;
     if (material) {
       if (typeof row.sourcePath !== 'string' || names.has(row.identifier)) return false;
       if (!validMaterialParameterDeclaration(row, program.template.engine !== undefined))
@@ -250,6 +358,7 @@ export function admitShaderTemplateManifest(
         typeof row.hash !== 'string' ||
         !row.hash ||
         hashes.has(row.hash) ||
+        !validPreparedReflection(row.preparedReflection, program, selected.value.key) ||
         (row.programContract !== undefined && !isShaderProgramContract(row.programContract))
       )
         return false;
@@ -262,10 +371,111 @@ export function admitShaderTemplateManifest(
     !input.materialShaders.every((row) => validate(row, true))
   )
     return malformed('missing, conflicting or illegal program selection');
-  const wire = structuredClone(input) as unknown as ShaderTemplateManifest;
-  freeze(wire);
-  return ok({ wire, programs: programs.value });
+  return ok((owned ? input : structuredClone(input)) as unknown as ShaderTemplateManifest);
 }
+
+function finishTemplateManifest(
+  wire: ShaderTemplateManifest,
+  programs: AdmittedShaderTemplateManifest['programs'],
+  preparedPrograms: AdmittedShaderTemplateManifest['preparedPrograms'],
+): Result<AdmittedShaderTemplateManifest, ShaderError> {
+  freeze(wire);
+  return ok({ wire, programs, preparedPrograms });
+}
+function validPreparedManifestEntry(
+  entry: unknown,
+  program: AdmittedShaderProgramTemplate,
+): boolean {
+  return (
+    record(entry) &&
+    typeof entry.hash === 'string' &&
+    /^[a-f0-9]{8}$/.test(entry.hash) &&
+    typeof entry.wgsl === 'string' &&
+    entry.wgsl.length > 0 &&
+    (entry.glsl === undefined || typeof entry.glsl === 'string') &&
+    typeof entry.bindings === 'string' &&
+    isShaderCompilerProfile(entry.compilerProfile) &&
+    shaderCompilerProfilesEqual(entry.compilerProfile, program.template.compilerProfile) &&
+    isShaderReflection(entry.reflection) &&
+    (entry.entryPoints === undefined || isShaderEntryPointReads(entry.entryPoints))
+  );
+}
+
+function validPreparedArtifact(
+  value: unknown,
+  program: AdmittedShaderProgramTemplate,
+): value is ShaderProgramCompilation {
+  return (
+    record(value) &&
+    validPreparedManifestEntry(value.manifestEntry, program) &&
+    typeof value.uvSetCount === 'number' &&
+    Number.isSafeInteger(value.uvSetCount) &&
+    value.uvSetCount >= 0 &&
+    (value.receipt === undefined || isMaterialProgramAbi(value.receipt)) &&
+    (value.forwardFog === undefined || value.forwardFog === 'height-vertex/1')
+  );
+}
+
+interface PreparedProgramSelection {
+  readonly artifact: ShaderProgramCompilation;
+  readonly digest: string;
+}
+
+function preparedProgramSelections(
+  input: unknown,
+  programs: ReadonlyMap<string, AdmittedShaderProgramTemplate>,
+): Result<ReadonlyMap<string, PreparedProgramSelection>, ShaderError> {
+  const prepared = new Map<string, PreparedProgramSelection>();
+  if (input === undefined) return ok(prepared);
+  if (!Array.isArray(input)) return malformed('invalid prepared program list');
+  for (const row of input) {
+    if (!record(row) || typeof row.program !== 'string' || !record(row.selection))
+      return malformed('invalid prepared program address');
+    const program = programs.get(row.program);
+    if (
+      program === undefined ||
+      program.identity !== row.programIdentity ||
+      !validPreparedArtifact(row.artifact, program)
+    )
+      return malformed(
+        'prepared program recipe or compiler artifact disagrees with its declaration',
+      );
+    const selection = selectShaderProgramDefines(program, row.selection as Record<string, boolean>);
+    if (!selection.ok) return selection;
+    if (selection.value.key !== row.selectionKey)
+      return malformed('prepared artifact belongs to a different variant selection');
+    const key = `${program.identity}:${row.selectionKey}`;
+    const entry = row.artifact.manifestEntry;
+    if (
+      prepared.has(key) ||
+      typeof row.sourceDigest !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(row.sourceDigest) ||
+      (entry.sourceDigest !== undefined && entry.sourceDigest !== row.sourceDigest)
+    )
+      return malformed('duplicate prepared selection or invalid program source digest');
+    prepared.set(key, { artifact: row.artifact, digest: row.sourceDigest });
+  }
+  return ok(prepared);
+}
+
+function materializePreparedPrograms(
+  selections: ReadonlyMap<string, PreparedProgramSelection>,
+  verified: boolean,
+): Result<AdmittedShaderTemplateManifest['preparedPrograms'], ShaderError> {
+  const prepared = new Map<
+    string,
+    { readonly artifact: ShaderProgramCompilation; readonly source: ShaderSource }
+  >();
+  for (const [key, { artifact, digest }] of selections) {
+    const source = verified
+      ? ShaderSource.fromVerifiedUtf8(artifact.manifestEntry.wgsl, digest)
+      : new ShaderSource([artifact.manifestEntry.wgsl]);
+    if (source.identity !== digest) return malformed('invalid prepared program source digest');
+    prepared.set(key, Object.freeze({ artifact, source }));
+  }
+  return ok(prepared);
+}
+
 function freeze(value: unknown): void {
   if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return;
   Object.values(value).forEach(freeze);
@@ -340,8 +550,23 @@ export function materializeShaderTemplateManifest(
 } {
   const entries = admitted.wire.entries.map((declaration): ManifestEntry => {
     let compiled: CompiledProgram | undefined;
-    const read = (): CompiledProgram =>
-      (compiled ??= resolve(declaration.program, declaration.selection).unwrap());
+    const prepared = declaration.preparedReflection;
+    const preparedProfile =
+      prepared === undefined
+        ? undefined
+        : admitted.programs.get(declaration.program)?.template.compilerProfile;
+    const read = (): CompiledProgram => {
+      if (compiled === undefined) {
+        const selected = resolve(declaration.program, declaration.selection).unwrap();
+        if (
+          prepared !== undefined &&
+          prepared.sourceDigest !== selected.program.sourceReference.identity
+        )
+          malformed('the selected source disagrees with its published reflection').unwrap();
+        compiled = selected;
+      }
+      return compiled;
+    };
     const row = Object.freeze({
       hash: declaration.hash,
       identifier: declaration.identifier,
@@ -354,7 +579,7 @@ export function materializeShaderTemplateManifest(
         return read().program.sourceReference.read();
       },
       get sourceDigest() {
-        return read().program.sourceReference.identity;
+        return prepared?.sourceDigest ?? read().program.sourceReference.identity;
       },
       get glsl() {
         return read().manifestEntry.glsl;
@@ -363,10 +588,10 @@ export function materializeShaderTemplateManifest(
         return read().manifestEntry.bindings;
       },
       get reflection() {
-        return read().manifestEntry.reflection;
+        return prepared?.reflection ?? read().manifestEntry.reflection;
       },
       get compilerProfile() {
-        return read().manifestEntry.compilerProfile;
+        return preparedProfile ?? read().manifestEntry.compilerProfile;
       },
       get entryPoints() {
         return read().manifestEntry.entryPoints;
@@ -380,11 +605,10 @@ export function materializeShaderTemplateManifest(
     (declaration): MaterialShaderManifestEntry => {
       const program = admitted.programs.get(declaration.program);
       if (program === undefined) throw new Error('Admitted template program is missing');
-      const paramSchema =
-        program.template.engine === undefined
-          ? declaration.paramSchema
-          : JSON.stringify(program.template.engine.paramSchema);
-      if (paramSchema === undefined) throw new Error('Admitted material schema is missing');
+      const engineSchema = program.template.engine?.paramSchema;
+      let serializedSchema = declaration.paramSchema;
+      if (serializedSchema === undefined && engineSchema === undefined)
+        throw new Error('Admitted material schema is missing');
       const axes = program.template.axes;
       let choicesDomain: ShaderVariantDomain | undefined;
       const domain = () => (choicesDomain ??= new ShaderVariantDomain(axes));
@@ -408,7 +632,10 @@ export function materializeShaderTemplateManifest(
       const row = Object.freeze({
         identifier: declaration.identifier,
         sourcePath: declaration.sourcePath,
-        paramSchema,
+        get paramSchema() {
+          serializedSchema ??= JSON.stringify(engineSchema);
+          return serializedSchema;
+        },
         get composedWgsl() {
           return base.composedWgsl;
         },
@@ -452,6 +679,9 @@ export function materializeShaderTemplateManifest(
       bindManifestShaderSource(row, () => boundManifestShaderSource(base) as ShaderSource);
       familyReaders.set(row, {
         axes,
+        program: declaration.program,
+        engineSchema,
+        offersPointShadows: program.template.engine?.pointShadows === true,
         domain,
         variant,
         prepared: () => [...choices.values()].filter((choice) => preparedRows.has(choice)),
@@ -484,6 +714,13 @@ export function materializeShaderTemplateManifest(
     },
   );
   return { entries, materialShaders };
+}
+
+/** Read the admitted Engine source recipe's point-shadow capability before compilation. */
+export function materialShaderTemplateOffersPointShadows(
+  entry: MaterialShaderManifestEntry,
+): boolean {
+  return familyReaders.get(entry)?.offersPointShadows === true;
 }
 
 /** Prepared native rows only: inspection and aliasing cannot cause permutation compilation. */

@@ -392,6 +392,17 @@ describe('derived material interface contract matrix', () => {
     ).toThrow('different schema content');
   });
 
+  it('shares exact schema content with detached template records', () => {
+    const owner = new ParamSchemaProjectionOwner();
+    const field = { name: 'detachedTemplateFactor', type: 'f32', default: 0.5 } as const;
+    const original = owner.admit({ ownerId: 'plain', revision: 1, schema: [field] });
+    const detached = Object.assign(Object.create(null) as typeof field, field);
+    const admitted = owner.admit({ ownerId: 'template', revision: 1, schema: [detached] });
+    expect(admitted.schema).toBe(original.schema);
+    expect(admitted.derivedInterface).toBe(original.derivedInterface);
+    expect(owner.stats()).toEqual({ admissions: 2, derivations: 1, projections: 2 });
+  });
+
   it('serializes current ABI owner gaps as intermediate evidence', async () => {
     const schema = [
       { name: 'roughness', type: 'f32' as const },

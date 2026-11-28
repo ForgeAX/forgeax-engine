@@ -1,4 +1,6 @@
-import { appendFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   type BakeExecutor,
   type BakeOptions,
@@ -6,6 +8,8 @@ import {
   bakeMaps,
   bakeMapsParallel,
   bakePhases,
+  bakeSources,
+  createBakeCooker,
   model,
   sel,
   WorkMeter,
@@ -140,6 +144,22 @@ describe('bake Workers: split and order independence (gate)', () => {
       ok: false,
       error: { code: 'model-cancelled' },
     });
+    // An expired deadline settles the bake and terminates its Workers.
+    expect(
+      await bakeMapsParallel(options, bakeWorkers({ workers: 2, maxHeapMb: 512 })),
+    ).toMatchObject({ ok: true });
+    expect(
+      await bakeMapsParallel(options, bakeWorkers({ workers: 2, timeoutMs: 1 })),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'model-work-budget' },
+    });
+    expect(
+      await bakeMapsParallel(options, bakeWorkers({ workers: 2, timeoutMs: 0 })),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'model-invalid-argument' },
+    });
     expect(await bakeMapsParallel(options, bakeWorkers({ workers: 0 }))).toMatchObject({
       ok: false,
       error: { code: 'model-invalid-argument' },
@@ -151,4 +171,85 @@ describe('bake Workers: split and order independence (gate)', () => {
       error: { code: 'model-capability-unavailable' },
     });
   });
+});
+
+describe('bake Worker bounds', () => {
+  const small = (): BakeOptions => ({ ...fixture(), maps: ['normal'], resolution: 64, samples: 1 });
+  const threads = () => readdirSync('/proc/self/task').length;
+  const settled = async (limit: number) => {
+    for (let i = 0; i < 100 && threads() > limit; i++) await new Promise((r) => setTimeout(r, 50));
+    return threads();
+  };
+
+  it('rejects a deadline Node cannot arm, and accepts the longest one (falsifier)', async () => {
+    const options = small();
+    for (const timeoutMs of [2 ** 31, 1e10]) {
+      expect(await bakeMapsParallel(options, bakeWorkers({ workers: 1, timeoutMs }))).toMatchObject(
+        {
+          ok: false,
+          error: { code: 'model-invalid-argument' },
+        },
+      );
+    }
+    expect(
+      await bakeMapsParallel(options, bakeWorkers({ workers: 1, timeoutMs: 2 ** 31 - 1 })),
+    ).toMatchObject({ ok: true });
+  }, 60_000);
+
+  it('floors maxHeapMb at 16 (falsifier)', async () => {
+    const options = small();
+    expect(
+      await bakeMapsParallel(options, bakeWorkers({ workers: 1, maxHeapMb: 15 })),
+    ).toMatchObject({ ok: false, error: { code: 'model-invalid-argument' } });
+    expect(
+      await bakeMapsParallel(options, bakeWorkers({ workers: 1, maxHeapMb: 512 })),
+    ).toMatchObject({ ok: true });
+  }, 60_000);
+
+  it('terminates its Workers once the bake settles, by success or by failure (falsifier)', async () => {
+    const options = small();
+    await bakeMapsParallel(options, bakeWorkers({ workers: 2 }));
+    const baseline = await settled(0);
+    for (const timeoutMs of [undefined, 1]) {
+      const executor = bakeWorkers({
+        workers: 3,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      });
+      await bakeMapsParallel(options, executor);
+      expect(await settled(baseline)).toBeLessThanOrEqual(baseline);
+    }
+  }, 60_000);
+
+  it('caps a Worker heap at maxHeapMb (falsifier)', () => {
+    const child = fileURLToPath(new URL('./fixtures/worker-heap-child.mjs', import.meta.url));
+    const { NODE_OPTIONS: _flags, ...env } = process.env;
+    const run = (heap: number) =>
+      JSON.parse(
+        execFileSync(process.execPath, [child, 'bake', String(heap)], {
+          env,
+          encoding: 'utf8',
+          timeout: 100_000,
+        })
+          .trim()
+          .split('\n')
+          .at(-1) ?? '{}',
+      ) as { ok: boolean; code?: string; text?: string };
+    const capped = run(16);
+    expect(capped).toMatchObject({ ok: false, code: 'model-capability-unavailable' });
+    expect(capped.text).toContain('ERR_WORKER_OUT_OF_MEMORY');
+    expect(run(1024)).toEqual({ ok: true });
+  }, 120_000);
+});
+
+it('cooks native source maps on real Workers with the serial bytes and fingerprint', {
+  timeout: 60000,
+}, async () => {
+  const sources = bakeSources({ ...fixture(), resolution: 32, key: 'worker-cooker' });
+  if (!sources.ok) throw sources.error;
+  const serial = createBakeCooker();
+  const parallel = createBakeCooker({ executor: bakeWorkers({ workers: 2 }) });
+  for (const asset of Object.values(sources.value)) {
+    const input = { guid: '01900000-0000-7000-8000-00000000b4ce', source: asset.source };
+    expect(await parallel.cook(input)).toEqual(await serial.cook(input));
+  }
 });

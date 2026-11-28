@@ -165,6 +165,7 @@ export type RenderWorkerInput =
       readonly width: number;
       readonly height: number;
       readonly publication: RenderPublicationMessage;
+      readonly sourceSceneIndexDeferred?: true;
       readonly groupSelection?: ClosedLevelFrameChanges;
       readonly sourceFixedStep: number;
       /** Engine Worker World update milliseconds for this published frame. */
@@ -270,10 +271,21 @@ export type RenderWorkerOutput =
         | { readonly ok: false; readonly error: RhiDebugError };
     }
   | {
+      readonly kind: 'device-admitted';
+      readonly identity: RenderPublicationIdentity;
+      readonly capabilities: import('@forgeax/engine-rhi').RhiCaps;
+      readonly maxSampledTexturesPerShaderStage?: number;
+    }
+  | {
       readonly kind: 'ready';
       readonly deviceGeneration: number;
       readonly capabilities: import('@forgeax/engine-rhi').RhiCaps;
       readonly limits?: Readonly<Record<string, number>>;
+    }
+  | {
+      readonly kind: 'scene-index-demand';
+      readonly identity: RenderPublicationIdentity;
+      readonly worldIdentity: string;
     }
   | {
       readonly kind: 'submitted';

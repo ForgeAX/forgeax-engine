@@ -6,7 +6,8 @@ import type {
   TextureView,
   Tlas,
 } from '@forgeax/engine-rhi';
-import { ok } from './errors.js';
+import type { InheritedTextureRead } from './content-ranges.js';
+import { ok, type ResultOk } from './errors.js';
 import type { ResolvedColorTargetDescriptor } from './graph.js';
 import type {
   GraphAccelerationStructure,
@@ -162,7 +163,7 @@ export type ResourceRecord<FrameCtx> =
   | ImportedBufferRecord<FrameCtx>
   | ImportedAccelerationStructureRecord<FrameCtx>;
 
-export interface TextureViewRecord<FrameCtx extends RenderGraphFrame = RenderGraphFrame> {
+export interface TextureViewRecord<FrameCtx = RenderGraphFrame> {
   readonly id: number;
   readonly label: string;
   readonly textureId: number;
@@ -177,36 +178,76 @@ export interface PassRecord<FrameCtx extends RenderGraphFrame> {
   readonly pass: GraphPass<FrameCtx>;
 }
 
-export interface CompiledResource<FrameCtx> {
-  readonly record: ResourceRecord<FrameCtx>;
-  readonly usage: number;
-  readonly firstUse: number | null;
-  readonly lastUse: number | null;
-  readonly texture?: Texture | undefined;
-  /** The normalized allocation descriptor also owns imported texture extents. */
-  readonly textureDescriptor?:
-    | (TextureDescriptor & {
-        readonly size: {
-          readonly width: number;
-          readonly height: number;
-          readonly depthOrArrayLayers: number;
-        };
-      })
-    | undefined;
-  /** Actual size supplied by the current imported allocation, separate from its declaration. */
-  resolvedDescriptor?: CompiledResource<FrameCtx>['textureDescriptor'];
+interface BoundSlot<T extends object> {
+  handle?: T | undefined;
+  receipt?: ResultOk<T> | undefined;
+}
+
+export function bindSlot<T extends object>(
+  slot: BoundSlot<T>,
+  handle: T | undefined,
+  receipt?: ResultOk<T>,
+): boolean {
+  if (slot.handle === handle) return false;
+  slot.handle = handle;
+  if (receipt !== undefined || slot.receipt !== undefined) slot.receipt = receipt;
+  return true;
+}
+
+type ResourceBinding<Frame> =
+  | ((CreatedTextureRecord | ImportedTextureRecord<Frame>) & BoundSlot<Texture>)
+  | ((CreatedBufferRecord | ImportedBufferRecord<Frame>) & BoundSlot<Buffer>)
+  | (ImportedAccelerationStructureRecord<Frame> & BoundSlot<Tlas>);
+
+/** One slot carries a declaration through access emission and physical binding. */
+export type CompiledResource<FrameCtx> = ResourceBinding<FrameCtx> & {
+  usage: number;
+  firstUse: number | null;
+  firstView?: number;
+  lastUse: number | null;
+  lastAccess?: number;
+  firstClear?: number;
+  resolvedView?: number | undefined;
+  textureShape?: PhysicalTextureShape;
+  /** Actual size supplied by the current imported allocation. */
+  resolvedDescriptor?: ResolvedTextureDescriptor;
   resolvedViewExtent?: ReturnType<import('./types.js').GraphResourceResolver['textureViewExtent']>;
-  readonly textureAllocation?: GraphTextureAllocation | undefined;
+  textureAllocation?: GraphTextureAllocation;
+  /** First uses that need bytes from the previous attachment. Consumed during binding. */
+  inheritedTextureReads?: InheritedTextureRead[];
   /** Materialized only for a named read of a graph-owned texture. */
   colorTarget?: ResolvedColorTargetDescriptor;
-  readonly borrowedTextureSlot?: true;
-  readonly passLocal?: true;
-  readonly buffer?: Buffer | undefined;
+  /** Accounting and native preparation are written only to their owning slots. */
+  ownedByteSize?: number | undefined;
+  nativeViews?: CompiledView<FrameCtx>[] | undefined;
+  preparedNativeTexture?: Texture | undefined;
+  passLocal?: true;
+};
+
+type ResolvedTextureDescriptor = Omit<TextureDescriptor, 'viewFormats' | 'size'> & {
+  readonly usage: number;
+  readonly viewFormats: NonNullable<GraphTextureDescriptor['viewFormats']>;
+  readonly size: {
+    readonly width: number;
+    readonly height: number;
+    readonly depthOrArrayLayers: number;
+  };
+};
+
+/** Allocation facts held by the physical slot, independent of its view labels. */
+export interface PhysicalTextureShape {
+  readonly descriptor: Omit<ResolvedTextureDescriptor, 'usage'> & {
+    readonly label: string;
+    /** Additional access roles join this physical descriptor before binding. */
+    usage: number;
+  };
+  readonly lifetime: NonNullable<GraphTextureDescriptor['lifetime']>;
 }
 
 export interface GraphTextureAllocation {
   readonly texture: Texture;
-  readonly signature: string;
+  readonly shape: PhysicalTextureShape;
+  readonly byteSize: number | undefined;
   references: number;
   /** Shared by every graph lease of this physical allocation. */
   readonly committedContentRanges: GraphTextureContentRange[];
@@ -234,9 +275,15 @@ export function physicalAllocationKey(handle: object): string {
   return key;
 }
 
-export interface CompiledView<FrameCtx extends RenderGraphFrame = RenderGraphFrame> {
-  readonly record: TextureViewRecord<FrameCtx>;
-  readonly view?: TextureView | undefined;
+export interface CompiledView<FrameCtx = RenderGraphFrame>
+  extends TextureViewRecord<FrameCtx>,
+    BoundSlot<TextureView> {
+  /** Native preparation can get ahead of frame recording. */
+  preparedImport?: { texture: Texture; view: ResultOk<TextureView> };
+  extent?:
+    | ReturnType<import('./types.js').GraphResourceResolver['textureViewExtent']>
+    | CompiledResource<FrameCtx>
+    | undefined;
 }
 
 /** Builder handle ids occupy one dense namespace shared by resources and views. */
@@ -247,8 +294,12 @@ export class PhysicalGraphSlots<Frame extends RenderGraphFrame> {
     return this.rows.length;
   }
 
+  entries(): readonly (CompiledResource<Frame> | CompiledView<Frame> | undefined)[] {
+    return this.rows;
+  }
+
   insert(row: CompiledResource<Frame> | CompiledView<Frame>): void {
-    this.rows[row.record.id] = row;
+    this.rows[row.id] = row;
   }
 
   resource(id: number): CompiledResource<Frame> | undefined {
@@ -259,6 +310,18 @@ export class PhysicalGraphSlots<Frame extends RenderGraphFrame> {
   view(id: number): CompiledView<Frame> | undefined {
     const row = this.rows[id];
     return row !== undefined && !('usage' in row) ? row : undefined;
+  }
+
+  /** Pass address operands and validated handles already identify the slot kind. */
+  handle<T extends object>(id: number): T | undefined {
+    return (this.rows[id] as BoundSlot<T> | undefined)?.handle;
+  }
+
+  result<T extends object>(id: number): ResultOk<T> | undefined {
+    const slot = this.rows[id] as BoundSlot<T> | undefined;
+    if (slot?.handle === undefined) return undefined;
+    slot.receipt ??= ok(slot.handle);
+    return slot.receipt;
   }
 
   *resources(): IterableIterator<CompiledResource<Frame>> {
@@ -273,14 +336,17 @@ export class PhysicalGraphSlots<Frame extends RenderGraphFrame> {
 /** Short pass ranges stay in declaration order. Longer ranges are sorted on seal. */
 export const LINEAR_PASS_ACCESS_LIMIT = 12;
 
+/** A recorded write retains its physical binding slot across attachment placement. */
+export interface CompiledTextureWrite<FrameCtx extends RenderGraphFrame> {
+  readonly texture: Extract<CompiledResource<FrameCtx>, { kind: 'texture' }>;
+  readonly range: GraphTextureContentRange;
+  readonly stored: boolean;
+}
+
 export interface CompiledPass<FrameCtx extends RenderGraphFrame> extends PassRecord<FrameCtx> {
   readonly accessStart: number;
   readonly accessEnd: number;
-  readonly textureWrites: readonly {
-    readonly resourceId: number;
-    readonly range: GraphTextureContentRange;
-    readonly stored: boolean;
-  }[];
+  readonly textureWrites: readonly CompiledTextureWrite<FrameCtx>[];
 }
 
 export function accessResourceId(access: GraphAccess): number | undefined {

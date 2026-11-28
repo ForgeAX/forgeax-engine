@@ -824,7 +824,9 @@ export function createPluginPackInternal(
       if (source === VIRTUAL_ASSETS_ID) return RESOLVED_VIRTUAL_ASSETS_ID;
       if (source === VIRTUAL_ASSETS_DTS_ID) return RESOLVED_VIRTUAL_ASSETS_DTS_ID;
       if (source === VIRTUAL_RUNTIME_TRANSPORT_ID) {
-        return fileURLToPath(import.meta.resolve('@forgeax/engine-runtime'));
+        return fileURLToPath(
+          import.meta.resolve('@forgeax/engine-runtime/internal/dev-import-transport'),
+        );
       }
       return null;
     },

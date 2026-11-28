@@ -1,3 +1,4 @@
+import { mat4 } from '@forgeax/engine-math';
 import {
   type Buffer,
   err,
@@ -7,6 +8,7 @@ import {
   RhiError,
   type RhiQueue,
 } from '@forgeax/engine-rhi';
+import { shouldShrinkCapacity } from './dynamic-capacity';
 import { type GpuInputPreparation, InputPreparation } from './gpu-input-preparation';
 import { StableRangeAllocator } from './stable-range-allocator';
 
@@ -49,6 +51,7 @@ export interface GpuInputUpload {
     queue: RhiQueue,
     buffer: Buffer,
     descriptors?: readonly GpuInputDescriptorReservation[],
+    capacityBytes?: number,
   ): Result<GpuInputPreparation, RhiError>;
   release(): void;
 }
@@ -64,6 +67,7 @@ export interface GpuInputDescriptorReservation {
 }
 
 const COALESCE_GAP_WORDS = 64;
+const INITIAL_WORDS = 256;
 type DirtyRange = { start: number; end: number };
 interface UploadConnection {
   released: boolean;
@@ -88,7 +92,7 @@ interface PreparingUpload {
 export class GpuInputArena {
   // Pose frames retire and re-create rows of a few recurring sizes.
   private readonly ranges = new StableRangeAllocator(1 << 19);
-  private words = new Uint32Array(256);
+  private words = new Uint32Array(INITIAL_WORDS);
   private floats = new Float32Array(this.words.buffer);
   private readonly pending = new Map<number, DirtyRange>();
   private pendingOrder = new Uint32Array(0);
@@ -98,6 +102,8 @@ export class GpuInputArena {
   private readonly usedTargets = new WeakSet<Buffer>();
   private writing = 0;
   private revision = 0;
+  private liveWords = 1;
+  private reviewTail = false;
   private failed = false;
   private disposed = false;
   private readonly privateDescriptors = new WeakMap<
@@ -117,6 +123,39 @@ export class GpuInputArena {
   }
   assertLive(): void {
     if (!this.live) throw invalid('a live CPU numeric arena');
+  }
+
+  /** At frame acceptance, return only a proven unused tail. Native readers
+   * keep their buffers, and private preparation keeps its original extent. */
+  reclaimTail(): void {
+    const capacity = this.words.length;
+    if (
+      !this.reviewTail ||
+      this.writing !== 0 ||
+      this.preparing !== undefined ||
+      !this.live ||
+      !shouldShrinkCapacity(this.liveWords, capacity)
+    )
+      return;
+    this.reviewTail = false;
+    const extent = this.ranges.releaseTail();
+    if (!shouldShrinkCapacity(extent, capacity)) return;
+    let words = INITIAL_WORDS;
+    while (words < extent) words *= 2;
+    const next = this.words.slice(0, words);
+    const floats = new Float32Array(next.buffer);
+    this.words = next;
+    this.floats = floats;
+    if (this.pendingOrder.length > words) this.pendingOrder = new Uint32Array(0);
+  }
+
+  private releaseRange(address: number, words: number): void {
+    // A non-tail release cannot expose a new upper bound. Keep an existing
+    // review pending until the population becomes small enough to consider it.
+    const wasTail = address + words === this.ranges.reservedCapacity();
+    this.ranges.release(address, words);
+    this.liveWords -= words;
+    this.reviewTail ||= wasTail;
   }
   /** Reusable address-ordered view of the pending population. */
   private sortedPending(): Uint32Array {
@@ -161,10 +200,12 @@ export class GpuInputArena {
       }
       this.words.fill(0, address, end);
       this.changed(address, wordCount);
+      this.liveWords += wordCount;
       return address;
     } catch (cause) {
       this.pending.delete(address);
       try {
+        this.reviewTail ||= address + wordCount === this.ranges.reservedCapacity();
         this.ranges.release(address, wordCount);
       } catch (cleanup) {
         this.failed = true;
@@ -184,6 +225,7 @@ export class GpuInputArena {
     if (wordCount === 0 || wordCount > Math.floor(this.byteLimit / 4))
       throw invalid('a nonempty private descriptor within the arena budget');
     const range = this.ranges.reserve(wordCount);
+    this.liveWords += wordCount;
     let owner: GpuInputArena | undefined = this;
     let words: Uint32Array | undefined;
     let failure: { cause: unknown } | undefined;
@@ -220,7 +262,10 @@ export class GpuInputArena {
         if (held === undefined) return;
         owner = undefined;
         try {
+          const wasTail = range.start + wordCount === held.ranges.reservedCapacity();
           range.release();
+          held.liveWords -= wordCount;
+          held.reviewTail ||= wasTail;
           words = undefined;
           held.privateDescriptors.delete(api);
         } catch (cause) {
@@ -341,6 +386,39 @@ export class GpuInputArena {
       throw invalid('a complete retained numeric float range');
     for (let lane = 0; lane < out.length; lane++) out[lane] = this.floats[address + lane] as number;
   }
+
+  /** Write paired retained matrices to a task-owned packed range and check the rounded products. */
+  readMatrixProducts(
+    out: Float32Array,
+    offset: number,
+    left: number,
+    right: number,
+    count: number,
+  ): boolean {
+    this.assertLive();
+    u32(left);
+    u32(right);
+    u32(offset);
+    u32(count);
+    const lanes = count * 16;
+    if (
+      left === 0 ||
+      right === 0 ||
+      count === 0 ||
+      Math.max(left, right) + lanes > this.words.length ||
+      offset + lanes > out.length
+    )
+      throw invalid('two complete retained matrix ranges and a complete packed output');
+    const floats = this.floats;
+    for (let lane = 0; lane < lanes; lane += 16)
+      mat4.multiply(out, floats, floats, right + lane, left + lane, offset + lane);
+    for (let lane = offset, end = offset + lanes; lane < end; lane++) {
+      const value = out[lane] as number;
+      // A rounded Float32 lands strictly between the infinities exactly when finite.
+      if (!(value > -Infinity && value < Infinity)) return false;
+    }
+    return true;
+  }
   fillDescriptor(address: number, count: number, value: number): void {
     this.assertLive();
     u32(address);
@@ -375,7 +453,7 @@ export class GpuInputArena {
       throw invalid('a numeric descriptor range within owned storage');
     this.pending.delete(address);
     try {
-      this.ranges.release(address, wordCount);
+      this.releaseRange(address, wordCount);
     } catch (cause) {
       this.failed = true;
       throw cause;
@@ -404,8 +482,8 @@ export class GpuInputArena {
         connection.target.queue === queue,
       activate: () => this.activateConnection(connection),
       flush: (queue, buffer, initial) => this.flushConnection(connection, queue, buffer, initial),
-      prepare: (queue, buffer, descriptors) =>
-        this.prepareConnection(connection, queue, buffer, descriptors),
+      prepare: (queue, buffer, descriptors, capacityBytes) =>
+        this.prepareConnection(connection, queue, buffer, descriptors, capacityBytes),
       release: () => this.releaseConnection(connection),
     };
   }
@@ -602,6 +680,7 @@ export class GpuInputArena {
     queue: RhiQueue,
     buffer: Buffer,
     descriptors: readonly GpuInputDescriptorReservation[] = [],
+    capacityBytes?: number,
   ): Result<GpuInputPreparation, RhiError> {
     if (
       !this.live ||
@@ -614,8 +693,16 @@ export class GpuInputArena {
     )
       return err(invalid('one detached upload incarnation with a fresh private native target'));
     const owned = [...new Set(descriptors)].sort((a, b) => a.address - b.address);
-    const privateWords =
-      owned.length === 0 ? undefined : new Uint32Array(this.preparationByteLength(owned) / 4);
+    const required = owned.length === 0 ? this.byteLength : this.preparationByteLength(owned);
+    const allocated = capacityBytes ?? required;
+    if (
+      !Number.isSafeInteger(allocated) ||
+      allocated % 4 !== 0 ||
+      allocated < required ||
+      (owned.length !== 0 && allocated > this.byteLimit)
+    )
+      return err(invalid('one prepared numeric backing within the granted native capacity'));
+    const privateWords = owned.length === 0 ? undefined : new Uint32Array(allocated / 4);
     const task: InputPreparation = new InputPreparation(
       {
         snapshot: () => ({ words: privateWords ?? this.words, revision: this.revision }),

@@ -117,6 +117,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       loadManifest: vi.fn(async () => ({ ok: true, value: undefined })),
       materialShaderManifestEntries: () => [entry][Symbol.iterator](),
       isSourceBackedMaterialArtifact: () => false,
+      materialArtifactDeclaration: () => undefined,
       findMaterialArtifact: vi.fn(() => ({ ok: false })),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;
@@ -138,6 +139,7 @@ fn cloud_direct_solar_factorX() -> f32 {
     await prepareMaterialShaders(device, () => registry, new Map());
 
     expect(installMaterialArtifact).toHaveBeenCalledWith('forgeax::default-standard-pbr', {
+      forwardFog: undefined,
       source: 'coverage-off',
       sourceReference: expect.any(ShaderSource),
       paramSchema: [],
@@ -167,6 +169,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       loadManifest: vi.fn(async () => ({ ok: true, value: undefined })),
       materialShaderManifestEntries: () => [entry][Symbol.iterator](),
       isSourceBackedMaterialArtifact: () => false,
+      materialArtifactDeclaration: () => undefined,
       findMaterialArtifact: vi.fn(() => ({ ok: false })),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;
@@ -188,6 +191,7 @@ fn cloud_direct_solar_factorX() -> f32 {
     await prepareMaterialShaders(device, () => registry, new Map());
 
     expect(installMaterialArtifact).toHaveBeenCalledWith('hello-multi-uv::multi-uv-demo', {
+      forwardFog: undefined,
       source: 'multi-uv=true storage=false',
       sourceReference: expect.any(ShaderSource),
       paramSchema: [],
@@ -215,6 +219,7 @@ fn cloud_direct_solar_factorX() -> f32 {
       loadManifest: vi.fn(async () => ({ ok: true, value: undefined })),
       materialShaderManifestEntries: () => [entry][Symbol.iterator](),
       isSourceBackedMaterialArtifact: () => false,
+      materialArtifactDeclaration: () => undefined,
       findMaterialArtifact: vi.fn(() => ({ ok: false })),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;
@@ -354,6 +359,17 @@ fn cloud_direct_solar_factorX() -> f32 {
         limits: { maxSampledTexturesPerShaderStage: 16 },
       } as never),
     ).toEqual({ requiredFeatures: ['depth32float-stencil8'] });
+  });
+
+  it('requests packed cloud shadow attachments only when supported by the adapter', () => {
+    const features = new Set<GPUFeatureName>(['rg11b10ufloat-renderable']);
+    expect(deviceOptionsForAdapter({ features } as never)?.requiredFeatures).toContain(
+      'rg11b10ufloat-renderable',
+    );
+    features.clear();
+    expect(deviceOptionsForAdapter({ features } as never)?.requiredFeatures).not.toContain(
+      'rg11b10ufloat-renderable',
+    );
   });
 
   it('preserves the distinction between absent, canonical, and explicit requests', () => {

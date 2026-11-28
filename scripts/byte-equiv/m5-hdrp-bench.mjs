@@ -10,7 +10,7 @@
 // fixture. `pnpm bench:pixel-parity` runs the former and is the AC-13 gate.
 //
 // Strategy: exec `pnpm bench:pixel-parity` and surface its exit code.
-// Chrome Beta is required (driven by playwright; see pixel-parity.mjs
+// Chrome is required (driven by playwright; see pixel-parity.mjs
 // header). When unavailable, the bench exits non-zero with an
 // `pixel-parity-capture-failed` error code; we map that to a deferred
 // status here rather than failing the M5 milestone.
@@ -39,12 +39,12 @@ if (result.status === 0) {
 
 // Map known bench exit codes (from scripts/bench/pixel-parity.mjs CLI):
 //   65 - pixel-parity-threshold-exceeded (real regression)
-//   74 - pixel-parity-capture-failed (browser/Chrome-Beta env issue)
+//   74 - pixel-parity-capture-failed (browser/Chrome env issue)
 //   70 - metric-status-not-ok (infra failure)
 //   78 - metric-not-declared / schema-malformed (config error)
 const code = result.status;
 if (code === 74) {
-  console.log('[m5-hdrp-bench] DEFERRED - capture failed (likely Chrome Beta unavailable)');
+  console.log('[m5-hdrp-bench] DEFERRED - capture failed (likely Chrome unavailable)');
   process.exit(0);
 }
 console.log(`[m5-hdrp-bench] FAIL - bench exit ${code}`);

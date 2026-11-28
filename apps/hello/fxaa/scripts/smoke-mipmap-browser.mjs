@@ -90,8 +90,13 @@ try {
   } else if (process.env.FORGEAX_WEBKIT_EXECUTABLE_PATH !== undefined) {
     launchOptions.executablePath = process.env.FORGEAX_WEBKIT_EXECUTABLE_PATH;
   }
-  if (engine !== 'webkit' && process.env.FORGEAX_BROWSER_CHANNEL !== undefined) {
-    launchOptions.channel = process.env.FORGEAX_BROWSER_CHANNEL;
+  if (engine !== 'webkit') {
+    if (process.env.FORGEAX_BROWSER_EXECUTABLE) {
+      launchOptions.executablePath = process.env.FORGEAX_BROWSER_EXECUTABLE;
+    } else {
+      launchOptions.channel =
+        process.env.FORGEAX_BROWSER_CHANNEL || process.env.FORGEAX_CHROME_CHANNEL || 'chrome';
+    }
   }
   const browserType = engine === 'webkit' ? webkit : chromium;
   browser = await browserType.launch({ ...(launchOptions), chromiumSandbox: true });

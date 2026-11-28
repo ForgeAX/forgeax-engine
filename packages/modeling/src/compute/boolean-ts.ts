@@ -168,13 +168,226 @@ interface Solid {
   readonly bounds: Bounds;
 }
 
+/** Signed volume of a closed component: negative for an inverted shell (a cavity wall). */
+function signedVolume(polys: readonly Poly[]): number {
+  let sum = 0;
+  for (const poly of polys) {
+    const [a, b, c] = poly.points as [Tuple3, Tuple3, Tuple3];
+    sum +=
+      a[0] * (b[1] * c[2] - b[2] * c[1]) -
+      a[1] * (b[0] * c[2] - b[2] * c[0]) +
+      a[2] * (b[0] * c[1] - b[1] * c[0]);
+  }
+  return sum;
+}
+
+/**
+ * Whether the polygons lie inside the solid: the class of the first polygon corner that is
+ * not on its surface (IN or OUT), or the last class seen when every probed corner is on it.
+ */
+function insideOf(
+  solid: Solid,
+  polys: readonly Poly[],
+  eps: number,
+  settle: boolean,
+  work: WorkMeter,
+): PolyClass | undefined {
+  let inside: PolyClass | undefined;
+  for (const poly of polys) {
+    const p = poly.points[0] as Tuple3;
+    const probe: Poly = { points: [p, p, p], plane: poly.plane, source: poly.source };
+    const found = classify([probe], solid.root, solid.bounds, eps, work, settle);
+    if (found === undefined) return undefined;
+    inside = (found[0] as { type: PolyClass }).type;
+    if (inside === IN || inside === OUT) break;
+  }
+  return inside;
+}
+
+/** The classes of every distinct corner and polygon centre against the solid. */
+function cornerClasses(
+  solid: Solid,
+  polys: readonly Poly[],
+  eps: number,
+  settle: boolean,
+  work: WorkMeter,
+): Set<PolyClass> | undefined {
+  const seen = new Set<string>();
+  const classes = new Set<PolyClass>();
+  for (const poly of polys) {
+    const centre = poly.points.reduce<Tuple3>(
+      (sum, q) => [sum[0] + q[0], sum[1] + q[1], sum[2] + q[2]],
+      [0, 0, 0],
+    );
+    const n = poly.points.length;
+    for (const p of [...poly.points, [centre[0] / n, centre[1] / n, centre[2] / n] as Tuple3]) {
+      const key = `${p[0]},${p[1]},${p[2]}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const probe: Poly = { points: [p, p, p], plane: poly.plane, source: poly.source };
+      const found = classify([probe], solid.root, solid.bounds, eps, work, settle);
+      if (found === undefined) return undefined;
+      classes.add((found[0] as { type: PolyClass }).type);
+    }
+  }
+  return classes;
+}
+
+interface CavityOwners {
+  /** Per component: the outward component that owns a cavity, -1 for an orphan cavity, itself otherwise. */
+  readonly owner: number[];
+  /** Per component: a cavity whose probe corners all lie on the surface of some shell it was tested against. */
+  readonly touching: boolean[];
+  readonly volumes: number[];
+  readonly shells: { index: number; solid: Solid }[];
+}
+
+/**
+ * The smallest outward shell that contains each inverted shell (a cavity). The one
+ * containment rule behind both the grouping and the front-end precondition.
+ */
+function ownCavities(
+  components: readonly Poly[][],
+  eps: number,
+  settle: boolean,
+  work: WorkMeter,
+  counters: Counters,
+): CavityOwners | undefined {
+  const volumes = components.map(signedVolume);
+  const shells: { index: number; solid: Solid }[] = [];
+  const owner = components.map((_, i) => i);
+  const touching = components.map(() => false);
+  for (const [index, polys] of components.entries()) {
+    if ((volumes[index] as number) < 0) continue;
+    if (volumes.every((v) => v >= 0)) continue;
+    const solid = solidOf(polys, eps, settle, work, counters);
+    if (solid === undefined) return undefined;
+    shells.push({ index, solid });
+  }
+  for (const [index, polys] of components.entries()) {
+    if ((volumes[index] as number) >= 0) continue;
+    let found = -1;
+    for (const { index: shell, solid } of shells) {
+      if (found >= 0 && Math.abs(volumes[shell] as number) > Math.abs(volumes[found] as number))
+        continue;
+      const inside = insideOf(solid, polys, eps, settle, work);
+      if (inside === undefined) return undefined;
+      if (inside === IN) found = shell;
+      else if (inside !== OUT) touching[index] = true;
+    }
+    owner[index] = found;
+  }
+  return { owner, touching, volumes, shells };
+}
+
+/**
+ * Group each inverted shell (a cavity) with the smallest outward shell that contains
+ * it, so a hollow tool classifies as one solid with a void instead of as a solid
+ * united with the unbounded exterior of its cavity. A cavity that no shell contains
+ * stays a group of its own. Components without any inverted shell are returned as is.
+ */
+function groupCavities(
+  components: readonly Poly[][],
+  eps: number,
+  settle: boolean,
+  work: WorkMeter,
+  counters: Counters,
+): Poly[][] | undefined {
+  const owned = ownCavities(components, eps, settle, work, counters);
+  if (owned === undefined) return undefined;
+  const { owner, volumes } = owned;
+  if (volumes.every((v) => v >= 0)) return [...components];
+  const groups = new Map<number, Poly[]>();
+  for (const [index, polys] of components.entries()) {
+    if ((volumes[index] as number) >= 0) groups.set(index, [...polys]);
+  }
+  const orphans: Poly[][] = [];
+  for (const [index, polys] of components.entries()) {
+    if ((volumes[index] as number) >= 0) continue;
+    const target = owner[index] as number;
+    if (target < 0) orphans.push([...polys]);
+    else pushAll(groups.get(target) as Poly[], polys);
+  }
+  return [...groups.values(), ...orphans];
+}
+
+/** A component the evaluation cannot represent as a solid with voids. */
+export interface CavityFault {
+  readonly kind: 'nested' | 'flat' | 'orphan' | 'touching' | 'crossing';
+  readonly component: number;
+  readonly polygons: number;
+}
+
+/**
+ * Judge the shells of one operand with the same containment rule the evaluation groups by.
+ * The first fault is a zero-volume component (flat), an inverted shell that no outward
+ * shell contains (orphan), a cavity whose probe corners all lie on a shell surface so
+ * containment cannot be decided (touching: fail closed), a cavity with corners both
+ * inside and outside its owner shell or another cavity (crossing: the evaluation would
+ * answer for the wall it happens to probe), or an inverted shell that lies
+ * inside another cavity while its owner shell does not (nested: more than one level of
+ * void). Undefined when every cavity is representable. Components are numbered as the
+ * evaluation orders them (by lowest face).
+ */
+export function cavityFault(
+  mesh: EditMesh,
+  eps: number,
+  work: WorkMeter,
+): Result<CavityFault | undefined, ModelingError> {
+  const decoded = decodeSnapshot(encodeSnapshot(mesh));
+  if (!decoded.ok) return decoded;
+  const prepared = prepare(decoded.value, 0, []);
+  if (!prepared.ok) return prepared;
+  const { components } = prepared.value;
+  const counters: Counters = { treeNodes: 0, fragments: 0 };
+  const fault = (kind: CavityFault['kind'], i: number): Result<CavityFault, ModelingError> =>
+    ok({ kind, component: i, polygons: (components[i] as Poly[]).length });
+  const volumes = components.map(signedVolume);
+  const flat = volumes.indexOf(0);
+  if (flat >= 0) return fault('flat', flat);
+  const owned = ownCavities(components, eps, false, work, counters);
+  if (owned === undefined) return err(work.failure as ModelingError);
+  const { owner, touching } = owned;
+  const cavities = components.flatMap((_, i) => ((volumes[i] as number) < 0 ? [i] : []));
+  const touched = cavities.find((i) => touching[i]);
+  if (touched !== undefined) return fault('touching', touched);
+  const orphan = cavities.find((i) => (owner[i] as number) < 0);
+  if (orphan !== undefined) return fault('orphan', orphan);
+  for (const i of cavities) {
+    const shell = owned.shells.find((s) => s.index === owner[i]) as { solid: Solid };
+    const inShell = cornerClasses(shell.solid, components[i] as Poly[], eps, false, work);
+    if (inShell === undefined) return err(work.failure as ModelingError);
+    if (inShell.has(OUT)) return fault('crossing', i);
+  }
+  for (const j of cavities) {
+    const room = solidOf((components[j] as Poly[]).map(flipPoly), eps, false, work, counters);
+    if (room === undefined) return err(work.failure as ModelingError);
+    for (const i of cavities) {
+      if (i === j) continue;
+      const classes = cornerClasses(room, components[i] as Poly[], eps, false, work);
+      if (classes === undefined) return err(work.failure as ModelingError);
+      if (owner[i] === owner[j] && classes.has(IN) && classes.has(OUT)) {
+        return fault('crossing', i);
+      }
+      const within = insideOf(room, components[i] as Poly[], eps, false, work);
+      if (within === undefined) return err(work.failure as ModelingError);
+      if (within !== IN) continue;
+      const shell = insideOf(room, components[owner[i] as number] as Poly[], eps, false, work);
+      if (shell === undefined) return err(work.failure as ModelingError);
+      if (shell !== IN) return fault('nested', i);
+    }
+  }
+  return ok(undefined);
+}
+
 function solidOf(
   polys: readonly Poly[],
   eps: number,
+  settle: boolean,
   work: WorkMeter,
   counters: Counters,
 ): Solid | undefined {
-  const tree = buildTree(polys, eps, work);
+  const tree = buildTree(polys, eps, work, settle);
   if (tree === undefined) return undefined;
   counters.treeNodes += tree.nodes;
   return { polys, root: tree.root, bounds: boundsOf(polys) };
@@ -193,14 +406,17 @@ function evaluate(
   b: Operand,
   operation: Operation,
   eps: number,
+  settle: boolean,
   work: WorkMeter,
   counters: Counters,
 ): Poly[] | undefined {
-  const target = solidOf(a.components.flat(), eps, work, counters);
+  const target = solidOf(a.components.flat(), eps, settle, work, counters);
   if (target === undefined) return undefined;
   const tools: Solid[] = [];
-  for (const component of b.components) {
-    const solid = solidOf(component, eps, work, counters);
+  const shells = groupCavities(b.components, eps, settle, work, counters);
+  if (shells === undefined) return undefined;
+  for (const component of shells) {
+    const solid = solidOf(component, eps, settle, work, counters);
     if (solid === undefined) return undefined;
     tools.push(solid);
   }
@@ -208,7 +424,7 @@ function evaluate(
   let pending: readonly Poly[] = target.polys;
   const rule = TARGET[operation];
   for (const tool of tools) {
-    const classified = classify(pending, tool.root, tool.bounds, eps, work);
+    const classified = classify(pending, tool.root, tool.bounds, eps, work, settle);
     if (classified === undefined) return undefined;
     const next: Poly[] = [];
     for (const { poly, type } of classified) {
@@ -219,12 +435,12 @@ function evaluate(
   }
   if (operation !== 'intersection') pushAll(out, pending);
   for (const [i, tool] of tools.entries()) {
-    let kept = classify(tool.polys, target.root, target.bounds, eps, work);
+    let kept = classify(tool.polys, target.root, target.bounds, eps, work, settle);
     if (kept === undefined) return undefined;
     let polys = kept.filter((k) => TOOL[operation].includes(k.type)).map((k) => k.poly);
     for (const [j, other] of tools.entries()) {
       if (j === i || polys.length === 0) continue;
-      kept = classify(polys, other.root, other.bounds, eps, work);
+      kept = classify(polys, other.root, other.bounds, eps, work, settle);
       if (kept === undefined) return undefined;
       polys = kept
         .filter((k) => k.type === OUT || (k.type === ON_SAME && i < j))
@@ -236,6 +452,10 @@ function evaluate(
   return out;
 }
 
+/** Hash of an integer cell; a collision only adds candidates, the distance test stays exact. */
+const cellKey = (ix: number, iy: number, iz: number): number =>
+  (Math.imul(ix, 73856093) ^ Math.imul(iy, 19349663) ^ Math.imul(iz, 83492791)) | 0;
+
 /**
  * Spatial hash weld with transitive merging: points within `eps` of each other join
  * one cluster (so chains of near-coincident split points cannot leave sub-tolerance
@@ -244,7 +464,7 @@ function evaluate(
 class Welder {
   readonly positions: Tuple3[] = [];
   private readonly parent: number[] = [];
-  private readonly cells = new Map<string, number[]>();
+  private readonly cells = new Map<number, number[]>();
   private readonly ids = new Map<Tuple3, number>();
   merged = 0;
   private readonly eps: number;
@@ -277,7 +497,7 @@ class Welder {
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         for (let dz = -1; dz <= 1; dz++) {
-          for (const other of this.cells.get(`${ix + dx},${iy + dy},${iz + dz}`) ?? []) {
+          for (const other of this.cells.get(cellKey(ix + dx, iy + dy, iz + dz)) ?? []) {
             const q = this.positions[other] as Tuple3;
             const d0 = q[0] - p[0];
             const d1 = q[1] - p[1];
@@ -292,7 +512,7 @@ class Welder {
         }
       }
     }
-    const key = `${ix},${iy},${iz}`;
+    const key = cellKey(ix, iy, iz);
     const cell = this.cells.get(key);
     if (cell === undefined) this.cells.set(key, [id]);
     else cell.push(id);
@@ -539,6 +759,20 @@ function assemble(
   };
 }
 
+/**
+ * Band scale and corner settling per attempt. The settled ladder comes first; the plain
+ * ladder (the band decision alone) is the fallback, so a job the plain decision closes
+ * never fails because settling changed which seam stays open.
+ */
+const ATTEMPTS: readonly (readonly [number, boolean])[] = [
+  [1, true],
+  [0.25, true],
+  [4, true],
+  [1, false],
+  [0.25, false],
+  [4, false],
+];
+
 function runBoolean(
   request: ComputeJobRequest<'boolean'>,
   work: WorkMeter,
@@ -586,10 +820,10 @@ function runBoolean(
     let out: Assembled | undefined;
     let counters: Counters = { treeNodes: 0, fragments: 0 };
     let attempts = 0;
-    for (const scale of [1, 0.25, 4]) {
+    for (const [scale, settle] of ATTEMPTS) {
       attempts++;
       counters = { treeNodes: 0, fragments: 0 };
-      const polys = evaluate(a, b, operation, eps * scale, work, counters);
+      const polys = evaluate(a, b, operation, eps * scale, settle, work, counters);
       if (polys === undefined) return err(work.failure as ModelingError);
       out = assemble(polys, originals, sources, eps * scale);
       if (out.metrics.openEdges === 0 && out.metrics.nonManifold === 0) break;

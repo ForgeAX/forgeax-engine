@@ -1,0 +1,21 @@
+[package]
+name = "forgeax-modeling-kernel-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "Apache-2.0"
+publish = false
+description = "Zero-copy C-ABI WASM carrier for forgeax-modeling-kernel."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+forgeax-modeling-kernel = { path = "../../crates/forgeax-modeling-kernel" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

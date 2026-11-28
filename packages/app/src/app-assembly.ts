@@ -11,8 +11,7 @@ import type { FrameReceipt, RenderError, Renderer, RenderFrameInput } from '@for
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type AssetRuntimeAssembly, createAssetRuntimeAssembly } from './assets-runtime-assembly';
-import type { AppErrorCode, AppErrorDetailFor } from './errors';
-import { APP_ERROR_HINTS, APP_EXPECTED, AppError } from './errors';
+import { APP_ERROR_HINTS, APP_EXPECTED, type AppError, makeAppError } from './errors';
 import {
   createExecutionFrameInspection,
   createExecutionReport,
@@ -35,15 +34,6 @@ import { stageLocalAppLevels } from './levels/local-app-levels';
 import { createAppObservation } from './observation';
 import type { RuntimePackOptions } from './runtime-packs';
 import type { App, AppAssembleArgs, AppDispatchError, AssembleAppError } from './types';
-
-export function makeAppError<C extends AppErrorCode>(
-  code: C,
-  expected: string,
-  hint: string,
-  detail: AppErrorDetailFor<C>,
-): AppError {
-  return new AppError({ code, expected, hint, detail }) as AppError;
-}
 
 export interface FrameInspectionRef {
   current: () => ExecutionFrameInspection;

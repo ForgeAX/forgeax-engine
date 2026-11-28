@@ -25,6 +25,18 @@ isolation_dir="$workspace_temp/forgeax-apt-isolation-$$"
 apt_config="$isolation_dir/apt.conf"
 source_list="$isolation_dir/sources.list"
 source_parts="$isolation_dir/sources.list.d"
+
+# Remove orphaned isolation configs left by cancelled jobs whose temp directories were wiped;
+# otherwise apt-config shell (including google-chrome-stable.postinst) reads missing sourceparts.
+for stale_conf in /etc/apt/apt.conf.d/99forgeax-isolation-*; do
+  [ -e "$stale_conf" ] || continue
+  stale_dir=$(run_privileged awk -F'"' '/^Dir::Etc::sourceparts /{print $2; exit}' "$stale_conf" 2>/dev/null || true)
+  if [ -z "$stale_dir" ] || [ ! -d "$stale_dir" ]; then
+    echo "[apt-sources] removing stale apt isolation config: $stale_conf"
+    run_privileged rm -f "$stale_conf"
+  fi
+done
+
 mkdir -p "$isolation_dir"
 run_privileged mkdir -p "$source_parts"
 

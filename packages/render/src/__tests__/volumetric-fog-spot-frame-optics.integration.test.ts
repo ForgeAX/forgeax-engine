@@ -8,7 +8,7 @@ describe('volumetric Spot frame optics', () => {
     expect(frame).toMatch(
       /const lightColor = selectedSpot\?\.color \?\? lights\.directional\?\.color/,
     );
-    expect(frame).toContain('params.set(lightColor, 24);');
+    expect(frame).toContain('params.set(lightColor, offset + 24);');
     expect(frame).not.toContain('channel * selectedSpot.intensity');
   });
 });

@@ -1,0 +1,33 @@
+{
+  "tool": "im",
+  "case": "brep-cylinder-sharp",
+  "available": true,
+  "toolCommit": "7b3160864a2e1025af498c84cfed91cbfb613698",
+  "inputSha256": "94fdcc89a205f97c5dbd70bbc0decabd8e91812a0297ba97486df9140fb20563",
+  "inputFaces": 512,
+  "targetFaces": 800,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-f", "200", "-c", "30", "-d", "-t", "1", "-o", "<out.obj>", "<in.obj>"],
+      "cwd": null,
+      "wallSeconds": 0.261915358,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 200,
+        "crease": 30,
+        "mode": "pure quad, -f target/4 (pure-quad 2x2 subdivision)"
+      }
+    }
+  ],
+  "wallSeconds": 0.261915358,
+  "outcome": "ok",
+  "outputSha256": "ae64983cd173f3bbb928d025184e23dd3372e1a011d5a270cf023f14292e6dc4",
+  "rawOutputSha256": "7373b54b3ef4e8d09d06ba91a31ff77272612651c84f72e6b16ba53939d5c338",
+  "outputFaces": 918,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

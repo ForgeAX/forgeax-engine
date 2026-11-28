@@ -544,7 +544,7 @@ try {
     '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
     '--ignore-gpu-blocklist',
   ];
-  if (chromeChannel === 'chrome-beta') {
+  if (chromeChannel === 'chrome' && process.platform === 'linux') {
     chromeArgs.push(
       '--use-vulkan=swiftshader',
       '--use-angle=swiftshader',

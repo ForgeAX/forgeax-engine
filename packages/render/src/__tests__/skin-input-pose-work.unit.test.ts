@@ -41,9 +41,9 @@ type Fixture = ReturnType<typeof fixture>;
 
 function expectPose(frame: SkinInputFrame, binding: number, positions: readonly number[]) {
   const out = mat4.create();
-  const inverse = mat4.create();
+
   for (const [joint, x] of positions.entries()) {
-    expect(frame.matrix(binding, joint, out, inverse)).toBe(true);
+    expect(frame.matrix(binding, joint, out)).toBe(true);
     expect(out[12]).toBe(x);
   }
 }

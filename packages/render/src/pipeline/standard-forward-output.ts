@@ -17,6 +17,7 @@ import {
 import { addHdrOutputEffects } from './hdr-output-effects';
 import { renderInternalSize } from './render-extent';
 import type { StandardPipelineBuildContext } from './standard-build-context';
+import { premultipliedOutlineActive } from './standard-output/layout';
 import { buildStandard, standardPipeline } from './standard-pipeline';
 import { addStandardBloom } from './standard-post';
 
@@ -106,12 +107,11 @@ export function createPremultipliedForwardPipeline(
     format,
     domain: 'linear-hdr',
     build(context, topology, color, depth, surface) {
-      const outlined =
-        topology.camera.postProcessing && topology.camera.outline === true
-          ? addOutlinePasses(context.graph, color, depth, renderInternalSize(topology), {
-              premultipliedScene: true,
-            })
-          : ok(color);
+      const outlined = premultipliedOutlineActive(topology.camera)
+        ? addOutlinePasses(context.graph, color, depth, renderInternalSize(topology), {
+            premultipliedScene: true,
+          })
+        : ok(color);
       if (!outlined.ok) return outlined;
       const hdr = addForwardOutputBloom(context, topology, outlined.value);
       if (!hdr.ok) return hdr;

@@ -444,6 +444,7 @@ function addFieldCardCaptures(
     prepared.capture(),
     () => current().cards,
     (_frame, pass, phase) => current().recordCapture(pass, phase),
+    prepared.traversal === 'global-sdf',
   );
   if (!captured.ok) return captured;
   const resources = prepared.cards.capture.receivers;

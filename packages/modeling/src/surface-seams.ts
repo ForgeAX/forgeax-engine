@@ -1050,8 +1050,8 @@ export class SeamTable {
         const here = boundaryPoint(seam.bound, x);
         // Within the reach, or within 0.3 of this face's own spacing of its points there: the
         // other face's grid mapped onto the band a hair apart would leave sliver cells here.
-        const spacing = Math.min(
-          ...[image[m - 1], image[m + 1]].flatMap((q) =>
+        const spacing = minOf(
+          [image[m - 1], image[m + 1]].flatMap((q) =>
             q === undefined ? [] : [length(sub(q, image[m] as Tuple3))],
           ),
         );

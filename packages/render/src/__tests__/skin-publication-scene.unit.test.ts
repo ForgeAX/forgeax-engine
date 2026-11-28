@@ -21,7 +21,7 @@ it('carries sparse Worker joint columns through Persistent admission and cold re
     const slot = frame.slots.lookup(entity);
     if (!slot) throw new Error('Missing accepted Scene slot');
     const out = mat4.create();
-    expect(frame.current.matrix(slot.slot, 0, out, mat4.create())).toBe(true);
+    expect(frame.current.matrix(slot.slot, 0, out)).toBe(true);
     return out[12];
   };
   try {
@@ -52,7 +52,7 @@ it('passes only referenced joint windows from mixed Worker transform columns int
   const f = fixture();
   const receiver = new RenderPublicationReceiver({ source: 'skin-owner', epoch: 1 });
   const scene = new PersistentRenderScene({ assets: f.assets });
-  const write = vi.spyOn(SkinInputs.prototype, 'setJoint');
+  const write = vi.spyOn(SkinInputs.prototype, 'setPublishedJoint');
   try {
     f.world.set(f.second, Skin, { joints: [f.secondJoint] }).unwrap();
     scene.consumePublication(receiver.accept(encodeRenderPublication(f.publish())).unwrap());
@@ -76,18 +76,20 @@ it('passes only referenced joint windows from mixed Worker transform columns int
     expect(write).toHaveBeenCalledTimes(2);
     for (const row of rows) {
       const call = write.mock.calls.find((args) => args[1] === transformEntities[row]);
-      expect(call?.[2]).toBe(transforms);
+      expect(call?.[2]).toBeInstanceOf(Int32Array);
+      expect(call?.[2].buffer).toBe(transforms.buffer);
+      expect(call?.[2].byteOffset).toBe(transforms.byteOffset);
+      expect(call?.[2].length).toBe(transforms.length);
       expect(call?.[3]).toBe(row * 16);
     }
-    const out = mat4.create(),
-      inverse = mat4.create();
+    const out = mat4.create();
     for (const [entity, value] of [
       [f.first, 17],
       [f.second, 23],
     ] as const) {
       const slot = frame.slots.lookup(Number(entity));
       if (!slot) throw new Error('Missing published skin binding');
-      expect(frame.current.matrix(slot.slot, 0, out, inverse)).toBe(true);
+      expect(frame.current.matrix(slot.slot, 0, out)).toBe(true);
       expect(out[12]).toBe(value);
     }
   } finally {
@@ -180,14 +182,13 @@ it.each([
       expect(available).not.toHaveBeenCalled();
       available.mockRestore();
       const current = f.skin.capture(),
-        a = mat4.create(),
-        b = mat4.create();
+        a = mat4.create();
       try {
-        expect(before.matrix(first, 0, a, b)).toBe(true);
+        expect(before.matrix(first, 0, a)).toBe(true);
         expect(a[12]).toBe(0);
-        expect(current.matrix(first, 0, a, b)).toBe(true);
+        expect(current.matrix(first, 0, a)).toBe(true);
         expect(a[12]).toBe(7);
-        expect(current.matrix(second, 0, a, b)).toBe(true);
+        expect(current.matrix(second, 0, a)).toBe(true);
         expect(a[12]).toBe(7);
         expect(current.historyCompatible(before, first)).toBe(true);
       } finally {
@@ -226,13 +227,12 @@ it('restores a missing pose with no static upsert and resets history after a sha
         expect(asset.prepared.operations).toHaveLength(0);
         expect(asset.packet.upserts).toHaveLength(0);
         const changed = f.skin.capture(),
-          a = mat4.create(),
-          b = mat4.create();
+          a = mat4.create();
         try {
-          expect(changed.matrix(first, 0, a, b)).toBe(true);
+          expect(changed.matrix(first, 0, a)).toBe(true);
           expect(a[12]).toBe(6);
           expect(changed.historyCompatible(complete, first)).toBe(false);
-          expect(complete.matrix(first, 0, a, b)).toBe(true);
+          expect(complete.matrix(first, 0, a)).toBe(true);
           expect(a[12]).toBe(4);
         } finally {
           changed.release();
@@ -270,12 +270,11 @@ it('retires the final source reference then samples it once when a new Skin reus
       const restored = f.adopt();
       expect(restored.prepared.skinJoints?.rows).toHaveLength(1);
       const current = f.skin.capture(),
-        a = mat4.create(),
-        b = mat4.create();
+        a = mat4.create();
       try {
-        expect(current.matrix(f.slot(Number(f.first)), 0, a, b)).toBe(true);
+        expect(current.matrix(f.slot(Number(f.first)), 0, a)).toBe(true);
         expect(a[12]).toBe(11);
-        expect(old.matrix(oldSlot, 0, a, b)).toBe(true);
+        expect(old.matrix(oldSlot, 0, a)).toBe(true);
         expect(a[12]).toBe(0);
         expect(current.historyCompatible(old, oldSlot)).toBe(false);
       } finally {
@@ -302,12 +301,11 @@ it('keeps the unchanged joint when the same packet hands all old Skin references
       expect(handoff.prepared.skinJoints?.rows ?? []).toHaveLength(0);
       expect([...handoff.packet.transformEntities]).not.toContain(Number(f.firstJoint));
       const current = f.skin.capture(),
-        a = mat4.create(),
-        b = mat4.create();
+        a = mat4.create();
       try {
-        expect(current.matrix(f.slot(Number(next)), 0, a, b)).toBe(true);
+        expect(current.matrix(f.slot(Number(next)), 0, a)).toBe(true);
         expect(a[12]).toBe(0);
-        expect(old.matrix(oldSlot, 0, a, b)).toBe(true);
+        expect(old.matrix(oldSlot, 0, a)).toBe(true);
         expect(a[12]).toBe(0);
       } finally {
         current.release();
@@ -329,12 +327,11 @@ it('keeps both unchanged joint facts across a same-packet exchange of existing B
     const swap = f.adopt();
     expect(swap.prepared.skinJoints?.rows ?? []).toHaveLength(0);
     const current = f.skin.capture(),
-      a = mat4.create(),
-      b = mat4.create();
+      a = mat4.create();
     try {
-      expect(current.matrix(f.slot(Number(f.first)), 0, a, b)).toBe(true);
+      expect(current.matrix(f.slot(Number(f.first)), 0, a)).toBe(true);
       expect(a[12]).toBe(2);
-      expect(current.matrix(f.slot(Number(f.second)), 0, a, b)).toBe(true);
+      expect(current.matrix(f.slot(Number(f.second)), 0, a)).toBe(true);
       expect(a[12]).toBe(0);
     } finally {
       current.release();

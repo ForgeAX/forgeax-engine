@@ -19,7 +19,7 @@ test('existing smoke workers own every Bevy gate and protected Bevy names only p
   assert.match(legacy.steps[0].run, /success\|skipped/);
   assert.match(legacy.steps[0].env.MATRIX_RESULT, /needs.smoke-fleet.result/);
   const install = worker.steps.findIndex(
-    (step) => step.uses === './.github/actions/install-playwright-chrome-beta',
+    (step) => step.uses === './.github/actions/install-playwright-chrome',
   );
   const bevy = worker.steps.findIndex(
     (step) => step.name === 'Bevy examples headless smokes (dawn-node)',
@@ -88,7 +88,16 @@ test('four merged Bevy partitions execute every registered example exactly once'
   for (let group = 0; group < 4; group++) {
     const result = spawnSync(
       process.execPath,
-      ['scripts/bevy-demo.mjs', 'smokes', '--dry-run', '--group', String(group), '--groups', '4'],
+      [
+        'scripts/bevy-demo.mjs',
+        'smokes',
+        '--dry-run',
+        '--prepared-inputs',
+        '--group',
+        String(group),
+        '--groups',
+        '4',
+      ],
       { encoding: 'utf8' },
     );
     assert.equal(result.status, 0, result.stderr);

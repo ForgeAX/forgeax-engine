@@ -85,7 +85,9 @@ export default async function playthrough(play) {
   assert.equal(initialCloud.mode, 'shape');
   assert.ok(Math.abs(initialCloud.extinctionPerMeter - 0.008) < 1e-8);
   assert.equal(initialCloud.viewSampleCountScale, 1);
-  assert.ok(Math.abs(initialCloud.stopTransmittance - 0.005) < 1e-7);
+  assert.ok(Math.abs(initialCloud.stopTransmittance - 0.02) < 1e-7);
+  assert.equal(initialCloud.qualityPreset, 'quality-low');
+  assert.equal(initialCloud.viewBlueNoise, false);
   assert.match(initialCloud.kernelIdentity, /^[0-9a-f]{64}$/);
   const resized = await play.step('keep the vertical lens through an aspect change', async () => {
     const initial = play.page.viewportSize();
@@ -147,9 +149,11 @@ export default async function playthrough(play) {
     return { reference, changed };
   });
   const cloudShape = await play.step('sample the cooked cloud shape and change its controls', async () => {
+    await play.page.getByRole('button', { name: '纹理云', exact: true }).click();
     await play.page.getByRole('button', { name: 'UE 原纹理', exact: true }).click();
     const original = await play.waitFor((state) => state.mode === 'sample-ue', { read: cloudRead });
-    assert.notEqual(original.materialGuid, initialCloud.materialGuid);
+    assert.equal(original.materialGuid, initialCloud.materialGuid);
+    assert.notDeepEqual(original.textureGuids, initialCloud.textureGuids);
     assert.ok((await play.screenshot('original-ue-textures')).rendered);
     await play.page.getByRole('button', { name: '生成云', exact: true }).click();
     const shape = await play.waitFor((state) => state.mode === 'shape', { read: cloudRead });

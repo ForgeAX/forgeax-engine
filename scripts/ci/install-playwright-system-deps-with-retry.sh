@@ -15,6 +15,13 @@ apt_wrapper="$repo_root/scripts/ci/with-apt-ubuntu-sources.sh"
 if [ "${RUNNER_OS:-$(uname -s)}" = Linux ] && command -v dpkg >/dev/null 2>&1; then
   privilege=()
   if [ "$(id -u)" -ne 0 ]; then privilege=(sudo -n); fi
+  for stale_conf in /etc/apt/apt.conf.d/99forgeax-isolation-*; do
+    [ -e "$stale_conf" ] || continue
+    stale_dir=$("${privilege[@]}" awk -F'"' '/^Dir::Etc::sourceparts /{print $2; exit}' "$stale_conf" 2>/dev/null || true)
+    if [ -z "$stale_dir" ] || [ ! -d "$stale_dir" ]; then
+      "${privilege[@]}" rm -f "$stale_conf"
+    fi
+  done
   "${privilege[@]}" env DEBIAN_FRONTEND=noninteractive dpkg --force-confold --configure -a
 fi
 

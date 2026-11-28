@@ -9,7 +9,7 @@ import type {
 } from '@forgeax/engine-shader';
 import type { PassKind } from '@forgeax/engine-types';
 import { directionalPcssCapable } from '../../environment/capability';
-import { type GpuDrivenPbrProgram, resolveStandardPbrProgram } from '../../gpu-driven/pbr-program';
+import { type GpuDrivenPbrPrograms, resolveStandardPbrProgram } from '../../gpu-driven/pbr-program';
 import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../../pbr-pipeline';
 import { deriveExtendedLightingCapability } from '../../prepare/extended-lighting/resources';
 import { type LayoutKind, selectNoColorPbrVariant } from '../material-shader-policy';
@@ -27,7 +27,7 @@ type MaterialArtifactRegistry = Pick<
 export function resolveRendererMaterialShaderArtifact(
   materialShaderId: string,
   shader: MaterialArtifactRegistry,
-  programs: ReadonlyMap<string, GpuDrivenPbrProgram> | undefined,
+  programs: GpuDrivenPbrPrograms | undefined,
   options: MaterialShaderArtifactRequest | boolean = {},
   prepare?: (identifier: string) => boolean,
 ): MaterialShaderArtifact | undefined {

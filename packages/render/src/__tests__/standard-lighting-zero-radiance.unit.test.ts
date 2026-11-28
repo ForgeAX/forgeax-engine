@@ -1,11 +1,11 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CLUSTER_GRID } from '../pipeline/standard-lighting/layout';
-import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import {
   createStandardLocalLights,
   standardLocalLightEmitsNothing,
-} from '../record/frame-lighting';
+} from '../pipeline/standard-lighting/local-lights';
+import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import type { PointLightSnapshot, SpotLightSnapshot } from '../render-system-extract';
 import type { ViewLights } from '../world/render-lights';
 

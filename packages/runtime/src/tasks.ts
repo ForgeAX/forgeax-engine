@@ -1,11 +1,9 @@
 import { builtinTaskKinds } from '@forgeax/engine-render/tasks';
-import {
-  manifestMalformed,
+import type {
   ShaderError,
-  type ShaderProgramCompilation,
-  type ShaderProgramCompiler,
-  type ShaderProgramTemplate,
-  shaderCompilerProfilesEqual,
+  ShaderProgramCompilation,
+  ShaderProgramCompiler,
+  ShaderProgramTemplate,
 } from '@forgeax/engine-shader';
 import type {
   CompileResult,
@@ -45,27 +43,33 @@ type TemplateProgramReply =
     }
   | { readonly ok: false; readonly error: ConstructorParameters<typeof ShaderError>[0] };
 
+async function loadShaderTaskModules() {
+  const [compiler, shader] = await Promise.all([
+    import('@forgeax/engine-shader-compiler/program'),
+    import('@forgeax/engine-shader'),
+  ]);
+  return { compiler, shader };
+}
+
 function loadTemplateProgramTask(): TaskModule<TemplateProgramRequest, TemplateProgramReply> {
-  // The dispatcher may load the task definition. Only the executing realm
-  // initializes the compiler, on its first actual request.
-  let compiler:
-    | ReturnType<
-        typeof import('@forgeax/engine-shader-compiler/program').prepareShaderProgramCompiler
-      >
-    | undefined;
+  // The dispatcher can load the task definition for its shared inputs.
+  // Only the execution realm imports the compiler, on its first shader request.
+  const initialize = async () => {
+    const { compiler, shader } = await loadShaderTaskModules();
+    return { prepared: await compiler.prepareShaderProgramCompiler(), shader };
+  };
+  let compiler: ReturnType<typeof initialize> | undefined;
   const encoder = new TextEncoder();
   return {
     async run({ template, defines }) {
-      compiler ??= import('@forgeax/engine-shader-compiler/program').then(
-        ({ prepareShaderProgramCompiler }) => prepareShaderProgramCompiler(),
-      );
-      const prepared = await compiler;
+      compiler ??= initialize();
+      const { prepared, shader } = await compiler;
       const result = !prepared.ok
         ? prepared
-        : shaderCompilerProfilesEqual(prepared.value.profile, template.compilerProfile)
+        : shader.shaderCompilerProfilesEqual(prepared.value.profile, template.compilerProfile)
           ? prepared.value.compile(template, defines)
           : err(
-              manifestMalformed({
+              shader.manifestMalformed({
                 message: 'Task Worker shader compiler profile does not match the selected template',
                 hint: 'load the task Worker and shader publication from the same build',
               }),
@@ -100,16 +104,18 @@ function loadMaterialSourceProgramTask(): TaskModule<
 > {
   const encoder = new TextEncoder();
   const initialize = async () => {
-    const { prepareShaderCompiler, rebuildMaterialSourcePrograms } = await import(
-      '@forgeax/engine-shader-compiler/program'
-    );
-    return { prepared: await prepareShaderCompiler(), rebuild: rebuildMaterialSourcePrograms };
+    const { compiler, shader } = await loadShaderTaskModules();
+    return {
+      prepared: await compiler.prepareShaderCompiler(),
+      rebuild: compiler.rebuildMaterialSourcePrograms,
+      ShaderError: shader.ShaderError,
+    };
   };
   let compiler: ReturnType<typeof initialize> | undefined;
   return {
     async run(request) {
       compiler ??= initialize();
-      const { prepared, rebuild } = await compiler;
+      const { prepared, rebuild, ShaderError } = await compiler;
       const result = prepared.ok ? rebuild(prepared.value, request) : prepared;
       if (!result.ok) {
         const error = result.error;
@@ -148,8 +154,10 @@ export async function taskCompileMaterialSourcePrograms(
   switch (result.kind) {
     case 'ready':
       return ok(result.programs);
-    case 'shader-error':
+    case 'shader-error': {
+      const { ShaderError } = await import('@forgeax/engine-shader');
       return err(new ShaderError(result.error));
+    }
     case 'material-error':
       return err(result.error);
   }
@@ -179,7 +187,10 @@ export function taskShaderProgramCompiler(
         { template, defines },
         { priority: 'critical' },
       ).result;
-      if (!result.ok) return err(new ShaderError(result.error));
+      if (!result.ok) {
+        const { ShaderError } = await import('@forgeax/engine-shader');
+        return err(new ShaderError(result.error));
+      }
       return ok({
         ...result.compilation,
         manifestEntry: {

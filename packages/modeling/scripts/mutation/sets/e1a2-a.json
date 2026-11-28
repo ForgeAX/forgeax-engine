@@ -1,0 +1,199 @@
+{
+  "tests": [
+    "src/brep/__tests__/e1a2-intersect.unit.test.ts"
+  ],
+  "mutations": [
+    {
+      "id": "e1a2-a-share-wide",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "const COAXIAL_SHARE = 0.5;",
+      "new": "const COAXIAL_SHARE = 8;"
+    },
+    {
+      "id": "e1a2-a-axis-parallel",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (s.kind !== 'sphere' && len3(cross3(s.frame.z, axis.z)) > PAR) return undefined;",
+      "new": "if (false) return undefined;"
+    },
+    {
+      "id": "e1a2-a-axis-offset",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (off > reach) return undefined;",
+      "new": "if (off > 1000 * reach) return undefined;"
+    },
+    {
+      "id": "e1a2-a-sphere-axis",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "len3(sep) > PAR ? unit3(sep) : p.frame.z",
+      "new": "p.frame.z"
+    },
+    {
+      "id": "e1a2-a-cone-sign",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "sgn(dot3(s.frame.z, axis.z))",
+      "new": "1"
+    },
+    {
+      "id": "e1a2-a-cone-intercept",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "a: k / n, b: 1 / n, c: (k * w0 - s.radius) / n",
+      "new": "a: k / n, b: 1 / n, c: (s.radius - k * w0) / n"
+    },
+    {
+      "id": "e1a2-a-torus-major",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "r0: s.major,",
+      "new": "r0: 0,"
+    },
+    {
+      "id": "e1a2-a-torus-degenerate",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "(p.kind === 'torus' && p.major - p.minor <= tol) ||",
+      "new": "false ||",
+      "survives": "Equivalent: RANK orders torus highest, so the first disjunct p.kind === 'torus' can never hold after the swap; the q disjunct alone covers every horn torus in either argument order (probe: both orders return brep-ssi-unsupported). Removing the dead p disjunct is a cleanup, not a behaviour change."
+    },
+    {
+      "id": "e1a2-a-line-coincident-tol",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "    const off = Math.abs(l.c - s * m.c);\n    if (off <= tol) out.coincident.push(off);",
+      "new": "    const off = Math.abs(l.c - s * m.c);\n    if (off <= 0) out.coincident.push(off);"
+    },
+    {
+      "id": "e1a2-a-line-parallel-sign",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "const s = sgn(l.a * m.a + l.b * m.b);",
+      "new": "const s = 1;",
+      "survives": "Equivalent: every profile line from sharedAxis is built with normal (a, b) where b > 0 (cylinder b = 1; cone lines have b = 1/n > 0), so for parallel lines the dot a*a' + b*b' is positive and sgn returns 1 for every reachable pair."
+    },
+    {
+      "id": "e1a2-a-lc-far",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (gap > tol) return;",
+      "new": "if (gap > 10 * tol) return;"
+    },
+    {
+      "id": "e1a2-a-lc-tangent-narrow",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (gap >= -tol) {",
+      "new": "if (gap >= 0) {"
+    },
+    {
+      "id": "e1a2-a-lc-hit-sign",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "out.hits.push({ w: foot.w - l.b * h, rho: foot.rho + l.a * h });",
+      "new": "out.hits.push({ w: foot.w + l.b * h, rho: foot.rho + l.a * h });"
+    },
+    {
+      "id": "e1a2-a-lc-foot",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "const foot = { w: c.w - dist * l.a, rho: c.r0 - dist * l.b };",
+      "new": "const foot = { w: c.w + dist * l.a, rho: c.r0 + dist * l.b };"
+    },
+    {
+      "id": "e1a2-a-cc-miss-inner",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (ext > 0 || inner < 0) return;",
+      "new": "if (ext > 0) return;"
+    },
+    {
+      "id": "e1a2-a-cc-miss-outer",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (ext > 0 || inner < 0) return;",
+      "new": "if (inner < 0) return;"
+    },
+    {
+      "id": "e1a2-a-cc-near",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "rho: c.r0 + uy * x };\n  const near = Math.abs(ext) <= Math.abs(inner) ? ext : inner;",
+      "new": "rho: c.r0 + uy * x };\n  const near = ext;"
+    },
+    {
+      "id": "e1a2-a-cc-tangent-wide",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (Math.abs(near) <= tol) {\n    out.tans.push",
+      "new": "if (Math.abs(near) <= 10 * tol) {\n    out.tans.push"
+    },
+    {
+      "id": "e1a2-a-cc-x",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "const x = (d * d + c.rad * c.rad - e.rad * e.rad) / (2 * d);",
+      "new": "const x = (d * d + e.rad * e.rad - c.rad * c.rad) / (2 * d);"
+    },
+    {
+      "id": "e1a2-a-cc-concentric",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (d <= PAR) {",
+      "new": "if (d <= -1) {"
+    },
+    {
+      "id": "e1a2-a-ring-filter",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": ".filter((h) => h.rho > tol)",
+      "new": ".filter((h) => h.rho > 0)"
+    },
+    {
+      "id": "e1a2-a-ring-sort",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": ".sort((a, b) => a.w - b.w || a.rho - b.rho)",
+      "new": ".sort(() => 0)"
+    },
+    {
+      "id": "e1a2-a-coincident-gap",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "out.coincident.reduce((m, g) => Math.min(m, g), Infinity)",
+      "new": "out.coincident.reduce((m, g) => Math.max(m, g), -Infinity)",
+      "survives": "Equivalent for the class A pair family: coaxial coincidence yields one offset per pair (each surface contributes one profile line per nappe with identical offset), so min and max of the list are the same value. Min is the stated contract."
+    },
+    {
+      "id": "e1a2-a-touch-dedupe",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (seen.some((x) => Math.abs(x - w) <= tol)) return;",
+      "new": "if (false) return;"
+    },
+    {
+      "id": "e1a2-a-touch-axis-hits",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "out.hits.filter((x) => Math.abs(x.rho) <= tol)",
+      "new": "out.hits.filter((x) => false)"
+    },
+    {
+      "id": "e1a2-a-touch-rho",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "out.tans.filter((x) => x.rho >= -tol)",
+      "new": "out.tans.filter((x) => true)",
+      "survives": "Equivalent within the touch window: the filter admits tangents with rho >= -tol; without it, tangents with rho in [-tol, 0) would be dropped. Those lie on the axis within tol and the contact-on-both-surfaces test already bounds their position by 2 tol; the observable difference is inside the stated tolerance contract."
+    },
+    {
+      "id": "e1a2-a-touch-rim",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "Math.max(0, t.rho)",
+      "new": "t.rho",
+      "survives": "Equivalent within the touch window: clamping rho to 0 moves a contact at rho in [-tol, 0) by at most tol onto the axis; the contact-on-both-surfaces test bounds the position within 2 tol, so the clamp is not separately observable under the contract."
+    },
+    {
+      "id": "e1a2-a-dispatch",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "if (axis !== undefined) return ok(withOffset(coaxial(p, q, axis, tol), axisOffset(p, q, axis)));",
+      "new": "if (false) return ok(withOffset(coaxial(p, q, axis, tol), axisOffset(p, q, axis)));"
+    },
+    {
+      "id": "e1a2-a-rank",
+      "file": "src/brep/intersect-quadric.ts",
+      "old": "RANK[b.kind] < RANK[a.kind] ? [b, a] : [a, b]",
+      "new": "[a, b]"
+    },
+    {
+      "id": "e1a2-a-receipt-understated",
+      "file": "src/brep/intersect.ts",
+      "old": "receipt: fitted || (section.offset ?? 0) > 0 ? { bound: Math.max(bound, section.offset ?? 0) } : 'closed-form',",
+      "new": "receipt: fitted ? { bound } : 'closed-form',"
+    },
+    {
+      "id": "e1a2-a-offset-bound-dropped",
+      "file": "src/brep/intersect.ts",
+      "old": "{ bound: Math.max(bound, section.offset ?? 0) }",
+      "new": "{ bound }",
+      "survives": "Equivalent for reachable offsets: the sampled deviation already covers the axis offset (probe: offset 0.2 tol gives bound 3.68e-6 against offset 3.2e-6; the bound is at least BOUND_SAFETY times the sampled worst, which contains the offset). The max() is a guard against a sampling miss; the falsifier test asserts the bound covers the offset."
+    }
+  ]
+}

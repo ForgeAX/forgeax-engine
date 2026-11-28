@@ -98,6 +98,11 @@ Curvature-rate fairing (`rate`) removes trace noise without flattening the crown
 fairing does. A net as large as the grid, without fairing, is plain interpolation and fails
 quality like `nurbs.grid`.
 
+When a net already exists and only ripples, `nurbs.surface.fair(s, { fair: { bend } })` smooths
+it in place, keeping the boundary rows so its neighbours still meet. Start with a small weight:
+the weight balances against staying near the input, and past the point where the ripple goes the
+surface only flattens. On the quality-body hood `bend: 1e-4` already removes the trace noise.
+
 ```ts
 // examples/quality-body/body.ts, trimmed: lines first, panels lofted between them
 const line = (at: (t: number) => Tuple3) => {
@@ -252,7 +257,8 @@ declared it. `surface-continuity` reports `achieved` (`none`, `G0`, `G1`, `G2`) 
   knots or elevate degree first. If the gap is large the two patches do not meet: fix the lines.
 - `surface-continuity` on a crease: declare it a designed break (`G0` feature line) and add a blend.
 - `curve-inflection` / `surface-fairness` inflections: remove the wiggle at the source (fewer
-  control points, `rate` fairing). If the S-shape is designed, declare `inflections`.
+  control points, `rate` fairing), or `nurbs.surface.fair` the existing net. If the S-shape is
+  designed, declare `inflections`.
 - `curve-spike` / `curve-curvature-rate`: usually one control point out of line, or a line made of
   too many fitted points; refit with fewer control points and a lower `maxError` budget.
 - `highlight`: shows a fault the numeric edge checks miss because it lies inside a patch. Find

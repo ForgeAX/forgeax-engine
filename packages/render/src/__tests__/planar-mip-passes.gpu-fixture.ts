@@ -49,15 +49,27 @@ function checkerboardMipInput(
   return data;
 }
 
+function recordResidentMips(device: RhiDevice, native: NativeTargetCapture | undefined): void {
+  if (native === undefined) return;
+  const encoder = device.createCommandEncoder().unwrap();
+  const copies = vi.spyOn(encoder, 'copyTextureToTexture');
+  const before = renderGraphCompileCount();
+  native.encode({ encoder } as _InternalRenderPipelineContext, undefined);
+  expect(renderGraphCompileCount()).toBe(before);
+  expect(copies).not.toHaveBeenCalled();
+  device.queue.submit([encoder.finish().unwrap()]).unwrap();
+}
+
 /** Execute the production graph against its former scratch/copy path on the same device. */
 export async function verifyPlanarMipChain(
   device: RhiDevice,
-  shaderFactory: MipmapShaderModuleFactory,
+  shaderFactory: MipmapShaderModuleFactory | undefined,
   format: 'rgba8unorm' | 'rgba8unorm-srgb' | 'rgba16float',
   width: number,
   height: number,
 ) {
-  (await getOrCreateMipmapPipeline(device, format, shaderFactory)).unwrap();
+  if (shaderFactory !== undefined)
+    (await getOrCreateMipmapPipeline(device, format, shaderFactory)).unwrap();
   const levels = numMipLevels({ width, height });
   const bytesPerPixel = format === 'rgba16float' ? 8 : 4;
   const descriptor = {
@@ -167,15 +179,7 @@ export async function verifyPlanarMipChain(
         );
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
       }
-      if (native !== undefined) {
-        const encoder = device.createCommandEncoder().unwrap();
-        const copies = vi.spyOn(encoder, 'copyTextureToTexture');
-        const before = renderGraphCompileCount();
-        native.encode({ encoder } as _InternalRenderPipelineContext, undefined);
-        expect(renderGraphCompileCount()).toBe(before);
-        expect(copies).not.toHaveBeenCalled();
-        device.queue.submit([encoder.finish().unwrap()]).unwrap();
-      }
+      recordResidentMips(device, native);
       const encoder = device.createCommandEncoder().unwrap();
       for (const [index, texture] of written.entries()) {
         let offset = index * blockSize;

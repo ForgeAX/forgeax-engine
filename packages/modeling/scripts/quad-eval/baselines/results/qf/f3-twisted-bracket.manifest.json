@@ -1,0 +1,33 @@
+{
+  "tool": "qf",
+  "case": "f3-twisted-bracket",
+  "available": true,
+  "toolCommit": "810b7a0967c35b0dc85b4464e3835e26a756c967",
+  "inputSha256": "4e741ef6d86130a5d2f1a589d7b747ab696e5d37c3e0f18d3660c5bb3f252b37",
+  "inputFaces": 214,
+  "targetFaces": 1000,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-i", "<in.obj>", "-o", "<out.obj>", "-f", "1000", "-sharp", "-seed", "1"],
+      "cwd": null,
+      "wallSeconds": 18.996330124,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 1000,
+        "sharp": "on (threshold fixed at 60 deg in upstream source)",
+        "seed": 1
+      }
+    }
+  ],
+  "wallSeconds": 18.996330124,
+  "outcome": "ok",
+  "outputSha256": "91cc69d494cbb155793f61555e099331ae4d0eec57dcef21ce33da2ac6c0f988",
+  "rawOutputSha256": "9933c22ccf0ff0a825cc6cc30561b1f8c0dcfb22227d2c4cf3c7f25ef3e86f16",
+  "outputFaces": 910,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

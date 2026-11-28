@@ -50,10 +50,8 @@ import {
   observeCurrentFrame,
 } from './record/frame';
 import { type CurrentGraphTarget, getTextureIdentity } from './record/frame-snapshot';
-import {
-  getRenderFeatureGraphInspection,
-  inspectRenderGraphGenerationAllocation,
-} from './record/typed-frame-graph';
+import { inspectRenderGraphGenerationAllocation } from './record/graph-allocation-owner';
+import { getRenderFeatureGraphInspection } from './record/typed-frame-graph';
 import {
   createRendererProducerRootMatrix,
   type RendererProducerRoot,
@@ -63,7 +61,10 @@ import { type SsrSpatialAdmission, zeroSsrAdmissionWork } from './ssr/admission'
 import { projectSsrSpatialInspection } from './ssr/inspection';
 import { inspectTemporal, type TemporalInspection } from './temporal/inspection';
 import { inspectWaterFoamDraw } from './water/foam-inspection';
-import { inspectSettledDirectionalShadow } from './world/directional-shadow-inspection';
+import {
+  directionalShadowWriterPasses,
+  inspectSettledDirectionalShadow,
+} from './world/directional-shadow-inspection';
 import {
   inspectSharedFeatureGraphs,
   sharedFeatureGraphInspection,
@@ -367,7 +368,7 @@ export function viewDirectionalShadow(owner: ViewSettlementOwner): DirectionalSh
   if (settled !== undefined) return inspectSettledDirectionalShadow(owner, settled);
   const { frameState, internals } = owner;
   const lights = viewLightsOf(renderWorldFor(internals), internals.viewEntity);
-  const graph = viewGraphInfo(owner);
+  const cascadeCount = lights?.cascades?.cascadeCount ?? 0;
   const requested = directionalShadowProfileFromQuality(lights?.cascades?.directionalShadowQuality);
   const shadowReady = frameState.frameOutputs.directionalShadowView !== null;
   const directionalShadow = recordHistoryOf(owner)?.directionalShadow;
@@ -381,15 +382,12 @@ export function viewDirectionalShadow(owner: ViewSettlementOwner): DirectionalSh
             frameState.directionalShadowCache.directionalShadowQuality,
           ),
         }),
-    cascadeCount: lights?.cascades?.cascadeCount ?? 0,
+    cascadeCount,
     mapSize: recordContext(internals).getPipelineState()?.perPassResources.shadowMapSize ?? 0,
     shadowMapBytes: shadowReady
       ? (frameState.shadowDepthLayers?.byteSize('directional-shadow-depth') ?? 0)
       : 0,
-    writerPasses:
-      frameState.compiledFrameGraph?.directionalShadowViewCount === 'current'
-        ? Math.max(1, lights?.cascades?.cascadeCount ?? 0)
-        : (graph?.passes.filter((pass) => pass.name.startsWith('shadowCascade')).length ?? 0),
+    writerPasses: directionalShadowWriterPasses(frameState.compiledFrameGraph, cascadeCount),
     shadowAngularRadius: lights?.directionalCsmConfig?.shadowAngularRadius,
     maxPenumbraTexels: lights?.directionalCsmConfig?.maxPenumbraTexels,
     deviceGeneration: recordContext(internals).deviceScope.generation,

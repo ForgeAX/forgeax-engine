@@ -7,9 +7,9 @@
 #import forgeax_cloud::geometry::{cloud_shell_interval}
 #import forgeax_cloud::medium::{CloudDensityControls, CloudDensityPoint, evaluate_reference_conservative, evaluate_reference_medium}
 #import forgeax_cloud::coordinates::{cloud_height_fraction}
-#import forgeax_cloud::shadow::{cloud_bsm_trace_interval, cloud_shadow_accumulate, cloud_shadow_finish}
+#import forgeax_cloud::shadow::{cloud_bsm_trace_interval, cloud_shadow_accumulate, cloud_shadow_finish, cloud_shadow_pack_column}
 #import forgeax_cloud::lighting::{cloud_henyey_greenstein}
-#import forgeax_cloud::depth_minmax::{cloud_scene_depth_range_meters, cloud_scene_depth_meters}
+#import forgeax_cloud::depth_minmax::{cloud_scene_depth_range_meters, cloud_mode0_depth_range_meters, cloud_scene_depth_meters, cloud_mode0_pack_depth_km, cloud_mode0_unjittered_uv, cloud_mode0_noise}
 #import forgeax_cloud::trace::{CloudSampledTraceSettings, CloudTraceLighting, trace_sampled_cloud_lit}
 
 struct SampledCloudParams {
@@ -47,6 +47,9 @@ struct SampledCloudParams {
 @group(1) @binding(10) var solarTransmittance: texture_2d<f32>;
 @group(1) @binding(11) var distantSky: texture_2d<f32>;
 
+@group(1) @binding(12) var sceneDepthRange: texture_2d<f32>;
+@group(1) @binding(13) var cloudBlueNoise: texture_2d<f32>;
+
 struct CloudOutputs {
   @location(0) composited: vec4f,
   @location(1) radianceTransmittance: vec4f,
@@ -64,14 +67,22 @@ struct CloudMode0Outputs {
 };
 
 struct CloudMode0Trace { result: CloudMode0Outputs, farPosition: vec3f, nearPosition: vec3f }
-fn trace_mode_zero(input: FullscreenOutput) -> CloudMode0Trace {
+fn trace_mode_zero(input: FullscreenOutput, depthRangeZ: vec2f, stepPhase: f32) -> CloudMode0Trace {
   let fullSize = vec2i(cloud.mode0.zw);
   let origin = vec2i(input.position.xy) * 4;
   let pixel = min(origin + vec2i(cloud.mode0.xy) * 2, fullSize - vec2i(1));
-  let uv = (vec2f(pixel) + 0.5) / vec2f(fullSize);
+  let ueDepthKm = cloud.sampling.w != 0.0;
+  let halfSize = vec2f((fullSize + 1) / 2);
+  let ueUv = (vec2f(pixel / 2) + 0.5) / halfSize;
+  let uv = select((vec2f(pixel) + 0.5) / vec2f(fullSize), cloud_mode0_unjittered_uv(view, ueUv), ueDepthKm);
   let ray = atmosphere_view_ray(view, uv);
-  let rangeMeters = cloud_scene_depth_range_meters(sceneDepth, origin, vec2u(4u),
+  var rangeMeters: vec2f;
+  if depthRangeZ.r < 0.0 {
+    rangeMeters = cloud_scene_depth_range_meters(sceneDepth, origin, vec2u(4u),
     view.inverseViewProj, ray.origin);
+  } else {
+    rangeMeters = cloud_mode0_depth_range_meters(depthRangeZ, uv, view.inverseViewProj, ray.origin);
+  }
   let sceneMeters = cloud_scene_depth_meters(textureLoad(sceneDepth, pixel, 0), uv,
     view.inverseViewProj, ray.origin);
   let radius = 6360000.0;
@@ -80,7 +91,7 @@ fn trace_mode_zero(input: FullscreenOutput) -> CloudMode0Trace {
     cloud.windErosion.w);
   let settings = CloudSampledTraceSettings(cloud.layer, radius, rangeMeters.y, 15000.0,
     2u, u32(cloud.sampling.x), u32(cloud.sampling.y), true,
-    cloud.optical.w > 0.5, CLOUD_DETAIL, cloud.sampling.z, 0.5);
+    cloud.optical.w > 0.5, CLOUD_DETAIL, cloud.sampling.z, stepPhase);
   let lighting = CloudTraceLighting(-view.lightDir, view.lightColor, cloud.phase,
     cloud.multipleScattering, cloud.shadow, true,
     cloud.mapOrigin, cloud.mapRight, cloud.mapUp, cloud.mapDirection, cloud.mapSettings,
@@ -90,18 +101,56 @@ fn trace_mode_zero(input: FullscreenOutput) -> CloudMode0Trace {
     bodyNoise, wrapSampler, vec3f(0.0), settings, rangeMeters.x, lighting, cloudBsm, solarTransmittance, distantSky);
   return CloudMode0Trace(CloudMode0Outputs(vec4f(result.trace.radiance, result.trace.transmittance),
     vec4f(result.near.radiance, result.near.transmittance),
-    vec4f(result.trace.representativeDepthMeters, sceneMeters, rangeMeters)),
+    select(vec4f(result.trace.representativeDepthMeters, sceneMeters, rangeMeters),
+      cloud_mode0_pack_depth_km(result.trace.representativeDepthMeters, rangeMeters), ueDepthKm)),
     ray.origin + ray.direction * result.trace.representativeDepthMeters,
     ray.origin + ray.direction * result.nearRepresentativeDepthMeters);
 }
+
+@fragment fn fs_trace_mode_zero_ue(input: FullscreenOutput) -> CloudMode0Outputs {
+  let traced = trace_mode_zero(input, vec2f(-1.0), cloud_mode0_noise(cloudBlueNoise, input.position.xy, cloud.sampling.w, cloud.sampling.x));
+  return CloudMode0Outputs(cloud_height_transport(view, traced.farPosition, traced.result.far),
+    cloud_height_transport(view, traced.nearPosition, traced.result.near), traced.result.depthMeters);
+}
+
+@fragment fn fs_trace_mode_zero_depth_range_ue(input: FullscreenOutput) -> CloudMode0Outputs {
+  let traced = trace_mode_zero(input, textureLoad(sceneDepthRange, vec2i(input.position.xy), 0).rg, cloud_mode0_noise(cloudBlueNoise, input.position.xy, cloud.sampling.w, cloud.sampling.x));
+  return CloudMode0Outputs(cloud_height_transport(view, traced.farPosition, traced.result.far),
+    cloud_height_transport(view, traced.nearPosition, traced.result.near), traced.result.depthMeters);
+}
+
+@fragment fn fs_trace_mode_zero_air_ue(input: FullscreenOutput) -> CloudMode0Outputs {
+  let traced = trace_mode_zero(input, vec2f(-1.0), cloud_mode0_noise(cloudBlueNoise, input.position.xy, cloud.sampling.w, cloud.sampling.x));
+  return CloudMode0Outputs(cloud_aerial_transport(view, traced.farPosition, traced.result.far),
+    cloud_aerial_transport(view, traced.nearPosition, traced.result.near), traced.result.depthMeters);
+}
+
+@fragment fn fs_trace_mode_zero_air_depth_range_ue(input: FullscreenOutput) -> CloudMode0Outputs {
+  let traced = trace_mode_zero(input, textureLoad(sceneDepthRange, vec2i(input.position.xy), 0).rg, cloud_mode0_noise(cloudBlueNoise, input.position.xy, cloud.sampling.w, cloud.sampling.x));
+  return CloudMode0Outputs(cloud_aerial_transport(view, traced.farPosition, traced.result.far),
+    cloud_aerial_transport(view, traced.nearPosition, traced.result.near), traced.result.depthMeters);
+}
+
 @fragment fn fs_trace_mode_zero(input: FullscreenOutput) -> CloudMode0Outputs {
-  let traced = trace_mode_zero(input);
+  let traced = trace_mode_zero(input, vec2f(-1.0), 0.5);
+  return CloudMode0Outputs(cloud_height_transport(view, traced.farPosition, traced.result.far),
+    cloud_height_transport(view, traced.nearPosition, traced.result.near), traced.result.depthMeters);
+}
+
+@fragment fn fs_trace_mode_zero_depth_range(input: FullscreenOutput) -> CloudMode0Outputs {
+  let traced = trace_mode_zero(input, textureLoad(sceneDepthRange, vec2i(input.position.xy), 0).rg, 0.5);
   return CloudMode0Outputs(cloud_height_transport(view, traced.farPosition, traced.result.far),
     cloud_height_transport(view, traced.nearPosition, traced.result.near), traced.result.depthMeters);
 }
 
 @fragment fn fs_trace_mode_zero_air(input: FullscreenOutput) -> CloudMode0Outputs {
-  let traced = trace_mode_zero(input);
+  let traced = trace_mode_zero(input, vec2f(-1.0), 0.5);
+  return CloudMode0Outputs(cloud_aerial_transport(view, traced.farPosition, traced.result.far),
+    cloud_aerial_transport(view, traced.nearPosition, traced.result.near), traced.result.depthMeters);
+}
+
+@fragment fn fs_trace_mode_zero_air_depth_range(input: FullscreenOutput) -> CloudMode0Outputs {
+  let traced = trace_mode_zero(input, textureLoad(sceneDepthRange, vec2i(input.position.xy), 0).rg, 0.5);
   return CloudMode0Outputs(cloud_aerial_transport(view, traced.farPosition, traced.result.far),
     cloud_aerial_transport(view, traced.nearPosition, traced.result.near), traced.result.depthMeters);
 }
@@ -177,16 +226,16 @@ fn sampled_view_output(input: FullscreenOutput) -> CloudOutputs {
   let planetPosition = origin + vec3f(0.0, radius, 0.0);
   let interval = cloud_bsm_trace_interval(planetPosition, direction, radius,
     cloud.layer.x, cloud.layer.y);
-  if interval.x < 0.0 { return vec4f(cloud.mapRight.w, 0.0, 0.0, 1.0); }
+  if interval.x < 0.0 { return vec4f(cloud_shadow_pack_column(cloud.mapRight.w, 0.0, 0.0), 1.0); }
   if interval.y <= interval.x { return vec4f(0.0, 0.0, 0.0, 1.0); }
   let controls = CloudDensityControls(cloud.optical.x, cloud.optical.y, cloud.optical.z,
     cloud.albedo, cloud.weights.x, cloud.weights.y, cloud.weights.z, cloud.weights.w,
     cloud.windErosion.w);
-  let count = u32(clamp(cloud.mapSettings.z, 1.0, 256.0));
-  let stepMeters = (interval.y - interval.x) / f32(count);
+  let count = clamp(cloud.mapSettings.z, 1.0, 256.0);
+  let stepMeters = (interval.y - interval.x) / count;
   var acc = vec4f(interval.y, 0.0, 0.0, 0.0);
-  for (var index = 0u; index < count; index += 1u) {
-    let t = interval.x + (f32(index) + 0.5) * stepMeters;
+  for (var midpoint = 0.5; midpoint < count; midpoint += 1.0) {
+    let t = interval.x + midpoint * stepMeters;
     let position = origin + direction * t;
     let radial = length(planetPosition + direction * t);
     let eyeRadial = length(planetPosition);

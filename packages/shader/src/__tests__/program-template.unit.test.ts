@@ -180,9 +180,15 @@ it('round-trips a compact source library, shares module references and rejects t
     library.programs.second?.imports['test::shared'],
   );
   const wire = JSON.parse(JSON.stringify(library));
-  expect(readShaderProgramTemplates(wire).unwrap().get('first')?.identity).toBe(
-    admitShaderProgramTemplate(first).unwrap().identity,
-  );
+  const admitted = readShaderProgramTemplates(wire).unwrap();
+  const firstProgram = admitted.get('first');
+  const secondProgram = admitted.get('second');
+  expect(firstProgram?.identity).toBe(admitShaderProgramTemplate(first).unwrap().identity);
+  expect(firstProgram?.template.compilerProfile).toBe(secondProgram?.template.compilerProfile);
+  expect(Object.isFrozen(firstProgram?.template.compilerProfile)).toBe(true);
+  wire.compilerProfile.compilerVersion = 'other-version';
+  expect(firstProgram?.template.compilerProfile.compilerVersion).toBe('1');
+  wire.compilerProfile.compilerVersion = '1';
   const { registry, compile } = setup();
   registry.installProgramTemplates(wire).unwrap();
   expect(registry.programTemplateInspection()).toMatchObject({ templates: 2, selections: 0 });

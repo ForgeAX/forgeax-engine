@@ -9,8 +9,8 @@ import {
 import { renderWorldFor } from '../world/render-world';
 import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import {
-  type FoldBucket,
   type FoldDispatchPlan,
+  type FoldDraw,
   INSTANCE_UBO_FULL_ARRAY_BYTES,
   packInstanceStorageBuffer,
 } from './mesh-ssbo';
@@ -35,7 +35,7 @@ export function* retainedFoldInstanceKeys(
 /** Both transparent draw owners consume one fold payload and resident cache. */
 export function resolveFoldInstanceBuffer(
   c: _InternalRenderPipelineContext,
-  bucket: FoldBucket,
+  bucket: Pick<FoldDraw, 'bucketSize' | 'transforms'>,
   drawIndex: number,
 ): Buffer | null {
   const { runtime, frameState } = c;
@@ -92,25 +92,19 @@ export function resolveFoldInstanceBuffer(
 export function createFoldedDrawRecorder(
   c: Pick<_InternalRenderPipelineContext, 'validatedOrdered' | 'onRenderableDraw'>,
 ) {
-  let members: ReadonlyMap<number, ValidatedRenderable> | undefined;
   return (
     entry: ValidatedRenderable,
     submesh?: number,
     receipt?: import('./gpu-draw-receipts').RenderableDrawReceipt,
-    bucket?: FoldBucket,
+    bucket?: FoldDraw,
   ): void => {
     if (c.onRenderableDraw === undefined) return;
     if (bucket === undefined) {
       c.onRenderableDraw(entry, submesh, receipt);
       return;
     }
-    members ??= new Map(
-      c.validatedOrdered.flatMap((row) =>
-        row === undefined ? [] : [[row.renderableIndex, row] as const],
-      ),
-    );
-    for (const member of bucket.entries) {
-      const presented = members.get(member.renderableIndex);
+    for (const position of bucket.memberPositions) {
+      const presented = c.validatedOrdered.at(position);
       if (presented !== undefined) c.onRenderableDraw(presented, submesh, receipt);
     }
   };

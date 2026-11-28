@@ -156,6 +156,7 @@ import type {
   ProjectPortOptions,
 } from './types.js';
 import { completeCommand, failCommand, resolveProjectPort } from './types.js';
+import { viewportDebugViewSourceFragments } from './viewport-debug-view-source.js';
 import { workspacePackCookPlugin } from './workspace-pack-cook.js';
 
 const activeDevKitHosts = new Set<BackendHost>();
@@ -966,7 +967,9 @@ function hostSource(
   materialProfile?: BuildOptions['materialProfile'],
   staticPrograms = target === 'tauri',
   programNamespace?: string,
+  viewportDebugView = false,
 ): string {
+  const vpDebug = viewportDebugViewSourceFragments(devMode, viewportDebugView);
   const storage = hostStorageSource(target, facts.id);
   const runtimePackOptions = storage.options(
     `await createRuntimePackOptions(runtimeScopeBinding.scopeId${staticPrograms ? '' : ", undefined, ctx.get('frontendPlatform', false)?.createPackProgramHost"})`,
@@ -987,18 +990,14 @@ function hostSource(
             ...(gpuStub === undefined ? {} : { gpuStub }),`;
   return `${pipelineLibraryImports(appOptions)}import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { createProfiler } from '@forgeax/engine/profiler';
-import { activateExecutionRoot, addLoadWork, assembleAssetRuntime, withEngineSettings, EngineConfigurationError, beginLoadSession, beginLoadWork, describeLoadProgress, ${storage.appImport}, endLoadSession, ENGINE_STARTUP_PHASES, resolveLoadProgressLabels, subscribeLoadProgress, assembleRuntimePacks, captureEngineWorkspaceAssetBinding, createRendererInspectionError, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, engineWorkspaceBrowserPlugin, engineWorkspaceInputPlugin, engineWorkspaceResultService, createToolPreviewHost, createToolPreviewRecipe, fitToolPreviewCameraToAabb, gameHostPlugin, loadEngineWorkspaceMaterialSlots, projectEngineWorkspaceAssets, replayToolPreviewCapture, type App } from '@forgeax/engine/app';
-import { createApp, createBrowserConfigurationHost, syncCanvasDrawingBuffer } from '@forgeax/engine/app/browser';
-import { DEFAULT_WEBGPU_STUB_PROFILE } from '@forgeax/engine/rhi-webgpu';
-import { inspectUi } from '@forgeax/engine/ui';
+import type { App } from '@forgeax/engine/app';
+import { addLoadWork, beginLoadSession, beginLoadWork, describeLoadProgress, endLoadSession, ENGINE_STARTUP_PHASES, resolveLoadProgressLabels, subscribeLoadProgress } from '@forgeax/engine/types';
+import { activateExecutionRoot, assembleAssetRuntime, assembleRuntimePacks, createApp, createBrowserConfigurationHost, createRendererInspectionError, EngineConfigurationError, gameHostPlugin, ${storage.appImport}, syncCanvasDrawingBuffer, withEngineSettings } from '@forgeax/engine/app/browser';
 import { Context, startNativePlugin } from '@forgeax/engine/plugin';
 import { ShaderRegistry } from '@forgeax/engine/shader';
-import { textureViewSource } from '@forgeax/engine/preview';
 import { createRuntimePackOptions${deliverySource.importMember} } from './runtime-packs';
 import { ${storage.platformImports} } from '@forgeax/engine/platform-browser';
 ${deliverySource.importBootstrap}
-import { createGameVfx } from './game-vfx';
-import { createGameRenderFeatures } from './game-render-features';
 import { root as engineRoot, createPrograms as enginePrograms } from '${pluginProgramModule('engine', programNamespace)}';
 import { root as hostRoot, rootDescriptor as hostDescriptor, createPrograms as hostPrograms } from '${pluginProgramModule('frontend', programNamespace)}';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
@@ -1015,13 +1014,7 @@ import { audioPlugin } from '@forgeax/engine/audio';
 import { createHostAudioConsumer } from '@forgeax/engine/audio-webaudio';
 import { physicsComponentsPlugin } from '@forgeax/engine/physics';
 import { skinningPlugin } from '@forgeax/engine/skinning';
-import { createPrimitiveMesh } from '@forgeax/engine/geometry';
-import { mat4 } from '@forgeax/engine/math';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer, Skylight, SkyboxBackground, TONEMAP_REINHARD_EXTENDED, materialSampledTextureBudget } from '@forgeax/engine/render';
-import { Transform } from '@forgeax/engine/scene';
 import { numMipLevels, type SceneAsset } from '@forgeax/engine/types';
-import { ParticleEffectPlayer } from '@forgeax/engine/vfx';
-import { createVfxRuntimeHost } from '@forgeax/engine/vfx-render';
 ${
   previewRhiWindow && !rhiCaptureEnabled
     ? `import { attachRecorder } from '@forgeax/engine/rhi-debug';
@@ -1061,11 +1054,16 @@ const previewCameraEntities = new WeakMap();
 const previewCameraTargets = new WeakMap();
 let vfxRuntimeHost;
 function ensureVfxRuntimeHost() {
-  if (vfxRuntimeHost !== undefined) return vfxRuntimeHost;
-  vfxRuntimeHost = makeVfxRuntimeHost();
-  return vfxRuntimeHost;
+  return vfxRuntimeHost ??= makeVfxRuntimeHost();
 }
-function makeVfxRuntimeHost() {
+async function makeVfxRuntimeHost() {
+  const [{ createVfxRuntimeHost }, { Camera }, { Transform }, { mat4 }] =
+    await Promise.all([
+      import('@forgeax/engine/vfx-render'),
+      import('@forgeax/engine/render'),
+      import('@forgeax/engine/scene'),
+      import('@forgeax/engine/math'),
+    ]);
   return createVfxRuntimeHost({
     instanceArenas: vfxInstanceArenas,
     nativePlanning: vfxNativePlanning,
@@ -1167,7 +1165,7 @@ ${
     : ''
 }
 const previewVfxHosts = new WeakMap();
-if (resource?.kind === 'vfx') ensureVfxRuntimeHost();
+if (resource?.kind === 'vfx') await ensureVfxRuntimeHost();
 
 ${previewVfxBoundsSource}
 
@@ -1470,6 +1468,7 @@ function clockGameTime(app, request) {
   }
   return playClock?.status() ?? { running: false };
 }
+const loadUiInspection = () => import('@forgeax/engine/ui').then(module => module.inspectUi);
 async function inspectGameRenderer(app, isCurrent) {
   const failure = (reason, cause) => {
     const error = createRendererInspectionError(reason, typeof cause === 'string' ? cause : undefined);
@@ -1508,20 +1507,21 @@ function createGameInspection(app, projection, diagnostics) {
     ...(diagnostics === undefined ? {} : {
       advance: request => advanceGameTime(app, request),
       clock: request => clockGameTime(app, request),
-      ui: request => inspectUi(current() ? document.body : undefined, request),
+      ui: request => diagnostics.inspectUi(current() ? document.body : undefined, request),
       inspectRenderer: () => inspectGameRenderer(app, () => diagnostics.isLive() && current()),
       renderer: diagnostics.renderer,
     }),
   };
   return inspection;
 }
-function exposeGameInspection(app, isLive = () => true) {
+function exposeGameInspection(app, inspectUi, isLive = () => true) {
   const rendererErrors = trackRendererErrors(app, import.meta.env.DEV);
   globalThis.__forgeaxGameInspection = createGameInspection(app, {
     list: () => listGameProjection(),
     read: id => readGameProjection(id),
   }, {
     isLive,
+    inspectUi,
     renderer() {
       const inspection = app.renderer.inspect();
       return {
@@ -1614,7 +1614,7 @@ const cpuProfileRequested = query.get('forgeax-cpu-profile') === '1';
 const rhiCaptureRequested =
   query.get('forgeax-rhi-capture') === '1' || ${JSON.stringify(rhiCaptureEnabled)};
 // CPU-only diagnostics on hosts without a usable GPU: keep the WebGPU path, drop GPU work.
-const gpuStub = query.get('forgeax-gpu-stub') === '1' ? DEFAULT_WEBGPU_STUB_PROFILE : undefined;
+const gpuStub = query.get('forgeax-gpu-stub') === '1' ? (await import('@forgeax/engine/rhi-webgpu')).DEFAULT_WEBGPU_STUB_PROFILE : undefined;
 const renderBackendValue = query.get('forgeax-render-backend');
 const renderBackend = renderBackendValue === 'auto' || renderBackendValue === 'webgpu' || renderBackendValue === 'webgl2' ? renderBackendValue : undefined;
 if (query.has('forgeax-render-backend') && renderBackend === undefined) throw new EngineConfigurationError('configuration-invalid', { path: 'rendering.renderBackend', reason: 'unknown backend selector' });
@@ -1638,6 +1638,10 @@ const profiler = ${JSON.stringify(devMode)} || cpuProfileRequested ? createProfi
 const workspaceTarget = query.has('forgeaxWorkspace') && !workerExecution && bootstrapRoot === 'project-bootstrap';
 const workspaceGame = workspaceTarget && query.get('forgeaxWorkspace') === 'game';
 const workspaceMode = workspaceTarget && !workspaceGame;
+const workspaceTargetId = query.get('forgeaxWorkspaceTarget') ?? 'forgeax-workspace-target';
+const workspaceResultService = workspaceTarget
+  ? (await import('@forgeax/engine/app')).engineWorkspaceResultService(workspaceTargetId)
+  : undefined;
 const recipeValue = query.get('forgeax-tool-recipe');
 ${startupProgressSource(appOptions)}const snapshotValue = query.get('forgeax-tool-snapshot');
 const runIdValue = query.get('forgeax-tool-run-id');
@@ -1648,15 +1652,15 @@ let removeStartupErrorListener;
 let removeStartupInputBinding;
 let activateWorkspace;
 const notifyWorkspacePageLost =
-  workspaceTarget
+  workspaceResultService !== undefined
     ? () => {
         if (hostTransport === undefined) return;
         void hostTransport
-          .request(engineWorkspaceResultService(query.get('forgeaxWorkspaceTarget')), {
+          .request(workspaceResultService, {
             kind: 'lost',
             id: 'page-lost:' + (query.get('forgeaxWorkspaceSession') ?? 'forgeax-workspace-session'),
             sessionId: query.get('forgeaxWorkspaceSession') ?? 'forgeax-workspace-session',
-            targetId: query.get('forgeaxWorkspaceTarget') ?? 'forgeax-workspace-target',
+            targetId: workspaceTargetId,
           })
           .catch(() => {});
       }
@@ -1749,9 +1753,11 @@ const appBootstrapPlugin = {
     const runtimePacks = workerExecution ? undefined : ${runtimePackOptions};
     const pluginPrograms = workerExecution ? undefined : enginePrograms(crypto.randomUUID(), 'engine-main', initialAssembly.sessionGeneration, runtimePacks.programHost);
     const hasGameFeatures = !workerExecution && bootstrapRoot === 'project-bootstrap' && !workspaceMode && resource === undefined && recipeValue === null;
-    const gameFeatures = hasGameFeatures ? createGameRenderFeatures() : {features:[],plugins:[],vfxProviders:[],vfxProvidersForWorld:undefined};
-    const gameVfx = hasGameFeatures
-      ? createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources, dependencies: ${JSON.stringify(gameVfxDependencies(appOptions))}, providers: gameFeatures.vfxProviders, providersForWorld: gameFeatures.vfxProvidersForWorld }) : undefined;
+    const localGameModules = hasGameFeatures
+      ? await Promise.all([import('./game-render-features'), import('./game-vfx')])
+      : undefined;
+    const gameFeatures = localGameModules?.[0].createGameRenderFeatures() ?? { features: [], plugins: [], vfxProviders: [], vfxProvidersForWorld: undefined };
+    const gameVfx = localGameModules?.[1].createGameVfx({ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources, dependencies: ${JSON.stringify(gameVfxDependencies(appOptions))}, providers: gameFeatures.vfxProviders, providersForWorld: gameFeatures.vfxProvidersForWorld });
     let hostAudio: ReturnType<typeof createHostAudioConsumer> | undefined;
     ${
       appOptions.pipelineLibrary === undefined
@@ -1766,6 +1772,7 @@ const appBootstrapPlugin = {
     const pipelineLibrary = JSON.parse(pipelineLibraryText.value);`
     }
     ${appOptions.backgroundPipelineLibrary === undefined ? '' : 'const backgroundPipelineLibrary = await backgroundPipelineLibraryLoad;'}
+    ${vpDebug.setup}
     const result = await createApp(
       canvas,
       workerExecution
@@ -1815,9 +1822,10 @@ const appBootstrapPlugin = {
             ...(shadowWorkload === undefined ? {} : { shadowWorkload }),
             profiler,
             ...(workspaceTarget ? { viewportHitWarmup: true } : {}),
+            ${vpDebug.appOption}
             ...(workspaceGame ? { input: ctx.engineWorkspaceInput.game } : {}),
             plugins: [${plugins.join(', ')}${plugins.length > 0 ? ', ' : ''}...(workspaceMode ? [physicsComponentsPlugin()] : []), ...(gameVfx === undefined ? [] : [gameVfx.plugin]), ...gameFeatures.plugins],
-            ...(workspaceMode ? { features: [ensureVfxRuntimeHost().feature] } : gameVfx === undefined ? {} : { features: [gameVfx.feature, ...gameFeatures.features] }),
+            ...(workspaceMode ? { features: [(await ensureVfxRuntimeHost()).feature] } : gameVfx === undefined ? {} : { features: [gameVfx.feature, ...gameFeatures.features] }),
             ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
             ${appDeviceSource}
           },
@@ -1842,6 +1850,7 @@ const appBootstrapPlugin = {
       if (!selected.ok) throw selected.error;
     }
     appState.current = app;
+    ${vpDebug.globalSetup}
     ctx.effect(() => async () => {
       (await app.dispose()).unwrap();
       if (appState.current === app) appState.current = undefined;
@@ -1887,7 +1896,10 @@ const appBootstrapPlugin = {
       const sourceRead = (method: 'list' | 'read', id?: string) => app.remoteEval === undefined
         ? localInspection?.[method](id)
         : app.remoteEval('globalThis.__forgeaxGameInspection.' + method + '(' + (id === undefined ? '' : JSON.stringify(id)) + ')');
-      const rendererErrors = diagnostics ? trackRendererErrors(app, import.meta.env.DEV) : undefined;
+      const diagnosticReads = diagnostics ? {
+        inspectUi: await loadUiInspection(),
+        rendererErrors: trackRendererErrors(app, import.meta.env.DEV),
+      } : undefined;
       const inspection = createGameInspection(app, {
         list: async () => {
           if (diagnostics && !import.meta.env.DEV) return { reads: [] };
@@ -1901,17 +1913,18 @@ const appBootstrapPlugin = {
             throw new Error('forgeax: game read projection not found ' + id);
           return sourceRead('read', id);
         },
-      }, rendererErrors === undefined ? undefined : {
+      }, diagnosticReads === undefined ? undefined : {
         isLive: () => !pageHidden,
+        inspectUi: diagnosticReads.inspectUi,
         renderer: () => {
           const execution = app.execution.report();
           const local = 'renderer' in app ? app.renderer.inspect() : undefined;
-          return { state: execution.render?.state ?? local?.state ?? (execution.engine.health === 'running' ? 'alive' : execution.engine.health), frameId: execution.render?.completedFrame ?? execution.frame.completed, ...(local === undefined ? {} : { frame: local.frame }), execution, lastError: app.lastError, rendererError: rendererErrors.read() };
+          return { state: execution.render?.state ?? local?.state ?? (execution.engine.health === 'running' ? 'alive' : execution.engine.health), frameId: execution.render?.completedFrame ?? execution.frame.completed, ...(local === undefined ? {} : { frame: local.frame }), execution, lastError: app.lastError, rendererError: diagnosticReads.rendererErrors.read() };
         },
       });
       globalThis.__forgeaxGameInspection = inspection;
       ctx.effect(() => () => {
-        rendererErrors?.unsubscribe();
+        diagnosticReads?.rendererErrors.unsubscribe();
         if (globalThis.__forgeaxGameInspection === inspection) delete globalThis.__forgeaxGameInspection;
         gameProjectionDefinitions.clear();
       }, diagnostics ? 'devkit/host-inspection' : 'devkit/host-release-inspection');
@@ -1920,15 +1933,17 @@ const appBootstrapPlugin = {
       activateWorkspace = async () => {
         if (hostTransport === undefined || workerExecution) throw new Error('Workspace requires its main-realm Host transport');
         const extent = (name, fallback) => { const value = Number(query.get(name)); return Number.isSafeInteger(value) && value > 0 ? value : fallback; };
+        const { engineWorkspaceBrowserPlugin } = await import('@forgeax/engine/app');
         const fiber = await ctx.plugin(engineWorkspaceBrowserPlugin, {
           app, canvas, surface: engineWorkspaceSurface, transport: hostTransport,
           ...(workspaceMode ? { createPreviewApp: async ({ context, canvas: previewCanvas, asset, targetId }) => {
-            const vfx = asset.kind === 'vfx' ? makeVfxRuntimeHost() : undefined;
+            const vfx = asset.kind === 'vfx' ? await makeVfxRuntimeHost() : undefined;
             ${previewRhiWindow && !rhiCaptureEnabled ? "const diagnostic = ['mesh', 'texture', 'equirect'].includes(asset.kind) ? await previewRhiDiagnostic(context, previewCanvas, targetId) : undefined;" : ''}
             const created = await createApp(previewCanvas, {
               context, assetCatalog: app.pluginContext.get('runtimePacks')?.catalog ?? assetCatalog, plugins: [physicsComponentsPlugin()],
               ${previewRhiWindow && !rhiCaptureEnabled ? '...diagnostic?.options,' : ''}
               ...(asset.kind === 'scene' ? { viewportHitWarmup: true } : {}),
+              ${vpDebug.previewOption}
               ...(vfx ? { features: [vfx.feature] } : {}),
               ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
               pointerLockAllowed: () => false,
@@ -1982,7 +1997,7 @@ const appBootstrapPlugin = {
       });
     }
     if (workspaceMode) await activateWorkspace?.();
-    if ((import.meta.env.DEV || cpuProfileRequested || ${JSON.stringify(target === 'tauri')}) && !workerExecution) exposeGameInspection(app as App, () => !pageHidden);
+    if ((import.meta.env.DEV || cpuProfileRequested || ${JSON.stringify(target === 'tauri')}) && !workerExecution) exposeGameInspection(app as App, await loadUiInspection(), () => !pageHidden);
     let gameHostFiber;
     let engineRootFiber;
     ctx.effect(
@@ -2073,7 +2088,7 @@ const hostTransport = import.meta.env.DEV
 const frontendHost = await createFrontendHost({
   context: hostContext,
   startupTimeoutMs: ${startupTimeout},
-  startupPlugins: [...(preparedPlatform ? [] : [createFrontendPlatformPlugin(frontendPlatform)]), hostLifecyclePlugin, ...(workspaceGame ? [{ name: 'forgeax:workspace-input-bootstrap', async apply(ctx) { const fiber = ctx.plugin(engineWorkspaceInputPlugin, { canvas }); await fiber.await(); } }] : []), ...(workspaceMode ? [] : [appBootstrapPlugin])],
+  startupPlugins: [...(preparedPlatform ? [] : [createFrontendPlatformPlugin(frontendPlatform)]), hostLifecyclePlugin, ...(workspaceGame ? [{ name: 'forgeax:workspace-input-bootstrap', async apply(ctx) { const { engineWorkspaceInputPlugin } = await import('@forgeax/engine/app'); const fiber = ctx.plugin(engineWorkspaceInputPlugin, { canvas }); await fiber.await(); } }] : []), ...(workspaceMode ? [] : [appBootstrapPlugin])],
   assembly: initialAssembly,
   activateRoot: async (ctx, descriptor, signal, startupTimeoutMs) => {
     ${
@@ -2125,11 +2140,12 @@ if (workspaceMode) {
   } catch (error) {
     await appFiber.dispose();
     globalThis.__forgeaxStartup?.fail?.(error);
-    await hostTransport?.request(engineWorkspaceResultService(query.get('forgeaxWorkspaceTarget')), {
-      kind: 'failed', id: 'workspace-bootstrap-failed',
-      sessionId: query.get('forgeaxWorkspaceSession'), targetId: query.get('forgeaxWorkspaceTarget'),
-      error: { code: error?.code ?? 'engine-workspace-bootstrap-failed', expected: error?.expected ?? 'the workspace renderer to initialize', hint: error?.hint ?? String(error), detail: error?.detail ?? {} },
-    });
+    if (workspaceResultService !== undefined)
+      await hostTransport?.request(workspaceResultService, {
+        kind: 'failed', id: 'workspace-bootstrap-failed',
+        sessionId: query.get('forgeaxWorkspaceSession'), targetId: workspaceTargetId,
+        error: { code: error?.code ?? 'engine-workspace-bootstrap-failed', expected: error?.expected ?? 'the workspace renderer to initialize', hint: error?.hint ?? String(error), detail: error?.detail ?? {} },
+      });
   }
 }
 const app = appState.current;
@@ -2184,12 +2200,15 @@ if (query.has('forgeax-tool-replay')) {
   globalThis.__forgeaxToolReplayHost = {
     ready: true,
     async run(capture) {
+      const { replayToolPreviewCapture } = await import('@forgeax/engine/app');
       const result = await replayToolPreviewCapture(capture);
       return result.ok ? { ok: true, result: result.value } : { ok: false, error: result.error };
     },
   };
 } else if (recipeValue !== null) {
+  const { createToolPreviewRecipe, createToolPreviewHost } = await import('@forgeax/engine/app');
   const previewRecipe = createToolPreviewRecipe(JSON.parse(recipeValue));
+  const previewVfx = await vfxRuntimeHost;
   const host = await createToolPreviewHost({
     ...(runIdValue === null ? {} : { runId: runIdValue }),
     recipe: previewRecipe,
@@ -2199,7 +2218,7 @@ if (query.has('forgeax-tool-replay')) {
     app: {
       plugins: [${plugins.join(', ')}],
       ...(import.meta.env.DEV ? { assetRuntimeBinding: runtimeScopeBinding } : {}),
-      ...(vfxRuntimeHost === undefined ? {} : { features: [vfxRuntimeHost.feature] }),
+      ...(previewVfx === undefined ? {} : { features: [previewVfx.feature] }),
     },
     bundler,
     prepare: prepareProject,
@@ -2258,12 +2277,12 @@ if (query.has('forgeax-tool-replay')) {
         }
         return current;
       }
-      if (vfxRuntimeHost === undefined) return current;
-      const hostInspection = vfxRuntimeHost.inspect(app.world);
+      if (previewVfx === undefined) return current;
+      const hostInspection = previewVfx.inspect(app.world);
       const player = hostInspection?.players.find(
         (candidate) => candidate.assetGuid.toLowerCase() === resource.guid.toLowerCase(),
       );
-      const renderObservation = vfxRuntimeHost.feature.inspect();
+      const renderObservation = previewVfx.feature.inspect();
       if (player === undefined || renderObservation.frameNumber < 0) {
         return current;
       }
@@ -2464,6 +2483,7 @@ export async function buildProject(
         ...(options.materialProfile === undefined
           ? {}
           : { materialProfile: options.materialProfile }),
+        ...(options.viewportDebugView === true ? { viewportDebugView: true } : {}),
       }),
     );
     return await prepareProjectBuildOutput(facts.value, options, base, outDir);
@@ -2612,6 +2632,7 @@ export async function startDevProjectWithHost(
         createViteConfig(facts.value, 'serve', '/', {
           server: vitePort,
           ...(options.reuse === undefined ? {} : { generatedRoot: options.reuse.generatedRoot }),
+          ...(options.viewportDebugView === true ? { viewportDebugView: true } : {}),
         }),
       );
       server = await traceDevStartup('live-vite-create', () =>
@@ -3258,6 +3279,7 @@ export async function createViteConfig(
     readonly outDir?: string;
     readonly sourcemap?: BuildOptions['sourcemap'];
     readonly htmlHead?: BuildOptions['htmlHead'];
+    readonly viewportDebugView?: boolean;
     readonly server?: ProjectPortOptions;
     readonly host?: DevKitHostBinding;
     readonly onPackProgress?: (event: PluginPackProgress) => void;
@@ -3482,6 +3504,7 @@ export async function createViteConfig(
               options.materialProfile,
               staticPrograms,
               page.namespace,
+              options.viewportDebugView === true,
             ),
           ),
           writeFile(
@@ -3499,10 +3522,12 @@ export async function createViteConfig(
           ),
         ];
       };
+      const publishedBrowser =
+        !serving && (options.target === undefined || options.target === 'browser');
       const runtimePacks = await runtimePacksModuleSource(
         facts,
         sourceInventory,
-        staticPrograms,
+        staticPrograms ? 'native' : publishedBrowser ? 'published-browser' : 'browser',
         authoredPacks,
         realGeneratedRoot,
       );

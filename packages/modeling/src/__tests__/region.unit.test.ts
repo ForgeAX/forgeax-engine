@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { dot, faceCentroid, faceNormal } from '../geom';
 import { model } from '../model';
+import { REGION_MODES } from '../ops';
 import { sel } from '../selectors';
 import { bounds, expectContract, sharpEdges } from './contract';
 
@@ -225,5 +226,42 @@ describe('bridge', () => {
     expect(errors.map((i) => i.code)).toEqual(['mesh-inverted']);
     unequal.flip(sel.all());
     expect(unequal.validate().issues.filter((i) => i.severity === 'error')).toEqual([]);
+  });
+});
+
+describe('region mode admission', () => {
+  const invalid = { region: 'individual' } as unknown as { region: 'merged' };
+
+  it.each([
+    [
+      'inset',
+      (m: ReturnType<typeof model>) => m.inset(sel.facing('+y'), { thickness: 0.1, ...invalid }),
+    ],
+    [
+      'extrude',
+      (m: ReturnType<typeof model>) => m.extrude(sel.facing('+y'), { distance: 1, ...invalid }),
+    ],
+    [
+      'offset',
+      (m: ReturnType<typeof model>) => m.offset(sel.facing('+y'), { distance: 0.1, ...invalid }),
+    ],
+  ])('%s rejects an unknown region and lists the allowed modes', (_name, run) => {
+    const m = model();
+    m.box({ size: [1, 1, 1] });
+    const op = run(m);
+    expect(op.status).not.toBe('ok');
+    expect(op.error?.code).toBe('model-invalid-argument');
+    expect(op.error?.expected).toBe("region is one of 'merged', 'perFace', 'perIsland'");
+    expect(op.error?.detail).toMatchObject({ region: 'individual', allowed: REGION_MODES });
+    expect(op.error?.hint).toMatch(/^set region to merged, perFace, perIsland/);
+  });
+
+  it.each(REGION_MODES)('inset accepts %s unchanged', (region) => {
+    const m = model();
+    m.box({ size: [1, 1, 1] });
+    expect(m.inset(sel.facing('+y'), { thickness: 0.1, region }).roles).toEqual({
+      inner: 1,
+      rim: 4,
+    });
   });
 });

@@ -16,6 +16,8 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
 }));
 
 import { createApp } from '../browser';
+// Load the local fixture graph before the runner starts the assertions.
+import '../browser-local';
 
 function rendererStub() {
   const lease = {};

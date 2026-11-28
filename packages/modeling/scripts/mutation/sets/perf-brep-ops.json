@@ -1,0 +1,121 @@
+{
+ "tests": [
+  "src/brep/__tests__/brep-ops.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "perf-pairs-off-by-one",
+   "file": "src/brep/profile.ts",
+   "old": "      tally('segmentPairs');\n",
+   "new": "      tally('segmentPairs', 2);\n"
+  },
+  {
+   "id": "perf-pairs-dropped",
+   "file": "src/brep/profile.ts",
+   "old": "      tally('segmentPairs');\n",
+   "new": ""
+  },
+  {
+   "id": "perf-gap-before-box",
+   "file": "src/brep/profile.ts",
+   "old": "      tally('segmentGaps');\n      if (segmentGap",
+   "new": "      if (segmentGap"
+  },
+  {
+   "id": "perf-surface-point-dropped",
+   "file": "src/brep/surfaces.ts",
+   "old": "export function surfacePoint(s: Surface, u: number, v: number): P3 {\n  tally('surfaceEvals');\n",
+   "new": "export function surfacePoint(s: Surface, u: number, v: number): P3 {\n"
+  },
+  {
+   "id": "perf-normal-double",
+   "file": "src/brep/surfaces.ts",
+   "old": "export function surfaceNormal(s: Surface, u: number, v: number): P3 {\n  tally('surfaceEvals');\n",
+   "new": "export function surfaceNormal(s: Surface, u: number, v: number): P3 {\n  tally('surfaceEvals', 2);\n"
+  },
+  {
+   "id": "perf-curve-tangent-dropped",
+   "file": "src/brep/curves.ts",
+   "old": "export function curveTangent(c: Curve, t: number): P3 {\n  tally('curveEvals');\n",
+   "new": "export function curveTangent(c: Curve, t: number): P3 {\n"
+  },
+  {
+   "id": "perf-quadrature-per-piece",
+   "file": "src/brep/faces.ts",
+   "old": "tally('quadratureEvals', 8 * n);",
+   "new": "tally('quadratureEvals', n);"
+  },
+  {
+   "id": "perf-triangulation-dropped",
+   "file": "src/brep/tessellate.ts",
+   "old": "  tally('triangulations');\n",
+   "new": ""
+  },
+  {
+   "id": "perf-bound-widened",
+   "file": "bench/brep-ops.ts",
+   "old": "export const OPS_BOUND = 1.1;",
+   "new": "export const OPS_BOUND = 1.5;"
+  },
+  {
+   "id": "perf-bound-strict-compare",
+   "file": "bench/brep-ops.ts",
+   "old": "counts[k] > base[k] * bound",
+   "new": "counts[k] > base[k] * bound * bound"
+  },
+  {
+   "id": "perf-missing-case-ignored",
+   "file": "bench/brep-ops.ts",
+   "old": "if (current[name] === undefined) out.push(`${name}: in the baseline but not measured`);",
+   "new": "if (current[name] === undefined) continue;"
+  },
+  {
+   "id": "perf-nested-not-added",
+   "file": "src/brep/ops.ts",
+   "old": "if (outer !== undefined) for (const k of OP_KINDS) outer[k] += counts[k];",
+   "new": ""
+  },
+  {
+   "id": "perf-active-leak",
+   "file": "src/brep/ops.ts",
+   "old": "    active = outer;\n",
+   "new": "    active = counts;\n"
+  },
+  {
+   "id": "perf-vertex-calls-dropped",
+   "file": "src/brep/assembler.ts",
+   "old": "    tally('vertexCalls');\n",
+   "new": ""
+  },
+  {
+   "id": "perf-vertex-probes-dropped",
+   "file": "src/brep/assembler.ts",
+   "old": "            tally('vertexProbes');\n",
+   "new": ""
+  },
+  {
+   "id": "perf-finite-scan-x20",
+   "file": "src/brep/structure.ts",
+   "old": "  if (hasNonFinite(shape.vertices)) bad(",
+   "new": "  for (let q = 0; q < 20; q++) hasNonFinite(shape.surfaces);\n  if (hasNonFinite(shape.vertices)) bad("
+  },
+  {
+   "id": "perf-tri-points-dropped",
+   "file": "src/brep/tessellate.ts",
+   "old": "  tally('triangulationPoints', points.length);\n",
+   "new": ""
+  },
+  {
+   "id": "perf-pairs-counted-after-box-test",
+   "file": "src/brep/profile.ts",
+   "old": "        continue;\n      }\n      const n = (rings[s.ring]",
+   "new": "        continue;\n      }\n      tally('segmentPairs');\n      const n = (rings[s.ring]"
+  },
+  {
+   "id": "perf-vertex-weld-one-bucket",
+   "file": "src/brep/assembler.ts",
+   "old": "    const cx = Math.floor(p[0] / this.tol);\n    const cy = Math.floor(p[1] / this.tol);\n    const cz = Math.floor(p[2] / this.tol);\n    for",
+   "new": "    const cx = 0;\n    const cy = 0;\n    const cz = 0;\n    for"
+  }
+ ]
+}

@@ -2,7 +2,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { pushAll, replaceAll } from '../arrays';
 import { creaseWeights, edgeSharpness, withCrease } from '../crease';
 import { type ModelingError, modelingError } from '../errors';
-import { decodeSnapshot, encodeSnapshot } from '../fxem';
+import { decodeSnapshot, encodeSnapshotWithMaps } from '../fxem';
 import { faceCentroid, type Tuple3 } from '../geom';
 import { type CornerChannelName, EDGE_SHARP, EditMesh, NONE } from '../mesh';
 import { TS_BACKEND_IDENTITY } from './boolean-ts';
@@ -242,8 +242,9 @@ function refine(
     const loop: number[] = [];
     const values: { name: CornerChannelName; half: number; value: ArrayLike<number> }[] = [];
     for (const h of halves) {
-      values.push(
-        ...channels
+      pushAll(
+        values,
+        channels
           .filter((name) => mesh.corner(name, h) !== undefined)
           .map((name) => ({
             name,
@@ -255,8 +256,9 @@ function refine(
       const split = edgeOf.get(h >> 1);
       if (split === undefined) continue;
       const nextHalf = mesh.hNext[h] as number;
-      values.push(
-        ...channels
+      pushAll(
+        values,
+        channels
           .filter((name) => [h, nextHalf].every((x) => mesh.corner(name, x) !== undefined))
           .map((name) => ({
             name,
@@ -357,12 +359,12 @@ function runSubdivide(
     selected = refined.selected;
     sharp = refined.sharp;
   }
-  const { faceMap } = mesh.compact();
+  const { bytes, faceMap } = encodeSnapshotWithMaps(mesh);
   const face = new Int32Array(mesh.faceCount).fill(NONE);
   for (const f of mesh.faces()) face[faceMap[f] as number] = origin[f] as number;
   return ok({
     status: 'ok',
-    outputs: [encodeSnapshot(mesh)],
+    outputs: [bytes],
     provenance: [{ face }],
     metrics: {
       inputFaces: inputFaces.length,

@@ -18,8 +18,14 @@ import {
   type RenderPipelineTarget,
   type RenderPipelineTopology,
 } from '../render-pipeline';
-import { type DeferredAoNormalLayout, getSsaoParameters, resolveSsaoQuality } from '../ssao-config';
-import { buildScreenAoUniformPayload, SCREEN_AO_UNIFORM_BYTES } from '../ssao-uniform';
+import {
+  type AmbientOcclusionSettings,
+  AO_APPEARANCE_DEFAULTS,
+  type DeferredAoNormalLayout,
+  GTAO_DEFAULTS,
+  ssaoQualityPermutation,
+} from '../ssao-config';
+import { SCREEN_AO_UNIFORM_BYTES, ScreenAoUniformPage } from '../ssao-uniform';
 import { type GtaoHistoryGraphInput, importGtaoHistory } from './gtao-history';
 import {
   resolveStandardGtaoExecution,
@@ -27,6 +33,10 @@ import {
 } from './standard-build-context';
 import { addAoDepthInputs, addScreenAoRaster, reducedExtent } from './standard-screen-ssao';
 import type { ReadViewHzb } from './standard-view-hzb';
+
+const GTAO_ANGLE_OFFSETS = [60, 300, 180, 240, 120, 0].map((angle) => (angle * Math.PI) / 360);
+const GTAO_TEXEL_OFFSETS = [0.1, 0.6, 0.35, 0.85].map((offset) => offset * 0.25);
+const GTAO_STEP_COUNTS = [4, 6, 8, 12, 20] as const;
 
 interface StandardGtaoInput {
   readonly size: DepthPyramidExtent;
@@ -44,103 +54,21 @@ export function addStandardScreenGtao(
 ): Result<RenderPipelineTarget, RenderGraphError> {
   const { graph } = context;
   const config = topology.config?.ambientOcclusion;
-  const resolved = getSsaoParameters(config);
-  const options = resolved.gtao;
-  const { permutation } = resolveSsaoQuality(config);
-  const size = reducedExtent(input.size, Number(options.downsample));
+  const options = config?.gtao;
+  const size = reducedExtent(input.size, Number(options?.downsample ?? GTAO_DEFAULTS.downsample));
   const depthInputs = addAoDepthInputs(context, topology, input.depth, input.size, input.hzb);
   if (!depthInputs.ok) return depthInputs;
   const { depth, hierarchy } = depthInputs.value;
   const hzb = hierarchy.pyramid;
-  const history = options.temporalFilter
-    ? importGtaoHistory(
-        context,
-        size,
-        JSON.stringify([
-          options,
-          resolved.intensity,
-          resolved.power,
-          resolved.fadeDistance,
-          resolved.fadeRadius,
-          permutation,
-          input.normalLayout,
-        ]),
-      )
-    : ok(undefined);
+  const history =
+    (options?.temporalFilter ?? GTAO_DEFAULTS.temporalFilter)
+      ? importGtaoHistory(context, size)
+      : ok(undefined);
   if (!history.ok) return history;
   const acceptedHistory = history.value;
-  const buffer = graph.createBuffer('gtao-parameters', { size: SCREEN_AO_UNIFORM_BYTES });
-  if (!buffer.ok) return buffer;
-  const historyBuffer =
-    acceptedHistory === undefined
-      ? ok(undefined)
-      : graph.createBuffer('gtao-reprojection-parameters', { size: SCREEN_AO_UNIFORM_BYTES });
-  if (!historyBuffer.ok) return historyBuffer;
-  const reproject = historyBuffer.value;
-  const populated = graph.addCopyPass('gtao-parameters', {
-    accesses: [
-      { resource: buffer.value, usage: 'copy-dst' },
-      ...(reproject === undefined ? [] : [{ resource: reproject, usage: 'copy-dst' as const }]),
-    ],
-    encodeDirect: (_encoder, frame, resources) => {
-      const internal = frame as _InternalRenderPipelineContext;
-      const { camera, runtime } = internal;
-      const history = acceptedHistory?.resolve(internal);
-      const phase = history?.frameIndex ?? 0;
-      const angles = [60, 300, 180, 240, 120, 0] as const;
-      const offsets = [0.1, 0.6, 0.35, 0.85] as const;
-      const stepCounts = [4, 6, 8, 12, 20] as const;
-      const values = buildScreenAoUniformPayload(camera, config, input.size);
-      values.set(
-        [resolved.intensity, resolved.power, resolved.fadeDistance, resolved.fadeRadius],
-        48,
-      );
-      values.set(
-        [
-          options.falloffEnd,
-          Math.min(0.99, 1 - options.thicknessBlend ** 2),
-          stepCounts[permutation] ?? 8,
-          Math.max(0, 2 - permutation),
-        ],
-        52,
-      );
-      // GTAO uses mip.x to select the raw representation consumed by the optional spatial pass.
-      values[56] = Number(options.spatialFilter);
-      values.set(
-        [
-          ((angles[phase % 6] ?? 0) * Math.PI) / 360,
-          (offsets[Math.floor(phase / 6) % 4] ?? 0.1) * 0.25,
-          options.numAngles,
-          options.filterWidth,
-        ],
-        60,
-      );
-      const queue = runtime.device.queue;
-      queue.writeBuffer(resources.buffer(buffer.value).unwrap(), 0, values).unwrap();
-      if (history !== undefined && reproject !== undefined) {
-        const projection = values.subarray(16, 32);
-        const view = values.subarray(0, 16);
-        const current = mat4.multiply(mat4.create(), projection, view);
-        // This is promoted only if the temporal pass encoded and the view submitted.
-        const jitter = camera.temporal?.currentJitterUv ?? ([0, 0] as const);
-        history.pending = { matrix: current, jitter };
-        if (history.accepted !== undefined)
-          values.set(mat4.multiply(mat4.create(), history.accepted.matrix, camera.world), 0);
-        const previousJitter = history.accepted?.jitter;
-        values.set(
-          [
-            Number(history.accepted !== undefined),
-            options.temporalBlendWeight,
-            (jitter?.[0] ?? 0) - (previousJitter?.[0] ?? 0),
-            (jitter?.[1] ?? 0) - (previousJitter?.[1] ?? 0),
-          ],
-          60,
-        );
-        queue.writeBuffer(resources.buffer(reproject).unwrap(), 0, values).unwrap();
-      }
-    },
-  });
-  if (!populated.ok) return populated;
+  const buffers = addGtaoParameters(graph, config, input.size, acceptedHistory);
+  if (!buffers.ok) return buffers;
+  const { parameters, reproject } = buffers.value;
   const execution = resolveStandardGtaoExecution(
     'gtao',
     topology.lane.compute && topology.lane.storageTexture !== false,
@@ -152,36 +80,110 @@ export function addStandardScreenGtao(
       ? addGtaoCompute(
           context,
           size,
-          buffer.value,
+          parameters,
           depth,
           hzb,
-          options.useNormals ? { target: input.normal, layout: input.normalLayout } : undefined,
+          options?.useNormals ? { target: input.normal, layout: input.normalLayout } : undefined,
         )
       : addScreenAoRaster(
           context,
           'gtao-calc',
-          options.useNormals ? 'gtao-normal' : 'gtao-depth',
+          options?.useNormals ? 'gtao-normal' : 'gtao-depth',
           size,
-          buffer.value,
+          parameters,
           { 4: input.normal.view, 5: depth, 16: hzb },
-          options.useNormals ? input.normalLayout : undefined,
+          options?.useNormals ? input.normalLayout : undefined,
         );
   if (!raw.ok) return raw;
-  const current = options.spatialFilter
-    ? addScreenAoRaster(context, 'gtao-spatial', 'gtao-spatial', size, buffer.value, {
-        5: depth,
-        18: raw.value.view,
-      })
-    : raw;
+  const current =
+    (options?.spatialFilter ?? GTAO_DEFAULTS.spatialFilter)
+      ? addScreenAoRaster(context, 'gtao-spatial', 'gtao-spatial', size, parameters, {
+          5: depth,
+          18: raw.value.view,
+        })
+      : raw;
   if (!current.ok) return current;
   return resolveGtao(context, input, {
     size,
     depth,
     current: current.value,
-    parameters: buffer.value,
+    parameters,
     acceptedHistory,
     reproject,
   });
+}
+
+function addGtaoParameters(
+  graph: StandardPipelineBuildContext['graph'],
+  config: AmbientOcclusionSettings | undefined,
+  size: DepthPyramidExtent,
+  acceptedHistory: GtaoHistoryGraphInput | undefined,
+): Result<
+  { readonly parameters: GraphBuffer; readonly reproject: GraphBuffer | undefined },
+  RenderGraphError
+> {
+  const buffer = graph.createBuffer('gtao-parameters', { size: SCREEN_AO_UNIFORM_BYTES });
+  if (!buffer.ok) return buffer;
+  const historyBuffer =
+    acceptedHistory === undefined
+      ? ok(undefined)
+      : graph.createBuffer('gtao-reprojection-parameters', { size: SCREEN_AO_UNIFORM_BYTES });
+  if (!historyBuffer.ok) return historyBuffer;
+  const reproject = historyBuffer.value;
+  const uniforms = new ScreenAoUniformPage();
+  const populated = graph.addCopyPass('gtao-parameters', {
+    accesses: [
+      { resource: buffer.value, usage: 'copy-dst' },
+      ...(reproject === undefined ? [] : [{ resource: reproject, usage: 'copy-dst' as const }]),
+    ],
+    encodeDirect: (_encoder, frame, resources) => {
+      const internal = frame as _InternalRenderPipelineContext;
+      const { camera, runtime } = internal;
+      const history = acceptedHistory?.resolve(internal);
+      const settings = internal.frameState.installedPipelineConfig?.ambientOcclusion ?? config;
+      const previous = history?.prepare(camera, settings);
+      const phase = previous === undefined ? 0 : (history?.frameIndex ?? 0);
+      uniforms.writeCamera(camera, size);
+      const values = uniforms.data;
+      writeGtaoRawParameters(values, settings, phase);
+      const queue = runtime.device.queue;
+      queue.writeBuffer(resources.buffer(buffer.value).unwrap(), 0, values).unwrap();
+      if (history !== undefined && reproject !== undefined) {
+        mat4.multiply(history.pending.matrix, uniforms.projection, uniforms.view);
+        const pendingJitter = history.pending.jitter;
+        if (previous !== undefined) mat4.multiply(uniforms.view, previous.matrix, camera.world);
+        values[60] = Number(previous !== undefined);
+        values[61] = settings?.gtao?.temporalBlendWeight ?? GTAO_DEFAULTS.temporalBlendWeight;
+        values[62] = pendingJitter[0] - (previous?.jitter[0] ?? 0);
+        values[63] = pendingJitter[1] - (previous?.jitter[1] ?? 0);
+        queue.writeBuffer(resources.buffer(reproject).unwrap(), 0, values).unwrap();
+      }
+    },
+  });
+  return populated.ok ? ok({ parameters: buffer.value, reproject }) : populated;
+}
+
+function writeGtaoRawParameters(
+  values: Float32Array,
+  settings: AmbientOcclusionSettings | undefined,
+  phase: number,
+): void {
+  const gtao = settings?.gtao ?? GTAO_DEFAULTS;
+  const permutation = ssaoQualityPermutation(settings);
+  values[48] = settings?.intensity ?? AO_APPEARANCE_DEFAULTS.intensity;
+  values[49] = settings?.power ?? AO_APPEARANCE_DEFAULTS.power;
+  values[50] = settings?.fadeDistance ?? AO_APPEARANCE_DEFAULTS.fadeDistance;
+  values[51] = settings?.fadeRadius ?? AO_APPEARANCE_DEFAULTS.fadeRadius;
+  values[52] = gtao.falloffEnd ?? GTAO_DEFAULTS.falloffEnd;
+  values[53] = Math.min(0.99, 1 - (gtao.thicknessBlend ?? GTAO_DEFAULTS.thicknessBlend) ** 2);
+  values[54] = GTAO_STEP_COUNTS[permutation] ?? 8;
+  values[55] = Math.max(0, 2 - permutation);
+  // mip.x selects the raw representation consumed by the optional spatial pass.
+  values[56] = Number(gtao.spatialFilter ?? GTAO_DEFAULTS.spatialFilter);
+  values[60] = GTAO_ANGLE_OFFSETS[phase % 6] ?? 0;
+  values[61] = GTAO_TEXEL_OFFSETS[Math.floor(phase / 6) % 4] ?? 0.025;
+  values[62] = gtao.numAngles ?? GTAO_DEFAULTS.numAngles;
+  values[63] = gtao.filterWidth ?? GTAO_DEFAULTS.filterWidth;
 }
 
 function resolveGtao(

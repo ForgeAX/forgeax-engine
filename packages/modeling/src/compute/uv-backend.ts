@@ -10,6 +10,7 @@ import type {
   WorkMeter,
 } from './job';
 import { runSolveJob } from './sparse';
+import { runStraightenJob } from './uv-straighten';
 import { runPackJob, runUnwrapJob } from './uv-ts';
 
 /**
@@ -20,7 +21,11 @@ export const tsUvBackend: ComputeBackend = {
   name: 'ts',
   identity: TS_BACKEND_IDENTITY,
   supports: (kind: ComputeJobKind) =>
-    kind === 'solve.sparse' || kind === 'uv.unwrap' || kind === 'uv.pack' || kind === 'uv.chart',
+    kind === 'solve.sparse' ||
+    kind === 'uv.unwrap' ||
+    kind === 'uv.pack' ||
+    kind === 'uv.straighten' ||
+    kind === 'uv.chart',
   quality: () => 'baseline',
   run<K extends ComputeJobKind>(
     request: ComputeJobRequest<K>,
@@ -33,7 +38,9 @@ export const tsUvBackend: ComputeBackend = {
           ? runUnwrapJob(request as ComputeJobRequest<'uv.unwrap'>, work)
           : request.kind === 'uv.pack'
             ? runPackJob(request as ComputeJobRequest<'uv.pack'>, work)
-            : runChartJob(request as ComputeJobRequest<'uv.chart'>, work);
+            : request.kind === 'uv.straighten'
+              ? runStraightenJob(request as ComputeJobRequest<'uv.straighten'>, work)
+              : runChartJob(request as ComputeJobRequest<'uv.chart'>, work);
     return out as Result<BackendOutput<K>, ModelingError>;
   },
 };

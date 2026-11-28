@@ -421,8 +421,8 @@ export function pipeNetwork(
   const factor = tubeFactor(ringSegments, levels);
   const cageAt = (edge: number, end: 0 | 1) => endRadius(edge, end) / factor;
   const widestCage = nodes.map((_, n) =>
-    Math.max(
-      ...(branches[n] as Branch[]).map((b) =>
+    maxOf(
+      (branches[n] as Branch[]).map((b) =>
         cageAt(b.edge, (edges[b.edge] as readonly [number, number])[0] === n ? 0 : 1),
       ),
     ),

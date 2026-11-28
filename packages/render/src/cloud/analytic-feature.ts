@@ -15,6 +15,11 @@ import type {
   ExtractedSampledCloudLayer,
 } from './extract';
 import { CLOUD_ATMOSPHERE_TARGETS } from './lighting/environment';
+import { type CloudShadowFormat, isCloudShadowFormat } from './lighting/shadow-format';
+import {
+  CLOUD_SHADOW_FINAL_TARGET,
+  cloudShadowSpatialLayout,
+} from './lighting/shadow-spatial-layout';
 import { cloudShadowFilterWork } from './shadow-filter';
 import { CLOUD_SAMPLED_MAX_STEPS, cookedCloudViewSampleBudget } from './tracing/policy';
 
@@ -55,7 +60,7 @@ function encodeSampledShadowMap(map: ExtractedSampledCloudLayer['shadowMap']): n
     map?.strength ?? 1,
     map?.mode ?? 0,
     Number(map?.cast ?? false),
-    map?.mapSamples ?? 64,
+    map?.traceSamples ?? map?.mapSamples ?? 64,
     map?.surfaceStrength ?? 1,
   ];
 }
@@ -133,7 +138,7 @@ export function encodeProgram(layer: ExtractedProgramCloudLayer): Uint8Array {
     data.set([...map.right.map((value) => value * map.extentMeters * 0.5), 0], 28);
     data.set([...map.up.map((value) => value * map.extentMeters * 0.5), 0], 32);
     data.set([...map.directionToLight.map((value) => -value), map.depthMeters], 36);
-    data.set([map.mapSamples, map.strength, map.biasMeters, map.mode], 40);
+    data.set([map.traceSamples ?? map.mapSamples, map.strength, map.biasMeters, map.mode], 40);
   }
   data.set([0, 0, 1, 1], 44);
   data.set(
@@ -159,10 +164,12 @@ export function encodeProgram(layer: ExtractedProgramCloudLayer): Uint8Array {
 
 function cloudShadowWork(
   viewId: string,
+  target: string,
   programName: string,
   shader: string,
   params: Uint8Array,
   sampled: ExtractedSampledCloudLayer | undefined,
+  format: CloudShadowFormat,
 ): RenderFeatureWork {
   const shadowShader = `${programName}-shadow`;
   const shadowResources: RenderFeatureResourceDeclaration[] = [
@@ -180,6 +187,8 @@ function cloudShadowWork(
         ),
       ],
       params: { byteSize: params.byteLength, defaultValue: params },
+      paramsSource: 'current-view',
+      frameParams: params,
     },
     {
       kind: 'graphics-program',
@@ -188,7 +197,7 @@ function cloudShadowWork(
         shader: shadowShader,
         vertexLayout: 'none',
         sampleCount: 1,
-        colorFormats: ['rgba32float'],
+        colorFormats: [format],
         renderState: { depthWriteEnabled: false, depthCompare: 'always' },
       },
     },
@@ -224,7 +233,7 @@ function cloudShadowWork(
       {
         kind: 'raster',
         name: SkyPass.cloudShadow,
-        colorAttachments: [{ target: 'cloud-shadow-raw', loadOp: 'clear', storeOp: 'store' }],
+        colorAttachments: [{ target, loadOp: 'clear', storeOp: 'store' }],
         draws: [
           {
             program: 'cloud-bsm-pipeline',
@@ -338,6 +347,8 @@ function cloudTraceWork(
           ...(materialLayer === undefined ? [] : atmosphereReads),
         ],
         params: { byteSize: params.byteLength, defaultValue: params },
+        paramsSource: 'current-view',
+        frameParams: params,
       },
       {
         kind: 'graphics-program',
@@ -490,18 +501,57 @@ export function createAnalyticCloudFeature() {
               ? encodeProgram(layer)
               : encodeSampled(layer);
         if (materialLayer?.shadowMap !== undefined) {
-          const filterSource = context.getFeatureShaderSource?.('forgeax::cloud-shadow-filter');
-          if (filterSource === undefined) {
+          const map = materialLayer.shadowMap;
+          const layout = cloudShadowSpatialLayout(
+            map.resolution,
+            map.spatialPasses,
+            map.ue5Reference,
+          );
+          const format = view.targets.find(
+            (target) => target.name === CLOUD_SHADOW_FINAL_TARGET,
+          )?.format;
+          const attachmentNames = [layout.traceTarget, ...layout.passes.map((pass) => pass.output)];
+          if (
+            !isCloudShadowFormat(format) ||
+            attachmentNames.some(
+              (name) => view.targets.find((target) => target.name === name)?.format !== format,
+            )
+          ) {
             return err(
               new CloudLayerResourceFailureError({
                 stage: 'view',
                 generation: context.generation,
-                cause: 'Missing cloud shadow filter shader; rebuild the shader manifest',
+                cause:
+                  'Cloud shadow trace and spatial filters require matching color attachment formats',
               }),
             );
           }
-          works.push(cloudShadowWork(view.identity, programName, shader, params, sampled));
-          works.push(cloudShadowFilterWork(view.identity, filterSource));
+          works.push(
+            cloudShadowWork(
+              view.identity,
+              layout.traceTarget,
+              programName,
+              shader,
+              params,
+              sampled,
+              format,
+            ),
+          );
+          if (layout.passes.length > 0) {
+            const filterSource = context.getFeatureShaderSource?.('forgeax::cloud-shadow-filter');
+            if (filterSource === undefined) {
+              return err(
+                new CloudLayerResourceFailureError({
+                  stage: 'view',
+                  generation: context.generation,
+                  cause: 'Missing cloud shadow filter shader; rebuild the shader manifest',
+                }),
+              );
+            }
+            for (const pass of layout.passes) {
+              works.push(cloudShadowFilterWork(view.identity, filterSource, format, pass));
+            }
+          }
         }
         works.push(
           cloudTraceWork(

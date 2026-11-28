@@ -6,14 +6,22 @@
 // - Result<T, E> / ok / err -- binary result type
 // - PassInfo / ResourceInfo -- query interfaces
 
-export { RenderGraphBuilder, renderGraphCompileCount } from './builder.js';
+export {
+  RenderGraphBuilder,
+  renderGraphCompileCount,
+  renderOrderedViewBindCount,
+} from './builder.js';
 export {
   appendCompiledRenderGraphPassNames,
+  type BoundRenderGraphRecording,
+  boundRenderGraphResources,
   compiledRenderGraphAllocation,
   compiledRenderGraphGeneration,
   compiledRenderGraphHasPass,
+  compiledRenderGraphPassCountByPrefix,
   compiledRenderGraphPassDeclarations,
   compiledRenderGraphResourceDeclarations,
+  observeCompiledRenderGraphAllocations,
 } from './compiled-graph.js';
 export {
   err,
@@ -52,6 +60,7 @@ export type {
 export { RenderGraph } from './graph.js';
 export { sameGraphTexture } from './kernel-internal.js';
 export { allocateRenderPassGeneration, encodeNativeRenderPass } from './native-pass.js';
+export type { BoundRenderGraphResources } from './native-recording-resources.js';
 export {
   type CurrentFrameObservationDescriptor,
   type CurrentFrameObservationLease,

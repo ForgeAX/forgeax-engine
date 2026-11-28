@@ -1,3 +1,4 @@
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import {
@@ -17,8 +18,9 @@ export function createDepthOfFieldScene(
   height: number,
   antialias: number,
   scale: number,
+  assets?: AssetRegistry,
 ) {
-  const world = new World();
+  const world = new World(assets === undefined ? undefined : { assets });
   const material = testAssets(world)
     .create(Materials.unlit([0.8, 0.2, 0.1, 1]))
     .unwrap();

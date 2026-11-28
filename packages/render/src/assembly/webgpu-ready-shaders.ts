@@ -32,8 +32,9 @@ import {
 import type { ManifestEntry } from '@forgeax/engine-types';
 import { atmosphereAvailable, directionalPcssCapable } from '../environment/capability';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
-import type { GpuDrivenPbrProgram } from '../gpu-driven/pbr-program';
-import { setIblComposedShaders } from '../ibl/IblPipelineCache';
+import type { GpuDrivenPbrPrograms } from '../gpu-driven/pbr-program';
+import { publishIblProgramDeclarations } from '../ibl/IblPipelineCache';
+import type { DeviceScope } from '../lifecycle';
 import { assertStorageBufferCap } from '../light-buffer-layout';
 import { SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
 import type { StandardSceneShaderSources } from '../pipeline/standard-deferred-lighting';
@@ -45,9 +46,14 @@ import {
   invokeDeviceCreateShaderModule,
   prepareLowLimitMaterialShaderEntry,
 } from './material-shader-policy';
+import type { FullscreenProgramRequirement } from './render-feature-post-processes';
 import { runShimStep } from './renderer-helpers';
 import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES, selectBootVariant } from './shader-prewarm-policy';
-import { ATMOSPHERE_SHADER_STAGES, prewarmUtilityShaders } from './utility-shader-prewarm';
+import {
+  ATMOSPHERE_SHADER_STAGES,
+  declareUtilityShader,
+  prepareUtilityShaders,
+} from './utility-shader-prewarm';
 
 export type AsyncCreateShaderModule = (
   device: RhiDevice,
@@ -63,26 +69,35 @@ export type CompileShaderModule = (
 ) => Promise<ShaderModule>;
 
 /**
- * Eagerly compiled engine modules. A null module means its manifest entry is
- * absent (the camera-only empty manifest leaves every module null) and the
- * dependent pipeline stays null.
+ * Device-owned engine modules. Optional fullscreen modules can be populated by
+ * their pass owner. An absent declaration always leaves its module null.
  */
 export interface EngineShaderModules {
   readonly pbr: ShaderModule | null;
   readonly unlit: ShaderModule | null;
   readonly sprite: ShaderModule | null;
   readonly spriteLit: ShaderModule | null;
-  readonly fxaa: ShaderModule | null;
-  readonly skybox: ShaderModule | null;
-  readonly bloomHorizontal: ShaderModule | null;
-  readonly bloomVertical: ShaderModule | null;
-  readonly bloomComposite: ShaderModule | null;
-  readonly ssao: ShaderModule | null;
+  fxaa: ShaderModule | null;
+  skybox: ShaderModule | null;
+  bloomHorizontal: ShaderModule | null;
+  bloomVertical: ShaderModule | null;
+  bloomComposite: ShaderModule | null;
+  ssao: ShaderModule | null;
   readonly ssaoGBufferV2?: boolean;
   readonly ssaoCompactGBuffer?: boolean;
   readonly gtaoGBufferV2?: boolean;
-  readonly gtaoCompute: ShaderModule | null;
-  readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
+  gtaoCompute: ShaderModule | null;
+  readonly gpuDrivenPbrPrograms: GpuDrivenPbrPrograms;
+  readonly fullscreenOnDemand?: Pick<
+    ResolvedEngineManifestEntries,
+    | 'fxaa'
+    | 'skybox'
+    | 'bloomHorizontal'
+    | 'bloomVertical'
+    | 'bloomComposite'
+    | 'ssao'
+    | 'gtaoCompute'
+  >;
 }
 
 export function emptyEngineShaderModules(): EngineShaderModules {
@@ -513,6 +528,7 @@ export function resolveEngineManifestEntries(
   manifestEntries: readonly ManifestEntry[],
   backendKind: RhiDevice['caps']['backendKind'],
   caps: ReadyDeviceCapabilities,
+  nativeMaterialTemplates = false,
 ): ResolvedEngineManifestEntries {
   const entries = requireEngineTriple(
     classifyEngineManifestEntries(registry, manifestEntries),
@@ -520,26 +536,27 @@ export function resolveEngineManifestEntries(
   );
   if (!caps.storageBuffer) applyStorageFallbackVariants(registry, entries, caps);
   applyRuntimeVariants(registry, entries, caps);
-  applySpriteRegionlessVariant(registry, entries, caps);
+  const sprite = registry.materialShaderManifestEntry('forgeax::sprite');
+  if (!nativeMaterialTemplates || sprite === undefined || !isShaderTemplateManifestRow(sprite))
+    applySpriteRegionlessVariant(registry, entries, caps);
   return entries;
 }
 
-/** Publish the generation's compiled IBL programs before resource preparation. */
-export function publishIblPrograms(entries: EngineManifestEntries): void {
+/** Bind the manifest declarations to the device generation that will bake them. */
+export function publishIblPrograms(entries: EngineManifestEntries, scope: DeviceScope): void {
   const { iblEquirect, iblPrefilter, iblBrdfLut, probeBackground } = entries;
   if (iblEquirect === undefined || iblPrefilter === undefined || iblBrdfLut === undefined) return;
-  setIblComposedShaders({
-    equirectToCube: iblEquirect.wgsl,
-    prefilter: iblPrefilter.wgsl,
-    brdfLut: iblBrdfLut.wgsl,
-    ...(probeBackground === undefined ? {} : { probeBackground: probeBackground.wgsl }),
+  publishIblProgramDeclarations(scope, {
+    equirectToCube: iblEquirect,
+    prefilter: iblPrefilter,
+    brdfLut: iblBrdfLut,
+    ...(probeBackground === undefined ? {} : { probeBackground }),
   });
 }
 
 /**
- * Points/Lines are an engine-owned record path, not a producer feature, so they
- * cannot declare `requiredMaterialShaders`; prewarm their optional artifact so
- * a first frame cannot silently skip its draw behind an async module compile.
+ * Backends without native template preparation need the Points/Lines module
+ * before their synchronous record path consumes this optional artifact.
  */
 export async function prewarmPointsLinesProgram(
   registry: ShaderCatalog,
@@ -560,11 +577,13 @@ export async function prewarmPointsLinesProgram(
 
 /** Fullscreen feature modules compiled before the first synchronous frame. */
 export async function prewarmFullscreenPostProcesses(
-  postProcesses: readonly { readonly identity: string; readonly source: string }[],
+  postProcesses: readonly FullscreenProgramRequirement[],
   compile: CompileShaderModule,
   seed: SeedShaderModule,
+  nativeImmediate: boolean,
 ): Promise<void> {
   for (const postProcess of postProcesses) {
+    if (nativeImmediate && postProcess.rendererOwned === true) continue;
     const label = postProcessShaderModuleLabel(postProcess);
     const module = await compile(
       postProcess.source,
@@ -590,10 +609,42 @@ const STANDARD_COMPANION_PROGRAMS = [
   ['subsurface', 'forgeax::engine-subsurface-diffusion'],
 ] as const;
 
-/** Publish Deferred source contracts and prepare the companions that still need boot modules. */
+async function prepareStandardCompanions(
+  registry: ShaderCatalog,
+  compileUtility: CompileUtilityShader | undefined,
+  seed: SeedShaderModule,
+  storageBuffer: boolean,
+  contractFor: (entry: MaterialShaderManifestEntry) => ManifestEntry['programContract'],
+) {
+  const sources: Partial<Record<(typeof STANDARD_COMPANION_PROGRAMS)[number][0], ShaderSource>> =
+    {};
+  let compatible = true;
+  let compactDecals = 0;
+  for (const [field, identifier] of STANDARD_COMPANION_PROGRAMS) {
+    if (!storageBuffer && field === 'subsurface') continue;
+    const entry = findMaterialShaderEntry(registry, identifier);
+    if (entry === undefined) continue;
+    const decal = field === 'decalProject' || field === 'decalApply';
+    const contract = contractFor(entry);
+    if ((decal || field === 'subsurface') && contract?.gbuffer !== 'standard-gbuffer/2')
+      compatible = false;
+    if (decal && contract?.compactGbuffer === 'standard-gbuffer/4') compactDecals += 1;
+    if (compileUtility === undefined) {
+      declareUtilityShader(sources, field, () => materialShaderSource(entry.variants[0] ?? entry));
+    } else {
+      const source = materialShaderSource(entry.variants[0] ?? entry);
+      if (field !== 'subsurface')
+        seed(identifier, await compileUtility(identifier, source, 'Decal'), source);
+      sources[field] = source;
+    }
+  }
+  return { sources, compatible, compactDecals: compactDecals === 2 };
+}
+
+/** Publish Standard scene source contracts. Backends without immediate modules seed companions here. */
 export async function prepareStandardSceneSources(
   registry: ShaderCatalog,
-  compileUtility: CompileUtilityShader,
+  compileUtility: CompileUtilityShader | undefined,
   seed: SeedShaderModule,
   caps: ReadyDeviceCapabilities,
 ): Promise<StandardSceneShaderSources | undefined> {
@@ -621,7 +672,6 @@ export async function prepareStandardSceneSources(
     (isShaderTemplateManifestRow(deferred)
       ? materialShaderAxes(deferred).includes('DIRECT_DFG_LUT_AVAILABLE')
       : deferred.variants.some((variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true));
-  let gbufferCompatible = deferredContract?.gbuffer === 'standard-gbuffer/2';
   const deferredReflections = new Map<ShaderSource, ShaderReflection>();
   interface DeferredShaderSelection {
     readonly variant: MaterialShaderManifestVariant;
@@ -702,42 +752,23 @@ export async function prepareStandardSceneSources(
     selected.source = source;
     return source;
   };
-  let compactDecalPrograms = 0;
-  const companions: {
-    forwardScreenCompose?: ShaderSource;
-    forwardContact?: ShaderSource;
-    decalProject?: ShaderSource;
-    decalApply?: ShaderSource;
-    subsurface?: ShaderSource;
-  } = {};
-  for (const [field, identifier] of STANDARD_COMPANION_PROGRAMS) {
-    if (!caps.storageBuffer && field === 'subsurface') continue;
-    const entry = findMaterialShaderEntry(registry, identifier);
-    if (entry === undefined) continue;
-    if (
-      (field === 'decalProject' || field === 'decalApply' || field === 'subsurface') &&
-      contractFor(entry)?.gbuffer !== 'standard-gbuffer/2'
-    )
-      gbufferCompatible = false;
-    if (
-      (field === 'decalProject' || field === 'decalApply') &&
-      contractFor(entry)?.compactGbuffer === 'standard-gbuffer/4'
-    )
-      compactDecalPrograms += 1;
-    const source = materialShaderSource(entry.variants[0] ?? entry);
-    if (field !== 'subsurface')
-      seed(identifier, await compileUtility(identifier, source, 'Decal'), source);
-    companions[field] = source;
-  }
-  return {
-    ...companions,
+  const companions = await prepareStandardCompanions(
+    registry,
+    compileUtility,
+    seed,
+    caps.storageBuffer,
+    contractFor,
+  );
+  const contracts: StandardSceneShaderSources = {
     get forwardDirectionalShadow() {
       return forwardShadow === undefined
         ? undefined
         : materialShaderSource(forwardShadow.variants[0] ?? forwardShadow);
     },
-    ...(compactDecalPrograms === 2 ? { compactDecals: true as const } : {}),
-    ...(gbufferCompatible ? { gbuffer: 'standard-gbuffer/2' as const } : {}),
+    ...(companions.compactDecals ? { compactDecals: true as const } : {}),
+    ...(companions.compatible && deferredContract?.gbuffer === 'standard-gbuffer/2'
+      ? { gbuffer: 'standard-gbuffer/2' as const }
+      : {}),
     ...(caps.directionalPcss && deferredContract?.compactGbuffer === 'standard-gbuffer/4'
       ? { compactGbuffer: deferredContract.compactGbuffer }
       : {}),
@@ -770,6 +801,7 @@ export async function prepareStandardSceneSources(
         }
       : {}),
   };
+  return Object.defineProperties(contracts, Object.getOwnPropertyDescriptors(companions.sources));
 }
 
 function isDeferredLightingVariant(
@@ -788,16 +820,18 @@ function isDeferredLightingVariant(
 }
 
 /** Atmosphere sources plus the shared environment PMREM program they require. */
-export async function prewarmAtmospherePrograms(
+export async function prepareAtmospherePrograms(
   manifestEntries: readonly ManifestEntry[],
-  compileUtility: CompileUtilityShader,
+  compileUtility: CompileUtilityShader | undefined,
   seed: SeedShaderModule,
 ): Promise<AtmosphereShaderSources | undefined> {
-  const sources = await prewarmUtilityShaders(
+  const sources = await prepareUtilityShaders(
     'analytic-atmosphere',
     ATMOSPHERE_SHADER_STAGES,
     manifestEntries,
-    (label, source) => compileUtility(label, source, 'Atmosphere'),
+    compileUtility === undefined
+      ? undefined
+      : (label, source) => compileUtility(label, source, 'Atmosphere'),
     seed,
   );
   if (sources === undefined) return undefined;
@@ -815,12 +849,15 @@ export async function prewarmAtmospherePrograms(
       hint: 'include ibl-prefilter in the Engine shader manifest',
     });
   }
+  if (compileUtility === undefined)
+    return declareUtilityShader(sources, 'prefilter', () => manifestShaderSource(prefilter));
+  const prefilterSource = manifestShaderSource(prefilter);
   seed(
     'ibl-prefilter',
-    await compileUtility('ibl-prefilter', manifestShaderSource(prefilter), 'Atmosphere'),
-    manifestShaderSource(prefilter),
+    await compileUtility('ibl-prefilter', prefilterSource, 'Atmosphere'),
+    prefilterSource,
   );
-  return { ...sources, prefilter: manifestShaderSource(prefilter) };
+  return { ...sources, prefilter: prefilterSource };
 }
 
 /**

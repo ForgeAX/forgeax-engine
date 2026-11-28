@@ -55,11 +55,13 @@ export interface BakeMapStats {
 export interface BakeCompareView {
   readonly view: { readonly name: string; readonly yaw: number; readonly pitch: number };
   readonly high: {
+    readonly checkpoint?: string;
     readonly source: string;
     readonly session: number;
     readonly values: Readonly<Record<string, unknown>>;
   };
   readonly low: {
+    readonly checkpoint?: string;
     readonly source: string;
     readonly session: number;
     readonly values: Readonly<Record<string, unknown>>;
@@ -111,6 +113,11 @@ const argsSchema = {
       description: 'Session index of the low-poly receiver (needs uv0)',
     },
     detail: { type: 'integer', minimum: 0, description: 'Session index of the high-poly detail' },
+    baseCheckpoint: {
+      type: 'string',
+      description: 'Named receiver state before display-only geometry',
+    },
+    detailCheckpoint: { type: 'string', description: 'Named high detail state to project' },
     maps: {
       type: 'array',
       items: { type: 'string', enum: BAKE_MAP_KINDS.filter((m) => m !== 'resample') },
@@ -121,6 +128,12 @@ const argsSchema = {
     cage: {
       type: 'object',
       description: "Cage { offset, maxRay }, meters or 'auto' (default auto)",
+    },
+    protectMip: {
+      type: 'integer',
+      minimum: 0,
+      maximum: 12,
+      description: 'Coarsest mip level whose chart gutters must remain isolated',
     },
     gutter: { type: 'integer', minimum: 0, description: "Gutter texels (default 'fill')" },
     filter: {
@@ -137,6 +150,23 @@ const argsSchema = {
       description: 'Detail shading normal mode (default autoSmooth 35 degrees)',
     },
     ao: { type: 'object', description: 'Occlusion rays: { rays, bias, distance }' },
+    tags: {
+      type: 'object',
+      description: 'Bake group and floater tag conventions: { groupPrefix, floater }',
+    },
+    groups: {
+      type: 'object',
+      description: 'Per-group cage and direction overrides, keyed by bake group id',
+    },
+    slots: {
+      type: 'object',
+      description:
+        'High material-slot surfaces: { slot: { baseColor, roughness, metallic, emissive, emissiveIntensity } }; * is the fallback',
+    },
+    direction: {
+      description: 'Ray field: averaged, shading, face, { face: tag } or { blend: meters }',
+      anyOf: [{ enum: ['averaged', 'shading', 'face'] }, { type: 'object' }],
+    },
     out: {
       type: 'string',
       description: 'Project-relative directory for <map>.png (level 0, as baked); default none',
@@ -237,7 +267,12 @@ export function modelBakeTool(
           compare: _c,
           ...rest
         } = args;
-        const built = request({ ...rest, session: args[key] });
+        const checkpoint = args[`${key}Checkpoint`];
+        const built = request({
+          ...rest,
+          session: args[key],
+          ...(typeof checkpoint === 'string' ? { checkpoint } : {}),
+        });
         if ('ok' in built) return built as never;
         const response = await capture({ ...built, snapshot: true });
         if (!response.ok) return fail(response.error);
@@ -270,6 +305,7 @@ export function modelBakeTool(
         ...(args.cage !== undefined
           ? { cage: args.cage as NonNullable<BakeSettings['cage']> }
           : {}),
+        ...(typeof args.protectMip === 'number' ? { protectMip: args.protectMip } : {}),
         ...(typeof args.gutter === 'number' ? { gutter: args.gutter } : {}),
         ...(args.filter === 'bspline' || args.filter === 'none' ? { filter: args.filter } : {}),
         ...(args.normals !== undefined
@@ -279,6 +315,18 @@ export function modelBakeTool(
           ? { detailNormals: args.detailNormals as NonNullable<BakeSettings['detailNormals']> }
           : {}),
         ...(args.ao !== undefined ? { ao: args.ao as NonNullable<BakeSettings['ao']> } : {}),
+        ...(args.tags !== undefined
+          ? { tags: args.tags as NonNullable<BakeSettings['tags']> }
+          : {}),
+        ...(args.groups !== undefined
+          ? { groups: args.groups as NonNullable<BakeSettings['groups']> }
+          : {}),
+        ...(args.slots !== undefined
+          ? { slots: args.slots as NonNullable<BakeSettings['slots']> }
+          : {}),
+        ...(args.direction !== undefined
+          ? { direction: args.direction as NonNullable<BakeSettings['direction']> }
+          : {}),
       };
       const baked = bakeMaps({ ...settings, base: base.snapshot, detail: detail.snapshot });
       if (!baked.ok) {
@@ -341,8 +389,22 @@ export function modelBakeTool(
           ? {
               compare: BAKE_COMPARE_VIEWS.map((view) => ({
                 view,
-                high: { source, session: detail.side.session, values },
-                low: { source, session: base.side.session, values },
+                high: {
+                  source,
+                  session: detail.side.session,
+                  values,
+                  ...(detail.side.checkpoint === undefined
+                    ? {}
+                    : { checkpoint: detail.side.checkpoint }),
+                },
+                low: {
+                  source,
+                  session: base.side.session,
+                  values,
+                  ...(base.side.checkpoint === undefined
+                    ? {}
+                    : { checkpoint: base.side.checkpoint }),
+                },
               })),
             }
           : {}),

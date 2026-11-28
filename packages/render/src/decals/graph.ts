@@ -5,13 +5,13 @@ import type {
   RenderGraphBuilder,
 } from '@forgeax/engine-render-graph';
 import type { BindGroup, BindGroupLayout, RenderPipeline } from '@forgeax/engine-rhi';
-import { ok, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { type MaterialTextureCoordinates, ok, shaderSourceDescriptor } from '@forgeax/engine-types';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import { deriveRenderDataTexture } from '../render-data';
+import { deriveRenderDataTexture, type TextureExtent } from '../render-data';
 import {
   createRenderPipelineTarget,
   type RenderPipelineFrame,
@@ -24,15 +24,17 @@ import {
 import { ProjectedDecalInvalidError } from './component';
 import { DECAL_TEXTURE_FIELDS, MAX_PROJECTED_DECALS, type ProjectedDecalSnapshot } from './extract';
 
-export type ProjectedDecalTopology = readonly (readonly (
-  | ImportedTextureDescriptor
-  | undefined
-)[])[];
+type ProjectedDecalTexture = ImportedTextureDescriptor & { readonly size: TextureExtent };
+
+export type ProjectedDecalTopology = readonly (readonly (ProjectedDecalTexture | undefined)[])[];
+
+const EMPTY_PROJECTED_DECAL_TOPOLOGY: ProjectedDecalTopology = [];
 
 /** Only resource shapes enter graph identity; transforms and material values stay per-frame. */
 export function projectedDecalTopology(
   decals: readonly ProjectedDecalSnapshot[],
 ): ProjectedDecalTopology {
+  if (decals.length === 0) return EMPTY_PROJECTED_DECAL_TOPOLOGY;
   if (decals.length > MAX_PROJECTED_DECALS)
     throw new ProjectedDecalInvalidError(
       'count',
@@ -54,64 +56,65 @@ export function projectedDecalTopology(
 
 const PARAM_BYTES = 288;
 const PARAM_STRIDE = 512;
-function parameters(decal: ProjectedDecalSnapshot): Float32Array {
-  const values = new Float32Array(PARAM_BYTES / 4);
+const PARAM_WORDS_PER_ROW = PARAM_STRIDE / Float32Array.BYTES_PER_ELEMENT;
+
+function writeParameters(values: Float32Array, offset: number, decal: ProjectedDecalSnapshot) {
   const material = decal.material;
   const params = material.paramSnapshot;
   const color = params?.baseColor;
   const normalScale = params?.normalScale;
-  values.set(decal.inverse, 0);
-  values.set(decal.transform, 16);
-  values.set([...material.baseColor, Array.isArray(color) ? (color[3] ?? 1) : 1], 32);
-  values.set([decal.colorOpacity, decal.normalOpacity, decal.roughnessOpacity, decal.opacity], 36);
-  values.set(
-    [
-      material.roughness,
-      Array.isArray(normalScale) ? (normalScale[0] ?? 1) : 1,
-      Array.isArray(normalScale) ? (normalScale[1] ?? 1) : 1,
-      decal.normalThreshold,
-    ],
-    40,
-  );
-  values.set(
-    [
-      decal.textures[1] === undefined ? 0 : 1,
-      Number(params?.roughnessChannel ?? 1),
-      Number(params?.alphaCutoff ?? 0),
-      0,
-    ],
-    44,
-  );
-  DECAL_TEXTURE_FIELDS.forEach((field, index) => {
-    const coordinates = material.textureCoordinates?.get(field);
-    const transform = coordinates?.transform;
-    const scale = transform?.scale ?? [1, 1];
-    const offset = transform?.offset ?? [0, 0];
-    const rotation = transform?.rotation ?? 0;
-    const physical = coordinates?.physicalUvScale ?? [1, 1];
-    const c = Math.cos(rotation);
-    const s = Math.sin(rotation);
-    values.set(
-      [
-        c * scale[0] * physical[0],
-        -s * scale[1] * physical[0],
-        offset[0] * physical[0],
-        0,
-        s * scale[0] * physical[1],
-        c * scale[1] * physical[1],
-        offset[1] * physical[1],
-        0,
-      ],
-      48 + index * 8,
-    );
-  });
-  return values;
+  values.set(decal.inverse, offset);
+  values.set(decal.transform, offset + 16);
+  values.set(material.baseColor, offset + 32);
+  values[offset + 35] = Array.isArray(color) ? (color[3] ?? 1) : 1;
+  values[offset + 36] = decal.colorOpacity;
+  values[offset + 37] = decal.normalOpacity;
+  values[offset + 38] = decal.roughnessOpacity;
+  values[offset + 39] = decal.opacity;
+  values[offset + 40] = material.roughness;
+  values[offset + 41] = Array.isArray(normalScale) ? (normalScale[0] ?? 1) : 1;
+  values[offset + 42] = Array.isArray(normalScale) ? (normalScale[1] ?? 1) : 1;
+  values[offset + 43] = decal.normalThreshold;
+  values[offset + 44] = Number(decal.textures[1] !== undefined);
+  values[offset + 45] = Number(params?.roughnessChannel ?? 1);
+  values[offset + 46] = Number(params?.alphaCutoff ?? 0);
+  let uvOffset = offset + 48;
+  for (const field of DECAL_TEXTURE_FIELDS) {
+    writeTextureCoordinates(values, uvOffset, material.textureCoordinates?.get(field));
+    uvOffset += 8;
+  }
 }
 
-function current(frame: RenderPipelineFrame, index: number) {
+function writeTextureCoordinates(
+  values: Float32Array,
+  offset: number,
+  coordinates: MaterialTextureCoordinates | undefined,
+) {
+  const transform = coordinates?.transform;
+  const scaleX = transform?.scale?.[0] ?? 1;
+  const scaleY = transform?.scale?.[1] ?? 1;
+  const physicalX = coordinates?.physicalUvScale?.[0] ?? 1;
+  const physicalY = coordinates?.physicalUvScale?.[1] ?? 1;
+  const rotation = transform?.rotation ?? 0;
+  const c = Math.cos(rotation);
+  const s = Math.sin(rotation);
+  values[offset] = c * scaleX * physicalX;
+  values[offset + 1] = -s * scaleY * physicalX;
+  values[offset + 2] = (transform?.offset?.[0] ?? 0) * physicalX;
+  values[offset + 4] = s * scaleX * physicalY;
+  values[offset + 5] = c * scaleY * physicalY;
+  values[offset + 6] = (transform?.offset?.[1] ?? 0) * physicalY;
+}
+
+function currentDecal(frame: RenderPipelineFrame, index: number): ProjectedDecalSnapshot {
   const decal = frame.camera.projectedDecals?.[index];
   if (decal === undefined)
     throw new ProjectedDecalInvalidError('frame', 'the decal count used to compile this graph');
+  return decal;
+}
+
+function current(frame: RenderPipelineFrame, index: number) {
+  const decal = currentDecal(frame, index);
   const internal = frame as _InternalRenderPipelineContext;
   const scope = internal.resourceScopes ?? internal.world;
   if (scope === undefined)
@@ -194,15 +197,15 @@ export function addProjectedDecalChannels(
     }
     textureViews.push(views);
   }
+  const packed = new Float32Array(topology.length * PARAM_WORDS_PER_ROW);
   const upload = graph.addCopyPass('decal-prepare', {
     accesses: [{ resource: uniforms.value, usage: 'copy-dst' }],
     encodeDirect: (_graphencoder, frame, resources) => {
       const buffer = resources.buffer(uniforms.value).unwrap();
-      topology.forEach((_, index) => {
-        frame.runtime.device.queue
-          .writeBuffer(buffer, index * PARAM_STRIDE, parameters(current(frame, index).decal))
-          .unwrap();
-      });
+      for (let index = 0; index < topology.length; index++) {
+        writeParameters(packed, index * PARAM_WORDS_PER_ROW, currentDecal(frame, index));
+      }
+      frame.runtime.device.queue.writeBuffer(buffer, 0, packed).unwrap();
     },
   });
   if (!upload.ok) return upload;
@@ -238,7 +241,8 @@ export function addProjectedDecalChannels(
             'standard-gbuffer/2 decal projection; rebuild the Engine shader manifest',
           );
         const source = internal.runtime.standardSceneShaders?.decalProject;
-        const factory = frame.runtime.shaderModuleFactory;
+        const factory =
+          frame.runtime.immediateShaderModuleFactory ?? frame.runtime.shaderModuleFactory;
         if (source === undefined || factory === undefined)
           throw new ProjectedDecalInvalidError('shader', 'cooked decal projection shader');
         const module = factory
@@ -425,7 +429,8 @@ export function addProjectedDecalPasses(
             'standard-gbuffer/2 decal composition; rebuild the Engine shader manifest',
           );
         const source = internal.runtime.standardSceneShaders?.decalApply;
-        const factory = frame.runtime.shaderModuleFactory;
+        const factory =
+          frame.runtime.immediateShaderModuleFactory ?? frame.runtime.shaderModuleFactory;
         if (source === undefined || factory === undefined)
           throw new ProjectedDecalInvalidError('shader', 'cooked decal composition shader');
         const module = factory

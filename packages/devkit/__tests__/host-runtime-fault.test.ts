@@ -211,7 +211,8 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
     expect(terminal.execution.world.health).toBe('poisoned');
     expect(terminal.execution.fault?.source).toBe('world');
     expect(terminal.execution.fault?.partialWrite).toBe(true);
-    expect(terminal.errors).toContain('app-execution-kernel-failed');
+    expect(terminal.execution.fault?.code).toBe('system-failed');
+    expect(terminal.errors).toContain('app-system-update-failed');
     await expect
       .poll(() => page.locator('#forgeax-fatal').evaluate((el) => getComputedStyle(el).display))
       .toBe('grid');

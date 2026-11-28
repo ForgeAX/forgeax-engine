@@ -167,7 +167,7 @@ ${capture}
     size: 96,
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
   });
-  const view = device.createBuffer({ size: 1392, usage: GPUBufferUsage.UNIFORM });
+  const view = device.createBuffer({ size: 1408, usage: GPUBufferUsage.UNIFORM });
   const skySh = device.createBuffer({
     size: 112,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,

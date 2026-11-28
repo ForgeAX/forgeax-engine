@@ -170,6 +170,12 @@ export function mergeRigid(m: Model, name: string, options: { readonly slivers?:
   if (options.slivers !== undefined) check(m, m.tag(sel.all().minus(articulated()), RIGID), `tag ${name}`);
 }
 
+/** The closure gate of a built group: throws naming the open chains while its skin has an undesigned boundary (`validate({ watertight })`). */
+export function assertClosed(m: Model, name: string): void {
+  const open = m.validate({ watertight: true }).issues.filter((i) => i.code === 'mesh-open' && i.severity === 'error');
+  if (open.length > 0) throw new Error(`${name}: ${open.length} open chains ${JSON.stringify(open[0]?.detail)}`);
+}
+
 /** The gate of `mergeRigid`'s sliver pass: throws naming the count and first faces while a merged shell has a face narrower than `width`. */
 export function assertNoSlivers(m: Model, name: string, width: number): void {
   const found = m.validate({ slivers: { width, part: RIGID } }).issues.find((i) => i.code === 'face-degenerate');
@@ -190,12 +196,13 @@ export function assertRigidUnion(m: Model, name: string): void {
  * parts merged (`mergeRigid`), its faces in a slot named after the group, hard edges above 45 degrees, one `uv.auto`
  * atlas over the whole set (charts never cross a hard edge, so hard edges are UV seams).
  */
-export function buildLowSet(set: Group['set'], resolution: number, padding: number): { model: Model; groups: GroupName[] } {
+export function buildLowSet(set: Group['set'], resolution: number, padding: number, source: readonly Group[] = GROUPS): { model: Model; groups: GroupName[] } {
   const s = model();
   const groups: GroupName[] = [];
-  for (const g of GROUPS.filter((x) => x.set === set)) {
+  for (const g of source.filter((x) => x.set === set)) {
     const m = buildGroup(g, LOW);
     mergeRigid(m, g.name);
+    assertClosed(m, g.name);
     check(m, m.assign(sel.all(), g.name));
     check(s, s.append(m, { tag: g.name }), `append ${g.name}`);
     groups.push(g.name);

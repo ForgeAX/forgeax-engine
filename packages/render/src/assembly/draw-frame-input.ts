@@ -98,6 +98,9 @@ export function publicationDrawOptions(request: PublishedRenderFrameInput): Draw
         }
       : {}),
     ...(request.geometryLane === undefined ? {} : { geometryLane: request.geometryLane }),
+    ...(request.onSourceSceneIndexDemand === undefined
+      ? {}
+      : { onSourceSceneIndexDemand: request.onSourceSceneIndexDemand }),
   };
 }
 

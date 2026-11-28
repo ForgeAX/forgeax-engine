@@ -3,11 +3,14 @@ import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { RecorderSession } from '@forgeax/engine-profiler';
 import { RhiError } from '@forgeax/engine-rhi';
 import { ShaderError } from '@forgeax/engine-shader';
-import { cloudMode0TransportFormat } from './cloud/reconstruction/history';
+import { selectCloudShadowFormat } from './cloud/lighting/shadow-format';
+import { cloudMode0DepthFormat, cloudMode0TransportFormat } from './cloud/reconstruction/history';
 import { runtimeFailureDetails } from './errors/runtime-failure-details';
+import { BARREL_DISTORTION_FEATURE_IDENTITY } from './features/barrel-distortion';
 import { depthOfFieldGraphForParams } from './features/depth-of-field/depth-of-field-inspection';
 import { resolveDepthOfFieldFrameParams } from './features/depth-of-field/depth-of-field-params';
 import type { RenderFeatureFrameResult } from './features/host';
+import { MOTION_BLUR_FEATURE_IDENTITY } from './features/motion-blur/motion-blur-execution';
 import { resolveStandardRenderFeatureTargets } from './features/targets';
 import type { GpuDrawSelection } from './gpu-driven/draw-selection';
 import { PipelineSpecError } from './pipeline-spec';
@@ -22,12 +25,11 @@ import type {
   DrawOptions,
   FramePresentationPendingReason,
 } from './render-contract';
-import type { ExtractedFrame, RenderableSnapshot } from './render-system-extract';
+import type { ExtractedFrame } from './render-system-extract';
 import type {
-  createPresentationDraws,
   FramePresentationCandidate,
+  PresentationDrawEvidence,
 } from './render-system-presentation';
-import type { FrameList } from './scene/frame-list';
 import type { ViewLights } from './world/render-lights';
 import type { ViewFrameResult, ViewRecordMode } from './world/view-frame-systems';
 import { recordContext } from './world/view-record-context';
@@ -59,28 +61,15 @@ export interface RecordAttempt {
 export interface RecordOutcome {
   readonly frame: ExtractedFrame;
   readonly lights: ViewLights;
-  readonly cameraCount: number;
+  readonly camera: CameraSnapshot | undefined;
   readonly presentation: FramePresentationCandidate;
   readonly captureAdmits?: import('./record/frame').FrameRecordingAttempt['captureAdmits'];
-  readonly presentationRenderables: FrameList<RenderableSnapshot>;
   readonly draws: RecordDraws;
-}
-
-/** Feature-host products of one record attempt. */
-export interface RecordFeatures {
-  readonly scheduledCaptureWork: readonly import('./capture/scheduler').CubeCaptureWork[];
-  readonly sceneInputWork: readonly import('./record/target-capture-graph').CubeCaptureGraphWork[];
-  readonly auxiliaryCameras: readonly CameraSnapshot[];
-  /** Every non-probe capture face `render-capture-schedule` built. */
-  readonly faces: readonly import('./capture/faces').CaptureFace[];
-  readonly featureFrame: RenderFeatureFrameResult | undefined;
-  /** The view's composite/post plan `render-feature-plan` wrote in RenderQueue. */
-  readonly plan: import('./world/feature-plan-systems').ViewFeaturePlan;
 }
 
 /** Submitted-draw evidence consumed by presentation readiness and observation commit. */
 export interface RecordDraws {
-  readonly presentedDraws: ReturnType<typeof createPresentationDraws>;
+  readonly presentedDraws: PresentationDrawEvidence;
   readonly drawObservation: ReturnType<typeof createDrawObservation>;
   /** The selection that drew a GPU-owned frame's non-residual rows. */
   readonly gpuSelection: GpuDrawSelection;
@@ -150,6 +139,7 @@ export function resolveFeatureTargets(
   camera: Pick<CameraSnapshot, 'tonemap' | 'antialias'> | undefined,
   cloudLayer: ExtractedFrame['cloudLayer'],
   singleLayerWater = false,
+  profile?: import('./pipeline/standard-profile').StandardProfile,
 ) {
   if (pipelineState === null || camera === undefined) return [];
   return resolveStandardRenderFeatureTargets({
@@ -160,7 +150,12 @@ export function resolveFeatureTargets(
     multisample: internals.device.caps.backendKind !== 'wgpu-webgl2',
     cloudHistory: cloudLayer !== undefined,
     analyticCloud: cloudLayer !== undefined,
-    cloudTransportFormat: cloudMode0TransportFormat(internals.device),
+    cloudTransportFormat:
+      profile?.cloudMode0Model === 'ue5-desktop'
+        ? 'rgba16float'
+        : cloudMode0TransportFormat(internals.device),
+    cloudDepthFormat: cloudMode0DepthFormat(profile),
+    cloudShadowFormat: selectCloudShadowFormat(internals.device.caps),
     singleLayerWater,
   });
 }
@@ -256,8 +251,13 @@ export function unimplementedPublishedFeature(
   publication: PreparedRenderPublication | undefined,
   featureHost: RenderSystemInternals['featureHost'],
 ): string | undefined {
+  // Earlier protocol-12 senders also publish these camera fields as Feature rows.
+  // The camera projection is authoritative when no explicit Feature consumes them.
   return publication?.packet.features.find(
-    (row) => !featureHost?.features.some((feature) => feature.identity === row.identity),
+    ({ identity }) =>
+      identity !== BARREL_DISTORTION_FEATURE_IDENTITY &&
+      identity !== MOTION_BLUR_FEATURE_IDENTITY &&
+      !featureHost?.features.some((feature) => feature.identity === identity),
   )?.identity;
 }
 

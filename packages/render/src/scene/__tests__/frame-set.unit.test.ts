@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { FrameSet } from '../frame-set';
 
 const KEYS = [0, 1, 31, 32, 63, 1023, 1024, 1025, 4096 + 31, 70_000];
@@ -65,6 +65,25 @@ test('additions and removals keep earlier frames and report exactly the flipped 
   expect(emptied.size).toBe(0);
   expect([...emptied]).toEqual([]);
   expect(() => new FrameSet().with(-1)).toThrow(RangeError);
+});
+
+test('copies only membership pages containing a changed bit', () => {
+  const before = FrameSet.from(KEYS);
+  const reads = new Map(KEYS.map((key) => [key, true]));
+  reads.set(10_000, false);
+  const copies = vi.spyOn(Int32Array.prototype, 'slice');
+  try {
+    expect(before.edit(reads)).toBe(before);
+    expect(copies).not.toHaveBeenCalled();
+    reads.set(31, false);
+    reads.set(32, false);
+    const next = before.edit(reads);
+    expect(copies).toHaveBeenCalledTimes(1);
+    expect([...next]).toEqual(KEYS.filter((key) => key !== 31 && key !== 32));
+    expect([...before]).toEqual(KEYS);
+  } finally {
+    copies.mockRestore();
+  }
 });
 
 test('ranked keys preserve ascending values through dense and sparse word boundaries', () => {

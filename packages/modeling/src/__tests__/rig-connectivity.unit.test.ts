@@ -22,6 +22,36 @@ function arm(gap: number, extra?: (m: Model) => void) {
 }
 
 describe('rig.connectivity (F1 criterion 13)', () => {
+  it('does not treat disconnected shells in one rigid binding as attached hardware', () => {
+    const m = model();
+    m.box({ size: [0.1, 0.1, 0.1], tag: 'base' });
+    m.box({ size: [0.04, 0.1, 0.04], center: [0, 0.1, 0], tag: 'attached' });
+    m.box({ size: [0.04, 0.04, 0.04], center: [0.3, 0.1, 0], tag: 'floating' });
+    const r = rig(m, {
+      joints: [
+        { name: 'root', parent: null, position: [0, 0, 0] },
+        { name: 'child', parent: 'root', position: [0, 0.05, 0] },
+      ],
+    });
+    r.bindRigid(sel.tag('base'), 'root', { part: 'base' });
+    r.bindRigid(sel.tag('attached').or(sel.tag('floating')), 'child', { part: 'mount-child' });
+    const report = r.connectivity([{}]).unwrap();
+    expect(report.attached).toBe(false);
+    expect(report.floating).toEqual(['mount-child']);
+    const frameTag = m.editMesh.tagIndex('attached', false);
+    const classified = r
+      .connectivity([{}], {
+        hardware: (_name, faces) => faces.some((face) => m.editMesh.hasTag(face, frameTag)),
+      })
+      .unwrap();
+    expect(classified.poses[0]?.floating).toHaveLength(1);
+    expect(
+      r.connectivity([{}], { hardware: () => false }).unwrap().poses[0]?.floating,
+    ).toHaveLength(2);
+    m.translate(sel.tag('floating'), [-0.3, 0, 0]);
+    expect(r.connectivity([{}]).unwrap().attached).toBe(true);
+  });
+
   it('across a joint only hardware connects: a flush child without it floats', () => {
     const { r } = arm(0);
     const report = r.connectivity([{}]);

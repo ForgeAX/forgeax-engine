@@ -112,6 +112,12 @@ const buildArgsSchema: ToolSchema<BuildOptions> = {
       return { ok: false, error: 'htmlHead must be a non-empty project-relative file path' };
     if ('sourcemap' in value && value.sourcemap !== undefined && value.sourcemap !== 'hidden')
       return { ok: false, error: 'sourcemap must be hidden when provided' };
+    if (
+      'viewportDebugView' in value &&
+      value.viewportDebugView !== undefined &&
+      typeof value.viewportDebugView !== 'boolean'
+    )
+      return { ok: false, error: 'viewportDebugView must be a boolean when provided' };
     return { ok: true, value: value as BuildOptions };
   },
   describe: JSON.stringify({
@@ -140,6 +146,11 @@ const buildArgsSchema: ToolSchema<BuildOptions> = {
         type: 'string',
         enum: ['hidden'],
         description: 'Emit hidden source maps for the actual production bundles.',
+      },
+      viewportDebugView: {
+        type: 'boolean',
+        description:
+          'Opt in to bundling the viewport debug output visualizer into the built game (default false; tree-shaken out when omitted).',
       },
       json: { type: 'boolean' },
       animation: animationPlaybackSchema,

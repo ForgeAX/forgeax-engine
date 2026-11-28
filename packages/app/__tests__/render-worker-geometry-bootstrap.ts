@@ -82,112 +82,128 @@ const entry: ExecutionBootstrapEntry = (data) => {
                 mapSize: testQuality.shadowMapSize,
                 cascadeCount: testQuality.cascadeCount,
                 intensity: 3,
-                direction: [-0.5, -1, -0.3],
+                direction: mode === 'deformation' ? [0, 0, -1] : [-0.5, -1, -0.3],
                 color: [1, 1, 1],
               },
             })
             .unwrap();
-          let mesh = createBoxGeometry(2, 2, 2).unwrap();
-          const skinned = mode === 'skin';
-          if (skinned) {
-            const count = (mesh.attributes.position as Float32Array).length / 3;
-            const weights = new Float32Array(count * 4);
-            for (let i = 0; i < count; i++) weights[i * 4] = 1;
-            const attributes = {
-              ...mesh.attributes,
-              skinIndex: new Uint16Array(count * 4),
-              skinWeight: weights,
-            };
-            mesh = {
-              ...mesh,
-              attributes,
-              vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
-            };
-          } else if (mode === 'morph') {
-            const delta = new Float32Array((mesh.attributes.position as Float32Array).length);
-            for (let i = 0; i < delta.length; i += 3) delta[i] = 1.2;
-            mesh = { ...mesh, morphTargets: [{ position: delta }] };
-          } else if (mode === 'points' || mode === 'lines') {
-            mesh = {
-              ...mesh,
-              submeshes: mesh.submeshes.map((row) => ({
-                ...row,
-                topology: mode === 'points' ? 'point-list' : 'line-list',
-              })),
-            };
-          }
-          const meshHandle = assets.create(mesh).unwrap();
-          const material: MaterialAsset = {
-            kind: 'material',
-            passes: [
-              {
-                name: 'Forward',
-                program: {
-                  module: skinned
-                    ? 'forgeax::pbr-skin'
-                    : mode === 'points' || mode === 'lines'
-                      ? 'forgeax::default-unlit'
-                      : 'forgeax::default-standard-pbr',
+          const assetStore = assets;
+          const stageGeometry = (mode: string, offset: number) => {
+            let mesh = createBoxGeometry(2, 2, 2).unwrap();
+            const skinned = mode === 'skin';
+            if (skinned) {
+              const count = (mesh.attributes.position as Float32Array).length / 3;
+              const weights = new Float32Array(count * 4);
+              for (let i = 0; i < count; i++) weights[i * 4] = 1;
+              const attributes = {
+                ...mesh.attributes,
+                skinIndex: new Uint16Array(count * 4),
+                skinWeight: weights,
+              };
+              mesh = {
+                ...mesh,
+                attributes,
+                vertices: packInterleavedVertexAttributes(attributes, count).unwrap().vertices,
+              };
+            } else if (mode === 'morph') {
+              const delta = new Float32Array((mesh.attributes.position as Float32Array).length);
+              const axis = offset === 0 ? 0 : 1;
+              for (let i = axis; i < delta.length; i += 3) delta[i] = 1.2;
+              mesh = { ...mesh, morphTargets: [{ position: delta }] };
+            } else if (mode === 'points' || mode === 'lines') {
+              mesh = {
+                ...mesh,
+                submeshes: mesh.submeshes.map((row) => ({
+                  ...row,
+                  topology: mode === 'points' ? 'point-list' : 'line-list',
+                })),
+              };
+            }
+            const meshHandle = assetStore.create(mesh).unwrap();
+            const material: MaterialAsset = {
+              kind: 'material',
+              passes: [
+                {
+                  name: 'Forward',
+                  program: {
+                    module: skinned
+                      ? 'forgeax::pbr-skin'
+                      : mode === 'points' || mode === 'lines'
+                        ? 'forgeax::default-unlit'
+                        : 'forgeax::default-standard-pbr',
+                  },
+                  renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
                 },
-                renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
-              },
-            ],
-            values: { baseColor: [0.8, 0.3, 0.1, 1], metallic: 0, roughness: 0.8 },
+              ],
+              values: { baseColor: [0.8, 0.3, 0.1, 1], metallic: 0, roughness: 0.8 },
+            };
+            const materialHandle = assetStore.create(mode === 'points' || mode === 'lines'
+                ? Materials.unlit([0.8, 0.3, 0.1, 1])
+                : material).unwrap();
+            const entity = world
+              .spawn(
+                { component: Transform, data: { pos: [offset, 0, 0] } },
+                { component: MeshFilter, data: { assetHandle: meshHandle } },
+                { component: MeshRenderer, data: { materials: [materialHandle] } },
+              )
+              .unwrap();
+            const matrix = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+            const joint = world.spawn({ component: Transform, data: { pos: [offset, 0, 0] } }).unwrap();
+            if (skinned) {
+              const skeleton = assetStore.create({
+                kind: 'skeleton',
+                jointCount: 1,
+                inverseBindMatrices: matrix,
+              }).unwrap();
+              world
+                .addComponent(entity, {
+                  component: Skin,
+                  data: { skeleton, joints: new Uint32Array([joint]) },
+                })
+                .unwrap();
+            }
+            if (mode === 'morph')
+              world
+                .addComponent(entity, {
+                  component: MorphWeights,
+                  data: { weights: new Float32Array([0.1]) },
+                })
+                .unwrap();
+            if (mode === 'instances')
+              world
+                .addComponent(entity, { component: Instances, data: { transforms: matrix } })
+                .unwrap();
+            if (mode === 'points')
+              world.addComponent(entity, { component: Points, data: { size: 8 } }).unwrap();
+            if (mode === 'lines')
+              world.addComponent(entity, { component: Lines, data: { width: 5 } }).unwrap();
+            return () => {
+              if (skinned)
+                world.set(joint, Transform, { pos: offset === 0 ? [1, 0, 0] : [offset, 0.75, 0] }).unwrap();
+              else if (mode === 'morph')
+                world.set(entity, MorphWeights, { weights: new Float32Array([0.9]) }).unwrap();
+              else if (mode === 'instances') {
+                const moved = matrix.slice();
+                moved[12] = 1;
+                world.set(entity, Instances, { transforms: moved }).unwrap();
+              } else world.set(entity, Transform, { pos: [1, 0, 0] }).unwrap();
+            };
           };
-          const materialHandle = assets.create(mode === 'points' || mode === 'lines'
-              ? Materials.unlit([0.8, 0.3, 0.1, 1])
-              : material).unwrap();
-          const entity = world
-            .spawn(
-              { component: Transform, data: {} },
-              { component: MeshFilter, data: { assetHandle: meshHandle } },
-              { component: MeshRenderer, data: { materials: [materialHandle] } },
-            )
-            .unwrap();
-          const matrix = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-          const joint = world.spawn({ component: Transform, data: {} }).unwrap();
-          if (skinned) {
-            const skeleton = assets.create({
-              kind: 'skeleton',
-              jointCount: 1,
-              inverseBindMatrices: matrix,
-            }).unwrap();
-            world
-              .addComponent(entity, {
-                component: Skin,
-                data: { skeleton, joints: new Uint32Array([joint]) },
-              })
-              .unwrap();
-          }
-          if (mode === 'morph')
-            world
-              .addComponent(entity, {
-                component: MorphWeights,
-                data: { weights: new Float32Array([0.1]) },
-              })
-              .unwrap();
-          if (mode === 'instances')
-            world
-              .addComponent(entity, { component: Instances, data: { transforms: matrix } })
-              .unwrap();
-          if (mode === 'points')
-            world.addComponent(entity, { component: Points, data: { size: 8 } }).unwrap();
-          if (mode === 'lines')
-            world.addComponent(entity, { component: Lines, data: { width: 5 } }).unwrap();
+          // Both deformation owners share the device and restart. The two
+          // pictures stay in separate halves for independent pixel checks.
+          const updates = mode === 'deformation'
+            ? [stageGeometry('skin', -1.65), stageGeometry('morph', 1.65)]
+            : [stageGeometry(mode, 0)];
           const port = ctx.executionBootstrapHost.port;
           if (port !== undefined) {
             port.onmessage = (event) => {
               if (event.data === 'recover') crashRenderer();
-              if (event.data === 'update') {
+              const update =
+                event.data === 'update' || event.data === 'update-skin' ? updates[0] :
+                event.data === 'update-morph' ? updates[1] : undefined;
+              if (update) {
                 revision++;
-                if (skinned) world.set(joint, Transform, { pos: [1, 0, 0] }).unwrap();
-                else if (mode === 'morph')
-                  world.set(entity, MorphWeights, { weights: new Float32Array([0.9]) }).unwrap();
-                else if (mode === 'instances') {
-                  const moved = matrix.slice();
-                  moved[12] = 1;
-                  world.set(entity, Instances, { transforms: moved }).unwrap();
-                } else world.set(entity, Transform, { pos: [1, 0, 0] }).unwrap();
+                update();
               }
               port.postMessage({ revision, acknowledgments, errors: submittedErrors });
             };

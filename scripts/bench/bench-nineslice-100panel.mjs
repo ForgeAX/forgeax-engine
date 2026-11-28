@@ -3,7 +3,7 @@
 // M5 / w20 (AC-09 + AC-10). 100 panel @ 10x10 stretch grid bench fixture
 // monitoring two sub-keys on the same run:
 //
-//   - fps: target 60 fps +/- 3% on Mac M1 Chrome Beta 1080p (research F-5
+//   - fps: target 60 fps +/- 3% on Mac M1 Chrome 1080p (research F-5
 //     baseline).
 //   - ubo-bytes-per-entity: AC-10 ceiling 16 B/entity increment over the
 //     pre-feat sprite UBO. Sprite UBO grew 48 B -> 64 B (one vec4 column
@@ -48,9 +48,9 @@
 //   - Sandbox path: dawn-node `webgpu` package; if dawn import / device
 //     init fails the script exits 74 with a structured payload (charter
 //     P3) instead of a raw stack trace.
-//   - CI path (Mac M1 chrome-beta primary-pnpm): same script invoked via
+//   - CI path (Mac M1 chrome primary-pnpm): same script invoked via
 //     `pnpm bench:nineslice` (root scripts entry; w20 wires) reads the
-//     identical fixture; the chrome-beta vs dawn-node delta is just the
+//     identical fixture; the chrome vs dawn-node delta is just the
 //     navigator.gpu source, the rendering path and JSON schema are the
 //     same.
 //
@@ -114,7 +114,7 @@ function hintFor(code) {
     case 'pixel-parity-threshold-exceeded':
       return 'inspect git diff for sprite shader / runtime record-stage regressions; if driver noise, bump packages/runtime/package.json#forgeax.metrics.bench thresholds in a PR commit (append-only audit)';
     case 'pixel-parity-capture-failed':
-      return 'inspect detail.stage to localize the capture pipeline step; ensure dawn-node `webgpu` package is installed (sandbox) or chrome-beta is available (CI primary-pnpm)';
+      return 'inspect detail.stage to localize the capture pipeline step; ensure dawn-node `webgpu` package is installed (sandbox) or chrome is available (CI primary-pnpm)';
     case 'metric-status-not-ok':
       return 'rerun pnpm bench:nineslice locally; if persistent, inspect report/bench-nineslice-100panel.json for the failing sub-key';
   }

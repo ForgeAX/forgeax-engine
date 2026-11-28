@@ -1,6 +1,6 @@
 import { vec3 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import { GpuScene } from '../gpu-scene';
 import { GPU_MATERIAL_DESCRIPTOR } from '../gpu-scene-inputs';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
@@ -68,6 +68,122 @@ function updateSnapshot(value: RenderableSnapshot) {
 }
 
 describe('GpuScene Dawn residency', () => {
+  it('uploads edited survivor inputs to a smaller native buffer while the old reader is held', async () => {
+    const adapter = (await rhi.requestAdapter()).unwrap();
+    const device = (await adapter.requestDevice()).unwrap();
+    const available = GpuScene.create(device, 8).unwrap();
+    assert(available.status === 'available');
+    const scene = available.scene;
+    const arena = scene.inputs.arena;
+    const kept = Array.from({ length: 8 }, () => arena.allocateDescriptor(16));
+    const bulk = arena.allocateDescriptor(65536);
+    const old = scene.inputs.capture();
+    const initial = old.buffer().unwrap();
+    old.seal().unwrap();
+    const destroy = vi.spyOn(device, 'destroyBuffer');
+    const readback = device
+      .createBuffer({ size: 1024, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
+      .unwrap();
+    try {
+      arena.releaseDescriptor(bulk, 65536);
+      for (let frame = 0; frame < 8; frame++) {
+        const read = scene.inputs.capture();
+        try {
+          for (const address of kept) arena.writeDescriptorWord(address, 16, 7, frame + address);
+          read.buffer().unwrap();
+          read.seal().unwrap();
+          scene.commitFrame().unwrap();
+        } finally {
+          read.release();
+        }
+      }
+      const current = scene.inputs.uploadedBuffer();
+      assert(current);
+      expect(current.byteLength).toBe(1024);
+      expect(initial.byteLength / current.byteLength).toBe(512);
+      const encoder = device.createCommandEncoder().unwrap();
+      encoder.copyBufferToBuffer(current.buffer, 0, readback, 0, current.byteLength);
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+      try {
+        const data = new Uint32Array(mapped.getMappedRange().unwrap());
+        for (const address of kept) expect(data[address + 7]).toBe(address + 7);
+      } finally {
+        mapped.unmap();
+      }
+      expect(destroy.mock.calls.some(([buffer]) => buffer === initial.buffer)).toBe(false);
+      old.release();
+      await device.queue.onSubmittedWorkDone();
+      await Promise.resolve();
+      expect(destroy.mock.calls.some(([buffer]) => buffer === initial.buffer)).toBe(true);
+    } finally {
+      old.release();
+      scene.dispose();
+      device.destroyBuffer(readback);
+      destroy.mockRestore();
+    }
+  });
+
+  it('returns scene history and physical tables to a bounded size after each bulk unload', async () => {
+    const adapter = (await rhi.requestAdapter()).unwrap();
+    const device = (await adapter.requestDevice()).unwrap();
+    const available = GpuScene.create(device, 8).unwrap();
+    assert(available.status === 'available');
+    const scene = available.scene;
+    const projection = new RenderScene();
+    const survivor = snapshot(0, 0);
+    const bulk = Array.from({ length: 3072 }, (_, slot) =>
+      updateSnapshot(snapshot(slot + 1, slot + 1)),
+    );
+    const unload = bulk.map(({ entityKey }) => ({ kind: 'remove' as const, entityKey }));
+    const destroy = vi.spyOn(device, 'destroyBuffer');
+    try {
+      scene.sync(projection.apply([updateSnapshot(survivor)]), undefined, projection).unwrap();
+      scene.commitFrame().unwrap();
+      for (let cycle = 0; cycle < 3; cycle++) {
+        const old = scene.contentCursor;
+        scene.sync(projection.apply(bulk), undefined, projection).unwrap();
+        scene.commitFrame().unwrap();
+        const peak = scene.inspect().tables;
+        const peakJournal = projection.changeJournalBackingBytes;
+        const original = scene.transformBuffer;
+        const held = scene.captureResources().unwrap();
+        held.inputReads();
+        held.seal().unwrap();
+        try {
+          scene.sync(projection.apply(unload), undefined, projection).unwrap();
+          expect(scene.changedBoundsSince(old)).toBe('unbounded');
+          scene.commitFrame().unwrap();
+          for (let frame = 1; frame <= 40; frame++) {
+            const pose = snapshot(0, cycle * 64 + frame);
+            const move = { kind: 'update' as const, entityKey: 0, world: pose.transform.world };
+            const previous = scene.contentCursor;
+            scene.sync(projection.apply([move]), undefined, projection).unwrap();
+            expect(scene.changedBoundsSince(previous)).toBeInstanceOf(Float32Array);
+            scene.commitFrame().unwrap();
+          }
+          const reduced = scene.inspect();
+          expect(reduced.tables.primitive.bytes).toBeLessThan(peak.primitive.bytes / 4);
+          expect(reduced.tables.instance.bytes).toBeLessThan(peak.instance.bytes / 4);
+          expect(reduced.tables.transform.bytes).toBeLessThan(peak.transform.bytes / 4);
+          expect(reduced.tableReclamation).toMatchObject({ failures: 0, privateBytes: 0 });
+          expect(projection.changeJournalBackingBytes).toBeLessThan(peakJournal / 3);
+          await device.queue.onSubmittedWorkDone();
+          expect(destroy.mock.calls.some(([buffer]) => buffer === original)).toBe(false);
+        } finally {
+          held.release();
+        }
+        await device.queue.onSubmittedWorkDone();
+        await Promise.resolve();
+        expect(destroy.mock.calls.some(([buffer]) => buffer === original)).toBe(true);
+      }
+    } finally {
+      scene.dispose();
+      projection.dispose();
+      destroy.mockRestore();
+    }
+  });
+
   it('reads the moving pose and its previous pose from the smaller physical table', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();

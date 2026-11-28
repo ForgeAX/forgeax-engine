@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { projectSurfaceMaterialBindings, retainProjectedMaterialSlots } from '../pbr-pipeline';
 import {
   buildPerSubmeshMaterialBg,
+  type MaterialBindingAddress,
   type PerSubmeshMaterialBgDeps,
 } from '../record/main-pass-material';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
@@ -131,6 +132,57 @@ function mediumSnapshot() {
 }
 
 describe('main-pass Surface material selection', () => {
+  it('publishes the selected primitive reflection from the material binding source revision', () => {
+    const deps = dependencies();
+    const world = {
+      identity: 'scene',
+      assetRevision: () => 7,
+    } as unknown as PerSubmeshMaterialBgDeps['world'];
+    const ready = { ...deps.skylightResources };
+    const resolveProbe = vi.fn<
+      NonNullable<PerSubmeshMaterialBgDeps['resolveReflectionProbeResources']>
+    >((source) => {
+      expect(source.assetRevision(19)).toBe(4);
+      return { resources: ready, probeIndex: 1 };
+    });
+    Object.assign(deps, { resolveReflectionProbeResources: resolveProbe });
+    const material = {
+      ...defaultMaterialSnapshot(),
+      materialHandle: 19,
+      materialShaderId: 'forgeax::default-standard-pbr',
+      materialParamSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
+      sourceAssets: {
+        root: 19,
+        revision: 4,
+        assets: [{ handle: 19, revision: 4, value: { kind: 'Material' } }],
+      },
+    } as Parameters<typeof buildPerSubmeshMaterialBg>[1];
+    const address: MaterialBindingAddress = {
+      byteOffset: 0,
+      dynamicOffsetCount: 1,
+      reflection: undefined,
+    };
+    const bind = () =>
+      buildPerSubmeshMaterialBg(
+        deps,
+        material,
+        4,
+        world,
+        undefined,
+        0,
+        'class',
+        0,
+        undefined,
+        address,
+      );
+    const first = bind();
+    expect(address.reflection).toBe(ready);
+    expect(resolveProbe).toHaveBeenCalledExactlyOnceWith(expect.any(Object), 4, 'class');
+    resolveProbe.mockImplementationOnce(() => undefined);
+    expect(bind()).toBe(first);
+    expect(address.reflection).toBe(deps.skylightResources);
+  });
+
   it('shares only immutable empty prepared-resource facts between independent assemblies', () => {
     const deps = dependencies();
     for (const materialHandle of [27, 28])

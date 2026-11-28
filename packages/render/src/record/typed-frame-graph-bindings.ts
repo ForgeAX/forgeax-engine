@@ -21,6 +21,7 @@ import {
   type Result,
   type TextureAsset,
 } from '@forgeax/engine-types';
+import { CLOUD_MODE0_BLUE_NOISE } from '../cloud/tracing/blue-noise';
 import {
   type AtmosphereViews,
   atmosphereBindings,
@@ -38,6 +39,7 @@ import type {
   RenderFeatureGraphTargetResolver,
 } from '../features/render-graph-raster';
 import { isRenderFeatureTargetHandle } from '../features/targets';
+import { isRenderFeatureTextureReference } from '../features/texture-source';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import {
   buildFullscreenPostProcessPass,
@@ -60,6 +62,7 @@ import {
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   sceneDataTargetOwner,
 } from '../temporal/scene-data';
+import { waterGerstnerSurfacePublicationMatches } from '../water/surface-source';
 import {
   requireWaterMaterialBakedSources,
   waterMaterialBodyIndex,
@@ -223,6 +226,7 @@ export interface TargetBindingsInput {
   readonly resources: GraphResourceResolver;
   readonly resolveTarget: RenderFeatureGraphTargetResolver;
   readonly resolveGpuResource?: (name: string) => RenderFeatureResolvedGpuBuffer | undefined;
+  readonly resolveCloudBlueNoise?: (() => TextureView | undefined) | undefined;
 }
 
 type BindingValues = RenderFeatureBindingsDescriptor['values'];
@@ -231,6 +235,21 @@ type LayoutPipeline = RenderPipeline & {
 };
 type ResolvedTarget = NonNullable<ReturnType<RenderFeatureGraphTargetResolver>>;
 type FullscreenPass = NonNullable<ReturnType<typeof buildFullscreenPostProcessPass>>;
+
+function waterFrameViewOrigin(frame: _InternalRenderPipelineContext): [number, number, number] {
+  const [x, y, z] = frame.camera.position;
+  if (x === undefined || y === undefined || z === undefined)
+    throw new RenderFeatureStageFailedError(
+      'water-frame-system-input',
+      -1,
+      'record',
+      'next-frame',
+      {
+        reason: 'view-origin-unavailable',
+      },
+    );
+  return [x, y, z];
+}
 
 export function resolveTargetBindings(
   input: TargetBindingsInput,
@@ -285,13 +304,8 @@ export function resolveTargetBindings(
   }
   if (descriptor?.values.waterMaterial !== undefined) {
     const resolveFeatureWaterMaterialBindings = () => {
-      const selected = descriptor.values.waterMaterial as {
-        readonly bodyKey: string;
-        readonly viewIdentity: string;
-        readonly bodyGeneration: number;
-        readonly zoneGeneration: number;
-        readonly programInputs: import('../material-program-inputs').MaterialProgramInputs;
-      };
+      const selected = descriptor.values
+        .waterMaterial as import('../features/prepared-graphics').RenderFeatureWaterMaterialInput;
       const expected = {
         viewIdentity: selected.viewIdentity,
         bodyGeneration: selected.bodyGeneration,
@@ -299,28 +313,41 @@ export function resolveTargetBindings(
         deviceGeneration: frame.runtime.deviceGeneration ?? 0,
         frameGeneration: frame.runtime.rendererFrameNumber ?? -1,
       };
+      if (selected.surfaceSource !== undefined) {
+        const publication = frame.runtime.getWaterMaterialFramePublication?.(
+          selected.viewIdentity,
+          expected.frameGeneration,
+          expected.deviceGeneration,
+        );
+        if (
+          publication === undefined ||
+          !waterGerstnerSurfacePublicationMatches(publication, selected)
+        )
+          throw new RenderFeatureStageFailedError(
+            'water-surface-source',
+            -1,
+            'record',
+            'next-frame',
+            {
+              reason: 'selected-gerstner-surface-unavailable',
+              selected,
+              expected,
+            },
+          );
+      }
       const views = new Map<string, TextureView>();
       for (const [name, target] of waterInfoTargets ?? [])
         views.set(name, input.resources.textureView(target.view).unwrap());
-      const [viewX, viewY, viewZ] = frame.camera.position;
-      if (viewX === undefined || viewY === undefined || viewZ === undefined)
-        throw new RenderFeatureStageFailedError(
-          'water-frame-system-input',
-          -1,
-          'record',
-          'next-frame',
-          {
-            reason: 'view-origin-unavailable',
-          },
-        );
+      const viewOriginM = waterFrameViewOrigin(frame);
       const bindings = frame.runtime.getWaterMaterialFrameBindings?.({
         ...expected,
-        viewOriginM: [viewX, viewY, viewZ],
+        viewOriginM,
         waterInfoTextureViews: views,
         waterMeshDraws: [],
       });
       const resources = [...(bindings?.values() ?? [])].find(
         (candidate) =>
+          candidate.bodyIndices.has(selected.bodyKey) &&
           candidate.bodyTargetNames.get(selected.bodyKey) === candidate.waterInfoTargetName,
       );
       const index =
@@ -336,6 +363,17 @@ export function resolveTargetBindings(
           'next-frame',
           {
             reason: 'selected-water-frame-unavailable',
+            bindingCohortCount: bindings?.size ?? 0,
+            bodyBound: resources !== undefined,
+            pipelineLayoutAvailable: layout !== undefined,
+            publishedTargets: frame.runtime
+              .getWaterMaterialFramePublication?.(
+                selected.viewIdentity,
+                expected.frameGeneration,
+                expected.deviceGeneration,
+              )
+              ?.targets.map((target) => target.targetName),
+            resolvedTargets: [...views.keys()],
             selected,
             expected,
             ...(index?.ok === false ? { cause: index.error } : {}),
@@ -606,7 +644,8 @@ function writePostProcessParams(
 ): boolean {
   if (entry.params === undefined) return true;
   if (paramsBuffer === undefined) return false;
-  const data = frame.postProcessParams.get(shader) ?? entry.params.defaultValue;
+  const data =
+    frame.postProcessParams.get(shader) ?? entry.frameParams ?? entry.params.defaultValue;
   if (data.byteLength !== entry.params.byteSize) return false;
   return frame.runtime.device.queue.writeBuffer(paramsBuffer, 0, data).ok;
 }
@@ -614,9 +653,18 @@ function writePostProcessParams(
 function fullscreenDepthTarget(
   input: TargetBindingsInput,
   values: BindingValues,
+  primaryDepth: boolean,
 ): ResolvedTarget | undefined {
-  if (values.depthFallback === true || values.depth === undefined) return undefined;
-  return input.resolveTarget(values.depth as never);
+  if (primaryDepth) return undefined;
+  const target =
+    values.depthFallback === true || values.depth === undefined
+      ? undefined
+      : input.resolveTarget(values.depth as never);
+  if (values.depth !== undefined && target === undefined)
+    throw new RenderFeatureStageFailedError('fullscreen-depth-input', -1, 'record', 'next-frame', {
+      target: values.depth,
+    });
+  return target;
 }
 
 function fullscreenInputView(
@@ -657,13 +705,31 @@ function fullscreenAdditionalViews(
     const assetCount = Array.isArray(values.assetTextures) ? values.assetTextures.length : 0;
     const binding = fullscreen.extraColorBindings[assetCount + index]?.binding;
     if (binding === undefined) return undefined;
+    if (value === CLOUD_MODE0_BLUE_NOISE) {
+      const noise = input.resolveCloudBlueNoise?.();
+      if (noise === undefined) return undefined;
+      additionalViews.push({ binding, view: noise });
+      continue;
+    }
     if (value === false) {
       additionalViews.push({ binding, view: frame.pipelineState.defaultWhiteTextureView });
       continue;
     }
-    if (typeof value !== 'string') return undefined;
+    if (
+      typeof value !== 'string' &&
+      !isSceneDataTarget(value) &&
+      !isRenderFeatureTextureReference(value)
+    )
+      return undefined;
     const target = input.resolveTarget(value);
-    if (target === undefined) return undefined;
+    if (target === undefined)
+      throw new RenderFeatureStageFailedError(
+        'fullscreen-sampled-input',
+        -1,
+        'record',
+        'next-frame',
+        { index, target: value },
+      );
     const view = input.resources.textureView(target.view);
     if (!view.ok) return undefined;
     additionalViews.push({ binding, view: view.value });
@@ -771,6 +837,24 @@ function acceptFullscreenBindings(
   return group;
 }
 
+function fullscreenParamsBuffer(
+  frame: _InternalRenderPipelineContext,
+  shader: string,
+  entry: PostProcessShaderEntry,
+): Buffer | undefined {
+  const buffer = frame.runtime.getPostProcessParamsBuffer?.(
+    shader,
+    entry.params === undefined ? undefined : 'write',
+  );
+  if (!writePostProcessParams(frame, shader, entry, buffer))
+    throw new RenderFeatureStageFailedError('fullscreen-params-input', -1, 'record', 'next-frame', {
+      shader,
+      size: entry.params?.byteSize,
+      available: buffer !== undefined,
+    });
+  return buffer;
+}
+
 function resolveFullscreenBindings(
   input: TargetBindingsInput,
   frame: _InternalRenderPipelineContext,
@@ -781,10 +865,17 @@ function resolveFullscreenBindings(
   const shader = values.shader;
   if (typeof shader !== 'string') return undefined;
   const entry = postProcessEntryOf(frame, shader, featurePostProcessEntries);
-  if (entry === undefined) return undefined;
+  if (entry === undefined)
+    throw new RenderFeatureStageFailedError(
+      'fullscreen-program-input',
+      -1,
+      'record',
+      'next-frame',
+      { shader },
+    );
   const primaryDepth = entryUsesPrimaryDepth(entry);
   const primaryDepthTarget = primaryDepth ? input.resolveTarget(values.input as never) : undefined;
-  const depthTarget = primaryDepth ? undefined : fullscreenDepthTarget(input, values);
+  const depthTarget = fullscreenDepthTarget(input, values, primaryDepth);
   const fullscreen = buildFullscreenPostProcessPass(
     { device: frame.runtime.device, errorRegistry: frame.runtime.errorRegistry },
     entry,
@@ -805,11 +896,7 @@ function resolveFullscreenBindings(
   if (additionalViews === undefined) return undefined;
   // The explicit fullscreen layout also owns bindings on handles that cannot reflect it.
   const layout = pipeline.getBindGroupLayout?.(1) ?? fullscreen.bindGroupLayout;
-  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(
-    shader,
-    entry.params === undefined ? undefined : 'write',
-  );
-  if (!writePostProcessParams(frame, shader, entry, paramsBuffer)) return undefined;
+  const paramsBuffer = fullscreenParamsBuffer(frame, shader, entry);
   const createdBindGroup = createFullscreenBindGroup(
     frame.runtime.device,
     layout,

@@ -75,6 +75,27 @@ function pixel(result: { bytes: Uint8Array; format?: string; width?: number }, p
   return readPixel(result.bytes, { bytesPerRow: width * bytesPerPixel, format }, probe.x, probe.y);
 }
 
+function inspectCompositeTarget(
+  tape: V7Tape,
+  work: ReturnType<typeof buildFrameModel>['works'][number],
+  msaa: boolean,
+) {
+  const descriptor = (work.pipeline.descriptor as Json).desc as Json;
+  const sampleCount = (descriptor.multisample as Json | undefined)?.count ?? 1;
+  expect(sampleCount).toBe(1);
+  expect(work.attachments?.colorResolveViewHandleIds).toEqual([null]);
+  const sceneId = work.attachments?.colorViewHandleIds[0];
+  if (typeof sceneId !== 'string') throw new Error('Missing composite scene color');
+  if (msaa) {
+    const resolves = tape.events
+      .filter((event) => event.kind === 'beginRenderPass')
+      .filter((event) => event.colorAttachmentResolveTargetHandleIds.includes(sceneId));
+    expect(resolves).toHaveLength(1);
+    expect(resolves[0]?.desc.label).toContain('main');
+  }
+  return { sceneId, sampleCount };
+}
+
 /**
  * AC-4: replay one captured OIT frame on a fresh device and prove the
  * accumulation, the composite and the final color from the tape alone.
@@ -124,10 +145,7 @@ export async function inspectOitTape(input: {
 
   const compositeBindings = compositeWork.bindings.map((binding) => binding.resourceId);
   expect(compositeBindings).toEqual(expect.arrayContaining([accumId, weightId]));
-  const sceneId = input.msaa
-    ? compositeWork.attachments?.colorResolveViewHandleIds[0]
-    : compositeWork.attachments?.colorViewHandleIds[0];
-  if (typeof sceneId !== 'string') throw new Error('Missing composite scene color');
+  const { sceneId, sampleCount } = inspectCompositeTarget(tape, compositeWork, input.msaa);
 
   const views = viewTextures(tape);
   const unseeded = new Set(model.unseededResources.map((resource) => resource.resourceId));
@@ -162,9 +180,7 @@ export async function inspectOitTape(input: {
     expect(accum.format).toBe('rgba16float');
     expect(weight.format).toBe('r16float');
 
-    // The scene resolve is deliberately deferred until the composite ends.
-    // Removing only its draw preserves native stores/resolves and observes the
-    // actual pre-composite scene, even when no intermediate resolve exists.
+    // Remove only the composite draw to observe its unchanged background.
     const compositeEvent = tape.events[compositeWork.eventIndex];
     assert(compositeEvent?.kind === 'draw');
     const withoutComposite = encodeTape({
@@ -265,6 +281,7 @@ export async function inspectOitTape(input: {
       },
       resources: { accum: accumId, weight: weightId, scene: sceneId },
       accumulatePipeline: inspectedAccumulate.pipeline?.descriptor,
+      compositeSampleCount: sampleCount,
       compositeBindings: inspectedComposite.bindings,
       probes,
       preCompositeReferenceGap: beforeGap,

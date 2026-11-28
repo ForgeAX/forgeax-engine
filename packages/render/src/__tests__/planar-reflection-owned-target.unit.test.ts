@@ -1,3 +1,4 @@
+import { configureNativeMipmapCompiler } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { quat } from '@forgeax/engine-math';
 import type { RhiDevice } from '@forgeax/engine-rhi';
@@ -15,12 +16,6 @@ import { PlanarReflection } from '../components/planar-reflection';
 import type { CameraSnapshot } from '../render-contract';
 import { projectAuxiliaryCamerasForView, selectCameraRoles } from '../render-system-extract';
 import type { RenderTarget, RenderTargetDescriptor } from '../targets/contracts';
-
-const mipmapPipelines = vi.hoisted(() => ({ size: 0 }));
-vi.mock('@forgeax/engine-assets-runtime', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@forgeax/engine-assets-runtime')>()),
-  mipmapCacheSize: () => mipmapPipelines.size,
-}));
 
 function ownedPlanarWorld(data: { resolutionScale?: number; generateMipmaps?: boolean } = {}) {
   const world = new World();
@@ -70,7 +65,6 @@ function fakeHost() {
 }
 
 afterEach(() => {
-  mipmapPipelines.size = 0;
   vi.restoreAllMocks();
 });
 
@@ -165,8 +159,11 @@ describe('PlanarReflection renderer-owned target', () => {
   });
 
   it('counts the full chain when mipmaps are generated, else one level', () => {
-    const device = {} as RhiDevice;
-    mipmapPipelines.size = 1;
+    const device = { caps: { backendKind: 'webgpu' } } as RhiDevice;
+    const compile = vi.fn(() => {
+      throw new Error('Target selection must leave module creation to mip encoding');
+    });
+    configureNativeMipmapCompiler(device, compile);
     const full = planarReflectionTargetDescriptor(
       { width: 1024, height: 300 },
       { resolutionScale: 1, generateMipmaps: true },
@@ -179,6 +176,7 @@ describe('PlanarReflection renderer-owned target', () => {
     expect(
       planarReflectionLevels(device, { generateMipmaps: true }, { ...game, mipLevels: 1 }),
     ).toBe(1);
+    expect(compile).not.toHaveBeenCalled();
   });
 
   it('falls back to mip 0 with one warning when the mipmap pipeline is not prewarmed', () => {

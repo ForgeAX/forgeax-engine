@@ -253,7 +253,9 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     context.signal.throwIfAborted();
     const executablePath = [
       process.env.FORGEAX_BROWSER_EXECUTABLE,
-      '/opt/google/chrome-beta/chrome',
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/opt/google/chrome/chrome',
+      '/usr/bin/google-chrome',
       '/usr/bin/google-chrome',
       chromium.executablePath(),
     ].find((path): path is string => path !== undefined && existsSync(path));

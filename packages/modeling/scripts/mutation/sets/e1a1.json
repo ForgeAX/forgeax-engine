@@ -1,0 +1,267 @@
+{
+ "tests": [
+  "src/brep/__tests__/e1a1-intersect.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "e1a1-sphere-tangent-wide",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "  if (gap <= tol) return touching(gap, foot);\n  return { raws: [loopOf(circleIn(p, foot,",
+   "new": "  if (gap <= 10 * tol) return touching(gap, foot);\n  return { raws: [loopOf(circleIn(p, foot,"
+  },
+  {
+   "id": "e1a1-sphere-tangent-strict",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "  if (gap <= tol) return touching(gap, foot);\n  return { raws: [loopOf(circleIn(p, foot,",
+   "new": "  if (gap < tol) return touching(gap, foot);\n  return { raws: [loopOf(circleIn(p, foot,"
+  },
+  {
+   "id": "e1a1-sphere-radius",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "Math.sqrt(gap * (s.radius + Math.abs(dsg)))",
+   "new": "Math.sqrt(gap * s.radius)"
+  },
+  {
+   "id": "e1a1-sphere-miss-tol",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "  if (gap < -tol) return NOTHING;\n  if (gap <= tol) return touching(gap, foot);",
+   "new": "  if (gap < 0) return NOTHING;\n  if (gap <= tol) return touching(gap, foot);"
+  },
+  {
+   "id": "e1a1-cyl-ellipse-a",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "a: c.radius / Math.abs(cs),",
+   "new": "a: c.radius * Math.abs(cs),"
+  },
+  {
+   "id": "e1a1-cyl-centre",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "frameOf(madd3(o, z, -dsg / cs), g, cross3(n, g))",
+   "new": "frameOf(madd3(o, z, dsg / cs), g, cross3(n, g))"
+  },
+  {
+   "id": "e1a1-cyl-lines-one",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "lineRaw(madd3(foot, side, -1), g, win));\n  }\n  const curve: Curve = {",
+   "new": "lineRaw(madd3(foot, side, 1), g, win));\n  }\n  const curve: Curve = {"
+  },
+  {
+   "id": "e1a1-cyl-tangent-wide",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "    if (gap <= tol) return ok(touching(gap, foot));\n    const side",
+   "new": "    if (gap <= 10 * tol) return ok(touching(gap, foot));\n    const side"
+  },
+  {
+   "id": "e1a1-cyl-parallel-pivot",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "if (Math.abs(cs) <= PAR) {\n    const gap = c.radius",
+   "new": "if (Math.abs(cs) <= 0.5) {\n    const gap = c.radius"
+  },
+  {
+   "id": "e1a1-cone-ellipse-b",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "b: Math.abs(e * sa) / Math.sqrt(dd),",
+   "new": "b: Math.abs(e * sa) / dd,"
+  },
+  {
+   "id": "e1a1-cone-centre",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "const centre = (a * b * e) / dd;",
+   "new": "const centre = (a * b * e) / (dd + 1e-3);"
+  },
+  {
+   "id": "e1a1-cone-parabola-be",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "const be = (e * (c * c - b * b)) / (2 * a * b);",
+   "new": "const be = (e * (c * c - b * b)) / (a * b);"
+  },
+  {
+   "id": "e1a1-cone-hyperbola-one-nappe",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "return ok({ raws: [arc(1), arc(-1)] });",
+   "new": "return ok({ raws: [arc(1)] });"
+  },
+  {
+   "id": "e1a1-cone-hyperbola-weight",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "[1, ch, 1]);",
+   "new": "[1, 1, 1]);"
+  },
+  {
+   "id": "e1a1-cone-apex-touch-lt",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "if (ratio >= 1) return",
+   "new": "if (ratio > 1) return",
+   "survives": "equivalent: at ratio 1 the fallthrough sqrt gives sn 0 and the same tangent partial with gap 0"
+  },
+  {
+   "id": "e1a1-cone-circle-radius",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "(Math.abs(sa) / c) * Math.abs(e)",
+   "new": "(Math.abs(sa) * c) * Math.abs(e)"
+  },
+  {
+   "id": "e1a1-cone-lines-sign",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "lineRaw(origin, madd3(scale3(g, ratio), m, -sn), win),",
+   "new": "lineRaw(origin, madd3(scale3(g, ratio), m, sn), win),"
+  },
+  {
+   "id": "e1a1-torus-circles-inner",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "loopOf(circleIn(p, c, R - rho))",
+   "new": "loopOf(circleIn(p, c, R + rho))"
+  },
+  {
+   "id": "e1a1-torus-rho",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "const rho = Math.sqrt(gap * (r + Math.abs(h)));",
+   "new": "const rho = Math.sqrt(gap * r);"
+  },
+  {
+   "id": "e1a1-torus-meridian-radius",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "        radius: r,\n      });\n    return { raws: [meridian(1), meridian(-1)] };",
+   "new": "        radius: r * 1.01,\n      });\n    return { raws: [meridian(1), meridian(-1)] };"
+  },
+  {
+   "id": "e1a1-torus-oblique-guess",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "if (Math.abs(dot3(n, z)) > PAR) return UNSUPPORTED;",
+   "new": "if (Math.abs(dot3(n, z)) > 0.9) return UNSUPPORTED;"
+  },
+  {
+   "id": "e1a1-torus-node-wide",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "if (Math.abs(d - (R - r)) <= tol) return touching(d - (R - r), base);",
+   "new": "if (Math.abs(d - (R - r)) <= 100 * tol) return touching(d - (R - r), base);"
+  },
+  {
+   "id": "e1a1-torus-lobe-one",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "return { raws: [lobe(1), lobe(-1)] };",
+   "new": "return { raws: [lobe(1)] };"
+  },
+  {
+   "id": "e1a1-torus-eps-loose",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "const eps = tol / 8;",
+   "new": "const eps = tol * 50;"
+  },
+  {
+   "id": "e1a1-plane-coincident-dropped",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "return ok({ raws: [], touch: { code: 'brep-ssi-coincident', gap: sep } });",
+   "new": "return ok(NOTHING);"
+  },
+  {
+   "id": "e1a1-plane-line-origin",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "scale3(cross3(n2, d), c1), cross3(d, n1), c2)",
+   "new": "scale3(cross3(n2, d), c2), cross3(d, n1), c1)"
+  },
+  {
+   "id": "e1a1-window-centre",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "  const tc = dot3(sub3(win.c, o), d);\n  return ok({ curve: { kind: 'line', o, d }, t0: tc - win.r, t1: tc + win.r, closed: false });",
+   "new": "  return ok({ curve: { kind: 'line', o, d }, t0: -win.r, t1: win.r, closed: false });"
+  },
+  {
+   "id": "e1a1-chain-no-split",
+   "file": "src/brep/intersect-plane.ts",
+   "old": "out.length < CHAIN_PIECES && strayed(piece, t0)",
+   "new": "false && strayed(piece, t0)"
+  },
+  {
+   "id": "e1a1-bound-understated",
+   "file": "src/brep/intersect.ts",
+   "old": "const bound = Math.max(worst * BOUND_SAFETY, BOUND_FLOOR);",
+   "new": "const bound = worst * 0.25;"
+  },
+  {
+   "id": "e1a1-bound-sampled-coarse",
+   "file": "src/brep/intersect.ts",
+   "old": "const FITTED_SAMPLES = 2048;",
+   "new": "const FITTED_SAMPLES = 4;"
+  },
+  {
+   "id": "e1a1-tol-check-removed",
+   "file": "src/brep/intersect.ts",
+   "old": "    if (worst > tol) {",
+   "new": "    if (worst > 1e9) {"
+  },
+  {
+   "id": "e1a1-unsupported-silent",
+   "file": "src/brep/intersect.ts",
+   "old": "return ok(deepFreeze({ branches: [], partials: [partial('brep-ssi-unsupported', null)] }));\n  }\n  const swap",
+   "new": "return ok(deepFreeze({ branches: [], partials: [] }));\n  }\n  const swap"
+  },
+  {
+   "id": "e1a1-torus-unsupported-silent",
+   "file": "src/brep/intersect.ts",
+   "old": "if (section.unsupported === true) {\n    return ok(deepFreeze({ branches: [], partials: [partial('brep-ssi-unsupported', null)] }));",
+   "new": "if (section.unsupported === true) {\n    return ok(deepFreeze({ branches: [], partials: [] }));"
+  },
+  {
+   "id": "e1a1-ids-ignored",
+   "file": "src/brep/intersect.ts",
+   "old": "({ code, surfaces: ids, gap,",
+   "new": "({ code, surfaces: [0, 1] as const, gap,"
+  },
+  {
+   "id": "e1a1-swap-pcurves",
+   "file": "src/brep/intersect.ts",
+   "old": "      onA: trim(a),\n      onB: trim(b),",
+   "new": "      onA: trim(b),\n      onB: trim(a),"
+  },
+  {
+   "id": "e1a1-pcurve-unchecked",
+   "file": "src/brep/intersect.ts",
+   "old": "    if (dist3(surfacePoint(s, uv[0], uv[1]), curvePoint(raw.curve, t)) > tol) return undefined;",
+   "new": "    if (dist3(surfacePoint(s, uv[0], uv[1]), curvePoint(raw.curve, t)) > 1e9) return undefined;",
+   "survives": "equivalent: every closed-form pcurve pcurveFor returns for a supported pair already lies within tol, so the self-check only guards future pairs"
+  },
+  {
+   "id": "e1a1-lift-no-unwrap",
+   "file": "src/brep/intersect.ts",
+   "old": "period > 0 ? x + period * Math.round((ref - x) / period) : x;",
+   "new": "x;"
+  },
+  {
+   "id": "e1a1-tol-floor",
+   "file": "src/brep/intersect.ts",
+   "old": "if (!Number.isFinite(tol) || tol < TOL_FLOOR) {",
+   "new": "if (!Number.isFinite(tol)) {"
+  },
+  {
+   "id": "e1a1-window-validate",
+   "file": "src/brep/intersect.ts",
+   "old": "    w.r > 0\n",
+   "new": "    w.r >= 0\n"
+  },
+  {
+   "id": "e1a1-options-twice",
+   "file": "src/brep/intersect.ts",
+   "old": "    const { window, ids } = options ?? {};\n    return { window, ids };",
+   "new": "    return { window: options?.window, ids: options?.ids ?? options?.ids };"
+  },
+  {
+   "id": "e1a1-frame-unchecked",
+   "file": "src/brep/intersect.ts",
+   "old": "  const defect = frameDefect(x.frame);\n  if (defect !== undefined) return defect;",
+   "new": ""
+  },
+  {
+   "id": "e1a1-cone-inverse-sign",
+   "file": "src/brep/surfaces.ts",
+   "old": "const lower = lz * sa + s.radius * ca < 0;",
+   "new": "const lower = false;"
+  },
+  {
+   "id": "e1a1-cone-inverse-u",
+   "file": "src/brep/surfaces.ts",
+   "old": "u: lower && rho !== 0 ? wrapPeriod(atan2(-ly, -lx)) : u,",
+   "new": "u,"
+  }
+ ]
+}

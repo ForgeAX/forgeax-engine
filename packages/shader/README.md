@@ -3,6 +3,22 @@
 
 # @forgeax/engine-shader
 
+## Geometric optical interface
+
+`forgeax_optics::interface` supplies pure `refractInterface`,
+`intersectOpticalPlane`, `opticalMappedArea` and
+`opticalRelativeConcentration`. Incident directions point toward the interface;
+unit normals point into the incident medium and both indices are positive.
+Results explicitly distinguish valid, invalid, total reflection, parallel,
+behind, outside and degenerate states through shader-local status constants.
+Plane coordinates are metres in explicit orthonormal axes. Area uses two
+receiver tangent differences and the corresponding source Gram metric; its
+ratio is receiver area / source area. Concentration compares incident projected
+area / receiver area against the same ratio for an explicit reference interface.
+Stencil, focusing regularization, overlap accumulation, filtering and optical
+losses remain effect policy. These helpers do not allocate resources, discover
+receivers or modify lights.
+
 ## Source-template publications
 
 `programTemplateInspection()` returns preparation counters without listing programs.
@@ -32,10 +48,13 @@ parameter layout with a canonical receipt. Material values and render state do
 not enter the feature selection. Template identity never masquerades as the
 content digest of final WGSL.
 
-`buildEngineShaderTemplateManifest()` in the shader tool package produces this
-source format without composing a Cartesian product. Existing precompiled
-publication versions remain readable. Their producer and consumption contract
-is described below; source templates do not change those wire versions.
+`buildEngineShaderTemplateManifest()` in the shader tool package publishes the
+compiler reflection of the shared Cluster layout probe. Its optional
+`preparedReflection` descriptor names the exact recipe, selected defines and
+source digest. Render can validate the ABI before any variant compiles. When a
+consumer requests the probe source, the Registry checks its compiled digest
+against the descriptor. Earlier publications expose reflection through the
+selected program.
 
 A project can also publish an `8.0.0` manifest with `templates` and `cooked`
 sections. The Registry verifies both sections before publishing any row and
@@ -1208,6 +1227,7 @@ the build-only ray context selects explicit mip levels from the hit's ray-cone
 footprint. Custom Surface modules can consume the same input and shared sampling
 helper. The reference admits opaque and MASK coverage; shared Standard opacity
 `<= alphaClipThreshold` rejects a candidate only when the threshold is positive.
+`materialTextureMipBias` carries UE's automatic surface texture mip bias (View.MaterialTextureMipBias): negative for the display view under TAA/TSR, zero for shadow, ray, card and capture views. Standard samplers apply it; custom Surface code that samples textures itself should pass it to `sampleSurfaceTexture` or `textureSampleBias`.
 Surface status 3 means rejected coverage, while status 2 means invalid output.
 `geometricNormalWS` describes
 triangle orientation; `vertexNormalWS` is the interpolated normal used by Standard

@@ -1,3 +1,4 @@
+import type { PackCookSource } from '@forgeax/engine-pack/source';
 import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import type { SourceSite } from '../capture';
 import type { OverlayKind } from '../diagnostics';
@@ -308,6 +309,16 @@ export interface PackMaterials {
   readonly materials: Readonly<Record<string, MaterialAsset>>;
   /** `texture/<key>` outputs, keyed by the formatted GUID derived from the Pack id and `texture/<key>`. */
   readonly textures: Readonly<Record<string, TextureAsset>>;
+  /** Deferred authoring outputs; the host must run their registered producer before rendering. */
+  readonly cookSources?: Readonly<
+    Record<
+      string,
+      {
+        readonly sourceKey: string;
+        readonly value: PackCookSource;
+      }
+    >
+  >;
 }
 
 export interface CaptureReport {
@@ -434,6 +445,9 @@ export const REPLAY_LIMIT = 64;
 
 /** Largest per-call capture budget a caller may ask for. */
 export const CAPTURE_TIMEOUT_LIMIT_MS = 600_000;
+
+/** Longest deadline a Worker pool accepts: Node fires a longer `setTimeout` after 1 ms. */
+export const MAX_DEADLINE_MS = 2 ** 31 - 1;
 
 /** `--timeout-ms`: per-call capture budget; composers such as DevKit's `model.render` spread it. */
 export const CAPTURE_TIMEOUT_ARG = {

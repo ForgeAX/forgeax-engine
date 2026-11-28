@@ -1,4 +1,8 @@
-import { type CompiledRenderGraph, RenderGraphBuilder } from '@forgeax/engine-render-graph';
+import {
+  boundRenderGraphResources,
+  type CompiledRenderGraph,
+  RenderGraphBuilder,
+} from '@forgeax/engine-render-graph';
 import { RhiError } from '@forgeax/engine-rhi';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import type { GpuSceneCapacityPreparation } from '../gpu-scene-capacity';
@@ -79,7 +83,10 @@ async function fixture() {
       graphs.push(compiled);
       const view = compiled.createdTextureView(port);
       assert(view);
-      const facts: GraphBindingViews = { graph: compiled, views: [['ssao', port, view]] };
+      const facts: GraphBindingViews = {
+        resources: boundRenderGraphResources(compiled),
+        views: [['ssao', port, view]],
+      };
       return { compiled, view, facts };
     };
     const result = {
@@ -234,13 +241,16 @@ it('retires a graph variant without invalidating ordinary or other probe binding
   const a = f.graph();
   const port = a.facts.views[0]?.[1];
   assert(port);
-  const graphViews: GraphBindingViews = { graph: a.compiled, views: [['backdrop', port, a.view]] };
+  const graphViews: GraphBindingViews = {
+    resources: boundRenderGraphResources(a.compiled),
+    views: [['backdrop', port, a.view]],
+  };
   const graphEntry = { ...entry, graphViews };
   cache.set('world', 12, 'surface', 0, graphEntry, 3);
   cache.set('world', 12, 'surface', 0, entry, 3);
   const probe = { ...entry };
   cache.set('world', 12, 'surface', undefined, probe, 3);
-  cache.retireGraph(a.compiled);
+  cache.retirePassResources(boundRenderGraphResources(a.compiled));
   expect(cache.get('world', 12, 'surface', 0, graphViews, 3)).toBeUndefined();
   expect(cache.get('world', 12, 'surface', 0, undefined, 3)).toBe(entry);
   cache.releaseBinding(12, entry);
@@ -259,18 +269,26 @@ it('cannot reinsert a material graph variant after its original graph retires', 
   const aoPort = a.facts.views[0]?.[1];
   assert(aoPort !== undefined);
   const graphViews: GraphBindingViews = {
-    graph: a.compiled,
+    resources: boundRenderGraphResources(a.compiled),
     views: [['backdrop', aoPort, a.view]],
   };
   const identity = worldRenderResources(f.f.world).identity;
   cache.set(identity, handle, entry.material.materialShaderId, 99, { ...entry, graphViews });
-  expect([...cache.values()].some((value) => value.graphViews?.graph === a.compiled)).toBe(true);
-  cache.retireGraph(a.compiled);
+  expect(
+    [...cache.values()].some(
+      (value) => value.graphViews?.resources === boundRenderGraphResources(a.compiled),
+    ),
+  ).toBe(true);
+  cache.retirePassResources(boundRenderGraphResources(a.compiled));
   (await a.compiled.retire()).unwrap();
   expect(() =>
     cache.set(identity, handle, entry.material.materialShaderId, 99, { ...entry, graphViews }),
   ).toThrow();
-  expect([...cache.values()].some((value) => value.graphViews?.graph === a.compiled)).toBe(false);
+  expect(
+    [...cache.values()].some(
+      (value) => value.graphViews?.resources === boundRenderGraphResources(a.compiled),
+    ),
+  ).toBe(false);
 });
 
 it.each([
@@ -284,7 +302,10 @@ it.each([
   const a = f.graph();
   const port = a.facts.views[0]?.[1];
   assert(port);
-  const graphViews: GraphBindingViews = { graph: a.compiled, views: [['backdrop', port, a.view]] };
+  const graphViews: GraphBindingViews = {
+    resources: boundRenderGraphResources(a.compiled),
+    views: [['backdrop', port, a.view]],
+  };
   const pipelineState = recordContext(f.runtime).getPipelineState();
   assert(pipelineState);
   const deps: PerSubmeshMaterialBgDeps = {
@@ -303,7 +324,7 @@ it.each([
     frameState: f.f.manager.currentOwner.frameState,
   };
   const retire = () => {
-    cache.retireGraph(a.compiled);
+    cache.retirePassResources(boundRenderGraphResources(a.compiled));
     void a.compiled.retire();
   };
   const create = f.runtime.device.createBindGroup.bind(f.runtime.device);
@@ -325,7 +346,11 @@ it.each([
     expect(() => buildPerSubmeshMaterialBg(deps, entry.material, undefined)).toThrow(RhiError);
     expect(native).toHaveBeenCalledOnce();
     if (stage === 'retention') expect(retention).toHaveBeenCalledOnce();
-    expect([...cache.values()].some((value) => value.graphViews?.graph === a.compiled)).toBe(false);
+    expect(
+      [...cache.values()].some(
+        (value) => value.graphViews?.resources === boundRenderGraphResources(a.compiled),
+      ),
+    ).toBe(false);
   } finally {
     native.mockRestore();
     retention.mockRestore();

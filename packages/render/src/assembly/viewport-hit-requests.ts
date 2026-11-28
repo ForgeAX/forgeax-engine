@@ -273,9 +273,15 @@ export function createViewportHitRequests(options: {
       frame = undefined;
     },
     submit,
-    invalidate() {
-      pending?.finish(stale('renderer'));
-      inFlight?.finish(stale('renderer'));
+    detachWorld(worldIdentity: string) {
+      if (pending?.input.worldIdentity === worldIdentity) pending.finish(stale('world-or-request'));
+      if (inFlight?.input.worldIdentity === worldIdentity)
+        inFlight.finish(stale('world-or-request'));
+    },
+    invalidate(reason: 'renderer' | 'device-generation' = 'renderer') {
+      pending?.finish(stale(reason));
+      inFlight?.finish(stale(reason));
+      if (reason === 'device-generation') inFlight = undefined;
       frame = undefined;
       cached = undefined;
       warmupRun?.abort();

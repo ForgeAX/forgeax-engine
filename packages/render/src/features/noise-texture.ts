@@ -56,6 +56,7 @@ export function createFeatureNoiseTexture(
 export function createFeatureNoiseResolver(input: {
   readonly scope: DeviceScope;
   readonly getDevice: () => RhiDevice;
+  readonly create?: typeof createFeatureNoiseTexture;
   readonly onError: (error: RhiError) => void;
 }): (frameNumber: number) => TextureView | undefined {
   let current:
@@ -77,7 +78,7 @@ export function createFeatureNoiseResolver(input: {
     }
     current = undefined;
     attempt = { device, generation, frameNumber };
-    const created = createFeatureNoiseTexture(device);
+    const created = (input.create ?? createFeatureNoiseTexture)(device);
     if (!created.ok) {
       input.onError(created.error);
       return undefined;

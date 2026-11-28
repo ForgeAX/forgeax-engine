@@ -33,6 +33,7 @@ export {
   type RenderFeatureNativePlanBuilder,
   type RenderFeatureNativePlanToken,
 } from './features/prepared-gpu-work';
+export { sourceMaterialProgramDemand } from './material-program-selection';
 export { resolveMeshMaterialBindings } from './mesh-material-bindings';
 export {
   deriveLtcResourcePlan,
@@ -236,6 +237,7 @@ export {
   prepareExtractContext,
   rectAreaFacesPoint,
 } from './render-system-extract';
+export { prepareSourceMeshPrograms } from './render-system-extract-tail';
 export { LocalMeshSource } from './scene/local-mesh-source';
 export {
   type MeshSourcePreparation,

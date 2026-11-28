@@ -1,9 +1,7 @@
-import {
-  type CompiledRenderGraph,
-  compiledRenderGraphGeneration,
-} from '@forgeax/engine-render-graph';
+import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import type { RenderError } from '../errors/render';
+import type { ViewFeatureWork } from '../features/view-feature-work';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { retirePendingStandardOutputGpu } from '../pipeline/standard-output/resources';
 import type { RendererError } from '../render-contract';
@@ -11,7 +9,12 @@ import type { RenderPipelineFrame } from '../render-pipeline';
 import { renderSubmission, renderWorldFor } from '../world/render-world';
 import { recordContext } from '../world/view-record-context';
 import { type FrameGraphIdentity, frameGraphCompileAttribution } from './frame-graph-identity';
-import type { InstalledFrameGraph, RenderFrameState } from './frame-snapshot';
+import {
+  type InstalledFrameGraph,
+  type RenderFrameState,
+  viewGraphDeviceIsCurrent,
+} from './frame-snapshot';
+import { trackGraphGeneration } from './graph-allocation-owner';
 import type { RenderSystemInternals } from './render-context';
 import {
   commitFeatureCandidate,
@@ -19,23 +22,19 @@ import {
   mutableFeatureGraphInspection,
   type RenderFeatureGraphCandidate,
   type RenderFeaturePlanRevisionState,
-  recordGraphDeviceGeneration,
   recordRenderFeatureCandidateEvent,
   reportRenderFeatureGraphError,
   retire,
-  trackGraphGeneration,
 } from './typed-frame-graph';
 
 type Graph = CompiledRenderGraph<RenderPipelineFrame>;
 
 /** Failed compiler allocations remain exact original-owner retirement responsibilities. */
 export function retireRejectedSourceGraph(
-  internals: RenderSystemInternals,
   frameState: RenderFrameState,
   graph: Graph,
 ): Promise<Result<void, unknown>> {
   trackGraphGeneration(frameState, graph);
-  recordGraphDeviceGeneration(internals, graph);
   retire(frameState, graph);
   return graph.retire();
 }
@@ -58,20 +57,19 @@ export function holdPreparedViewGraph(
   const previous = frameState.compiledFrameGraph;
   const graph = installed.graph;
   trackGraphGeneration(frameState, graph);
-  recordGraphDeviceGeneration(internals, graph);
   let accepted = false;
   let retirement: Promise<Result<void, unknown>> | undefined;
   const ownerCurrent = () =>
     recordContext(internals) === context &&
     context.deviceScope === scope &&
-    scope.isAlive() &&
-    !graph.isRetired();
+    viewGraphDeviceIsCurrent(installed, scope) &&
+    !installed.nativeResources.isRetired();
   const current = () =>
     accepted &&
     retirement === undefined &&
     ownerCurrent() &&
-    (frameState.compiledFrameGraph?.graph === graph ||
-      frameState.unsubmittedCompiledFrameGraph?.installed.graph === graph);
+    (frameState.compiledFrameGraph === installed ||
+      frameState.unsubmittedCompiledFrameGraph === installed);
   return Object.freeze({
     installed,
     isCurrent: current,
@@ -92,14 +90,9 @@ export function holdPreparedViewGraph(
           }),
         );
       const stash = frameState.unsubmittedCompiledFrameGraph;
-      if (previous?.graph !== graph)
-        frameState.unsubmittedCompiledFrameGraph = {
-          installed,
-          deviceGeneration: scope.generation,
-        };
+      if (previous !== installed) frameState.unsubmittedCompiledFrameGraph = installed;
       accepted = true;
-      if (stash !== undefined && stash.installed.graph !== graph)
-        retire(frameState, stash.installed.graph);
+      if (stash !== undefined && stash.graph !== graph) retire(frameState, stash.graph);
       return current()
         ? ok(undefined)
         : err(
@@ -116,10 +109,10 @@ export function holdPreparedViewGraph(
         // Ordinary adoption transfers this graph to its existing View owner.
         if (
           frameState.compiledFrameGraph?.graph === graph ||
-          frameState.compiledFrameGraphCandidate?.graph === graph
+          frameState.compiledFrameGraphCandidate?.installed.graph === graph
         )
           return ok(undefined);
-        if (frameState.unsubmittedCompiledFrameGraph?.installed.graph === graph)
+        if (frameState.unsubmittedCompiledFrameGraph?.graph === graph)
           frameState.unsubmittedCompiledFrameGraph = undefined;
         retire(frameState, graph);
         return graph.retire();
@@ -193,13 +186,11 @@ export interface GraphEffects {
   readonly metrics: FeatureGraphMetricsDelta;
   /** App request whose inputs produced this compile outcome. */
   readonly configurationRevision?: number | undefined;
-  /** Applied on `reused`, `promoted` and `compiled`. */
-  readonly lightingSignature: string;
   readonly forwardDisplayReceiver?: InstalledFrameGraph['forwardDirectionalShadow'];
   /** Applied on `reused`, `promoted` and `compiled`. */
-  readonly cloudHistoryActive: boolean;
   readonly cloudHistoryFormat?: import('../cloud/reconstruction/history').CloudTransportFormat;
   readonly featureCandidate: RenderFeatureGraphCandidate | undefined;
+  readonly featureWork: ViewFeatureWork;
   /** The post chain is still compiling: a settled candidate is abandoned rather than committed. */
   readonly postPending: boolean;
   /** A stashed unsubmitted graph whose key or device generation no longer matches. */
@@ -211,7 +202,30 @@ export interface GraphEffects {
   readonly rejectedGraph?: Graph;
 }
 
+/** The ordered recorder hands over the binding it already selected. */
+export type OrderedDisplayOutcome = {
+  readonly frame: number;
+  readonly kind: 'ordered-display';
+  readonly installed: InstalledFrameGraph;
+  readonly configurationRevision: number | undefined;
+  readonly forwardDisplayReceiver: InstalledFrameGraph['forwardDirectionalShadow'];
+  readonly featureCandidate: RenderFeatureGraphCandidate | undefined;
+  readonly featureWork: ViewFeatureWork;
+  readonly metrics: FeatureGraphMetricsDelta | undefined;
+} & (
+  | { readonly operation: 'reuse' }
+  | { readonly operation: 'promote'; readonly gpuReplacement: PreparedGpuDrivenFrame | undefined }
+  | {
+      readonly operation: 'bind';
+      readonly gpuReplacement: PreparedGpuDrivenFrame | undefined;
+      readonly retireStash: InstalledFrameGraph | undefined;
+      readonly buildCpuMs: number;
+      readonly bindingCpuMs: number;
+    }
+);
+
 export type ViewGraphCompileOutcome =
+  | OrderedDisplayOutcome
   | {
       readonly frame: number;
       readonly kind: 'reused';
@@ -301,18 +315,20 @@ function fireGraphEffectError(
  * A second build in the same transaction supersedes only the unsubmitted
  * candidate; rollback must still reach the last accepted projection.
  */
-function stageCompiledFrameGraphCandidate(frameState: RenderFrameState, graph: Graph): void {
+function stageCompiledFrameGraphCandidate(
+  frameState: RenderFrameState,
+  installed: InstalledFrameGraph,
+): void {
   const superseded = frameState.compiledFrameGraphCandidate;
   frameState.compiledFrameGraphCandidate = {
-    graph,
+    installed,
     previous: superseded?.previous ?? {
       installed: frameState.compiledFrameGraph,
       graphGeneration: frameState.graphGeneration ?? 0,
-      compiledGeneration: frameState.compiledFrameGraphGeneration ?? 0,
-      lightingSignature: frameState.standardLightingGraphSignature ?? '',
     },
   };
-  if (superseded !== undefined && superseded.graph !== graph) retire(frameState, superseded.graph);
+  if (superseded !== undefined && superseded.installed.graph !== installed.graph)
+    retire(frameState, superseded.installed.graph);
 }
 
 // View buffer replacement is safe to retire once the compiled graph owns
@@ -330,38 +346,102 @@ function commitGpuDrivenResourceReplacement(gpuDriven: PreparedGpuDrivenFrame | 
 
 /** Stage a promoted or freshly compiled graph as this frame's transactional candidate. */
 function installAdoptedGraph(
-  internals: RenderSystemInternals,
   frameState: RenderFrameState,
-  graph: Graph,
   installed: InstalledFrameGraph,
-  effects: GraphEffects,
-  fresh: boolean,
+  gpuReplacement: PreparedGpuDrivenFrame | undefined,
 ): void {
   // Register the generation before publishing it. The owner observes the
   // overlap while the previous graph is still live, even if a queue fence
   // retires that graph before the next public inspect() call.
+  const { graph } = installed;
   trackGraphGeneration(frameState, graph);
-  stageCompiledFrameGraphCandidate(frameState, graph);
-  frameState.compiledFrameGraphGeneration += 1;
+  stageCompiledFrameGraphCandidate(frameState, installed);
   frameState.graphGeneration += 1;
-  const graphGeneration = compiledRenderGraphGeneration(graph);
-  frameState.compiledFrameGraph =
-    installed.targets.graphGeneration === graphGeneration
-      ? installed
-      : {
-          ...installed,
-          targets: { ...installed.targets, graphGeneration },
-        };
-  commitGpuDrivenResourceReplacement(effects.gpuReplacement);
-  if (fresh) recordGraphDeviceGeneration(internals, graph);
+  frameState.compiledFrameGraph = installed;
+  commitGpuDrivenResourceReplacement(gpuReplacement);
 }
 
-/** Publish a candidate whose post chain is complete; abandon one still waiting on post pipelines. */
-function settleFeatureCandidate(internals: RenderSystemInternals, effects: GraphEffects): void {
-  const candidate = effects.featureCandidate;
+function installedDisplay(frameState: RenderFrameState, graph: Graph): InstalledFrameGraph | null {
+  const installed = frameState.compiledFrameGraph;
+  return installed?.graph === graph ? installed : null;
+}
+
+/** Publish the plans used by encoding once their post chain is ready. */
+function settleFeatureCandidate(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  graph: Graph,
+  candidate: RenderFeatureGraphCandidate | undefined,
+  work: ViewFeatureWork,
+  postPending: boolean,
+): void {
   if (candidate === undefined) return;
-  if (effects.postPending) recordRenderFeatureCandidateEvent(internals, candidate, 'abandoned');
-  else commitFeatureCandidate(internals, candidate);
+  if (postPending) {
+    recordRenderFeatureCandidateEvent(internals, candidate, 'abandoned');
+    return;
+  }
+  commitFeatureCandidate(internals, frameState, candidate, work);
+  frameState.featureGraphReceipt = {
+    kind: 'compiled',
+    graph,
+    frame: renderSubmission(renderWorldFor(internals)).frame,
+    generation: recordContext(internals).deviceScope?.generation ?? 0,
+    view: internals.viewEntity,
+    plans: work.plans,
+  };
+}
+
+/** Move the chosen ordered binding into the existing submission transaction. */
+export function adoptOrderedDisplay(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  display: OrderedDisplayOutcome,
+): InstalledFrameGraph {
+  const { installed, operation, featureCandidate } = display;
+  frameState.featureGraphReceipt = undefined;
+  const inspection = mutableFeatureGraphInspection(internals);
+  inspection.ensureCalls += 1;
+  if (display.metrics !== undefined)
+    applyFeatureGraphMetrics(inspection, display.metrics, display.frame);
+  inspection.lastTopologyKey = installed.topologyKey;
+  if (operation === 'reuse') {
+    inspection.reuseHits += 1;
+  } else {
+    if (operation === 'bind') {
+      const retired = display.retireStash;
+      if (retired !== undefined) {
+        frameState.unsubmittedCompiledFrameGraph = undefined;
+        retire(frameState, retired.graph);
+      }
+      inspection.rebuildAttempts += 1;
+      inspection.compileAttempts += 1;
+      inspection.compileSuccesses += 1;
+      inspection.buildCpuMs += display.buildCpuMs;
+      inspection.compileCpuMs += display.bindingCpuMs;
+      recordCompileCauses(
+        inspection,
+        display.frame,
+        frameState.compiledFrameGraph?.topologyKey,
+        installed.topologyKey,
+      );
+    } else {
+      frameState.unsubmittedCompiledFrameGraph = undefined;
+      inspection.unsubmittedGraphReuses += 1;
+    }
+    installAdoptedGraph(frameState, installed, display.gpuReplacement);
+  }
+  frameState.barrelDistortionGraphResolution = 'accepted';
+  frameState.forwardDisplayReceiver = display.forwardDisplayReceiver;
+  settleFeatureCandidate(
+    internals,
+    frameState,
+    installed.graph,
+    featureCandidate,
+    display.featureWork,
+    false,
+  );
+  setPendingCloudHistory(frameState, installed.displayPorts?.cloud?.format);
+  return installed;
 }
 
 /**
@@ -373,7 +453,9 @@ export function adoptViewGraph(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   outcome: ViewGraphCompileOutcome,
-): Graph | null {
+): InstalledFrameGraph | null {
+  if (outcome.kind === 'ordered-display')
+    return adoptOrderedDisplay(internals, frameState, outcome);
   frameState.featureGraphReceipt = undefined;
   const featureMetrics = mutableFeatureGraphInspection(internals);
   featureMetrics.ensureCalls += 1;
@@ -391,7 +473,6 @@ export function adoptViewGraph(
     const rejectedGraph = effects.rejectedGraph;
     if (rejectedGraph !== undefined) {
       trackGraphGeneration(frameState, rejectedGraph);
-      recordGraphDeviceGeneration(internals, rejectedGraph);
     }
     try {
       fireGraphEffectError(internals, effects.error);
@@ -405,30 +486,33 @@ export function adoptViewGraph(
     if (effects.featureCandidate !== undefined) {
       recordRenderFeatureCandidateEvent(internals, effects.featureCandidate, 'rejected');
     }
-    return outcome.kind === 'retained' ? outcome.graph : null;
+    return outcome.kind === 'retained' ? installedDisplay(frameState, outcome.graph) : null;
   }
   if (outcome.kind === 'promoted') {
-    installAdoptedGraph(internals, frameState, outcome.graph, outcome.stash, effects, false);
+    installAdoptedGraph(frameState, outcome.stash, effects.gpuReplacement);
   } else if (outcome.kind === 'compiled') {
-    installAdoptedGraph(internals, frameState, outcome.graph, outcome.installed, effects, true);
+    installAdoptedGraph(frameState, outcome.installed, effects.gpuReplacement);
   }
   frameState.barrelDistortionGraphResolution = 'accepted';
-  frameState.standardLightingGraphSignature = effects.lightingSignature;
   frameState.forwardDisplayReceiver = effects.forwardDisplayReceiver;
-  settleFeatureCandidate(internals, effects);
-  if (!effects.postPending && effects.featureCandidate !== undefined) {
-    frameState.featureGraphReceipt = {
-      kind: 'compiled',
-      graph: outcome.graph,
-      frame: renderSubmission(renderWorldFor(internals)).frame,
-      generation: recordContext(internals).deviceScope?.generation ?? 0,
-      view: internals.viewEntity,
-      plans: effects.featureCandidate.plans,
-    };
-  }
-  frameState.pendingCloudHistoryActive = effects.cloudHistoryActive;
-  if (effects.cloudHistoryFormat === undefined) delete frameState.pendingCloudHistoryFormat;
-  else frameState.pendingCloudHistoryFormat = effects.cloudHistoryFormat;
+  settleFeatureCandidate(
+    internals,
+    frameState,
+    outcome.graph,
+    effects.featureCandidate,
+    effects.featureWork,
+    effects.postPending,
+  );
+  setPendingCloudHistory(frameState, effects.cloudHistoryFormat);
   // The selected candidate owner retires the previous graph only after submit.
-  return outcome.graph;
+  return installedDisplay(frameState, outcome.graph);
+}
+
+function setPendingCloudHistory(
+  frameState: RenderFrameState,
+  format: GraphEffects['cloudHistoryFormat'],
+): void {
+  frameState.pendingCloudHistoryActive = format !== undefined;
+  if (format === undefined) delete frameState.pendingCloudHistoryFormat;
+  else frameState.pendingCloudHistoryFormat = format;
 }

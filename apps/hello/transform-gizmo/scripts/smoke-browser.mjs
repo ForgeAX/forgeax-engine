@@ -21,7 +21,7 @@ const launch = resolveBrowserWebGpuLaunch();
 const browser = await chromium
   .launch({
     headless: true,
-    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome-beta',
+    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome',
     args: launch.args,
     chromiumSandbox: true,
   })

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bevySmokeApps } from '../bevy-demo.mjs';
 import { appPackages } from '../build-task-cache.mjs';
 import { pnpmCommand } from '../lib/pnpm-command.mjs';
 import coreDeferredAppBuilds from './core-app-build-deferred.json' with { type: 'json' };
@@ -281,16 +282,15 @@ export function resolveRunnableEntries({ repoRoot = root, roster, roots = roster
   };
 }
 
-// Complete passing Smoke jobs in runs 38313136540 and 38316658619 supply
-// median gate and post-roster seconds. Each gate includes its child startup;
-// the tail includes reporting/cleanup, without obsolete screenshot uploads.
+// Complete passing children include package startup. Run 45814612938
+// completed both transmission features in 154.246 and 247.615 seconds.
 const measuredSmokeGateSeconds = new Map([
   ['app-learn-render-5-advanced-lighting-5-parallax-mapping/smoke', 7],
   ['app-learn-render-5-advanced-lighting-9-ssao/smoke', 9],
   ['app-learn-render-6-pbr-2-ibl-irradiance/smoke', 13],
   ['app-learn-render-6-pbr-3-ibl-specular/smoke', 14],
-  ['app-learn-render-6-pbr-4-transmission-refraction/features-a', 94],
-  ['app-learn-render-6-pbr-4-transmission-refraction/features-b', 60],
+  ['app-learn-render-6-pbr-4-transmission-refraction/features-a', 155],
+  ['app-learn-render-6-pbr-4-transmission-refraction/features-b', 248],
   ['app-learn-render-6-pbr-4-transmission-refraction/frames', 28],
   ['hello-boss-lightning/sdf', 15],
   ['hello-cinder-fall/smoke', 28],
@@ -306,11 +306,42 @@ const measuredSmokeGateSeconds = new Map([
   ['hello-volumetric-fog/smoke', 18],
 ]);
 const defaultSmokeGateSeconds = 11;
-// Run 43943068121: complete fixed steps, including each folded Bevy owner.
-// Move complete Bloom (371s) from 1 to 2 and SSR (144s) from 1 to 0.
-// Round the resulting observed fixed totals upward.
-// These placement forecasts retain the original samples; they are not deadlines.
-export const ciSmokeShardTailSeconds = Object.freeze([705, 905, 925, 675]);
+// Reserve the fixed steps so the longest job improves in each complete replay
+// (45609245746, 45814612938 and 45859608750). Actual job times stay in Actions.
+const smokeFixedSeconds = [580, 677, 815, 501];
+const bevySmokeSeconds = new Map([
+  ['clearcoat', 26],
+  ['fog', 169],
+  ['shadow-biases', 26],
+  ['skybox', 31],
+  ['ssao', 33],
+  ['transparency-3d', 25],
+]);
+const bevyCost = ({ spec }) => bevySmokeSeconds.get(spec.id) ?? 15;
+
+export function planCiSmokeFleet({
+  entries = selectSmokeEntries(resolveRunnableEntries({ roster: readRoster() }), 'sharded'),
+  bevyApps = bevySmokeApps(root),
+} = {}) {
+  const lanes = smokeFixedSeconds.map((fixedSeconds) => ({
+    seconds: fixedSeconds,
+    entries: [],
+    bevyApps: [],
+  }));
+  const ranked = [
+    ...entries.map((entry) => ({ entry, id: entry.gateId, seconds: smokeGateSeconds(entry) })),
+    ...bevyApps.map((app) => ({ app, id: app.spec.id, seconds: bevyCost(app) })),
+  ].sort((a, b) => b.seconds - a.seconds || a.id.localeCompare(b.id));
+  for (const work of ranked) {
+    const lane = lanes.reduce((least, candidate) =>
+      candidate.seconds < least.seconds ? candidate : least,
+    );
+    lane.seconds += work.seconds;
+    if (work.app) lane.bevyApps.push(work.app);
+    else lane.entries.push(work.entry);
+  }
+  return lanes;
+}
 
 export function smokeGateSeconds(entry) {
   return measuredSmokeGateSeconds.get(entry.gateId) ?? defaultSmokeGateSeconds;
@@ -331,12 +362,11 @@ export function partitionRunnableEntries(
       a.gateId.localeCompare(b.gateId) ||
       a.commandId.localeCompare(b.commandId),
   );
-  // Fixed tails exist only in the four-shard smoke-fleet (`sharded`) layout.
-  const totals = Array.from({ length: shardCount }, (_value, shard) =>
-    scope === 'sharded' && shardCount === ciSmokeShardTailSeconds.length
-      ? ciSmokeShardTailSeconds[shard]
-      : 0,
-  );
+  if (scope === 'sharded' && shardCount === SHARD_COUNT) {
+    const assigned = new Set(planCiSmokeFleet({ entries: ordered })[shardIndex].entries);
+    return ordered.filter((entry) => assigned.has(entry));
+  }
+  const totals = Array(shardCount).fill(0);
   const assignment = new Map();
   const ranked = ordered
     .map((entry, index) => ({ entry, index, seconds: smokeGateSeconds(entry) }))

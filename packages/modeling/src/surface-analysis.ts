@@ -56,6 +56,8 @@ export function coloredMesh(colored: ColoredTriangles): Result<MeshAsset, Modeli
 export interface SurfaceFieldOptions {
   /** Largest distance between a render vertex and its patch point to count as exact (default 2e-5 m). */
   readonly tolerance?: number;
+  /** MeshAsset attribute holding the normalized patch domain (default `uv1`; BK56 may move it to `uv2`..`uv7`). */
+  readonly domain?: 'uv1' | 'uv2' | 'uv3' | 'uv4' | 'uv5' | 'uv6' | 'uv7';
 }
 
 const sub = (a: Tuple3, b: Tuple3): Tuple3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -164,7 +166,8 @@ export function surfaceField(
   const count = position.length / 3;
   const normal =
     mesh.attributes.normal instanceof Float32Array ? mesh.attributes.normal : undefined;
-  const uv1 = mesh.attributes.uv1 instanceof Float32Array ? mesh.attributes.uv1 : undefined;
+  const carrier = mesh.attributes[options.domain ?? 'uv1'];
+  const uv1 = carrier instanceof Float32Array ? carrier : undefined;
   const positions = Float64Array.from(position);
   const normals = new Float64Array(count * 3);
   if (normal !== undefined && normal.length === count * 3) normals.set(normal);

@@ -1,5 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { minOf } from './arrays';
+import { maxOf, minOf } from './arrays';
 import { type ModelingError, modelingError } from './errors';
 import { partDistance } from './interference';
 import type {
@@ -110,9 +110,11 @@ export function rigStopReport(
       if (!overlap.ok) return overlap;
       const depth = Math.max(
         0,
-        ...overlap.value.pairs
-          .filter((p) => p.parts.includes(spec.stop) && p.parts.some((n) => names.includes(n)))
-          .map((p) => p.depth),
+        maxOf(
+          overlap.value.pairs
+            .filter((p) => p.parts.includes(spec.stop) && p.parts.some((n) => names.includes(n)))
+            .map((p) => p.depth),
+        ),
       );
       const finding: StopFinding =
         gap.value > contact

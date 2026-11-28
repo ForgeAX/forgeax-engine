@@ -1,5 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
+import type { ExecutionBootstrapValue } from './types';
 
 /** Normalize a bootstrap module before any realm probing or worker startup. */
 export function normalizeExecutionBootstrapUrl(
@@ -21,5 +22,31 @@ export function normalizeExecutionBootstrapUrl(
         },
       }),
     );
+  }
+}
+
+export function bootstrapError(
+  phase: 'import' | 'export' | 'prepare' | 'bootstrap' | 'data',
+  moduleUrl: string,
+  cause: unknown,
+): AppErrorType {
+  return new AppError({
+    code: 'app-execution-bootstrap-failed',
+    expected: APP_EXPECTED['app-execution-bootstrap-failed'],
+    hint: APP_ERROR_HINTS['app-execution-bootstrap-failed'],
+    detail: { phase, moduleUrl, cause },
+  });
+}
+
+export function validateExecutionBootstrapData(
+  data: ExecutionBootstrapValue | undefined,
+  moduleUrl: string,
+): Result<void, AppErrorType> {
+  if (data === undefined) return ok(undefined);
+  try {
+    structuredClone(data);
+    return ok(undefined);
+  } catch (cause) {
+    return err(bootstrapError('data', moduleUrl, cause));
   }
 }

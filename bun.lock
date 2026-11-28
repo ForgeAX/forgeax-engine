@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "forgeax-engine",
@@ -2433,7 +2434,6 @@
       "devDependencies": {
         "@forgeax/engine-audio-webaudio": "workspace:*",
         "@forgeax/engine-devkit": "workspace:*",
-        "@forgeax/engine-dsh": "workspace:*",
         "@forgeax/engine-fbx": "workspace:*",
         "@forgeax/engine-font": "workspace:*",
         "@forgeax/engine-gltf": "workspace:*",
@@ -2946,26 +2946,6 @@
         "vite": "8.3.5",
       },
     },
-    "apps/hello/dsh-federation": {
-      "name": "@forgeax/hello-dsh-federation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@forgeax/engine-app": "workspace:*",
-        "@forgeax/engine-assets-runtime": "workspace:*",
-        "@forgeax/engine-dsh": "workspace:*",
-        "@forgeax/engine-ecs": "workspace:*",
-        "@forgeax/engine-geometry": "workspace:*",
-        "@forgeax/engine-render": "workspace:*",
-        "@forgeax/engine-rhi-webgpu": "workspace:*",
-        "@forgeax/engine-runtime": "workspace:*",
-        "@forgeax/engine-scene": "workspace:*",
-      },
-      "devDependencies": {
-        "@forgeax/engine-vite-plugin-shader": "workspace:*",
-        "@webgpu/types": "^0.1.74",
-        "vite": "8.3.5",
-      },
-    },
     "apps/hello/entity-visibility": {
       "name": "@forgeax/hello-entity-visibility",
       "version": "0.0.0",
@@ -3220,28 +3200,6 @@
         "@forgeax/engine-rhi-webgpu": "workspace:*",
         "@forgeax/engine-vite-plugin-shader": "workspace:*",
         "@webgpu/types": "^0.1.74",
-        "vite": "8.3.5",
-      },
-    },
-    "apps/hello/intelligence-worker": {
-      "name": "@forgeax/hello-intelligence-worker",
-      "version": "0.0.0",
-      "dependencies": {
-        "@forgeax/engine-app": "workspace:*",
-        "@forgeax/engine-assets-runtime": "workspace:*",
-        "@forgeax/engine-ecs": "workspace:*",
-        "@forgeax/engine-geometry": "workspace:*",
-        "@forgeax/engine-intelligence": "workspace:*",
-        "@forgeax/engine-render": "workspace:*",
-        "@forgeax/engine-runtime": "workspace:*",
-        "@forgeax/engine-scene": "workspace:*",
-        "@forgeax/engine-types": "workspace:*",
-      },
-      "devDependencies": {
-        "@forgeax/engine-shader-compiler": "workspace:*",
-        "@forgeax/engine-vite-plugin-shader": "workspace:*",
-        "@webgpu/types": "^0.1.74",
-        "playwright": "1.56.1",
         "vite": "8.3.5",
       },
     },
@@ -5671,6 +5629,7 @@
         "@types/node": "^20.19.40",
         "tsx": "4.20.6",
         "typescript": "6.0.3",
+        "upstream-webgpu": "npm:webgpu@0.6.2",
       },
     },
     "apps/water/r3-slw-reflection-underwater": {
@@ -5679,6 +5638,7 @@
       "dependencies": {
         "@forgeax/apps-shared": "workspace:*",
         "@forgeax/engine": "workspace:*",
+        "@forgeax/engine-water": "workspace:*",
       },
       "devDependencies": {
         "@forgeax/engine-devkit": "workspace:*",
@@ -6016,7 +5976,7 @@
       "name": "@forgeax/engine-devkit",
       "version": "0.0.0",
       "bin": {
-        "forgeax": "./dist/cli.mjs"
+        "forgeax": "./dist/cli.mjs",
       },
       "dependencies": {
         "@fontsource-variable/noto-sans-sc": "5.3.0",
@@ -6049,6 +6009,7 @@
         "@forgeax/engine-project": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-render-graph": "workspace:*",
+        "@forgeax/engine-render-kernel": "workspace:*",
         "@forgeax/engine-rhi-debug": "workspace:*",
         "@forgeax/engine-rhi-null": "workspace:*",
         "@forgeax/engine-rhi-webgpu": "workspace:*",
@@ -6090,22 +6051,6 @@
         "@types/ws": "^8.18.1",
       },
     },
-    "packages/dsh": {
-      "name": "@forgeax/engine-dsh",
-      "version": "0.0.0",
-      "dependencies": {
-        "@forgeax/engine-ecs": "workspace:*",
-        "@forgeax/engine-intelligence": "workspace:*",
-        "@forgeax/engine-plugin": "workspace:*",
-        "@forgeax/engine-types": "workspace:*",
-      },
-      "devDependencies": {
-        "@types/node": "^20.14.0",
-        "@types/react": "^19.2.17",
-        "playwright": "^1.56.1",
-        "react": "^19.2.8",
-      },
-    },
     "packages/ecs": {
       "name": "@forgeax/engine-ecs",
       "version": "0.0.0",
@@ -6122,7 +6067,7 @@
       "name": "@forgeax/engine",
       "version": "0.0.0",
       "bin": {
-        "forgeax": "./dist/bin/forgeax.mjs"
+        "forgeax": "./dist/bin/forgeax.mjs",
       },
       "dependencies": {
         "@forgeax/engine-animation": "workspace:*",
@@ -6136,7 +6081,6 @@
         "@forgeax/engine-ddc": "workspace:*",
         "@forgeax/engine-debug-draw": "workspace:*",
         "@forgeax/engine-devkit": "workspace:*",
-        "@forgeax/engine-dsh": "workspace:*",
         "@forgeax/engine-ecs": "workspace:*",
         "@forgeax/engine-fbx": "workspace:*",
         "@forgeax/engine-font": "workspace:*",
@@ -6147,9 +6091,6 @@
         "@forgeax/engine-image": "workspace:*",
         "@forgeax/engine-import": "workspace:*",
         "@forgeax/engine-input": "workspace:*",
-        "@forgeax/engine-intelligence": "workspace:*",
-        "@forgeax/engine-intelligence-dsh": "workspace:*",
-        "@forgeax/engine-intelligence-fake": "workspace:*",
         "@forgeax/engine-interaction": "workspace:*",
         "@forgeax/engine-math": "workspace:*",
         "@forgeax/engine-mesh-io": "workspace:*",
@@ -6158,7 +6099,6 @@
         "@forgeax/engine-navigation": "workspace:*",
         "@forgeax/engine-net": "workspace:*",
         "@forgeax/engine-net-websocket": "workspace:*",
-        "@forgeax/engine-npc": "workspace:*",
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-path": "workspace:*",
         "@forgeax/engine-physics": "workspace:*",
@@ -6175,6 +6115,7 @@
         "@forgeax/engine-remote": "workspace:*",
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-render-graph": "workspace:*",
+        "@forgeax/engine-render-kernel": "workspace:*",
         "@forgeax/engine-rhi": "workspace:*",
         "@forgeax/engine-rhi-debug": "workspace:*",
         "@forgeax/engine-rhi-null": "workspace:*",
@@ -6247,6 +6188,7 @@
         "@forgeax/engine-math": "workspace:*",
         "@forgeax/engine-pack": "workspace:*",
         "@forgeax/engine-types": "workspace:*",
+        "@forgeax/modeling-kernel": "workspace:*",
         "earcut": "3.2.4",
       },
       "devDependencies": {
@@ -6359,38 +6301,6 @@
         "@forgeax/engine-plugin": "workspace:*",
       },
     },
-    "packages/intelligence": {
-      "name": "@forgeax/engine-intelligence",
-      "version": "0.0.0",
-      "dependencies": {
-        "@forgeax/engine-plugin": "workspace:*",
-        "@forgeax/engine-types": "workspace:*",
-      },
-    },
-    "packages/intelligence-dsh": {
-      "name": "@forgeax/engine-intelligence-dsh",
-      "version": "0.0.0",
-      "dependencies": {
-        "@deepseek-ai/dsh-sdk-client": "0.1.0-rc.6",
-        "@forgeax/engine-intelligence": "workspace:*",
-        "@forgeax/engine-types": "workspace:*",
-      },
-      "devDependencies": {
-        "@forgeax/engine-intelligence-fake": "workspace:*",
-        "@types/node": "^20.14.0",
-      },
-    },
-    "packages/intelligence-fake": {
-      "name": "@forgeax/engine-intelligence-fake",
-      "version": "0.0.0",
-      "dependencies": {
-        "@forgeax/engine-intelligence": "workspace:*",
-        "@forgeax/engine-types": "workspace:*",
-      },
-      "devDependencies": {
-        "@forgeax/engine-plugin": "workspace:*",
-      },
-    },
     "packages/interaction": {
       "name": "@forgeax/engine-interaction",
       "version": "0.0.0",
@@ -6443,6 +6353,7 @@
         "@forgeax/engine-render": "workspace:*",
         "@forgeax/engine-tool-runtime": "workspace:*",
         "@forgeax/engine-types": "workspace:*",
+        "@forgeax/modeling-kernel": "workspace:*",
       },
       "devDependencies": {
         "@forgeax/engine-assets-runtime": "workspace:*",
@@ -6455,6 +6366,41 @@
         "@forgeax/engine-vite-plugin-shader": "workspace:*",
         "@types/node": "^20.14.0",
         "@webgpu/types": "^0.1.74",
+      },
+    },
+    "packages/modeling-kernel": {
+      "name": "@forgeax/modeling-kernel",
+      "version": "0.1.0",
+      "dependencies": {
+        "@forgeax/modeling-kernel-wasm": "workspace:*",
+      },
+      "devDependencies": {
+        "tsup": "^9.0.0",
+        "typescript": "^6.0.0",
+        "vitest": "^4.1.12",
+      },
+    },
+    "packages/modeling-kernel-three": {
+      "name": "@forgeax/modeling-kernel-three",
+      "version": "0.1.0",
+      "dependencies": {
+        "@forgeax/modeling-kernel": "workspace:*",
+      },
+      "devDependencies": {
+        "tsup": "^9.0.0",
+        "typescript": "^6.0.0",
+        "vitest": "^4.1.12",
+      },
+      "peerDependencies": {
+        "three": ">=0.160.0",
+      },
+    },
+    "packages/modeling-kernel-wasm": {
+      "name": "@forgeax/modeling-kernel-wasm",
+      "version": "0.1.0",
+      "devDependencies": {
+        "tsup": "^9.0.0",
+        "typescript": "^6.0.0",
       },
     },
     "packages/naga": {
@@ -6503,14 +6449,6 @@
       "devDependencies": {
         "@forgeax/engine-ecs": "workspace:*",
         "@types/ws": "^8.5.10",
-      },
-    },
-    "packages/npc": {
-      "name": "@forgeax/engine-npc",
-      "version": "0.0.0",
-      "dependencies": {
-        "@forgeax/engine-ecs": "workspace:*",
-        "@forgeax/engine-plugin": "workspace:*",
       },
     },
     "packages/pack": {
@@ -6746,6 +6684,7 @@
         "@forgeax/engine-plugin": "workspace:*",
         "@forgeax/engine-profiler": "workspace:*",
         "@forgeax/engine-render-graph": "workspace:*",
+        "@forgeax/engine-render-kernel": "workspace:*",
         "@forgeax/engine-rhi": "workspace:*",
         "@forgeax/engine-scene": "workspace:*",
         "@forgeax/engine-shader": "workspace:*",
@@ -6777,6 +6716,21 @@
       },
       "devDependencies": {
         "@forgeax/engine-rhi-null": "workspace:*",
+      },
+    },
+    "packages/render-kernel": {
+      "name": "@forgeax/engine-render-kernel",
+      "version": "0.0.0",
+      "dependencies": {
+        "@forgeax/engine-rhi": "workspace:*",
+        "@forgeax/engine-types": "workspace:*",
+      },
+      "devDependencies": {
+        "@forgeax/engine-dawn-node": "workspace:*",
+        "@forgeax/engine-rhi-debug": "workspace:*",
+        "@forgeax/engine-rhi-null": "workspace:*",
+        "@forgeax/engine-rhi-webgpu": "workspace:*",
+        "@webgpu/types": "^0.1.74",
       },
     },
     "packages/rhi": {
@@ -7185,6 +7139,14 @@
         "tsup": "9.0.0",
         "vitest": "4.1.12",
       },
+      "peerDependencies": {
+        "@forgeax/engine-assets-runtime": "workspace:*",
+        "@forgeax/engine-render": "workspace:*",
+      },
+      "optionalPeers": [
+        "@forgeax/engine-assets-runtime",
+        "@forgeax/engine-render",
+      ],
     },
     "packages/wgpu-wasm": {
       "name": "@forgeax/engine-wgpu-wasm",
@@ -7247,7 +7209,9 @@
       "name": "@forgeax/view",
       "version": "0.2.0",
       "bin": {
-        "forgeax-view": "./dist/modules/cli.mjs",        "forgeax-view-start": "./dist/modules/start-cli.mjs"      },
+        "forgeax-view": "./dist/modules/cli.mjs",
+        "forgeax-view-start": "./dist/modules/start-cli.mjs",
+      },
       "dependencies": {
         "@forgeax/engine": "workspace:*",
         "@forgeax/engine-host": "workspace:*",
@@ -7584,17 +7548,17 @@
     "@actions/glob@0.7.0": "patches/@actions__glob@0.7.0.patch",
   },
   "overrides": {
-    "joi": "^18.3.1",
     "@hono/node-server": "2.1.6",
+    "body-parser": "^2.4.0",
+    "fast-uri": "^3.1.9",
     "follow-redirects": "^1.16.2",
-    "hono": "4.13.18",
     "glob": "^14.0.2",
-    "qs": "^6.16.1",
+    "hono": "4.13.18",
+    "joi": "^18.3.1",
     "minimatch": "^11.0.1",
     "postcss-selector-parser": "6.1.6",
+    "qs": "^6.16.1",
     "zod": "^4.6.7",
-    "fast-uri": "^3.1.9",
-    "body-parser": "^2.4.0",
   },
   "packages": {
     "@actions/core": ["@actions/core@3.0.1", "", { "dependencies": { "@actions/exec": "^3.0.0", "@actions/http-client": "^4.0.0" } }, "sha512-a6d/Nwahm9fliVGRhdhofo40HjHQasUPusmc7vBfyky+7Z+P2A1J68zyFVaNcEclc/Se+eO595oAr5nwEIoIUA=="],
@@ -7736,40 +7700,6 @@
     "@deepseek-ai/cordis": ["@deepseek-ai/cordis@4.0.4", "", { "dependencies": { "@deepseek-ai/cosmokit": "~1.8.5", "@standard-schema/spec": "^1.1.0" }, "peerDependencies": { "@deepseek-ai/cordis-plugin-include": "~1.0.9", "@deepseek-ai/cordis-plugin-loader": "~1.0.5" }, "optionalPeers": ["@deepseek-ai/cordis-plugin-include", "@deepseek-ai/cordis-plugin-loader"], "bin": { "cordis": "bin.js" } }, "sha512-obgyxqWAmFn3Re8kvsuUnyW+ihrz6eJCnJO4fh1cQzDtmPYz/zzVeUkH9R94I0OwSVOocK67Kgakm04j/oQXzg=="],
 
     "@deepseek-ai/cosmokit": ["@deepseek-ai/cosmokit@1.8.5", "", {}, "sha512-LXsrlem9z8dq4sLflj2yuCuYX7KqhdzF5hZly3eZyuTo8d6oDSOXuEgC5DbQWKW+lksm6zmOutQLsP/ma6wR6A=="],
-
-    "@deepseek-ai/dsh-agent": ["@deepseek-ai/dsh-agent@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8", "@deepseek-ai/dsh-llm": "^0.1.0-rc.8", "@deepseek-ai/dsh-scope": "^0.1.0-rc.8", "@deepseek-ai/dsh-session": "^0.1.0-rc.8", "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.8", "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.8" } }, "sha512-fOl46ZvzoYHalrlyfOJAHNhzyKeVDTUnZZKNSJEr9GY/98WJTjcV21agVEofTXldkJ7a/ws2HpJkVNJVFMtslg=="],
-
-    "@deepseek-ai/dsh-attachment": ["@deepseek-ai/dsh-attachment@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-brand": "^0.1.0-rc.8", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8" } }, "sha512-cCrg4WWiav7pGtbdU8dJTpAG28cPnkWVB2YPOrlBCgBbhQziGcG9Dv67Ti6L3PI4OQKC55gYBFinQghFO/7FGg=="],
-
-    "@deepseek-ai/dsh-brand": ["@deepseek-ai/dsh-brand@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8" } }, "sha512-402aUAfHxIZJrArBV4gDf0I/A/69A/By26FX6HTIOyFmCnB4wUBKh8jnglz1CorKWdZy8AKldAhh8HQhQEbGOQ=="],
-
-    "@deepseek-ai/dsh-code-runtime": ["@deepseek-ai/dsh-code-runtime@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8" } }, "sha512-6ZKyEE7dHH1UkKe5b0lg18Byww/7ocZyrNMVjAoUWEWp5i96Brf9Eavu9q3zepBMDMZJErCfV0pyt7KDhBJSig=="],
-
-    "@deepseek-ai/dsh-invariants": ["@deepseek-ai/dsh-invariants@0.1.0-rc.8", "", { "dependencies": { "@deepseek-ai/schemastery": "^3.18.1" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1" } }, "sha512-u0lYqyxOYwfsVnbsfGXZos5vFvA4cqFnBEW3/ezgljNwkYwzeUP/Y5wjPnQjP+ZzBn3CnVeIF6s2N2Vk3iA5mQ=="],
-
-    "@deepseek-ai/dsh-llm": ["@deepseek-ai/dsh-llm@0.1.0-rc.8", "", { "dependencies": { "@deepseek-ai/schemastery": "^3.18.1" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-attachment": "^0.1.0-rc.8", "@deepseek-ai/dsh-brand": "^0.1.0-rc.8", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8", "@deepseek-ai/dsh-timeout": "^0.1.0-rc.8" } }, "sha512-hf6RmX2Stn1UtzpktSHQLkIktQkBm9i/3yFfJlbGSkwyw5Cv9sTYJbyoHzsSnnh6i8nRRcMcBhvMgm23I00oIw=="],
-
-    "@deepseek-ai/dsh-scope": ["@deepseek-ai/dsh-scope@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8" } }, "sha512-/o+PxkVV2zUy9lYlMFr4TWSb+ESW4DE+fI891yIbsLzOJdFgfbmmLpGrlWgnz8/unIGJZxjeXdwyppV04Z277Q=="],
-
-    "@deepseek-ai/dsh-sdk-client": ["@deepseek-ai/dsh-sdk-client@0.1.0-rc.6", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.6", "@deepseek-ai/dsh-llm": "^0.1.0-rc.6", "@deepseek-ai/dsh-sdk-protocol": "^0.1.0-rc.6", "@deepseek-ai/dsh-session": "^0.1.0-rc.6" } }, "sha512-7y8+dsTljsvHpyZeENeTcUNyxComHlawF8txGdCXxp0VsDt38aKYai8tqdOIrltKAZthmsmj80XuNtmQZxWRlw=="],
-
-    "@deepseek-ai/dsh-sdk-protocol": ["@deepseek-ai/dsh-sdk-protocol@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8", "@deepseek-ai/dsh-llm": "^0.1.0-rc.8", "@deepseek-ai/dsh-session": "^0.1.0-rc.8", "@deepseek-ai/dsh-subagent": "^0.1.0-rc.8" } }, "sha512-nG+EsNlNT2wvaRL/HJR2N/O3JIQPFRhgUyJKdJy98CkTtleAj6xVWrXsAsaJl6nUZtliYNI7CTo0BxH6ga6rHQ=="],
-
-    "@deepseek-ai/dsh-session": ["@deepseek-ai/dsh-session@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-brand": "^0.1.0-rc.8", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8", "@deepseek-ai/dsh-llm": "^0.1.0-rc.8", "@deepseek-ai/dsh-scope": "^0.1.0-rc.8", "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.8" } }, "sha512-Qs5Mgn32WPPVB4rKHjsZBgLOkh0TQurUAcc9GaDVudK4dUkpno2HDh++qu/PrwRA3CZ/iwPAoFHCpB3AMMaoLg=="],
-
-    "@deepseek-ai/dsh-subagent": ["@deepseek-ai/dsh-subagent@0.1.0-rc.8", "", { "dependencies": { "zod": "^4.4.3" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-agent": "^0.1.0-rc.8", "@deepseek-ai/dsh-agent-presets": "^0.1.0-rc.8", "@deepseek-ai/dsh-brand": "^0.1.0-rc.8", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8", "@deepseek-ai/dsh-jobs": "^0.1.0-rc.8", "@deepseek-ai/dsh-llm": "^0.1.0-rc.8", "@deepseek-ai/dsh-sandbox": "^0.1.0-rc.8", "@deepseek-ai/dsh-sandbox-policy": "^0.1.0-rc.8", "@deepseek-ai/dsh-scope": "^0.1.0-rc.8", "@deepseek-ai/dsh-session": "^0.1.0-rc.8", "@deepseek-ai/dsh-session-persistence": "^0.1.0-rc.8", "@deepseek-ai/dsh-session-projection": "^0.1.0-rc.8", "@deepseek-ai/dsh-session-projection-cache": "^0.1.0-rc.8", "@deepseek-ai/dsh-tools": "^0.1.0-rc.8", "@deepseek-ai/dsh-user-approval": "^0.1.0-rc.8" }, "optionalPeers": ["@deepseek-ai/dsh-agent-presets", "@deepseek-ai/dsh-jobs", "@deepseek-ai/dsh-sandbox", "@deepseek-ai/dsh-sandbox-policy", "@deepseek-ai/dsh-session-persistence", "@deepseek-ai/dsh-session-projection", "@deepseek-ai/dsh-session-projection-cache", "@deepseek-ai/dsh-user-approval"] }, "sha512-EI94+hYMfAe8BQkkH/FTcciGxajFfAdQe66Jhy2/eyR3dssRAZ+oJsV6SzU20x3m2yd0gmMaXzO1iV3gwYhY+g=="],
-
-    "@deepseek-ai/dsh-system-prompt": ["@deepseek-ai/dsh-system-prompt@0.1.0-rc.8", "", { "dependencies": { "@deepseek-ai/schemastery": "^3.18.1" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8", "@deepseek-ai/dsh-llm": "^0.1.0-rc.8", "@deepseek-ai/dsh-scope": "^0.1.0-rc.8" } }, "sha512-yk8Z85rzX2EwpKNWA5i+K3I3mqsIIUc9niwbDpXO8vlHvpC2qR3RNHjJIJN2EZYDqfSzTVtkbxHFsuMzDXIbew=="],
-
-    "@deepseek-ai/dsh-timeout": ["@deepseek-ai/dsh-timeout@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8" } }, "sha512-RwOC/qHribE6b+LStAO7aAgweefLE5sqDO7Uz6/mnTDyJxCt7HNQnE/Op8sAvRa33d752aUkPfO9S0mgzVAoFQ=="],
-
-    "@deepseek-ai/dsh-tools": ["@deepseek-ai/dsh-tools@0.1.0-rc.8", "", { "dependencies": { "@deepseek-ai/schemastery": "^3.18.1" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-agent": "^0.1.0-rc.8", "@deepseek-ai/dsh-code-runtime": "^0.1.0-rc.8", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8", "@deepseek-ai/dsh-llm": "^0.1.0-rc.8", "@deepseek-ai/dsh-scope": "^0.1.0-rc.8", "@deepseek-ai/dsh-session": "^0.1.0-rc.8", "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.8", "@deepseek-ai/dsh-user-approval": "^0.1.0-rc.8" } }, "sha512-tvuGAVUS4yoPW9zH7CGWJgMlAzGjfu2UlRiricldlcwSKAaJZPZx/K/YfTivUyDTER6aK1DJUnIpVG7RD/DoHQ=="],
-
-    "@deepseek-ai/dsh-typert-protocol": ["@deepseek-ai/dsh-typert-protocol@0.1.0-rc.8", "", { "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8" } }, "sha512-scwEAefRBL7gRpaXiEdiHRMvlr8dLmUbiEvy0LOAX/8X3FZBd/5tHQ/8lCppAQNTDZMI/LSiSMpu5XrFId+7cQ=="],
-
-    "@deepseek-ai/dsh-user-approval": ["@deepseek-ai/dsh-user-approval@0.1.0-rc.8", "", { "dependencies": { "@deepseek-ai/schemastery": "^3.18.1" }, "peerDependencies": { "@deepseek-ai/cordis": "^4.0.1", "@deepseek-ai/dsh-agent": "^0.1.0-rc.8", "@deepseek-ai/dsh-brand": "^0.1.0-rc.8", "@deepseek-ai/dsh-invariants": "^0.1.0-rc.8", "@deepseek-ai/dsh-llm": "^0.1.0-rc.8", "@deepseek-ai/dsh-scope": "^0.1.0-rc.8", "@deepseek-ai/dsh-session": "^0.1.0-rc.8", "@deepseek-ai/dsh-system-prompt": "^0.1.0-rc.8" } }, "sha512-6SFCxp7dgNFEyzQIcs5i9C+5djgXsAeV0iKmZUCLlcIeVM1chcCMHyGcoXlw8yyB14qFMrMs+TPvhvpu2WWxAw=="],
-
-    "@deepseek-ai/schemastery": ["@deepseek-ai/schemastery@3.18.2", "", { "dependencies": { "@deepseek-ai/cosmokit": "^1.8.3", "@standard-schema/spec": "^1.1.0" } }, "sha512-njDtZsznjYxok7KLLlHOPyuv2efdWVbSflAHgztSfbMsg+CVraEoRe2DjOCgClYv3ZCSm7WXoaUkbB/+RY7tWQ=="],
 
     "@dimforge/rapier3d-compat": ["@dimforge/rapier3d-compat@0.12.0", "", {}, "sha512-uekIGetywIgopfD97oDL5PfeezkFpNhwlzlaEYNOA0N6ghdsOvh/HYjSMek5Q2O1PYvRSDFcqFVJl4r4ZBwOow=="],
 
@@ -8161,8 +8091,6 @@
 
     "@forgeax/engine-devkit": ["@forgeax/engine-devkit@workspace:packages/devkit"],
 
-    "@forgeax/engine-dsh": ["@forgeax/engine-dsh@workspace:packages/dsh"],
-
     "@forgeax/engine-ecs": ["@forgeax/engine-ecs@workspace:packages/ecs"],
 
     "@forgeax/engine-fbx": ["@forgeax/engine-fbx@workspace:packages/fbx"],
@@ -8183,12 +8111,6 @@
 
     "@forgeax/engine-input": ["@forgeax/engine-input@workspace:packages/input"],
 
-    "@forgeax/engine-intelligence": ["@forgeax/engine-intelligence@workspace:packages/intelligence"],
-
-    "@forgeax/engine-intelligence-dsh": ["@forgeax/engine-intelligence-dsh@workspace:packages/intelligence-dsh"],
-
-    "@forgeax/engine-intelligence-fake": ["@forgeax/engine-intelligence-fake@workspace:packages/intelligence-fake"],
-
     "@forgeax/engine-interaction": ["@forgeax/engine-interaction@workspace:packages/interaction"],
 
     "@forgeax/engine-math": ["@forgeax/engine-math@workspace:packages/math"],
@@ -8204,8 +8126,6 @@
     "@forgeax/engine-net": ["@forgeax/engine-net@workspace:packages/net"],
 
     "@forgeax/engine-net-websocket": ["@forgeax/engine-net-websocket@workspace:packages/net-websocket"],
-
-    "@forgeax/engine-npc": ["@forgeax/engine-npc@workspace:packages/npc"],
 
     "@forgeax/engine-pack": ["@forgeax/engine-pack@workspace:packages/pack"],
 
@@ -8238,6 +8158,8 @@
     "@forgeax/engine-render": ["@forgeax/engine-render@workspace:packages/render"],
 
     "@forgeax/engine-render-graph": ["@forgeax/engine-render-graph@workspace:packages/render-graph"],
+
+    "@forgeax/engine-render-kernel": ["@forgeax/engine-render-kernel@workspace:packages/render-kernel"],
 
     "@forgeax/engine-rhi": ["@forgeax/engine-rhi@workspace:packages/rhi"],
 
@@ -8331,8 +8253,6 @@
 
     "@forgeax/hello-deep-agent-feedback": ["@forgeax/hello-deep-agent-feedback@workspace:apps/hello/deep-agent-feedback"],
 
-    "@forgeax/hello-dsh-federation": ["@forgeax/hello-dsh-federation@workspace:apps/hello/dsh-federation"],
-
     "@forgeax/hello-entity-visibility": ["@forgeax/hello-entity-visibility@workspace:apps/hello/entity-visibility"],
 
     "@forgeax/hello-fbx-cube": ["@forgeax/hello-fbx-cube@workspace:apps/hello/fbx-cube"],
@@ -8352,8 +8272,6 @@
     "@forgeax/hello-gltf-instancing": ["@forgeax/hello-gltf-instancing@workspace:apps/hello/gltf-instancing"],
 
     "@forgeax/hello-hdrp-lighting": ["@forgeax/hello-hdrp-lighting@workspace:apps/hello/hdrp-lighting"],
-
-    "@forgeax/hello-intelligence-worker": ["@forgeax/hello-intelligence-worker@workspace:apps/hello/intelligence-worker"],
 
     "@forgeax/hello-level-switch": ["@forgeax/hello-level-switch@workspace:apps/hello/level-switch"],
 
@@ -8436,6 +8354,12 @@
     "@forgeax/mcp": ["@forgeax/mcp@workspace:tools/forgeax-mcp"],
 
     "@forgeax/mesh-io-parity": ["@forgeax/mesh-io-parity@workspace:apps/parity/mesh-io"],
+
+    "@forgeax/modeling-kernel": ["@forgeax/modeling-kernel@workspace:packages/modeling-kernel"],
+
+    "@forgeax/modeling-kernel-three": ["@forgeax/modeling-kernel-three@workspace:packages/modeling-kernel-three"],
+
+    "@forgeax/modeling-kernel-wasm": ["@forgeax/modeling-kernel-wasm@workspace:packages/modeling-kernel-wasm"],
 
     "@forgeax/multiplayer-snake": ["@forgeax/multiplayer-snake@workspace:apps/multiplayer-snake"],
 
@@ -10005,8 +9929,6 @@
 
     "@babel/register/make-dir": ["make-dir@2.1.0", "", { "dependencies": { "pify": "^4.0.1", "semver": "^5.6.0" } }, "sha512-LS9X+dc8KLxXCb8dni79fLIIUA5VyZoyjSMCwTluaXA0o27cCK0bhXkpgw+sTXVpPy/lSO57ilRixqk0vDmtRA=="],
 
-    "@deepseek-ai/schemastery/@deepseek-ai/cosmokit": ["@deepseek-ai/cosmokit@1.8.3", "", {}, "sha512-qBo+ronVM6Eu2WNVJXi8JcMiqZ19T9BRIpV+5qJUFPXjGH/Z0QKcQMC/IZJ7L394YTOtJgcovbk9qP0w2GsBXQ=="],
-
     "@forgeax/app-learn-render-1-getting-started-4-textures/@types/node": ["@types/node@25.9.5", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-OScDchr2fwuUmWdf4kZ9h7PcJiYDVInhJizG/biAq3cAvqwYktuy/TYGGdZNMtNTFUP7rnb0NU4TUdm82kt4Rg=="],
 
     "@forgeax/app-learn-render-2-lighting-1-colors/playwright": ["playwright@1.63.0", "", { "dependencies": { "playwright-core": "1.63.0" }, "bin": { "playwright": "cli.js" } }, "sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg=="],
@@ -10095,8 +10017,6 @@
 
     "@forgeax/engine-devkit/playwright": ["playwright@1.63.0", "", { "dependencies": { "playwright-core": "1.63.0" }, "bin": { "playwright": "cli.js" } }, "sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg=="],
 
-    "@forgeax/engine-dsh/playwright": ["playwright@1.63.0", "", { "dependencies": { "playwright-core": "1.63.0" }, "bin": { "playwright": "cli.js" } }, "sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg=="],
-
     "@forgeax/engine-geometry/earcut": ["earcut@3.2.4", "", {}, "sha512-FHc6yNpnTORB0tM5kmZ03iD2mDuNakDE2lvf4Hw1XkfxtEHIGVi01B/GqUSwx+NcC1WGjidAfpTXzeALtPtfpg=="],
 
     "@forgeax/engine-host/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
@@ -10136,8 +10056,6 @@
     "@forgeax/hello-gltf/@types/node": ["@types/node@25.9.5", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-OScDchr2fwuUmWdf4kZ9h7PcJiYDVInhJizG/biAq3cAvqwYktuy/TYGGdZNMtNTFUP7rnb0NU4TUdm82kt4Rg=="],
 
     "@forgeax/hello-gltf-instancing/@types/node": ["@types/node@25.9.5", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-OScDchr2fwuUmWdf4kZ9h7PcJiYDVInhJizG/biAq3cAvqwYktuy/TYGGdZNMtNTFUP7rnb0NU4TUdm82kt4Rg=="],
-
-    "@forgeax/hello-intelligence-worker/playwright": ["playwright@1.56.1", "", { "dependencies": { "playwright-core": "1.56.1" }, "optionalDependencies": { "fsevents": "2.3.2" }, "bin": { "playwright": "cli.js" } }, "sha512-aFi5B0WovBHTEvpM3DzXTUaeN6eN0qWnTkKx4NQaH4Wvcmc153PdaY2UBdSYKaGYw+UyWXSVyxDUg5DoPEttjw=="],
 
     "@forgeax/hello-lod-occlusion/@types/node": ["@types/node@25.9.5", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-OScDchr2fwuUmWdf4kZ9h7PcJiYDVInhJizG/biAq3cAvqwYktuy/TYGGdZNMtNTFUP7rnb0NU4TUdm82kt4Rg=="],
 
@@ -10409,8 +10327,6 @@
 
     "@forgeax/engine-devkit/playwright/playwright-core": ["playwright-core@1.63.0", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg=="],
 
-    "@forgeax/engine-dsh/playwright/playwright-core": ["playwright-core@1.63.0", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg=="],
-
     "@forgeax/feature-lab/playwright/playwright-core": ["playwright-core@1.63.0", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg=="],
 
     "@forgeax/hello-animation-graph/@types/node/undici-types": ["undici-types@7.24.6", "", {}, "sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg=="],
@@ -10436,8 +10352,6 @@
     "@forgeax/hello-gltf-instancing/@types/node/undici-types": ["undici-types@7.24.6", "", {}, "sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg=="],
 
     "@forgeax/hello-gltf/@types/node/undici-types": ["undici-types@7.24.6", "", {}, "sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg=="],
-
-    "@forgeax/hello-intelligence-worker/playwright/playwright-core": ["playwright-core@1.56.1", "", { "bin": { "playwright-core": "cli.js" } }, "sha512-hutraynyn31F+Bifme+Ps9Vq59hKuUCz7H1kDOcBs+2oGguKkWTU50bBWrtz34OUWmIwpBTWDxaRPXrIXkgvmQ=="],
 
     "@forgeax/hello-lod-occlusion/@types/node/undici-types": ["undici-types@7.24.6", "", {}, "sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg=="],
 

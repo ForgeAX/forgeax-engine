@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
     },
+    "./internal/dev-import-transport": {
+      "types": "./dist/dev-import-transport.d.ts",
+      "import": "./dist/dev-import-transport.mjs"
+    },
     "./internal/renderer-host": {
       "types": "./dist/renderer-host.d.ts",
       "import": "./dist/renderer-host.mjs"

@@ -687,9 +687,13 @@ publications reject recording; held observations retain their encoded identity.
 
 Each captured Scene page holds the rows issued by its writer. An edit copies
 64 row references once per touched page and replaces its affected lanes. Pose
-writes append 16 floats to an eight-matrix backing in admission order, including
-edits to scattered physical slots. A held matrix pins at most 512 bytes of pose
-storage. Earlier rows and frames retain their data across deletion and slot reuse.
+writes append 16 floats in admission order. Individual writes reserve eight-matrix
+pages when the open page is full. Distinct validated spans reserve up to 64 matrices per new native page,
+bounded by the remaining input rows. Numeric draw, bounds, temporal and sort
+consumers read their lanes without opening an owned matrix. Explicit matrix reads
+detach sixteen floats from wider pages, so a held matrix pins at most 512 bytes.
+An issued Scene row or a held native frame can still retain that row's full
+native page. Earlier versions remain readable across deletion and slot reuse.
 Material and feature scans read contiguous entity and content columns, shared
 across all pose edits. An actual content or membership change owns their next
 revision. Mesh and temporal draw owners read the same issued row.
@@ -778,14 +782,14 @@ a pending identity or row observation. Earlier edits in the same batch retain
 their staged authority; selected source offsets, parity changes and late identities
 keep their normal merge behavior. Each live source window is read once, and an
 absent row does not read it. Only actual changes hydrate a row for its public delta.
-For validated native transform-only batches, large synchronous admission stages
-source coordinates and sticky parity in Render World arena chunks, sharing the
-existing commit-local slot index. It admits every chunk before the first row
-write. A denied budget leaves the row root unchanged and clears staging before
-returning the memory failure. Small inputs retain ordinary staging because their
-scope/view overhead exceeds the removed objects. Neither arena coordinates nor
-packet matrices escape: the public delta still owns immutable row observations.
-Overlapping commits are rejected before either staging format can be reused.
+Published transform columns have already passed the receiver's uniqueness and
+shape checks. A transform-only packet uses the distinct-row writer directly,
+including the selected ordinal ranges that exclude joint-only rows. Structural
+edits and borrowed multi-span inputs still stage coordinates for merge order and
+sticky parity. The ordinary borrowed path admits its World arena chunks before
+writing anything, so denied budgets leave the prior row root intact. The
+returned delta owns immutable row observations. The row owner counts its
+issued pose backing allocations independently of any staging workspace.
 
 Publication admission consumes verified transform ranges synchronously into the
 canonical Scene rows. Transform-only changes do not expand into per-entity
@@ -2103,9 +2107,13 @@ work finish. At most 128 material frames may be retained per GPU Scene. Unpinned
 values reuse storage and upload only changed rows. All this work scales with shared
 material bindings and changed material bytes, not the number of objects using them.
 
-Captured pin rosters share their fixed resource maps. Extending or releasing one
-preparation cannot change an earlier roster; adoption validates the complete
-material/Mesh versions and accepted input mapping before acquiring references.
+Each GPU Scene reuses a retired private pin workspace in each resource domain.
+The ordered rows keep exact version references and the typed index locates rows.
+Publishing a roster freezes its membership by ownership; the frame copies into
+private workspace on its next added version. Published rosters cannot be
+recycled. Adoption validates the complete material/Mesh versions and accepted
+input mapping before taking references. Retirement drops all version references
+from private workspace, and the idle capacity shrinks with the live roster.
 GPU passes borrow slot indices from the accepted material table. Fixed GPU-only
 binding rosters reuse that table while material versions and resource scopes
 match; mutable borrowed bindings remain observed on each preparation.
@@ -2403,6 +2411,12 @@ optical coefficients. Up to `MAX_VOLUMETRIC_FOG_OWNERS` (11) owners share the
 renderer-owned inject, integrate, temporal, and composite passes. Overlapping
 media add coefficients before integration; removing one owner keeps the others.
 Removing the last owner retires the volume graph resources.
+
+The Renderer prepares volume shader modules and pipelines on the first eligible
+view that requests the effect. A frame waiting on those programs reports pending
+presentation and exposes the preparation result on its receipt. The next
+eligible frame can present with fog. Prepared programs stay available across
+owner removal and reactivation until the device generation changes.
 
 The capacity follows the portable 16 sampled-texture budget: integration binds
 five auxiliary textures plus eleven independent 3D density textures, including
@@ -6229,13 +6243,15 @@ analysis, reconstruction and successful-submit history contract. TAA remains ava
 TAAU. TSR shares temporal view, jitter, scene data and successful-submit history
 ownership, and adds opaque Guide, input-domain shading/flicker analysis and
 output-domain reconstruction. It never silently falls back to TAA.
+Under TAA or TSR the display View carries UE's automatic material texture mip bias
+(`-0.3` plus `log2(internal/output)`, floored at `-2`; `View.surfaceMipBias.x`), and the
+jitter sequence is sized for the resolution fraction (TSR rounds up to a prime).
 
 TSR writes `rgba16float` history color. The current write also supplies the
 resolved HDR image to downstream post passes. Reprojection samples its RGB
 and this frame's output carries scene alpha. Two four-byte RGB histories plus
 one eight-byte resolved RGBA image would still use 16 bytes per pixel and add
 a full-resolution write with separate storage-texture support.
-
 See the TSR guide
 for the API, selected formats, memory formula, support boundaries and validation.
 
@@ -7643,7 +7659,7 @@ never thrown. A view's adopted graph settles first in RenderCommit:
 (including one whose queue submit succeeded while Feature scene inputs were pending)
 reinstalls its previous graph, generations and Feature plans, stashing a graph that
 waits on pipeline preparation. It advances the view's `frameNumber` once per recorded
-attempt and stores a frame-stamped `settled`/`failed` outcome on `ViewGraphCandidate`.
+attempt and forwards settlement errors to the Renderer's error registry.
 Shared Feature work prepares in `render-feature-graph-compile` (RenderRecord)
 from the sealed Feature frame. Recording executes only that frame's receipt,
 after scene-input captures; the receipt supplies its submitted plans. An
@@ -7662,17 +7678,16 @@ frame-owned graph retires immediately. Native command graphs retire with their
 device scope. `featureGraph.sharedFrame` reports preparation routes separately
 from submitted plans and GPU completion. The frame must already be open
 before its recording coordinator starts, as in the Renderer frame entry.
-`render-graph-compile` reads the current Standard lighting, topology, SSR, GI,
-GPU raster lane, Feature plan and Pass plans from their view components. Its
-staged `ViewGraphCompileRequest` carries only the resolved camera, clear-only
-flag, subsurface capture class, recording mode and shadow-layer resource. The
-standalone graph harness supplies explicit compiler facts through the same pure
-compiler. A missing component produces `graph-build-failed` with its owning
-system; it never poisons the Render World. Pass plans remain borrowed until
-`render-pass-plan-release` in Cleanup so recording and compile consume one plan.
-`render-graph-seal` then consumes the view and capture compiler products. It
-adopts the selected graph, seals resource reads, stages temporal resources,
-writes view uniforms, resolves bindings and prepares native pipelines. Its
+`render-graph-seal` starts after encoder open and capture and shared Feature
+preparation. It validates the current capture result and reads Standard lighting,
+topology, SSR, GI, GPU raster, Feature and Pass plans from their view components.
+The recording provides its resolved camera, capture class and recording mode.
+The standalone graph harness supplies explicit facts to the same compiler.
+A missing component produces `graph-build-failed` with its owning system.
+Pass plans remain borrowed until `render-pass-plan-release` in Cleanup.
+The compiler result goes directly into adoption and resource sealing in the
+same system. It stages temporal resources, writes view uniforms, resolves
+bindings and prepares native pipelines before any view encodes. Its
 `ViewGraphSeal` stores prepared facts and sealed/rejected/failed outcomes;
 removing the system produces a structured missing-product failure. Cleanup
 clears the staged facts. `render-capture-graph-encode` executes ready capture graphs
@@ -7924,12 +7939,14 @@ renderer.inspect().transparency;
 - Both targets share one blend:
   - color `one + one` accumulates `rgb·a·w` and `a·w`;
   - alpha `zero + one-minus-src-alpha` accumulates revealage `∏(1 − a)`.
-- Accumulation tests depth against the opaque depth and never writes it. Fragments with
-  `a < 0.001` are discarded.
-- `oit-composite` is a full-screen pass. It writes `(accum.rgb / max(w, 1e-5), 1 − revealage)`
+- Accumulation loads scene depth for testing and leaves it unchanged. Zero-opacity fragments
+  are discarded.
+- `oit-composite` is a full-screen pass. It writes
+  `(accum.rgb / max(sum(a*w), 1.25e-6), 1 − revealage)`
   over scene color with straight-alpha over, and discards pixels whose revealage is `1`.
-- The weight is `clamp(10 / (1e-5 + (d/5)² + (d/200)⁶), 0.01, 500)`, where `d` is the
-  linear camera distance.
+- The three.js r187 weight is `a * clamp(0.03 / ((z/200)^4 + 1e-5), 0.01, 3000)`, where
+  `z` is linear view depth. Both stored sums and the composite denominator floor use
+  a common factor of `1/8` to leave FP16 accumulation headroom.
   - The CPU reference is `packages/render/src/oit/weight.ts`.
   - The WGSL constants in `packages/shader/src/oit.wgsl` are parity-tested against it.
 - The built-in Standard PBR and Unlit programs expose the `fs_oit` (straight alpha) and
@@ -7943,13 +7960,9 @@ renderer.inspect().transparency;
 | Color | A depth-weighted average, not the exact over-operator. A single layer is exact; overlapping layers differ from sorted-over by content. |
 | Draw order | No effect. The fixture's reversed-order delta is `0`. |
 
-Measured with the cyclic three-layer fixture (red 0.6, green 0.5 and blue 0.4 interpenetrating
-over gray `0.25`):
-- Every backend gate holds the weighted result within `0.05` of its CPU reference. The Dawn
-  `hello-oit` smoke measures a maximum delta of `2e-4`.
-- The exact sorted-over reference at the left probe is `[0.63, 0.15, 0.19]`; WBOIT gives
-  `[0.43, 0.28, 0.26]`.
-- The sorted path changes by `0.42` between the two draw orders.
+The cyclic three-layer fixture checks the weighted result within `0.05` of its CPU
+reference and within `0.01` after reversing the draw order. It also checks that an
+additive residual is attenuated by the combined revealage.
 
 Use sorted transparency when exact layered color matters more than order independence.
 
@@ -7975,13 +7988,12 @@ their own paths.
 ### Pass order and lane policy
 
 When the view resolves to `weighted-blended` and at least one draw is eligible, the pass order is:
-1. `oit-accumulate`;
-2. `oit-composite`;
-3. `transparent`, which holds only the ineligible residual and is present only when that
-   residual exists.
+1. `transparent` draws the ineligible residual when present.
+2. `oit-accumulate` draws the eligible geometry.
+3. `oit-composite` blends the accumulated color over the existing scene.
 
-Additive and effect draws therefore land over the OIT result. With no eligible draw, or under a
-sorted view, the graph has no OIT pass, pipeline or target.
+Additive mesh draws in the residual contribute to the background attenuated by OIT.
+With no eligible draw, or under a sorted view, the graph has no OIT pass, pipeline or target.
 
 The sorted `transparent` pass also skips execution when its current CPU material selection is
 empty. This removes an otherwise empty full-size color/depth load/store pass without changing
@@ -7994,7 +8006,7 @@ and compares the restored pixels through Forward, Deferred and MSAA.
 | Surface | Policy |
 |:--|:--|
 | Forward and Deferred | Both lanes share `addStandardTransparentPasses`, which runs after the opaque/deferred lighting result. |
-| MSAA 4x | Accum and weight are 4x targets with 1x resolves. The composite reads the resolves and writes through the scene-color MSAA/resolve pair. |
+| MSAA 4x | Accum and weight are 4x targets with 1x resolves. The last scene color writer resolves before the composite, which blends onto 1x scene color. Scene-stage features can still need the 4x scene color, so their views retain the multisampled composite. |
 | Memory | 10 B/px at 1x; 50 B/px under MSAA 4x (40 B/px multisampled plus 10 B/px resolve). The targets are render-graph leases and are counted in `renderGraphResourceAllocation.liveBytes`. |
 | TAA | The composite is a transparent contributor with the same treatment as the `transparent` pass. |
 | Fog, DoF, outline, post | Unchanged: they consume the composited scene color. DoF keeps `opaque-depth-approximation`. Outline keeps depth-write-off transparents as non-occluders. |
@@ -8041,9 +8053,10 @@ Permanent gates:
   so an MLAB or k-buffer port would depend on atomic order and break order independence.
   The forgeax design takes Unreal's view-level switch (`r.OIT.SortedPixels` is a project/view
   setting), its blend-mode eligibility table, and its front-to-back composite equation.
-- **three.js r184.** It has no OIT. It sorts transparents with `reversePainterSortStable` and
-  draws them in a double pass. The forgeax `sorted` default is that baseline. WBOIT is the
-  opt-in path that removes the order dependence three.js leaves to authors.
+- **three.js r187.** [OITPassNode](https://github.com/mrdoob/three.js/blob/r187/examples/jsm/tsl/display/OITPassNode.js)
+  provides the weight and compositing order. ForgeaX stores revealage in the accumulation
+  texture's alpha and weight in a separate R16F target. The shared blend state carries
+  WebGL2 MSAA without requiring independent attachment blending.
 
 ## Alpha Hash
 
@@ -8925,6 +8938,29 @@ call the action directly.
 The render package remains the owner of render vocabulary and extract/plan/record execution.
 
 ## RenderFeature: the producer seam
+
+### Shared fixed Gerstner input
+
+`waterGerstnerSurfaceBindings({ name, program, viewIdentity, source, contract })`
+returns an ordinary `graphics-bindings` declaration. Obtain `source` from
+Water's `waterGerstnerSurfaceSource` and `contract` from the plan context's
+`materialShaderBindingContract` for the selected cooked graphics program.
+The program imports the Engine Water shader rather than declaring private
+binding slots. The receiving renderer verifies the visible native fixed
+Gerstner branch and uses its accepted Body/WaveSet buffers and current time.
+Stale generations/digests or mapped/advanced/custom branches never bind.
+A receiving surface branch not yet admitted is retryable preparation.
+A fixed Body upload may retain the original material WaterInfo switch and
+flat-body LOD mapping switches; the uploaded geometry model remains authoritative.
+Programs using this helper reserve group 2 for their certified Water reads,
+without scene-geometry bindings below slot 16. Unread graphics groups remain empty.
+There is no second wave upload, texture residency owner or submission API.
+
+Use the existing graph texture `materialSource` and
+`renderFeatureTextureSource` to consume a produced field. Static and
+asset-revision-driven patterns retain ordinary Texture/GpuTexture generation.
+Their channel encoding, receiver mapping and material response are effect
+contracts; sampling a concentration field does not add selected-light irradiance.
 
 Register one producer-owned feature at the renderer assembly boundary. The
 same `FrameData` type flows through `extract` and the mandatory `plan`; the
@@ -13243,3 +13279,40 @@ queue completion. Sibling projection/generator/mip work remains queued for its
 own consumer. Rejected submits leave mip work available for retry. The caller
 retains the asset; detachment, asset
 retirement and device generation keep their normal ownership boundaries.
+
+### Opaque receiver composition before media
+
+`RenderFeature.placement: 'before-medium'` and the corresponding scoped work
+placement run after opaque lighting in the Standard Forward/Deferred lanes,
+before Single Layer Water and ordinary transparency. This scene work remains
+active when optional camera post-processing is disabled. The host supplies the
+current lit scene color/depth and existing receiver visibility inputs. An effect
+can write an intermediate graph texture then copy it back to the declared scene
+color, preserving distinct sampled and attachment roles.
+
+Fullscreen `additionalTextures` may contain exact SceneData tokens and
+`RenderFeatureTextureReference` values, declared in the pass `sampledTargets`.
+Integer normal inputs use `reads: [{ key: 'normal', sampleType: 'uint' }]`.
+Prepared binding snapshots retain immutable SceneData token authority and include
+its view/plan/device/surface owner in equality. A selected Deferred
+`standard-gbuffer/2` writer receipt qualifies actual normal/depth coverage,
+including canonical Terrain; missing or incompatible writers still fail closed.
+Forward consumers retain their separate supported surface producer contract.
+No receiver selection, illumination algorithm or caustics policy belongs here.
+
+With temporal AA, `before-medium` also exposes the optional
+`temporal-reactivity` logical attachment. It aliases the current renderer-owned
+`temporal-v1` texture; it allocates no additional texture or history. An animated
+color producer can include it as an MRT attachment with `loadOp: 'load'`,
+`writeMask: 8` and alpha `max` blending. Only alpha is writable through this
+contract: preserve geometry-owned velocity/depth RGB and existing stronger
+reactivity. Mark the complete bounded animated receiver domain, including dark
+samples that must clear old highlights; leave unrelated pixels at zero. Later
+nearest-medium geometry owns its covered pixels. No-AA/MSAA rosters omit this
+alias, so the producer must retain its ordinary single-color entry.
+
+For animated fullscreen uniforms, keep `params.defaultValue` fixed and supply
+`frameParams` on the fullscreen program, including explicit raster passes.
+Those bytes are validated against `params.byteSize`, uploaded from the current
+accepted frame and excluded from graph/shader identity. Changing defaults to
+carry a clock would instead change program topology every frame.

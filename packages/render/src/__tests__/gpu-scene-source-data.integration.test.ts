@@ -157,7 +157,7 @@ it.each([
           snapshot: { ...record.snapshot, shadowReceiver: false },
         },
       ]);
-      const changed = ordinary.updatedSlots[0];
+      const changed = ordinary.updatedSlots.at(0);
       assert(changed);
       expect(f.scene.acceptSourceRow(capacity, 0, changed).ok).toBe(false);
     }

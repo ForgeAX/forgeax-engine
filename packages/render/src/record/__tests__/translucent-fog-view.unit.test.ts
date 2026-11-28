@@ -160,6 +160,54 @@ describe('translucent fog composition', () => {
     );
   });
 
+  it('keeps fast aerial perspective separate from the UE5 route in the View flags', () => {
+    const flags = (profile: Parameters<typeof writeViewUbo>[18], ue5 = false) => {
+      const writes: Float32Array[] = [];
+      const queue = {
+        writeBuffer: (_buffer: Buffer, _offset: number, data: Float32Array) => {
+          writes.push(data.slice());
+          return { ok: true, value: undefined } as const;
+        },
+      } as unknown as RhiQueue;
+      const light = {
+        kind: 'directional' as const,
+        direction: vec3.create(0, -1, 0),
+        color: vec3.create(1, 1, 1),
+        intensity: 1,
+        contactShadowLength: 0,
+      } as never;
+      writeViewUbo(
+        queue,
+        {} as Buffer,
+        camera(),
+        light,
+        { point: [], spot: [], directional: light } as never,
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        earthAtmosphere,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        profile,
+        false,
+        false,
+        false,
+        ue5,
+      );
+      return writes[0]?.[319];
+    };
+
+    expect(flags({ aerialPerspectiveQuality: 'fast' })).toBe(19);
+    expect(flags(undefined, true)).toBe(7);
+  });
+
   it('keeps local lights in the Cluster transport without changing the shared View payload', () => {
     const uploads: Float32Array[] = [];
     const queue = {

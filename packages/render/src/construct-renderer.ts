@@ -7,7 +7,7 @@ import type {
   RendererHostImplementation,
   RendererLegacyHostAdapter,
 } from './assembly/host-contract';
-import { validateDynamicGeometryMeshBudget } from './dynamic-geometry';
+import { validateDynamicGeometryMeshBudget } from './dynamic-geometry-budget';
 import { type RenderError, RendererContractFailureError } from './errors/render';
 import type { Renderer, RendererOptions, RenderResult } from './render-contract';
 

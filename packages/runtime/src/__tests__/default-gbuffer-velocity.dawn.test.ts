@@ -35,6 +35,9 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
   return result.value;
 }
 
+// tsr_reconstruct writes colorOutput at binding 14 and temporalOutput (motion) at binding 15
+// (twelve sampled inputs, the sampler and the params buffer come first).
+const TSR_RECONSTRUCT_OUTPUT_BINDING = 14;
 const temporalModes = [
   { antialias: ANTIALIAS_TAA, scale: 1, name: 'TAA' },
   { antialias: ANTIALIAS_TAA, scale: 0.75, name: 'TAAU' },
@@ -259,10 +262,21 @@ it.each([
           (renderPath === 'forward'
             ? shader.source?.includes('fn fs_taa_resolve') ||
               shader.entryPoint === 'tsr_reconstruct'
-            : shader.source?.includes('fn sceneTemporalFromVelocity')) &&
+            : shader.entryPoint === 'tsr_reconstruct' ||
+              shader.source?.includes('fn sceneTemporalFromVelocity')) &&
           (shader.entryPoint === 'fs_main' || shader.entryPoint === 'tsr_reconstruct'),
       ),
     );
+    if (renderPath === 'deferred' && antialias === ANTIALIAS_TSR) {
+      const dilatedVelocity = model.works.find((work) =>
+        work.pipeline.shaders.some(
+          (shader) =>
+            shader.entryPoint === 'tsr_dilate' &&
+            shader.source?.includes('fn sceneTemporalFromVelocity'),
+        ),
+      );
+      expect(dilatedVelocity).toBeDefined();
+    }
     expect(raw).toBeDefined();
     if (antialias !== ANTIALIAS_NONE) expect(resolved).toBeDefined();
     if (raw === undefined) throw new Error('Missing velocity writer');
@@ -278,7 +292,9 @@ it.each([
         const id =
           work?.attachments?.colorViewHandleIds[location] ??
           (antialias === ANTIALIAS_TSR
-            ? work?.bindings.find((binding) => binding.binding === 10 + location)?.resourceId
+            ? work?.bindings.find(
+                (binding) => binding.binding === TSR_RECONSTRUCT_OUTPUT_BINDING + location,
+              )?.resourceId
             : undefined);
         if (work === undefined || id === undefined) throw new Error('Missing velocity attachment');
         const attachment = (await replay.readResourceAtWork(id, work.workIndex)).unwrap();

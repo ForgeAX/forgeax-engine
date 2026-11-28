@@ -29,22 +29,18 @@ function fixture() {
   });
   const previousGraph = graph(retirePrevious);
   const candidateGraph = graph(retireCandidate);
-  const previousInstalled = { graph: previousGraph };
-  const candidateInstalled = { graph: candidateGraph };
+  const previousInstalled = { graph: previousGraph, standardLighting: 'current' };
+  const candidateInstalled = { graph: candidateGraph, standardLighting: 'missing' };
   const previous = {
     installed: previousInstalled,
     graphGeneration: 7,
-    compiledGeneration: 3,
-    lightingSignature: 'accepted',
   };
   const state = {
     frameNumber: 0,
     pipelinePreparationPending: true,
-    compiledFrameGraphCandidate: { graph: candidateGraph, previous },
+    compiledFrameGraphCandidate: { installed: candidateInstalled, previous },
     compiledFrameGraph: candidateInstalled,
     graphGeneration: 8,
-    compiledFrameGraphGeneration: 4,
-    standardLightingGraphSignature: 'candidate',
     retiredCompiledFrameGraphs: new Set(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     meshBindGroupCache: new WeakMap(),
@@ -104,10 +100,8 @@ describe('frame recording attempt settlement', () => {
     f.settle(queueSubmitted, false);
     expect(f.state.compiledFrameGraph).toBe(f.previousInstalled);
     expect(f.state.graphGeneration).toBe(7);
-    expect(f.state.standardLightingGraphSignature).toBe('accepted');
-    expect(f.state.unsubmittedCompiledFrameGraph).toMatchObject({
-      installed: f.candidateInstalled,
-    });
+    expect(f.state.compiledFrameGraph?.standardLighting).toBe('current');
+    expect(f.state.unsubmittedCompiledFrameGraph).toBe(f.candidateInstalled);
     expect(f.retirePrevious).not.toHaveBeenCalled();
     expect(f.retireCandidate).not.toHaveBeenCalled();
   });
@@ -118,12 +112,11 @@ describe('frame recording attempt settlement', () => {
     expect(f.state.compiledFrameGraph).toBe(f.previousInstalled);
     f.state.pipelinePreparationPending = false;
     f.state.compiledFrameGraphCandidate = {
-      graph: f.candidateGraph,
+      installed: f.candidateInstalled,
       previous: f.previous,
     } as never;
     f.state.compiledFrameGraph = f.candidateInstalled as never;
     f.state.graphGeneration = 8;
-    f.state.standardLightingGraphSignature = 'candidate';
     f.settle(true, true);
     expect(f.state.compiledFrameGraphCandidate).toBeUndefined();
     expect(f.state.unsubmittedCompiledFrameGraph).toBeUndefined();

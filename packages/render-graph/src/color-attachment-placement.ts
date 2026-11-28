@@ -1,5 +1,10 @@
-import { type CompiledPass, handleData, type ResourceRecord } from './kernel-internal.js';
-import type { GraphTextureView, RenderGraphFrame } from './types.js';
+import {
+  type CompiledPass,
+  handleData,
+  type PhysicalGraphSlots,
+  type ResourceRecord,
+} from './kernel-internal.js';
+import type { RenderGraphFrame } from './types.js';
 
 const RENDER_ATTACHMENT = 0x10;
 
@@ -30,10 +35,7 @@ function contains(slots: AttachmentSlots | undefined, id: number): boolean {
 export function placeColorAttachments<Frame extends RenderGraphFrame>(
   entry: CompiledPass<Frame>,
   omitted: AttachmentSlots | undefined,
-  uses: readonly (
-    | { readonly firstClear?: GraphTextureView; readonly lastUse: number | null }
-    | undefined
-  )[],
+  physical: PhysicalGraphSlots<Frame>,
   lastSubgraph: number,
 ): CompiledPass<Frame> {
   if (entry.pass.kind !== 'raster') return entry;
@@ -45,7 +47,7 @@ export function placeColorAttachments<Frame extends RenderGraphFrame>(
     let storeOp = attachment.storeOp;
     if (storeOp === 'auto') {
       const data = handleData(attachment.view);
-      const use = data?.kind === 'texture-view' ? uses[data.textureId] : undefined;
+      const use = data?.kind === 'texture-view' ? physical.resource(data.textureId) : undefined;
       if (
         !omit &&
         attachment.resolveTarget !== undefined &&
@@ -53,7 +55,7 @@ export function placeColorAttachments<Frame extends RenderGraphFrame>(
         data?.kind === 'texture-view' &&
         use?.lastUse === entry.id &&
         lastSubgraph < entry.id &&
-        use.firstClear === attachment.view
+        use.firstClear === data.id
       ) {
         discarded = addAttachmentSlot(discarded, data.textureId);
         storeOp = 'discard';
@@ -69,9 +71,9 @@ export function placeColorAttachments<Frame extends RenderGraphFrame>(
   if (omitted !== undefined || discarded !== undefined) {
     const writes: (typeof textureWrites)[number][] = [];
     for (const write of textureWrites) {
-      if (contains(omitted, write.resourceId)) continue;
+      if (contains(omitted, write.texture.id)) continue;
       writes.push(
-        contains(discarded, write.resourceId) ? Object.freeze({ ...write, stored: false }) : write,
+        contains(discarded, write.texture.id) ? Object.freeze({ ...write, stored: false }) : write,
       );
     }
     textureWrites = Object.freeze(writes);

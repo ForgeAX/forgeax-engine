@@ -11,6 +11,7 @@ import {
 import { GPU_SCENE_LAYOUTS } from './gpu-scene-schema';
 import type { MaterialResource } from './material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from './render-system-extract';
+import { CapturedSceneTransform } from './scene/captured-transform';
 import { projectMeshDrawSnapshot } from './scene/mesh-draw';
 import type { MeshGeometry } from './scene/mesh-frame';
 import {
@@ -283,12 +284,13 @@ export class GpuSceneSourceRows {
     }
     for (const row of this.rows) {
       if (!current()) throw new Error('Source numeric encoding is not current');
+      const pose = CapturedSceneTransform.storage(row.snapshot.transform);
       encodeResetSceneTransform(
         transformView,
         0,
         row.transformStart,
-        row.snapshot.transform.world,
-        0,
+        CapturedSceneTransform.column(pose),
+        CapturedSceneTransform.offset(pose),
         stamp(),
       );
       task.writeRows('transform', row.transformStart * TRANSFORM, transform).unwrap();

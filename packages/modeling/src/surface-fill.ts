@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { maxOf } from './arrays';
 import { atan2, cos, sin } from './dmath';
 import { type ModelingError, modelingError } from './errors';
 import type { Tuple3 } from './geom';
@@ -1065,7 +1066,7 @@ export function fillQuads(
     const corners = cornerMismatch(hole.value);
     const inconsistent = corners.some((a) => a > G1_TARGET);
     const worstOf = (edge: 'side' | 'spoke') =>
-      Math.max(0, ...result.residual.filter((r) => r.edge === edge).map((r) => r.angle));
+      Math.max(0, maxOf(result.residual.filter((r) => r.edge === edge).map((r) => r.angle)));
     return err(
       modelingError(
         'model-precondition',

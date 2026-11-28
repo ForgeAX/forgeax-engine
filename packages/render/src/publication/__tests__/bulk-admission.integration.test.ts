@@ -7,6 +7,7 @@ import { afterEach, assert, expect, it, vi } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { GpuInputArena } from '../../gpu-input-arena';
 import { FrameSet } from '../../scene/frame-set';
+import { slotPoseColumn } from '../../scene/mesh-draw';
 import { RowContents } from '../../scene/row-contents';
 import { SkinInputs } from '../../scene/skin-inputs';
 import { type Roster, RosterCursor, rosterMerge, rosterPut } from '../../scene/slot-roster';
@@ -109,8 +110,8 @@ function firstPublication(count: number) {
   candidate.accept();
   const receiver = new RenderPublicationReceiver(identity);
   const keyed = vi.spyOn(
-    RowContents.prototype as unknown as { acquireKeyed(source: object): unknown },
-    'acquireKeyed',
+    RowContents.prototype as unknown as { acquireIndexed(source: object): unknown },
+    'acquireIndexed',
   );
   const message = encodeRenderPublication(packet);
   const closure = vi.spyOn(dependencies, 'publicationDependencies');
@@ -137,6 +138,7 @@ it('admits a first publication with per-template keys and typed-array growth onl
   // Rows of one Mesh/material tuple share one template and one staged content.
   expect(large.templates).toBe(small.templates);
   expect(large.keyDerivations).toBe(small.keyDerivations);
+  expect(small.contentKeys).toBeGreaterThan(0);
   expect(large.contentKeys).toBeLessThanOrEqual(large.templates);
   expect(large.assetClosures).toBe(large.templates);
   // Columns grow by pages; a per-row page copy would construct >= 1 array per row.
@@ -305,12 +307,11 @@ it('binds many Skin rows into an exclusive root without copying the page path pe
   frame.release?.();
 });
 
-it('uses Render World arena storage for a native transform-only transaction and detaches recycled input', () => {
+it('commits an admitted transform column without staging and detaches recycled input', () => {
   const { assets, world } = scene(128);
-  const memory = new World();
   const identity = { source: 'numeric-pose-admission', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
-  const receiver = new RenderPublicationReceiver(identity, undefined, undefined, memory);
+  const receiver = new RenderPublicationReceiver(identity);
   const publish = () => {
     const candidate = publisher.prepare(0).unwrap();
     const packet = structuredClone(candidate.packet, {
@@ -326,6 +327,7 @@ it('uses Render World arena storage for a native transform-only transaction and 
   const first = publish();
   assert(first.admitted.scene);
   const held = first.admitted.scene.rows.capture();
+  const before = first.admitted.scene.rows.inspectPages();
   const old = held.slotAt(0);
   assert(old);
   for (const row of world.query({ read: [Transform] }).unwrap())
@@ -336,12 +338,19 @@ it('uses Render World arena storage for a native transform-only transaction and 
   assert(changed.admitted.scene.delta);
   expect(changed.admitted.operations).toHaveLength(0);
   expect(changed.admitted.scene.delta.updated).toBe(128);
-  expect(memory.memoryStats().arena.requests).toBe(2);
+  const pages = changed.admitted.scene.rows.inspectPages();
+  expect(pages.posePageAllocations - before.posePageAllocations).toBe(2);
+  expect(pages.posePageAllocatedBytes - before.posePageAllocatedBytes).toBe(128 * 16 * 4);
   const captured = changed.admitted.scene.rows.capture();
+  const firstMoved = captured.slotAt(0);
+  assert(firstMoved);
+  expect(slotPoseColumn(firstMoved).buffer.byteLength).toBe(64 * 16 * 4);
   changed.packet.transforms.fill(23);
-  expect(captured.slotAt(0)?.snapshot.transform.world[13]).toBe(3);
+  const heldMatrix = firstMoved.snapshot.transform.world;
+  expect(heldMatrix.buffer.byteLength).toBe(16 * 4);
+  expect(firstMoved.snapshot.transform.world).toBe(heldMatrix);
+  expect(heldMatrix[13]).toBe(3);
   expect(old.snapshot.transform.world[13]).toBe(0);
-  expect(memory.memoryStats().arena.active).toBe(false);
   receiver.dispose();
   publisher.dispose();
 });

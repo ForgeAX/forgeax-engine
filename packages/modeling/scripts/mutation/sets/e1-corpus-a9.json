@@ -1,0 +1,53 @@
+{
+	"tests": ["src/brep/__tests__/e1/e1-corpus.unit.test.ts"],
+	"mutations": [
+		{
+			"id": "a9-seam-strict-sign",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "if (p.s < 0 !== q.s < 0 && p.ok && q.ok) count++;",
+			"new": "if (p.s * q.s < 0 && p.ok && q.ok) count++;"
+		},
+		{
+			"id": "a9-slope-1e-9",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "const q = E1_NEAR / (2 * W * Math.sin(al));",
+			"new": "const q = 1e-9 / (2 * W * Math.sin(al));"
+		},
+		{
+			"id": "a9-apex-tangent-family-removed",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "return a.kind === 'plane' && b.kind === 'cone' ? apexChord(a, b) : null;",
+			"new": "return null;"
+		},
+		{
+			"id": "a9-south-pole-dropped",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "      { on: 'b', branch: 0, t: Math.PI, feature: 'pole' },\n",
+			"new": ""
+		},
+		{
+			"id": "a9-completeness-tol-loose",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "const COMPLETE_TOL = 4e-3;",
+			"new": "const COMPLETE_TOL = 0.5;"
+		},
+		{
+			"id": "a9-completeness-grid-12",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "const GRID = 160;",
+			"new": "const GRID = 12;"
+		},
+		{
+			"id": "a9-window-halved",
+			"file": "src/brep/__tests__/e1/corpus.ts",
+			"old": "export const E1_WINDOW = 4;",
+			"new": "export const E1_WINDOW = 2;"
+		},
+		{
+			"id": "a9-closing-segment-dropped",
+			"file": "src/brep/__tests__/e1/check.ts",
+			"old": "for (let k = 0; k + 1 < line.length; k++) {",
+			"new": "for (let k = 0; k + 2 < line.length; k++) {"
+		}
+	]
+}

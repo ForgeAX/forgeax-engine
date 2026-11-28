@@ -1,5 +1,7 @@
+// Type only: `bake.ts` imports `model.ts`, which imports `validate.ts`; a value import would cycle.
+import type { BakeResult } from './bake';
 import { cos, sin } from './dmath';
-import { type NormalMode, smoothAcross } from './finish';
+import { type NormalMode, smoothAcross, uvContinuous } from './finish';
 import { faceArea } from './geom';
 import { type EditMesh, NONE } from './mesh';
 import type { Issue } from './report';
@@ -10,7 +12,8 @@ import type { ValidationCode } from './validate';
  * runs the mesh-time checks (`BAKE_CHECKS`: V1 sharp-not-seam, V9 subpixel-bevel) as `bake`
  * issues whose `detail.check` names the check; the bake reports the others (V2 ray-miss,
  * V3 steep-wall, V4 mip-bleed, V5 stack-conflict, V12 opacity-coverage, cage-clip (audit A1),
- * stray-detail (audit A3), tangent-seam (audit A4)) as its own issues. V2 = share of misses; cage-clip = detail
+ * stray-detail (audit A3), tangent-seam (audit A4), analytic-mismatch (BK63: the exact patch
+ * and the ray bake disagree beyond tolerance, the group was ray-baked)) as its own issues. V2 = share of misses; cage-clip = detail
  * outside the cage span (not duplicates).
  */
 export type BakeCheck =
@@ -23,7 +26,8 @@ export type BakeCheck =
   | 'opacity-coverage'
   | 'cage-clip'
   | 'stray-detail'
-  | 'tangent-seam';
+  | 'tangent-seam'
+  | 'analytic-mismatch';
 
 /** The mesh-time checks `validate({ bake })` runs (default all of them). */
 export const BAKE_CHECKS = [
@@ -45,21 +49,19 @@ export interface BakeValidateOptions {
    * runs only with a view.
    */
   readonly view?: { readonly distance: number; readonly fov?: number; readonly height?: number };
+  /**
+   * The outcome of a bake that already ran on this mesh (`bakeMaps`). `cage-clip` is measured only
+   * by that bake's ray pass, so it is checked from this outcome and nowhere else: its cage-clip
+   * issues are `bake` errors, and without an outcome the report lists the check as not checked.
+   * The outcome carries no mesh identity or revision (its `report.cacheKey` hashes the bake
+   * inputs, which `validate` does not recompute), so the caller must pass the outcome of the
+   * mesh it validates.
+   */
+  readonly outcome?: Pick<BakeResult, 'issues'>;
 }
 
 /** Edges reported in detail (the count is always reported). */
 const MAX_EDGES = 32;
-/** UV coordinates closer than this are one corner value. */
-const UV_EPSILON = 1e-6;
-
-function sameUv(a: Float32Array | undefined, b: Float32Array | undefined): boolean {
-  if (a === undefined || b === undefined) return false;
-  return (
-    Math.abs((a[0] as number) - (b[0] as number)) <= UV_EPSILON &&
-    Math.abs((a[1] as number) - (b[1] as number)) <= UV_EPSILON
-  );
-}
-
 /**
  * V1 (pitfall 1): a hard edge whose uv0 is continuous across it. Both sides then bake
  * contradicting normals into the same texels, which shows as a bright seam line; every
@@ -74,11 +76,7 @@ function sharpNotSeam(mesh: EditMesh, normals: NormalMode, issues: Issue<Validat
     const t = h + 1;
     if ((mesh.hFace[h] as number) === NONE || (mesh.hFace[t] as number) === NONE) continue;
     if (smoothAcross(mesh, e, normals)) continue;
-    // Corner (A, origin of h) meets (B, origin of next(t)); (A, end of h) meets (B, origin of t).
-    const continuous =
-      sameUv(mesh.corner('uv0', h), mesh.corner('uv0', mesh.hNext[t] as number)) &&
-      sameUv(mesh.corner('uv0', mesh.hNext[h] as number), mesh.corner('uv0', t));
-    if (!continuous) continue;
+    if (!uvContinuous(mesh, e)) continue;
     count++;
     if (edges.length < MAX_EDGES) {
       edges.push(e);
@@ -172,4 +170,13 @@ export function checkBake(
     sharpNotSeam(mesh, settings.normals ?? { mode: 'smooth' }, issues);
   if (checks.has('subpixel-bevel') && settings.view !== undefined)
     subpixelBevel(mesh, settings.view, issues);
+  if (settings.outcome !== undefined) cageClipFindings(settings.outcome, issues);
+}
+
+/** The bake's cage-clip issues, re-reported as gate errors so a clipped feature fails `validate`. */
+function cageClipFindings(outcome: Pick<BakeResult, 'issues'>, issues: Issue<ValidationCode>[]) {
+  for (const i of outcome.issues) {
+    if (i.code !== 'cage-clip') continue;
+    issues.push({ code: 'bake', severity: 'error', detail: { ...i.detail, check: 'cage-clip' } });
+  }
 }

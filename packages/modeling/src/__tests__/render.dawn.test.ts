@@ -12,7 +12,7 @@ import {
 } from '@forgeax/engine-vite-plugin-shader';
 import { PNG } from 'pngjs';
 import { describe, expect, it } from 'vitest';
-import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { drawSceneFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { model } from '../model';
 import { sel } from '../selectors';
 
@@ -191,7 +191,7 @@ describe('modeling output on the real renderer (Dawn)', () => {
         world.update(1 / 60).unwrap();
         const lease = attached.value;
         for (let i = 0; i < 3; i++) {
-          await drawReadyFrame(renderer, { source: lease });
+          await drawSceneFrame(renderer, lease);
         }
         if (device === undefined || target === undefined) throw new Error('device not captured');
         return readPixels(device, target);

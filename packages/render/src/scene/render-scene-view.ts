@@ -5,13 +5,14 @@ import { type RenderResidencySelection, residencySelected } from '../gpu-driven/
 import type { InstanceBoundsCacheInspection } from '../instances-derived-bounds';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import { addressDrawRows, isOrdinarySceneDrawTable } from '../record/draw-row-pages';
+import { addressDrawRows, drawSourceAt, isOrdinarySceneDrawTable } from '../record/draw-row-pages';
 import type { DrawRows, ValidatedRenderable } from '../record/frame-snapshot';
 import { MeshDrawSlots } from '../record/mesh-draw-slots';
 import { type NativeDrawRoster, NativeDrawRosterOwner } from '../record/native-draw-roster';
 import type { CameraSnapshot } from '../render-contract';
 import { cameraAdmitsLayers } from '../render-layers';
 import type { RenderableSnapshot, RenderableTemporalSnapshot } from '../render-system-extract';
+import type { RecordingScenePose } from './captured-transform';
 import {
   type FrameList,
   FrameListBase,
@@ -21,7 +22,7 @@ import {
 import type { FrameSet } from './frame-set';
 import { GenerationalWeakMap } from './generational-weak-map';
 import { MaterialFrame } from './material-dispatch';
-import { slotContent, slotDrawMaterials, slotDrawSnapshot } from './mesh-draw';
+import { type SceneDrawSlot, slotContent, slotDrawMaterials, slotDrawSnapshot } from './mesh-draw';
 import type { MeshFrame } from './mesh-frame';
 import type { SlotCameraVisibility } from './persistent-cull';
 import { attachProbeRecord, type ProbeAttachMemo } from './probe-attach';
@@ -62,6 +63,8 @@ export type SurfaceColumnReader<T> = (
   materials: Pick<RenderableSnapshot, 'material' | 'materials'> | undefined,
 ) => T;
 
+export type DrawContentAdmission = (content: RowContent, rank: number) => boolean;
+
 /** Captured native columns; this delegates to existing Mesh binding ownership, never a row cache. */
 class SceneSurfaceRows {
   constructor(
@@ -75,6 +78,11 @@ class SceneSurfaceRows {
     readonly fixedMaterialReads = MaterialFrame.fixedProgramRoot(materials) !== undefined,
   ) {
     Object.freeze(this);
+  }
+
+  row(entity: number): RenderableSnapshot | undefined {
+    const record = this.source.lookup(entity);
+    return record === undefined ? undefined : this.project(record);
   }
 
   /** A slot walk sees the same authored visibility as this public row sequence. */
@@ -156,9 +164,12 @@ class SceneSurfaceRows {
   findDrawContent<T>(
     requireMaterials: boolean,
     read: (entity: number, content: RowContent) => T | undefined,
+    admit?: DrawContentAdmission,
     members?: FrameSet,
   ): T | undefined {
+    let rank = 0;
     const consume = (content: RowContent, entity: number, slot: number) => {
+      if (admit?.(content, rank++) === false) return undefined;
       if (
         (this.residencySelection !== undefined &&
           !residencySelected(this.residencySelection, content.residencyGroup)) ||
@@ -283,8 +294,9 @@ interface AddressedMeshRows {
   readonly capacity: number;
 }
 
-/** One view's prepared submission: its rows revision and the slots it drew visible. */
+/** The exact Scene root and visibility of one prepared submission. */
 export interface RenderSceneSubmissionCapture {
+  readonly frame: SceneSlotFrame;
   readonly revision: number;
   /** Fixed admitted slots or borrowed generations. Absent when the whole roster was visible. */
   readonly visible: import('./render-scene-snapshots').SubmittedVisibility | undefined;
@@ -299,7 +311,7 @@ export const EMPTY_SLOT_FRAME = new SceneSlotFrame(undefined, 0);
  * holds and bounds caches) belong to their ingest owner. A view pins the row
  * roster it last observed, so every read agrees with its derived state, and
  * keeps only temporal history, draw-address allocation and frame memos. The
- * history is written when rows change, never copied from a submitted frame.
+ * history holds the root accepted at submission.
  */
 export class RenderScene {
   private readonly rows: SceneRows;
@@ -441,8 +453,12 @@ export class RenderScene {
     }
     const roster = this.captureMeshDrawRoster(
       (function* () {
-        for (let index = nativeStart; index < nativeEnd; index++)
-          yield (primary.at(index) as ValidatedRenderable).source;
+        if (!isOrdinarySceneDrawTable(primary))
+          for (let index = nativeStart; index < nativeEnd; index++) {
+            const source = drawSourceAt(primary, index);
+            if (source === undefined) throw new Error('Missing native draw source');
+            yield source;
+          }
         if (!isOrdinarySceneDrawTable(shadow)) for (const row of shadow) yield row.source;
       })(),
     );
@@ -593,7 +609,7 @@ export class RenderScene {
     spans: readonly import('@forgeax/engine-scene/internal').PresentationSpan[],
   ): RenderSceneApplyResult {
     if (!this.ownsRows) throw new Error('Local ECS presentation requires an owned Scene');
-    const delta = this.rows.commitPresentationSpans(spans);
+    const delta = this.rows.commitDistinctTransformSpans(spans);
     let scans = 0;
     for (const span of spans) scans += span.entities.length;
     this.observe(delta, scans);
@@ -630,24 +646,10 @@ export class RenderScene {
       this.pin();
       return;
     }
-    // Prior records come from the delta. A slot first written by a create or
-    // recreate was free unless a removal recorded it earlier.
-    const history = this.history;
     if (delta.removed > 0 || delta.recreated > 0) this.addressedMeshDraws = undefined;
-    for (const record of delta.removedSlots) {
-      history.record(record.slot, record);
-      this.meshDrawSlots.release(record);
-    }
-    if (!history.isCut)
-      for (const before of delta.previous.values()) history.record(before.slot, before);
-    for (const record of delta.createdSlots) {
-      this.meshDrawSlots.releaseStale(record);
-      history.record(record.slot, undefined);
-    }
-    for (const record of delta.recreatedSlots) {
-      this.meshDrawSlots.releaseStale(record);
-      history.record(record.slot, undefined);
-    }
+    for (const record of delta.removedSlots) this.meshDrawSlots.release(record);
+    for (const record of delta.createdSlots) this.meshDrawSlots.releaseStale(record);
+    for (const record of delta.recreatedSlots) this.meshDrawSlots.releaseStale(record);
     this.revision += 1;
     this.pin();
     this.invalidateSnapshots();
@@ -794,7 +796,7 @@ export class RenderScene {
   }
 
   lastSubmittedSlotByIndex(slot: number): RenderSceneSlot | undefined {
-    return this.history.at(slot, this.frame);
+    return this.history.at(slot);
   }
 
   temporalSnapshotBySlot(
@@ -808,25 +810,29 @@ export class RenderScene {
   /** The upload consumes each result before reading the next row. Capture one frame and scratch. */
   gpuMotionReader(resetHistory = false) {
     const frame = this.frame;
-    const history = this.history;
+    const history = resetHistory ? SubmittedHistory.cut() : this.history;
     const meshes = this.meshes;
     const motion: GpuSceneMotion = {
       motionValid: false,
       reactive: false,
       previousInstances: undefined,
+      instanceOrder: undefined,
+      instanceOrderGenerations: undefined,
     };
-    return (record: RenderSceneSlot): Readonly<GpuSceneMotion> | undefined => {
-      const slot = frame.slotAt(record.slot);
-      if (slot === undefined) return undefined;
-      const submitted = resetHistory ? undefined : history.before(slot);
-      return createTemporalSnapshot(
+    const read = (record: RenderSceneSlot | number): Readonly<GpuSceneMotion> | undefined => {
+      const slot = typeof record === 'number' ? record : record.slot;
+      const content = frame.contentAt(slot);
+      const generation = frame.generationAt(slot);
+      if (content === undefined || generation === undefined) return undefined;
+      return history.gpuMotionAt(
         slot,
-        submitted,
-        submitted !== undefined && history.admitted(submitted),
-        hasDisplacementSource(slotDrawMaterials(slot, meshes)),
+        generation,
+        content,
+        hasDisplacementSource(frame.drawMaterials(content, meshes)),
         motion,
       );
     };
+    return Object.assign(read, { bySlot: read });
   }
 
   /** Indexed draw consumption shares the temporal owner used by full view publications. */
@@ -837,13 +843,12 @@ export class RenderScene {
   ): RenderableSnapshot | undefined => {
     const initial = this.frame.slotAt(slot);
     if (initial === undefined) return undefined;
-    const source = slotDrawSnapshot(initial, meshes);
     return !this.temporalTracking
-      ? source
+      ? slotDrawSnapshot(initial, meshes)
       : temporalDrawSnapshot(
-          source,
-          counters,
           initial,
+          meshes,
+          counters,
           this.history,
           undefined,
           this.temporalBySlot,
@@ -869,22 +874,22 @@ export class RenderScene {
     // frame-local slot map would register every consumed row again each frame.
     const project = (
       record: RenderSceneSlot,
-      camera?: Pick<CameraSnapshot, 'cullMask'>,
+      camera?: Pick<CameraSnapshot, 'cullMask'> & { readonly shadow?: boolean },
       visibility?: SlotCameraVisibility,
     ) => {
       if (view?.unavailable.has(record.slot)) return undefined;
       if (camera !== undefined && visibility !== undefined) {
         const content = slotContent(record);
         if (
+          (camera.shadow === true && content.shadowCaster === false) ||
           (camera.cullMask !== undefined && !cameraAdmitsLayers(camera, content)) ||
           !visibility.admitsSlot(content, record)
         )
           return undefined;
       }
-      const source = slotDrawSnapshot(record, meshes);
       const draw = temporal
-        ? temporalDrawSnapshot(source, counters, record, history, materials, memo)
-        : source;
+        ? temporalDrawSnapshot(record, meshes, counters, history, materials, memo)
+        : slotDrawSnapshot(record, meshes);
       return view === undefined
         ? draw
         : attachProbeRecord(draw, view.probeAt(record.slot), view.probeMemo);
@@ -897,6 +902,14 @@ export class RenderScene {
       locate: current.slotAt,
       project,
       projectCamera: project,
+      ...(temporal
+        ? {}
+        : {
+            borrowPose: (placed: SceneDrawSlot, into: RecordingScenePose): boolean =>
+              view?.unavailable.has(placed.slot) !== true &&
+              view?.probeAt(placed.slot) === undefined &&
+              current.borrowReplacementPose(placed, into),
+          }),
       mayHaveWaterSources: view?.mayHaveWaterSources ?? true,
     });
   }
@@ -941,14 +954,7 @@ export class RenderScene {
       // Pending source rows are retained for retry but have no accepted material.
       // Keep them hidden before consuming temporal facts from the accepted root.
       if (unavailable?.has(record.slot)) return { ...record.snapshot, authorVisible: false };
-      return temporalDrawSnapshot(
-        slotDrawSnapshot(record, meshes),
-        counters,
-        record,
-        history,
-        materials,
-        memo,
-      );
+      return temporalDrawSnapshot(record, meshes, counters, history, materials, memo);
     };
     // The temporal row keeps its draw projection's LOD levels, so the Scene's
     // maintained facts hold; sparse rows yield the same temporal projection.
@@ -984,7 +990,7 @@ export class RenderScene {
   }
 
   wasLastSubmittedVisible(slot: number, generation: number): boolean {
-    return this.history.wasVisible(slot, generation, this.frame);
+    return this.history.wasVisible(slot, generation);
   }
 
   /**
@@ -996,10 +1002,11 @@ export class RenderScene {
     roster?: SceneSlotFrame,
   ): RenderSceneSubmissionCapture {
     if (roster !== undefined || sceneDrawContentOf(visible)?.source === this.frame)
-      return { revision: this.revision, visible: undefined };
+      return { frame: this.frame, revision: this.revision, visible: undefined };
     if (SelectedSceneDrawRows.native(visible)) {
       const slots = visible.submittedSlots(this.frame);
-      if (slots !== undefined) return { revision: this.revision, visible: slots };
+      if (slots !== undefined)
+        return { frame: this.frame, revision: this.revision, visible: slots };
     }
     const slots = new Map<number, number>();
     for (const snapshot of visible) {
@@ -1007,6 +1014,7 @@ export class RenderScene {
       if (slot !== undefined) slots.set(slot.slot, slot.generation);
     }
     return {
+      frame: this.frame,
       revision: this.revision,
       visible: slots.size === this.frame.length ? undefined : slots,
     };
@@ -1014,10 +1022,10 @@ export class RenderScene {
 
   /** Receipt of a submitted frame: the rows it drew become the history's origin. */
   commitSubmission(capture: RenderSceneSubmissionCapture): void {
-    if (capture.revision !== this.revision) {
+    if (capture.frame !== this.frame || capture.revision !== this.revision) {
       throw new RangeError('render scene changed while its temporal submission was active');
     }
-    this.history = SubmittedHistory.submitted(capture.visible, this.history);
+    this.history = SubmittedHistory.submitted(capture.frame, capture.visible, this.history);
   }
 
   /** O(1) current record by stable slot index; bound so frame state can publish it. */
@@ -1056,7 +1064,7 @@ export class RenderScene {
     const records: RenderSceneSlot[] = [];
     for (const record of this.frame) {
       if (
-        record?.snapshot.materials.some(
+        slotContent(record).materials.some(
           (material) => material.snapshot.materialHandle === materialHandle,
         )
       )
@@ -1081,6 +1089,10 @@ export class RenderScene {
   }
   instanceBoundsStatistics(): InstanceBoundsCacheInspection {
     return this.rows.instanceBoundsStatistics();
+  }
+
+  get changeJournalBackingBytes(): number {
+    return this.rows.changeJournalBackingBytes;
   }
 
   get cullingBoundsBackingBytes(): number {
@@ -1147,6 +1159,30 @@ export class RenderScene {
     skin?: SkinSceneFrame,
   ): boolean {
     return this.rows.writeCullingWorldBoundsAt(slot, out, meshes, materials, skin);
+  }
+
+  writeCullingPoseBounds(
+    slot: number,
+    version: number,
+    content: RowContent,
+    column: Float32Array,
+    offset: number,
+    out: box3.Box3,
+    meshes = this.meshes,
+    materials?: MaterialFrame,
+    skin?: SkinSceneFrame,
+  ): boolean {
+    return this.rows.writeCullingPoseBounds(
+      slot,
+      version,
+      content,
+      column,
+      offset,
+      out,
+      meshes,
+      materials,
+      skin,
+    );
   }
 
   cullingWorldBounds(snapshot: RenderableSnapshot): RenderSceneBounds | undefined {

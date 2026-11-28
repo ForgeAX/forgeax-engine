@@ -16,6 +16,23 @@ import { testAssets } from './helpers/runtime-assets';
 
 export const TSR_QUALITY_SIZE = 128;
 const size = TSR_QUALITY_SIZE;
+export const TSR_STOP_CHECKPOINT = 8;
+const MOTION_FRAMES = 32;
+
+// UE TSR admits at least TheoricBlendFactor = 1/(1 + SampleCount/ratio^2) of each frame
+// (TemporalSuperResolution.cpp:3005, SampleCount 16 at cpp:45), so after motion the history
+// needs about 16/ratio^2 frames to reconverge: 16 at native scale, 64 at half scale.
+export const tsrSettleFrames = (scale: number) => Math.ceil(16 / (scale * scale));
+// Frames a TSR route draws after its steady window: the motion, then rest frames 0..settle.
+export const tsrMotionStopFrames = (scale: number) => MOTION_FRAMES + tsrSettleFrames(scale);
+
+// After the steady window the camera moves out and back along a triangle path and comes to
+// rest in place at the reference pose, so the history stays valid through the stop. `rest`
+// counts frames since arriving at rest; it is negative while the camera is still moving.
+export function motionStop(frame: number, steady: number) {
+  const k = frame - steady + 1;
+  return { x: 0.03 * Math.max(0, Math.min(k, MOTION_FRAMES - k)), rest: k - MOTION_FRAMES };
+}
 function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }): T {
   if (!result.ok) throw result.error;
   return result.value;

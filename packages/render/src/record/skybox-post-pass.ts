@@ -26,27 +26,25 @@ export function encodeSkyboxPass(
   if (skyboxSnapshot === undefined) return;
 
   const { runtime, store, pipelineState } = c;
+  const passResources = pipelineState.perPassResources;
+  const resources = passResources.getSkyboxResources?.() ?? passResources;
 
   // Guard: pipeline resources must exist (null when manifest has no
   // skybox entry -- legacy manifests continue to boot)
-  if (depthFormat !== undefined && pipelineState.perPassResources.skyboxScenePipeline === undefined)
+  if (depthFormat !== undefined && resources.skyboxScenePipeline === undefined)
     throw new RendererContractFailureError(
       'draw',
       'a scene sky requires its depth-compatible pipeline producer',
     );
   const skyboxPipeline =
     depthFormat !== undefined
-      ? pipelineState.perPassResources.skyboxScenePipeline?.(
-          c.msaaActive ? 4 : 1,
-          depthFormat,
-          colorFormat,
-        )
+      ? resources.skyboxScenePipeline?.(c.msaaActive ? 4 : 1, depthFormat, colorFormat)
       : c.msaaActive
-        ? pipelineState.perPassResources.skyboxPipelineMsaa
-        : pipelineState.perPassResources.skyboxPipeline;
-  const skyboxBgl = pipelineState.perPassResources.skyboxBindGroupLayout;
-  const skyboxSampler = pipelineState.perPassResources.skyboxSampler;
-  const skyboxRotationBuffer = pipelineState.perPassResources.skyboxRotationBuffer;
+        ? resources.skyboxPipelineMsaa
+        : resources.skyboxPipeline;
+  const skyboxBgl = resources.skyboxBindGroupLayout;
+  const skyboxSampler = resources.skyboxSampler;
+  const skyboxRotationBuffer = resources.skyboxRotationBuffer;
   if (
     skyboxPipeline === null ||
     skyboxPipeline === undefined ||
@@ -138,14 +136,16 @@ export function recordFxaaPass(
   // FXAA samples the graph-owned LDR target and writes the current surface.
   // The surface is an output attachment only: no COPY_SRC usage, no
   // copyTextureToTexture, and no backend-specific surface sampling path.
-  const fxaaActive = isFxaaAntialias(camera.antialias);
-  if (
-    fxaaActive &&
-    pipelineState.perPassResources.fxaaPipeline !== null &&
-    pipelineState.perPassResources.fxaaBindGroupLayout !== null &&
-    pipelineState.perPassResources.fxaaSampler !== null &&
-    runtime.getPostProcessParamsBuffer !== undefined
-  ) {
+  if (!isFxaaAntialias(camera.antialias) || runtime.getPostProcessParamsBuffer === undefined)
+    return;
+  const passResources = pipelineState.perPassResources;
+  const resources = passResources.getFxaaResources?.() ?? passResources;
+  const {
+    fxaaPipeline: defaultPipeline,
+    fxaaBindGroupLayout: fxaaBglLayout,
+    fxaaSampler,
+  } = resources;
+  if (defaultPipeline !== null && fxaaBglLayout !== null && fxaaSampler !== null) {
     // Typed graph calls provide explicit input/output keys. The legacy
     // ldrColor fallback is retained only for the direct surface owner.
     const inputView =
@@ -172,8 +172,6 @@ export function recordFxaaPass(
     // the identity-keyed cache rebuilds against the live target. The params
     // buffer is also a key so a device recovery cannot retain a bind group
     // pointing at the retired resource.
-    const fxaaBglLayout = pipelineState.perPassResources.fxaaBindGroupLayout;
-    const fxaaSampler = pipelineState.perPassResources.fxaaSampler;
     const fxaaBg = getOrCreateFromChain(
       c.frameState.postProcessBgCache,
       [inputView, fxaaParams],
@@ -238,7 +236,7 @@ export function recordFxaaPass(
         ) as never,
       );
     }
-    let fxaaPipeline = pipelineState.perPassResources.fxaaPipeline;
+    let fxaaPipeline = defaultPipeline;
     if (graphPass !== undefined && graphOutputFormat !== undefined) {
       const entry = runtime.lookupPostProcess?.(FXAA_POST_PROCESS_ID);
       const rebuilt =
@@ -252,7 +250,6 @@ export function recordFxaaPass(
             );
       if (rebuilt !== null) fxaaPipeline = rebuilt;
     }
-    if (fxaaPipeline === null) return;
     fxaaPass.setPipeline(fxaaPipeline);
     fxaaPass.setBindGroup(0, fxaaBg);
     fxaaPass.draw(3, 1, 0, 0);

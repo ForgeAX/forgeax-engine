@@ -91,6 +91,29 @@ describe('device-owned automatic Standard path', () => {
       validateRenderProfile({ ...profile, renderPath: 'unknown' } as unknown as RenderProfile),
     ).toContain('renderPath');
   });
+  it('validates the UE atmosphere and cloud profile flags', () => {
+    const ueProfile = {
+      ...profile,
+      renderPath: 'forward',
+      atmosphereLutModel: 'ue5-desktop',
+      cloudMode0Model: 'ue5-desktop',
+      realtimeSkyCapture: true,
+    } as const;
+    expect(validateRenderProfile(ueProfile)).toBeUndefined();
+    expect(validateRenderProfile({ ...ueProfile, renderPath: 'deferred' })).toContain('Forward');
+    expect(
+      validateRenderProfile({
+        ...ueProfile,
+        cloudMode0Model: 'unsupported',
+      } as unknown as RenderProfile),
+    ).toContain('cloudMode0Model');
+    expect(
+      validateRenderProfile({
+        ...ueProfile,
+        realtimeSkyCapture: 'true',
+      } as unknown as RenderProfile),
+    ).toContain('realtimeSkyCapture');
+  });
   it.each([32, 35, 36])('does not let SSR change the %i-byte device default', (bytes) => {
     const d = device(true, 8, bytes);
     const resolved = createRenderProfileSelection().select(profile, d);

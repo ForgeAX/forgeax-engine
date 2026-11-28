@@ -36,11 +36,15 @@ export default definePack({
         type: 'lake',
         zoneGuid: waterVisibilityGuid(`zone/${mode}`),
         surfaceMaterialGuid: family.guids.root,
+        ...(mode === 'cpu' ? { underwaterPostProcessMaterialGuid: family.guids.underwater } : {}),
         baseHeightM: 0,
         overlapPriority: 0,
         maxWaveHeightM: 0,
         flags: { affectsWaterInfo: true, affectsWaterMesh: true, affectsLandscape: false },
-        collision: { type: 'none', enabled: false },
+        collision:
+          mode === 'cpu'
+            ? { type: 'polygon', enabled: true, channelDepthM: 4, collisionGroups: 0x0002_ffff }
+            : { type: 'none', enabled: false },
         queryFootprint: [
           [-6, -6],
           [6, -6],
@@ -73,7 +77,17 @@ export default definePack({
     const cooked = await buildWaterPackOutputs(source, { packageId });
     if (!cooked.ok) return cooked;
     const material = family.outputs['material/water/root'];
-    if (material === undefined) throw new Error('Water visibility material missing');
-    return ok({ ...cooked.value, 'material/water/root': material });
+    const underwater = family.outputs['material/water/underwater'];
+    if (material === undefined || underwater === undefined)
+      throw new Error('Water visibility materials missing');
+    return ok({
+      ...cooked.value,
+      'material/water/root': material,
+      'material/water/underwater': {
+        ...underwater,
+        staticSwitches: { ...underwater.staticSwitches, waterInfo: false, waterFixedHeight: true },
+        values: { underwaterFogPerM: 1, underwaterAmbientColor: [0.02, 0.18, 0.42] },
+      },
+    });
   },
 });

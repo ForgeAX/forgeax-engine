@@ -173,8 +173,13 @@ export function dawnGroupEnvironment(group, environment, ordinaryWorkers, native
       ? { MALLOC_ARENA_MAX: '2', MALLOC_TRIM_THRESHOLD_: '131072' }
       : {}),
   };
-  const bundle = group.lockedGraphics && env.FORGEAX_CI_GRAPHICS_ROOT;
-  if (!bundle) return env;
+  if (!group.lockedGraphics) return env;
+  const bundle = env.FORGEAX_CI_GRAPHICS_ROOT;
+  if (!bundle) {
+    if (env.GITHUB_ACTIONS === 'true')
+      throw new Error(`Dawn ${group.id} requires the locked Lavapipe bundle in GitHub CI`);
+    return env;
+  }
   verifyBundle(bundle);
   const selected = graphicsEnvironment(bundle, env);
   console.log(
@@ -228,6 +233,67 @@ export function dawnExecutionGroups(id, shard, environment = process.env) {
     .filter((group) => group.vitestShard !== undefined || group.files.length > 0);
 }
 
+export function dawnOrdinaryInvocations(group, env, ordinaryWorkers) {
+  if (
+    !group.serialOrdinary ||
+    ordinaryWorkers !== 2 ||
+    env.FORGEAX_CI_CORE_VALIDATION !== '1' ||
+    env.FORGEAX_DAWN_LIGHTWEIGHT !== '1'
+  )
+    return [{ group, env, label: `Dawn ${group.id}` }];
+
+  const bounded = { ...env };
+  delete bounded.FORGEAX_DAWN_SERIAL_ORDINARY;
+  return [
+    {
+      group,
+      label: `Dawn ${group.id} exclusive`,
+      env: { ...env, FORGEAX_DAWN_ORDINARY_MEMORY_PHASE: 'exclusive' },
+    },
+    {
+      group: { ...group, serialOrdinary: false },
+      label: `Dawn ${group.id} bounded`,
+      env: { ...bounded, FORGEAX_DAWN_ORDINARY_MEMORY_PHASE: 'bounded' },
+    },
+  ];
+}
+
+async function runDawnVitest(group, env, ordinaryWorkers) {
+  for (const invocation of dawnOrdinaryInvocations(group, env, ordinaryWorkers)) {
+    const run = () =>
+      runBrowserCommand(
+        [process.execPath, ...dawnVitestArgs(invocation.group, { ordinaryWorkers })],
+        {
+          cwd: ROOT,
+          env: invocation.env,
+          label: invocation.label,
+          gpuLease: true,
+          ...(group.isolate === false ? { timeoutMs: 6 * 60_000 } : {}),
+        },
+      );
+    let result = await run();
+    if (
+      result.status !== 0 &&
+      !result.cancelled &&
+      group.retryMode &&
+      isRetryableOutput(group.retryMode, result.output)
+    ) {
+      console.warn(
+        `::warning::${invocation.label} matched a retry signature; retrying once in a fresh process`,
+      );
+      result = await run();
+    }
+    if (result.status !== 0) {
+      throw Object.assign(
+        new Error(`${invocation.label} exited ${result.status}; ${result.failure}`),
+        {
+          exitCode: result.status ?? 1,
+        },
+      );
+    }
+  }
+}
+
 export async function runDawnGate({ group: selectedGroup, shard, continueOnFailure = false } = {}) {
   validateDawnGateRoster();
   const environmentDiagnostics = shard === '3/4';
@@ -241,6 +307,7 @@ export async function runDawnGate({ group: selectedGroup, shard, continueOnFailu
       'FORGEAX_DAWN_PARTITION',
       'FORGEAX_DAWN_PARTITION_SCOPE',
       'FORGEAX_DAWN_SERIAL_ORDINARY',
+      'FORGEAX_DAWN_ORDINARY_MEMORY_PHASE',
     ])
       delete environment[name];
     return environment;
@@ -275,32 +342,7 @@ export async function runDawnGate({ group: selectedGroup, shard, continueOnFailu
         } else if (group.id === 'direct-light') {
           await runDirectLightDawn({ env });
         } else {
-          const run = () =>
-            runBrowserCommand([process.execPath, ...dawnVitestArgs(group, { ordinaryWorkers })], {
-              cwd: ROOT,
-              env,
-              label: `Dawn ${group.id}`,
-              gpuLease: true,
-              ...(group.isolate === false ? { timeoutMs: 6 * 60_000 } : {}),
-            });
-          let result = await run();
-          if (
-            result.status !== 0 &&
-            !result.cancelled &&
-            group.retryMode &&
-            isRetryableOutput(group.retryMode, result.output)
-          ) {
-            console.warn(
-              `::warning::Dawn ${group.id} matched a retry signature; retrying once in a fresh process`,
-            );
-            result = await run();
-          }
-          if (result.status !== 0) {
-            throw Object.assign(
-              new Error(`Dawn ${group.id} exited ${result.status}; ${result.failure}`),
-              { exitCode: result.status ?? 1 },
-            );
-          }
+          await runDawnVitest(group, env, ordinaryWorkers);
         }
       } catch (error) {
         status = 1;

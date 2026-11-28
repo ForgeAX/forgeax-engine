@@ -6,7 +6,7 @@ import { type RetainedBytes, RetentionBudget } from './retention-budget.js';
 
 type BundleWindow = NonNullable<ArtifactDescriptor['byteRange']>;
 
-export interface BundleWindowRead<Failure> {
+export interface BundleRead<Failure> {
   /** Resolved Bundle file URL. */
   readonly url: string;
   readonly range: BundleWindow;
@@ -15,6 +15,11 @@ export interface BundleWindowRead<Failure> {
    * only `range`; a response of exactly that length is the unverified entry.
    */
   fetch(entry: boolean): Promise<Result<Uint8Array, Failure>>;
+  /** The stored window is not one complete Bundle entry. */
+  invalid(reason: string): Failure;
+}
+
+export interface BundleWindowRead<Failure> extends BundleRead<Failure> {
   /** Decode and verify one stored entry. Its result is what consumers receive. */
   finish(stored: Uint8Array): Promise<Result<Uint8Array, Failure>>;
   /** Verify a private copy of a value another owner already extracted. */
@@ -34,7 +39,6 @@ export interface BundleWindowRead<Failure> {
    * value without copying it.
    */
   readonly shared?: boolean;
-  invalid(reason: string): Failure;
 }
 
 interface Resident {
@@ -69,6 +73,12 @@ export class BundleStore<Failure> implements RetainedBytes {
   constructor(budget: RetentionBudget | number = 256 * 1024 * 1024) {
     this.budget = typeof budget === 'number' ? new RetentionBudget(budget) : budget;
     this.budget.join(this);
+  }
+
+  /** Start the ordinary whole-Bundle transfer without extracting an entry. */
+  async prefetch(request: BundleRead<Failure>): Promise<void> {
+    const bundle = `${request.url}\0${request.range.bundleDigest}`;
+    if (!this.fetched.has(bundle)) await this.load(bundle, request);
   }
 
   async read(request: BundleWindowRead<Failure>): Promise<Result<Uint8Array, Failure>> {
@@ -198,7 +208,7 @@ export class BundleStore<Failure> implements RetainedBytes {
     return stored;
   }
 
-  private load(bundle: string, request: BundleWindowRead<Failure>): Promise<Result<void, Failure>> {
+  private load(bundle: string, request: BundleRead<Failure>): Promise<Result<void, Failure>> {
     let loading = this.loading.get(bundle);
     if (loading === undefined) {
       const current = this.populate(bundle, request).finally(() => {
@@ -212,7 +222,7 @@ export class BundleStore<Failure> implements RetainedBytes {
 
   private async populate(
     bundle: string,
-    request: BundleWindowRead<Failure>,
+    request: BundleRead<Failure>,
   ): Promise<Result<void, Failure>> {
     const fetched = await request.fetch(false);
     return fetched.ok ? this.admit(bundle, fetched.value, request) : fetched;
@@ -221,7 +231,7 @@ export class BundleStore<Failure> implements RetainedBytes {
   private admit(
     bundle: string,
     bytes: Uint8Array,
-    request: BundleWindowRead<Failure>,
+    request: BundleRead<Failure>,
   ): Result<void, Failure> {
     const table = readAssetBundleTable(bytes);
     if (!table.ok) return err(request.invalid(table.error));

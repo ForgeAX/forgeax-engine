@@ -6,7 +6,7 @@ import { RENDER_FEATURE_PLAN_SYSTEM, viewFeaturePlanOf } from './feature-plan-sy
 import { VIEW_DIFFUSE_GI_SYSTEM, viewDiffuseGiOf } from './gi-systems';
 import { RENDER_GPU_DRIVEN_RASTER_SYSTEM } from './gpu-driven-raster-systems';
 import { RENDER_GPU_DRIVEN_PREPARE_SYSTEM, viewGpuDrivenOf } from './gpu-driven-systems';
-import { readViewPassPlan, type ViewPassPlan } from './pass-plan-systems';
+import type { ViewPassPlan } from './pass-plan-systems';
 import { viewLightsOf } from './render-lights';
 import { RENDER_SSR_ADMISSION_SYSTEM, viewSsrAdmissionOf } from './ssr-admission-systems';
 import {
@@ -59,33 +59,13 @@ function unavailable(
   });
 }
 
-/** Resolve the compiler's immutable facts from the current component products; missing work is data. */
-export function readViewGraphInput(
-  world: World,
-  entity: EntityHandle,
-  owner: ViewSettlementOwner,
-  request: ViewGraphCompileRequest,
-): Result<GraphCompileInput, RendererOperationError<'graph-build-failed'>> {
-  return readGraphInput(world, entity, owner, request);
-}
-
-/** An off-frame Source supplies a plan from the same Pass family policy. */
+/** An off-frame Source supplies its own pass plan and reads the staged view producers. */
 export function readSourceViewGraphInput(
-  world: World,
-  entity: EntityHandle,
-  owner: ViewSettlementOwner,
-  request: ViewGraphCompileRequest,
-  pass: ViewPassPlan,
-): Result<GraphCompileInput, RendererOperationError<'graph-build-failed'>> {
-  return readGraphInput(world, entity, owner, request, pass);
-}
-
-function readGraphInput(
   world: World,
   entity: EntityHandle,
   { internals, frameState, captures }: ViewSettlementOwner,
   request: ViewGraphCompileRequest,
-  sourcePass?: ViewPassPlan,
+  pass: ViewPassPlan,
 ): Result<GraphCompileInput, RendererOperationError<'graph-build-failed'>> {
   const lighting = viewStandardLightingOf(world, entity);
   if (lighting?.kind !== 'prepared')
@@ -104,19 +84,6 @@ function readGraphInput(
     return err(unavailable(RENDER_GPU_DRIVEN_RASTER_SYSTEM));
   const feature = viewFeaturePlanOf(world, entity);
   if (feature?.kind !== 'planned') return err(unavailable(RENDER_FEATURE_PLAN_SYSTEM, feature));
-  const pass = sourcePass === undefined ? readViewPassPlan(world, entity) : ok(sourcePass);
-  if (!pass.ok)
-    return err(
-      new RendererOperationError('graph-build-failed', {
-        operation: 'draw',
-        cause: {
-          code: pass.error.code,
-          expected: `${pass.error.system} plans this view before graph compilation`,
-          hint: 'keep the RenderQueue plan systems registered',
-          detail: pass.error,
-        },
-      }),
-    );
   const subsurface = viewSubsurfaceAdmissionOf(world, entity)?.[request.subsurfaceClass];
   if (subsurface?.ok !== true)
     return err(unavailable(RENDER_SUBSURFACE_ADMISSION_SYSTEM, subsurface));
@@ -136,8 +103,8 @@ function readGraphInput(
     featurePlan: feature.plan,
     cubeCaptureState: recordContext(internals).captureView?.state ?? captures,
     clearOnly: request.clearOnly,
-    passPlan: pass.value,
-    unfoggedOpaque: pass.value.unfoggedOpaque,
+    passPlan: pass,
+    unfoggedOpaque: pass.unfoggedOpaque,
     capsuleShadows: request.capsuleShadows,
     volumetricFog: inputs.volume.graphFog,
     volumeTopologyCandidate: inputs.volume.topologyCandidate,
@@ -145,7 +112,7 @@ function readGraphInput(
     ssr: ssr.admission,
     renderExtent: gi.value.renderExtent,
     analyticFog: inputs.analyticFog,
-    cloudShadowResolution: inputs.cloudShadow?.rawResolution,
+    cloudShadowLayout: inputs.cloudShadow?.spatialLayout,
     terrainReceivers: inputs.terrainReceivers,
     subsurface: subsurface.value,
     rendererRecording: request.rendererRecording,

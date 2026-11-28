@@ -10,6 +10,7 @@ import { captureHiddenEntityReports } from './hidden-entity-reports';
 import type {
   RenderFeature,
   RenderFeatureExtractContext,
+  RenderFeatureExtractView,
   RenderFeatureHiddenEntityReport,
 } from './types';
 import { renderFeatureCameraView } from './view';
@@ -77,35 +78,44 @@ export function renderFeatureSourceContext(
   ) => import('./types').RenderFeatureViewContext | undefined,
   graphResources?: import('./types').RenderFeatureGraphResourceState,
 ): RenderFeatureExtractContext {
+  const views: RenderFeatureExtractView[] = [];
+  for (const camera of frame.cameras) {
+    if (camera.view?.enabled === false) continue;
+    if (camera.stereo === undefined) {
+      views.push(renderSourceView(camera, frame, viewFacts, graphResources));
+      continue;
+    }
+    for (const eye of stereoEyeCameras(camera))
+      views.push(renderSourceView(eye, frame, viewFacts, graphResources));
+  }
+  return { ...options, world, frameNumber, views, visibilitySnapshot: frame.visibilitySnapshot };
+}
+
+function renderSourceView(
+  camera: NonNullable<RenderFeatureExtractView['selectedCamera']>,
+  frame: ExtractedFrame,
+  viewFacts: Parameters<typeof renderFeatureSourceContext>[4],
+  graphResources: RenderFeatureExtractView['graphResources'],
+): RenderFeatureExtractView {
+  const view = viewFacts?.(camera);
+  const cloud = frame.cloudLayer;
   return {
-    ...options,
-    world,
-    frameNumber,
-    views: frame.cameras
-      .filter((camera) => camera.view?.enabled !== false)
-      .flatMap(stereoEyeCameras)
-      .map((camera) => {
-        const view = viewFacts?.(camera);
-        const cloud = frame.cloudLayer;
-        return {
-          ...renderFeatureCameraView(camera),
-          ...(graphResources === undefined ? {} : { graphResources }),
-          frame:
-            cloud === undefined
-              ? view === undefined
-                ? {}
-                : { view }
-              : createCloudFeatureFrameContext(
-                  prepareCloudShadowView(cloud, camera.position),
-                  view,
-                  frame.environment,
-                  frame.lights.directional,
-                ),
-        };
-      }),
-    visibilitySnapshot: frame.visibilitySnapshot,
+    ...renderFeatureCameraView(camera),
+    ...(graphResources === undefined ? {} : { graphResources }),
+    frame:
+      cloud === undefined
+        ? view === undefined
+          ? {}
+          : { view }
+        : createCloudFeatureFrameContext(
+            prepareCloudShadowView(cloud, camera.position),
+            view,
+            frame.environment,
+            frame.lights.directional,
+          ),
   };
 }
+
 /** A failed extract remains a result until the delivery owner applies its failure policy. */
 export function captureRenderFeatureSource(
   feature: RenderFeature<unknown>,

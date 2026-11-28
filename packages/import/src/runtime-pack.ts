@@ -49,7 +49,6 @@ import {
   validatePackDefinition,
   validatePluginAssetSource,
 } from '@forgeax/engine-pack/source';
-import { isEngineMaterial } from '@forgeax/engine-shader';
 import type { ToolCommandContract } from '@forgeax/engine-tool-runtime';
 import {
   type Asset,
@@ -476,7 +475,11 @@ async function contentFromOutputs(
       'execution' in asset
     )
       throw new TypeError('runtime outputs must be prepared assets, not build-only source');
-    if (asset.kind === 'material' && Array.isArray(asset.passes) && !isEngineMaterial(asset))
+    if (
+      asset.kind === 'material' &&
+      Array.isArray(asset.passes) &&
+      !(await import('@forgeax/engine-shader')).isEngineMaterial(asset)
+    )
       throw new TypeError('authored material programs require build-time Cook');
     const guid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), sourceKey));
     const producer = producers.get(asset.kind);
@@ -597,36 +600,42 @@ function outputTransfers(value: unknown): ArrayBuffer[] {
   return [...buffers];
 }
 
-const runtimePackBuildTask: TaskModule<RuntimePackBuildInput, RuntimePackContent> = {
-  async run(input, context) {
-    const program = input.programs[input.source.program]?.artifact;
-    if (program === undefined) throw new TypeError('missing generator program');
-    // A native URL is issued by the host for the verified closure. Import that
-    // URL here so evaluating the generator never runs its top level in Engine.
-    const build =
-      input.moduleUrl === undefined
-        ? (await loadPackProgram(program, input.imports)).unwrap()
-        : (await import(/* @vite-ignore */ input.moduleUrl))[program.export];
-    if (context.aborted) throw taskAbortError();
-    const content = await buildRuntimeContent(
-      input,
-      build,
-      async (guid) => input.dependencies.get(guid),
-      context,
-    );
-    if (context.aborted) throw taskAbortError();
-    return { value: content, transfer: outputTransfers(content) };
-  },
-};
+/** App supplies browser delivery only in the Worker that imports the program. */
+export function createRuntimePackTaskKinds(
+  importModule: (url: string) => Promise<Readonly<Record<string, unknown>>> = (url) =>
+    import(/* @vite-ignore */ url),
+) {
+  const task: TaskModule<RuntimePackBuildInput, RuntimePackContent> = {
+    async run(input, context) {
+      const program = input.programs[input.source.program]?.artifact;
+      if (program === undefined) throw new TypeError('missing generator program');
+      // A native URL is issued by the host for the verified closure. Import that
+      // URL here so evaluating the generator never runs its top level in Engine.
+      const build =
+        input.moduleUrl === undefined
+          ? (await loadPackProgram(program, input.imports)).unwrap()
+          : (await importModule(input.moduleUrl))[program.export];
+      if (context.aborted) throw taskAbortError();
+      const content = await buildRuntimeContent(
+        input,
+        build,
+        async (guid) => input.dependencies.get(guid),
+        context,
+      );
+      if (context.aborted) throw taskAbortError();
+      return { value: content, transfer: outputTransfers(content) };
+    },
+  };
+  return {
+    [RUNTIME_PACK_BUILD_TASK]: {
+      load: () => task,
+      workerOnly: true,
+      maxInFlight: 1,
+    },
+  };
+}
 
-/** App composes this registration into both ends of the existing Task Worker pool. */
-export const runtimePackTaskKinds = {
-  [RUNTIME_PACK_BUILD_TASK]: {
-    load: () => runtimePackBuildTask,
-    workerOnly: true,
-    maxInFlight: 1,
-  },
-};
+export const runtimePackTaskKinds = createRuntimePackTaskKinds();
 
 export function prepareRuntimePackAnchor(
   input: RuntimePackContent,

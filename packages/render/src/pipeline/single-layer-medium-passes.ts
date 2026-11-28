@@ -6,8 +6,7 @@ import {
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
 import {
-  SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_WGSL,
-  SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_WGSL,
+  SINGLE_LAYER_MEDIUM_MSAA_PAIRED_WGSL,
   SINGLE_LAYER_MEDIUM_RAW_DEPTH_WGSL,
 } from '@forgeax/engine-shader';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -18,7 +17,6 @@ import type {
   RenderPipelineTarget,
 } from '../render-pipeline';
 import { createRenderPipelineTarget } from '../render-pipeline';
-import type { RendererState } from '../render-system';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
 import { addTypedFullscreenPass, addTypedScenePass } from '../typed-render-graph-primitives';
 import type { WaterInfoGraphTargets } from './standard-build-context';
@@ -206,10 +204,26 @@ export function addSingleLayerMediumMsaaSurfaceProducer(input: {
 /** Stable renderer-owned post-process identity for the independent depth copy. */
 export const SINGLE_LAYER_MEDIUM_RAW_DEPTH_POST_PROCESS_ID =
   'forgeax.single-layer-medium-raw-depth' as const;
-export const SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_POST_PROCESS_ID =
-  'forgeax.single-layer-medium-msaa-paired-color' as const;
-export const SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_POST_PROCESS_ID =
-  'forgeax.single-layer-medium-msaa-raw-depth' as const;
+const SINGLE_LAYER_MEDIUM_MSAA_PAIRED_POST_PROCESS_ID =
+  'forgeax.single-layer-medium-msaa-paired' as const;
+
+export const SINGLE_LAYER_MEDIUM_PRODUCER_PROGRAMS = [
+  {
+    name: SINGLE_LAYER_MEDIUM_RAW_DEPTH_POST_PROCESS_ID,
+    kind: 'fullscreen',
+    source: SINGLE_LAYER_MEDIUM_RAW_DEPTH_WGSL,
+    reads: ['input', { key: 'scene-depth', sampleType: 'depth' }],
+  },
+  {
+    name: SINGLE_LAYER_MEDIUM_MSAA_PAIRED_POST_PROCESS_ID,
+    kind: 'fullscreen',
+    source: SINGLE_LAYER_MEDIUM_MSAA_PAIRED_WGSL,
+    reads: [
+      { key: 'input', sampleType: 'multisampled-float' },
+      { key: 'scene-depth', sampleType: 'depth' },
+    ],
+  },
+] as const;
 
 export interface SingleLayerMediumMsaaPair {
   readonly color: RenderPipelineTarget;
@@ -316,29 +330,42 @@ export function addSingleLayerMediumMsaaPairProducer(input: {
     sampleCount: 1,
   });
   if (!depth.ok) return depth;
-  const colorProducer = addTypedFullscreenPass(input.graph, {
-    name: `${input.label}-color-producer`,
-    shader: SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_POST_PROCESS_ID,
+  const resolve = addTypedFullscreenPass(input.graph, {
+    name: input.label,
+    shader: SINGLE_LAYER_MEDIUM_MSAA_PAIRED_POST_PROCESS_ID,
     input: input.sourceColor,
-    outputs: [color.value],
+    outputs: [color.value, depth.value],
     depth: input.sourceDepth,
   });
-  if (!colorProducer.ok) return colorProducer;
-  const depthProducer = addTypedFullscreenPass(input.graph, {
-    name: `${input.label}-depth-producer`,
-    shader: SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_POST_PROCESS_ID,
-    input: input.sourceColor,
-    outputs: [depth.value],
-    depth: input.sourceDepth,
-  });
-  if (!depthProducer.ok) return depthProducer;
-  return ok({ color: color.value, depth: depth.value });
+  return resolve.ok ? ok({ color: color.value, depth: depth.value }) : resolve;
 }
 
 /** Inputs shared by the two graph passes owned by the Surface model. */
 export interface SingleLayerMediumNearestTargets {
   readonly nearestLayer: RenderPipelineTarget;
   readonly nearestDepth: RenderPipelineTarget;
+}
+
+export function declareSingleLayerMediumTargets(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  size: GraphTextureDescriptor['size'],
+  sampleCount: 1 | 4,
+): Result<SingleLayerMediumNearestTargets, RenderGraphError> {
+  // R carries the admitted fragment's center depth and A carries coverage.
+  const nearestLayer = createRenderPipelineTarget(graph, 'single-layer-medium-nearest-layer', {
+    format: 'rgba16float',
+    size,
+    sampleCount,
+  });
+  if (!nearestLayer.ok) return nearestLayer;
+  const nearestDepth = createRenderPipelineTarget(graph, 'single-layer-medium-nearest-depth', {
+    format: 'depth32float-stencil8',
+    size,
+    sampleCount,
+  });
+  return nearestDepth.ok
+    ? ok({ nearestLayer: nearestLayer.value, nearestDepth: nearestDepth.value })
+    : nearestDepth;
 }
 
 /**
@@ -520,26 +547,4 @@ export function addSingleLayerMediumPasses(
     if (!velocity.ok) return velocity;
   }
   return ok(undefined);
-}
-
-/** Register the built-ins alongside their graph identities and binding contracts. */
-export function registerSingleLayerMediumBuiltins(
-  renderSystem: Pick<RendererState, 'registerBuiltinPostProcess'>,
-): void {
-  renderSystem.registerBuiltinPostProcess(SINGLE_LAYER_MEDIUM_RAW_DEPTH_POST_PROCESS_ID, {
-    source: SINGLE_LAYER_MEDIUM_RAW_DEPTH_WGSL,
-    reads: ['input', { key: 'scene-depth', sampleType: 'depth' }],
-  });
-  const pairedMsaaReads = [
-    { key: 'input', sampleType: 'multisampled-float' as const },
-    { key: 'scene-depth', sampleType: 'depth' as const },
-  ];
-  renderSystem.registerBuiltinPostProcess(SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_POST_PROCESS_ID, {
-    source: SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_WGSL,
-    reads: pairedMsaaReads,
-  });
-  renderSystem.registerBuiltinPostProcess(SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_POST_PROCESS_ID, {
-    source: SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_WGSL,
-    reads: pairedMsaaReads,
-  });
 }

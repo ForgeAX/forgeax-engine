@@ -13,7 +13,7 @@ import { gameProjectionSource } from '../host/game-projection-source.js';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
 import type { DevKitAppOptions } from '../plugin-build.js';
 import type { BuildOptions, ProjectFacts } from '../types.js';
-import { desktopAddon } from './desktop-addon.js';
+import { desktopAddon, desktopRenderKernelAddon } from './desktop-addon.js';
 import { emitDesktopAudioPayload } from './desktop-audio-payload.js';
 import { preflightDesktopStartup } from './desktop-configuration.js';
 import { staticPackTaskUrlSpecifier } from './execution-workers.js';
@@ -27,6 +27,29 @@ import { emitNativeUiFonts } from './native-ui-fonts.js';
 import { nativeGamePhysicsDimensions, type PluginSourceInventory } from './plugin-assets.js';
 import { staticPackProgramsSource } from './static-pack-programs.js';
 
+export type DesktopRendererChoice = 'native-kernel' | 'rhi-wgpu-native';
+
+/**
+ * Selects the desktop renderer backend:
+ * - Explicit option (`destination.desktopRenderer`) takes precedence.
+ * - Next, `FORGEAX_DESKTOP_RENDERER` environment variable (`'native-kernel' | 'rhi-wgpu-native'`).
+ * - Default: `'native-kernel'` when the target's `@forgeax/engine-render-kernel` native `.node`
+ *   addon is available, falling back cleanly to `'rhi-wgpu-native'` otherwise.
+ */
+export function resolveDesktopRendererChoice(
+  requested: DesktopRendererChoice | undefined,
+  envValue: string | undefined,
+  nativeKernelAvailable: boolean,
+): DesktopRendererChoice {
+  if (requested === 'native-kernel' || requested === 'rhi-wgpu-native') {
+    return requested;
+  }
+  if (envValue === 'native-kernel' || envValue === 'rhi-wgpu-native') {
+    return envValue;
+  }
+  return nativeKernelAvailable ? 'native-kernel' : 'rhi-wgpu-native';
+}
+
 export async function prepareDesktopBuild(
   facts: ProjectFacts,
   generated: string,
@@ -36,6 +59,7 @@ export async function prepareDesktopBuild(
     readonly authoredPacks: readonly AuthoredRuntimePack[];
     readonly platform?: BuildOptions['platform'];
     readonly arch?: BuildOptions['arch'];
+    readonly desktopRenderer?: DesktopRendererChoice;
   },
 ): Promise<{ readonly plugin: Plugin; readonly entry: string; readonly adapter: string }> {
   const dimensions = nativeGamePhysicsDimensions(inventory, facts.roots.engine);
@@ -44,18 +68,37 @@ export async function prepareDesktopBuild(
     destination.platform === undefined
       ? process.platform
       : ({ windows: 'win32', macos: 'darwin', linux: 'linux' } as const)[destination.platform];
+  const arch = destination.arch ?? process.arch;
   const definition = engineConfigurationForAppOptions(options, 'browser');
   const preflight = preflightDesktopStartup(definition, platform);
   if (!preflight.ok) throw preflight.error;
-  const addon = await desktopAddon(platform, destination.arch ?? process.arch);
-  const nativeFile = addon.fileName;
+  const explicitNativeKernel =
+    destination.desktopRenderer === 'native-kernel' ||
+    (destination.desktopRenderer === undefined &&
+      process.env.FORGEAX_DESKTOP_RENDERER === 'native-kernel');
+  const kernelAddon = await desktopRenderKernelAddon(platform, arch, {
+    required: explicitNativeKernel,
+  });
+  const selectedRenderer = resolveDesktopRendererChoice(
+    destination.desktopRenderer,
+    process.env.FORGEAX_DESKTOP_RENDERER,
+    kernelAddon !== undefined,
+  );
+  const useNativeKernel = selectedRenderer === 'native-kernel';
+  const addon = useNativeKernel ? undefined : await desktopAddon(platform, arch);
+  const nativeFile = useNativeKernel
+    ? (kernelAddon as NonNullable<typeof kernelAddon>).fileName
+    : (addon as Awaited<ReturnType<typeof desktopAddon>>).fileName;
   const adapter = existsSync(runtime)
     ? runtime
     : fileURLToPath(new URL('./desktop-platform.ts', import.meta.url));
   const entry = resolve(generated, 'desktop-main.ts');
   const taskWorker = resolve(generated, 'desktop-runtime-pack-worker.ts');
   await Promise.all([
-    writeFile(entry, desktopSource(facts, adapter, options, definition, nativeFile, taskWorker)),
+    writeFile(
+      entry,
+      desktopSource(facts, adapter, options, definition, nativeFile, taskWorker, useNativeKernel),
+    ),
     writeFile(
       taskWorker,
       `import { parentPort } from 'node:worker_threads';
@@ -84,22 +127,30 @@ serveTaskWorker(parentPort, runtimePackTaskKinds);
       name: 'forgeax:desktop-player',
       enforce: 'pre',
       resolveId(id) {
-        if (id === '@forgeax/engine-rhi-wgpu-native') return addon.module;
+        if (id === '@forgeax/engine-rhi-wgpu-native' && addon !== undefined) return addon.module;
+        if (id === '@forgeax/engine-render-kernel/native' && kernelAddon !== undefined) {
+          return kernelAddon.module;
+        }
         return null;
       },
       async buildStart() {
-        this.emitFile({
-          type: 'asset',
-          fileName: `native/${nativeFile}`,
-          source: await addon.read(),
+        if (addon !== undefined) {
+          this.emitFile({
+            type: 'asset',
+            fileName: `native/${addon.fileName}`,
+            source: await addon.read(),
+          });
+        }
+        if (kernelAddon !== undefined) {
+          this.emitFile({
+            type: 'asset',
+            fileName: `native/${kernelAddon.fileName}`,
+            source: await kernelAddon.read(),
+          });
+        }
+        await emitDesktopAudioPayload(platform, arch, (fileName, source) => {
+          this.emitFile({ type: 'asset', fileName, source });
         });
-        await emitDesktopAudioPayload(
-          platform,
-          destination.arch ?? process.arch,
-          (fileName, source) => {
-            this.emitFile({ type: 'asset', fileName, source });
-          },
-        );
         const engine = await this.resolve(
           '@forgeax/engine/package.json',
           resolve(facts.root, 'package.json'),
@@ -134,8 +185,28 @@ function desktopSource(
   definition: EngineConfigurationDefinition,
   nativeFile: string,
   taskWorker: string,
+  useNativeKernel = false,
 ): string {
   const assembly = nativeHostSource(options, { target: 'desktop' });
+  const rhiImport = useNativeKernel
+    ? ''
+    : "import { createNativeWindow, installNavigatorGpu } from '@forgeax/engine-rhi-wgpu-native';\n";
+  const windowBootstrap = useNativeKernel
+    ? `const nativeHost = value(createNativeKernelDesktopHost({
+    window: { width: 1280, height: 720, title: ${JSON.stringify(facts.name)} },
+    addonPath: fileURLToPath(new URL(${JSON.stringify(`native/${nativeFile}`)}, base)),
+    headless: false,
+  }));
+  const window = { ...nativeHost.window, canvas: nativeHost.canvas, gamepads: () => ok(null) };
+  releases.push(() => value(window.close()));`
+    : `const window = value(createNativeWindow({ width: 1280, height: 720, title: ${JSON.stringify(facts.name)},
+    addonPath: fileURLToPath(new URL(${JSON.stringify(`native/${nativeFile}`)}, base)),
+  }));
+  releases.push(() => value(window.close()));
+  value(installNavigatorGpu(window.gpu));`;
+  const graphicsBootstrap = useNativeKernel
+    ? `const graphics = { renderer: nativeHost.renderer, assets: nativeHost.assets, initialization: nativeHost.initialization };`
+    : assembly.graphics;
   return `import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -145,8 +216,7 @@ import { fileURLToPath } from 'node:url';
 import { audioPlugin } from '@forgeax/engine/audio';
 import { WebAudioEngine, webAudioPlugin } from '@forgeax/engine/audio-webaudio';
 import { decodeDocumentText } from '@forgeax/engine/codec';
-import { createNativeWindow, installNavigatorGpu } from '@forgeax/engine-rhi-wgpu-native';
-import { createDesktopFileStore, createDesktopGameSaves, createDesktopInput, createDesktopPackageFetcher, createDesktopPlatform, createDesktopPreferenceStorage, createDesktopRuntimePackCache, createDesktopRuntimePackTasks, desktopDeviceFacts, desktopPackageUrl, validateDesktopStartup } from ${JSON.stringify(adapter)};
+${rhiImport}import { createDesktopFileStore, createDesktopGameSaves, createDesktopInput, createDesktopPackageFetcher, createDesktopPlatform, createDesktopPreferenceStorage, createDesktopRuntimePackCache, createDesktopRuntimePackTasks, createNativeKernelDesktopHost, desktopDeviceFacts, desktopPackageUrl, validateDesktopStartup } from ${JSON.stringify(adapter)};
 import taskWorkerUrl from ${JSON.stringify(staticPackTaskUrlSpecifier(taskWorker))};
 import { activate } from './desktop-game.ts';
 ${assembly.imports}
@@ -213,11 +283,7 @@ try {
     readDeviceFacts: () => deviceFacts, store,
   }))));
   const configured = projectEngineStartup(plan);
-  const window = value(createNativeWindow({ width: 1280, height: 720, title: ${JSON.stringify(facts.name)},
-    addonPath: fileURLToPath(new URL(${JSON.stringify(`native/${nativeFile}`)}, base)),
-  }));
-  releases.push(() => value(window.close()));
-  value(installNavigatorGpu(window.gpu));
+  ${windowBootstrap}
   trace('window-open');
   const platform = createDesktopPlatform(window, () => void close().catch(fail), fail,
     (event, pixelRatio) => input?.accept(event, pixelRatio));
@@ -284,7 +350,7 @@ try {
     }
   })));
   const canvas = window.canvas;
-  ${assembly.graphics}
+  ${graphicsBootstrap}
   if (lifetime.signal.aborted) { graphics.renderer.dispose(); throw lifetime.signal.reason; }
   releases.push(() => graphics.renderer.dispose());
   releases.push(graphics.renderer.subscribe(event => {

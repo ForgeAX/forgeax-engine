@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MemberCandidates } from '../../gpu-driven/batch-members';
 import { FrameProjection, RetainedFrameProjection } from '../frame-list';
 import { changes, type Node, nodes, put, remove, treeKind } from '../frame-tree';
@@ -91,6 +91,29 @@ describe('frame tree iteration and no-op edits', () => {
 });
 
 describe('frame projections', () => {
+  it('visits a captured tree in indexed order before and after an iterator reads it', () => {
+    const source = new TreeFrame(tree([5, 1, 9, 3, 7]));
+    const edited = source.without(0, 3).with('new', 0, 4);
+    const rows = (frame: TreeFrame<string>) => {
+      const seen: string[] = [];
+      frame.forEach((value, index) => {
+        seen.push(`${value}@${index}`);
+      });
+      return seen;
+    };
+    const iterate = vi.spyOn(TreeFrame.prototype, Symbol.iterator);
+    try {
+      expect(rows(edited)).toEqual(['v1@0', 'new@1', 'v5@2', 'v7@3', 'v9@4']);
+      expect(rows(source)).toEqual(['v1@0', 'v3@1', 'v5@2', 'v7@3', 'v9@4']);
+      expect(iterate).not.toHaveBeenCalled();
+      expect([...edited]).toEqual(['v1', 'new', 'v5', 'v7', 'v9']);
+      expect(rows(edited)).toEqual(['v1@0', 'new@1', 'v5@2', 'v7@3', 'v9@4']);
+      expect(iterate).toHaveBeenCalledTimes(1);
+    } finally {
+      iterate.mockRestore();
+    }
+  });
+
   it('projects every row with its index, and stops cleanly on break', () => {
     const source = new TreeFrame(tree([1, 2, 3]));
     const projected = new FrameProjection(source, (value, index) => `${value}@${index}`);

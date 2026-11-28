@@ -4,7 +4,6 @@ import {
   type AssetReader,
   assetDataBytes,
 } from '@forgeax/engine-assets-runtime/internal';
-import type { World } from '@forgeax/engine-ecs';
 import {
   deriveVertexCount,
   deriveVertexLayoutProjection,
@@ -24,11 +23,11 @@ import {
 import { isWaterMeshLayoutReceiptValid } from '@forgeax/engine-water/internal';
 import { LIGHTING_CHANNELS_DEFAULT, validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
+import { MeshResidencyError } from '../dynamic-geometry';
 import {
   DEFAULT_DYNAMIC_GEOMETRY_MESH_BUDGET_BYTES,
-  MeshResidencyError,
   validateDynamicGeometryMeshBudget,
-} from '../dynamic-geometry';
+} from '../dynamic-geometry-budget';
 import { isRenderFeatureTextureSource } from '../features/feature-texture-source';
 import {
   isOwnedRenderFeatureProgramData,
@@ -43,6 +42,7 @@ import { sameValue } from '../same-value';
 import { ScenePoseWriter } from '../scene/captured-transform';
 import { dispatchEntry } from '../scene/dispatch-entry';
 import { FrameListBase } from '../scene/frame-list';
+import { slotContent } from '../scene/mesh-draw';
 import { captureMaterialOverrides } from '../scene/mesh-materials';
 import type { RenderSceneApplyResult, RenderSceneOperation } from '../scene/render-scene-types';
 import { SceneRows, type SceneRowWriteAccess, type WorldTransformSpan } from '../scene/scene-rows';
@@ -1614,7 +1614,6 @@ export class RenderPublicationReceiver {
     private readonly identity: RenderPublicationIdentity,
     targets?: RenderTargetAuthoring,
     prepareRows?: PublicationRowPreparation,
-    private readonly memory?: World,
     private readonly maxPreparedMeshBytes = DEFAULT_DYNAMIC_GEOMETRY_MESH_BUDGET_BYTES,
   ) {
     validateDynamicGeometryMeshBudget(maxPreparedMeshBytes);
@@ -1974,11 +1973,12 @@ export class RenderPublicationReceiver {
       hold(id, -1);
     };
     const releaseEntityMaterials = (entity: number) => {
-      const snapshot = this.rows.lookup(entity)?.snapshot;
-      if (snapshot === undefined) return;
-      for (const resource of snapshot.materials) releaseMaterial(resource);
-      if (snapshot.materialOverrides !== undefined)
-        for (const resource of snapshot.materialOverrides)
+      const row = this.rows.lookup(entity);
+      if (row === undefined) return;
+      const content = slotContent(row);
+      for (const resource of content.materials) releaseMaterial(resource);
+      if (content.materialOverrides !== undefined)
+        for (const resource of content.materialOverrides)
           if (resource !== undefined) releaseMaterial(resource);
     };
     const holdTemplateMaterials = (snapshot: TemplateSnapshot) => {
@@ -2470,6 +2470,7 @@ export class RenderPublicationReceiver {
     // A program row is validated and owned once per id; later projections
     // reference the receiver program table entry.
     const projections = new Map<AcceptedAssetRow, MaterialRenderProjection>();
+    const admitProjection = this.projections.stage(programKnown);
     for (const row of packet.assets) {
       if (
         !this.assetRowAdmissible(row) ||
@@ -2479,7 +2480,11 @@ export class RenderPublicationReceiver {
         return rejectPublication('shape', 'asset payload');
       if (!validAssetSource(row)) return rejectPublication('shape', 'asset source');
       assetHandles.add(row.handle);
-      const projection = this.receivedMaterialProjection(row, packet.retiredAssets, programKnown);
+      const projection = this.receivedMaterialProjection(
+        row,
+        packet.retiredAssets,
+        admitProjection,
+      );
       if (!projection.ok) return rejectPublication('shape', projection.error);
       const held = this.levelAssets.get(row.handle);
       if (held?.revision === row.revision && !sameAssetPayload(held.value, row.value))
@@ -2508,7 +2513,7 @@ export class RenderPublicationReceiver {
   private receivedMaterialProjection(
     row: RenderPublication['assets'][number],
     retired: readonly number[],
-    available: (key: string) => boolean,
+    admit: ReturnType<PublicationMaterialProjectionAdmission['stage']>,
   ): Result<MaterialRenderProjection | undefined, string> {
     const source = row.materialProjectionSource;
     if (source === undefined && row.materialProjection === undefined)
@@ -2521,7 +2526,7 @@ export class RenderPublicationReceiver {
       if (input === undefined) return err('material projection holder');
     }
     if (input === null) return ok(undefined);
-    const projection = this.projections.admit(input, row.value, available);
+    const projection = admit(input, row.value);
     return projection === undefined ? err('material source projection') : ok(projection);
   }
 
@@ -2925,7 +2930,10 @@ export class RenderPublicationReceiver {
     const completed = this.prepareRows?.(prepared) ?? prepared;
     // The receiver built every staged snapshot and owns it immutably: rows
     // adopt them as-is instead of copying matrices, bounds and draw tables.
-    const delta = this.rows.apply(completed.operations, transforms, true, this.memory);
+    const delta =
+      completed.operations.length === 0
+        ? this.rows.commitDistinctTransformSpans(transforms)
+        : this.rows.apply(completed.operations, transforms, true);
     return { ...completed, scene: { rows: this.rows, stageRows: this.stageRows, before, delta } };
   }
 

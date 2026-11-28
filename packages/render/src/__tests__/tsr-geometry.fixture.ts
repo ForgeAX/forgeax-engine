@@ -1,6 +1,7 @@
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { expect } from 'vitest';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { TSR_ANALYSIS_FORMATS, TSR_PARAMS_BYTES } from '../tsr/layout';
 import { createTsrProgram, createTsrRasterProgram } from '../tsr/program';
 import { half, unhalf } from './tsr-feedback';
 
@@ -10,7 +11,7 @@ type Compile = NonNullable<
   RenderPipelineFrame['runtime']['immediateShaderModuleFactory']
 >['createShaderModule'];
 
-/** Independent identity oracle: center wins equal depths, then row-major order. */
+/** Independent identity oracle for full-res coverage halos: center wins equal depths, then row-major order. */
 function geometry(data: readonly Tuple[], w: number, h: number, uv: Coordinate, radius: number) {
   const x = Math.max(0, Math.min(w - 1, Math.trunc(Math.fround(uv[0] * w))));
   const y = Math.max(0, Math.min(h - 1, Math.trunc(Math.fround(uv[1] * h))));
@@ -75,8 +76,12 @@ function verifyCpuGeometry(frame: CpuOracleFrame) {
         Math.fround(uv[0] + frame.jitter[0]),
         Math.fround(uv[1] + frame.jitter[1]),
       ];
-      const low = geometry(frame.input, iw, ih, current, 1),
-        high = geometry(frame.full, ow, oh, current, 3);
+      const ix = Math.max(0, Math.min(iw - 1, Math.trunc(Math.fround(uv[0] * iw))));
+      const iy = Math.max(0, Math.min(ih - 1, Math.trunc(Math.fround(uv[1] * ih))));
+      const lowPacked = frame.input[iy * iw + ix];
+      if (!lowPacked) throw new Error('missing dilated input');
+      const low = { packed: lowPacked, edge: false };
+      const high = geometry(frame.full, ow, oh, current, 3);
       const chosen =
         low.packed[2] >= 0 && low.packed[3] >= 1 ? low : high.packed[2] >= 0 ? high : low;
       const index = y * ow + x,
@@ -109,9 +114,9 @@ export async function verifyTsrGeometry(
     runtime: { device, immediateShaderModuleFactory: { createShaderModule: compile } },
   } as unknown as RenderPipelineFrame;
   const buildProgram = execution === 'compute' ? createTsrProgram : createTsrRasterProgram;
-  const program = buildProgram(frame, false);
+  const program = buildProgram(frame, 'reconstruct');
   // Let the same GPU evaluate rounding-sensitive UVs. The reference gathers
-  // directly from the original textures and does not use either geometry cache.
+  // directly from the coverage texture without the LDS coverage row cache.
   const reference =
     shape === 'rounding'
       ? buildProgram(
@@ -120,26 +125,21 @@ export async function verifyTsrGeometry(
               device,
               immediateShaderModuleFactory: {
                 createShaderModule: (descriptor: Parameters<Compile>[0]) => {
-                  let code = descriptor.code;
-                  for (const [from, to] of [
-                    [
-                      'tsrInputGeometry(sourcePixel,inputOrigin)',
-                      'tsrClosestTemporalAt(sceneTemporal,sourcePixel,1)',
-                    ],
-                    [
-                      'tsrCoverageGeometry(coveragePixel,coverageRadius,coverageOrigin,input.column)',
-                      'tsrClosestTemporalAt(coverage,coveragePixel,coverageRadius)',
-                    ],
-                  ] as const) {
-                    if (!code.includes(from)) throw new Error('missing geometry reference route');
-                    code = code.replace(from, to);
-                  }
-                  return compile({ ...descriptor, label: 'tsr-direct-geometry-reference', code });
+                  const from =
+                    'tsrCoverageGeometry(coveragePixel,coverageRadius,coverageOrigin,input.column)';
+                  const to = 'tsrClosestTemporalAt(coverage,coveragePixel,coverageRadius)';
+                  if (!descriptor.code.includes(from))
+                    throw new Error('missing geometry reference route');
+                  return compile({
+                    ...descriptor,
+                    label: 'tsr-direct-geometry-reference',
+                    code: descriptor.code.replace(from, to),
+                  });
                 },
               },
             },
           } as unknown as RenderPipelineFrame,
-          false,
+          'reconstruct',
         )
       : undefined;
   const textures: Texture[] = [];
@@ -155,23 +155,27 @@ export async function verifyTsrGeometry(
     return { texture, view: device.createTextureView(texture, {}).unwrap(), width, height, format };
   }
   const scene = surface(iw, ih, 'rgba16float'),
-    temporal = surface(iw, ih, 'rgba16float');
+    dilated = surface(iw, ih, TSR_ANALYSIS_FORMATS.dilated),
+    dilateEdge = surface(iw, ih, TSR_ANALYSIS_FORMATS.dilateEdge);
   const oldColor = surface(ow, oh, 'rgba16float'),
     oldTemporal = surface(ow, oh, 'rgba16float');
   const oldMetadata = surface(ow, oh, 'rgba8unorm'),
-    decision = surface(iw, ih, 'rgba16float');
+    decision = surface(iw, ih, TSR_ANALYSIS_FORMATS.decision),
+    spatial = surface(iw, ih, TSR_ANALYSIS_FORMATS.spatial);
   const secondary = surface(ow, oh, 'rgba8unorm'),
     coverage = surface(ow, oh, 'rgba16float');
   const color = surface(ow, oh, 'rgba16float'),
     output = surface(ow, oh, 'rgba16float');
   const metadata = surface(ow, oh, 'rgba8unorm');
-  const params = device.createBuffer({ size: 64, usage: 64 | 8 }).unwrap();
+  const params = device.createBuffer({ size: TSR_PARAMS_BYTES, usage: 64 | 8 }).unwrap();
   const readback = device.createBuffer({ size: stride * oh, usage: 1 | 8 }).unwrap();
   const upload = (s: ReturnType<typeof surface>, pixels: readonly Tuple[]) => {
     const data =
       s.format === 'rgba16float'
         ? new Uint16Array(pixels.flatMap((p) => p.map(half)))
-        : new Uint8Array(pixels.flatMap((p) => p.map((v) => Math.round(v * 255))));
+        : new Uint8Array(
+            pixels.flatMap((p) => p.map((v) => Math.max(0, Math.min(255, Math.round(v * 255))))),
+          );
     device.queue
       .writeTexture(
         { texture: s.texture },
@@ -211,7 +215,9 @@ export async function verifyTsrGeometry(
     upload(oldColor, fill(ow, oh, [4, 2, 1, 0.5]));
     upload(oldTemporal, fill(ow, oh, [0, 0, -1, 0]));
     upload(oldMetadata, fill(ow, oh, [128 / 255, 0, 0, 1]));
-    upload(decision, fill(iw, ih, [1, 0, 0, 1]));
+    upload(decision, fill(iw, ih, [1, 0, 0, 1 / 255]));
+    upload(spatial, fill(iw, ih, [0, 0, 0, 0]));
+    upload(dilateEdge, fill(iw, ih, [1, 0, 0, 0]));
     for (const pattern of ['ties', 'mixed', 'background', 'invalid', 'far-invalid'] as const)
       for (const phase of shape === 'rounding' ? [-0.25, 0.25] : [0, 0.25, -0.49]) {
         const input = Array.from({ length: iw * ih }, (_, i) => tag(i % iw, Math.floor(i / iw), 6));
@@ -233,24 +239,29 @@ export async function verifyTsrGeometry(
             );
           return tag(x, y, 2);
         });
-        upload(temporal, input);
+        upload(dilated, input);
         upload(coverage, full);
-        const data = new ArrayBuffer(64),
+        const data = new ArrayBuffer(TSR_PARAMS_BYTES),
           f = new Float32Array(data),
           u = new Uint32Array(data);
         f.set([phase / iw, -phase / ih, 0, 0, iw, ih, iw, ih]);
         u.set([1, 1, 1, 0, 1], 8);
         f[13] = 1 / 60;
+        f[22] = 1;
         device.queue.writeBuffer(params, 0, new Uint8Array(data)).unwrap();
         const reads = [
           scene,
-          temporal,
+          dilated,
           oldColor,
           oldTemporal,
           oldMetadata,
           decision,
           secondary,
           coverage,
+          spatial,
+          oldColor,
+          oldMetadata,
+          dilateEdge,
         ];
         const dispatch = (active: typeof program, lane: 'compute' | 'raster' = execution) => {
           const group = device
@@ -261,10 +272,13 @@ export async function verifyTsrGeometry(
                   binding,
                   resource: { kind: 'textureView' as const, value: s.view },
                 })),
-                { binding: 8, resource: { kind: 'sampler', value: active.sampler } },
-                { binding: 9, resource: { kind: 'buffer', value: { buffer: params } } },
+                { binding: reads.length, resource: { kind: 'sampler', value: active.sampler } },
+                {
+                  binding: reads.length + 1,
+                  resource: { kind: 'buffer', value: { buffer: params } },
+                },
                 ...(lane === 'compute' ? [color, output, metadata] : []).map((s, i) => ({
-                  binding: 10 + i,
+                  binding: reads.length + 2 + i,
                   resource: { kind: 'textureView' as const, value: s.view },
                 })),
               ],

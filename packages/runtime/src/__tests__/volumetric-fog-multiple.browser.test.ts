@@ -117,11 +117,6 @@ it('renders overlapping local fog, independently removes owners, and retires the
           },
         })
         .unwrap();
-    const left = spawn(-0.4, [0.8, 0.08, 0.01]);
-    const right = spawn(0.4, [0.01, 0.1, 0.8], 2, true);
-    const additional = Array.from({ length: 7 }, (_, index) =>
-      spawn((index - 3) * 0.175, [0.04, 0.12, 0.02], 0.15, index % 2 === 0),
-    );
     const mesh = testAssets(world)
       .create(createBoxGeometry(0.12, 1.7, 0.15).unwrap())
       .unwrap();
@@ -138,12 +133,28 @@ it('renders overlapping local fog, independently removes owners, and retires the
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
+    let volumePreparationReceipts = 0;
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      await drawReadyFrame(renderer, { source: lease });
+      await drawReadyFrame(renderer, { source: lease }, undefined, {
+        afterSubmit: (receipt) => {
+          if (receipt.presentationPendingReason?.pass !== 'volumetric-fog') return;
+          expect(receipt.presentation).toBe('pending');
+          expect(receipt.preparationCompleted).toBeDefined();
+          volumePreparationReceipts++;
+        },
+      });
     };
+    await draw();
+    expect(volumePreparationReceipts).toBe(0);
+    const left = spawn(-0.4, [0.8, 0.08, 0.01]);
+    const right = spawn(0.4, [0.01, 0.1, 0.8], 2, true);
+    const additional = Array.from({ length: 7 }, (_, index) =>
+      spawn((index - 3) * 0.175, [0.04, 0.12, 0.02], 0.15, index % 2 === 0),
+    );
     for (let index = 0; index < 12; index++) await draw();
+    expect(volumePreparationReceipts).toBe(1);
     expect(renderer.inspect().volumetricFog?.ownerCount).toBe(9);
     const nine = await page
       .elementLocator(canvas)
@@ -187,6 +198,7 @@ it('renders overlapping local fog, independently removes owners, and retires the
         memoryBytes: 0,
       });
     }
+    expect(volumePreparationReceipts).toBe(1);
     expect(errors).toEqual([]);
   } finally {
     off();

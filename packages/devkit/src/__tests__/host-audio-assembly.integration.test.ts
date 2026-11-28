@@ -245,6 +245,12 @@ it('projects the main-realm audio engine used by the native backend into GameHos
       ${generated.slice(start, end)}
       publishHost(${generated.slice(hostStart, hostEnd)});
     })()`
+      // The generated slice runs in a Node VM with the fixture's module bindings.
+      .replaceAll(
+        "import('./game-render-features')",
+        'Promise.resolve({ createGameRenderFeatures })',
+      )
+      .replaceAll("import('./game-vfx')", 'Promise.resolve({ createGameVfx })')
       .replaceAll('import.meta.env.DEV', 'false')
       .replaceAll('import.meta.url', "'https://game.example/main.js'");
     const transformed = await transformWithOxc(source, 'main-audio.ts', { lang: 'ts' });
@@ -283,6 +289,10 @@ it('projects the main-realm audio engine used by the native backend into GameHos
       createRuntimePackOptions: async () => ({}),
       enginePrograms: () => ({}),
       createGameVfx: () => undefined,
+      isolateVfxViewGraph: false,
+      vfxInstanceArenas: undefined,
+      vfxNativePlanning: undefined,
+      vfxRetainedResources: undefined,
       createHostAudioConsumer,
       WebAudioEngine,
       webAudioPlugin,

@@ -20,7 +20,7 @@ while (true) {
   await new Promise((resume) => setTimeout(resume, 250));
 }
 const browser = await chromium.launch({
-  channel: 'chrome-beta', headless: true,
+  channel: 'chrome', headless: true,
   args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'],
   chromiumSandbox: true,
 });

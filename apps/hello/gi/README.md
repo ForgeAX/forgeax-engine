@@ -331,3 +331,6 @@ node apps/hello/gi/.forgeax/native-sponza-dist/game.mjs
 Run the same output with `FORGEAX_WGPU_NATIVE_RAY_QUERY=off` to exercise the
 Global SDF fallback. The `[forgeax.sponza.gi]` receipt reports the selected
 traversal and any fallback reason after at least 60 GI submissions.
+
+The player and `scripts/native-sponza.mjs` anti-alias with TSR by default;
+`--antialias none|taa` selects the unjittered or TAA comparison.

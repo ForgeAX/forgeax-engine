@@ -12,7 +12,7 @@ import { append } from './connect';
 import { faceFolded } from './deform';
 import { type ModelingError, modelingError } from './errors';
 import { decodeSnapshot, encodeSnapshot } from './fxem';
-import { faceArea, faceCentroid, facesVolume } from './geom';
+import { faceCentroid, facesArea, facesVolume } from './geom';
 import type { EditMesh } from './mesh';
 import { isClosed, type OpDiagnostic, type RoleCounts, requireSegments } from './ops';
 
@@ -118,7 +118,7 @@ export function subdivide(
   const before = bounds(mesh);
   const closed = isClosed(mesh);
   const volumeBefore = closed ? facesVolume(mesh, mesh.faces()) : 0;
-  const area = mesh.faces().reduce((sum, f) => sum + faceArea(mesh, f), 0);
+  const area = facesArea(mesh, mesh.faces());
   const input = encodeSnapshot(mesh);
   const source = decodeSnapshot(input);
   if (!source.ok) return source;

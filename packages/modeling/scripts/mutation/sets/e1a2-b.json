@@ -1,0 +1,79 @@
+{
+ "tests": [
+  "src/brep/__tests__/e1a2-intersect.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "e1a2-b-tangent-wide",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.abs(near) <= tol) {\n    const way",
+   "new": "if (Math.abs(near) <= 10 * tol) {\n    const way"
+  },
+  {
+   "id": "e1a2-b-tangent-near",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const inner = d - Math.abs(p.radius - q.radius);\n  const near = Math.abs(ext) <= Math.abs(inner) ? ext : inner;",
+   "new": "const inner = d - Math.abs(p.radius - q.radius);\n  const near = ext;"
+  },
+  {
+   "id": "e1a2-b-way",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const way = Math.abs(ext) <= Math.abs(inner) || p.radius >= q.radius ? 1 : -1;",
+   "new": "const way = 1;"
+  },
+  {
+   "id": "e1a2-b-nested",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (ext > 0 || inner < 0) return ok(NOTHING);",
+   "new": "if (ext > 0) return ok(NOTHING);"
+  },
+  {
+   "id": "e1a2-b-disjoint",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (ext > 0 || inner < 0) return ok(NOTHING);",
+   "new": "if (inner < 0) return ok(NOTHING);"
+  },
+  {
+   "id": "e1a2-b-chord-x",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const x = (d * d + p.radius * p.radius - q.radius * q.radius) / (2 * d);",
+   "new": "const x = (d * d + q.radius * q.radius - p.radius * p.radius) / (2 * d);"
+  },
+  {
+   "id": "e1a2-b-chord-y",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const y = Math.sqrt((p.radius - x) * (p.radius + x));",
+   "new": "const y = p.radius;"
+  },
+  {
+   "id": "e1a2-b-second-line",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "madd3(madd3(p.frame.o, ex, x), ey, -y)",
+   "new": "madd3(madd3(p.frame.o, ex, x), ey, y)"
+  },
+  {
+   "id": "e1a2-b-window",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const a = lineRaw(add3(madd3(p.frame.o, ex, x), scale3(ey, y)), z, win);",
+   "new": "const a = lineRaw(add3(madd3(p.frame.o, ex, x), scale3(ey, y)), z, undefined);"
+  },
+  {
+   "id": "e1a2-b-window-b",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const b = lineRaw(madd3(madd3(p.frame.o, ex, x), ey, -y), z, win);",
+   "new": "const b = lineRaw(madd3(madd3(p.frame.o, ex, x), ey, -y), z, undefined);"
+  },
+  {
+   "id": "e1a2-b-dispatch",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (turn <= PAR) return parallelCylinders(p, q, tol, win);",
+   "new": "if (turn <= PAR) return ok(UNSUPPORTED);"
+  },
+  {
+   "id": "e1a2-b-normal",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const ex = scale3(dv, 1 / d);",
+   "new": "const ex = dv;"
+  }
+ ]
+}

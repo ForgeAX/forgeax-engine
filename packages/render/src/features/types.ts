@@ -70,8 +70,8 @@ export type RenderFeatureCompletion = Pick<
 /**
  * Graph placement for a producer-owned feature.
  *
- * `scene` is admitted after the opaque scene and before transmission,
- * ordinary transparency, and volumetric composition. `post` is admitted at
+ * `before-medium` consumes lit opaque color before Single Layer Water and
+ * ordinary transparency. `scene` runs after scene composition. `post` is admitted at
  * the existing post-TAA extension point. Keeping this as one closed value
  * lets the Standard owner place atmospheric transport without adding a
  * second renderer or a feature-specific side channel.
@@ -80,6 +80,7 @@ export type RenderFeaturePlacement =
   | 'environment'
   | 'scene'
   | 'after-depth'
+  | 'before-medium'
   | 'after-tonemap'
   | 'post';
 

@@ -11,6 +11,9 @@ overlapping parts, and what the checks mean. It matters before any bake
 (normal modes, LODs, `lodTopologyReport`). Failure codes are in
 [`reference/validation.md`](../reference/validation.md).
 
+The complete chain (form, `uv.plan`, seam-preserving `lowpoly`, raster pack, auto cage) is in
+[game-asset-pipeline.md](game-asset-pipeline.md); this page explains the decisions inside it.
+
 ## Seams are a shading decision as much as a UV one
 
 A hard (sharp) edge splits normals at export; a UV seam splits texture coordinates. The two
@@ -26,8 +29,9 @@ Further considerations for the rest of the cuts:
   existing panel lines.
 - A cylinder-like part is cut along one generatrix (a straight line on its side); a straight
   cut flattens to a straight border, which packs well and keeps strips straight.
-- Mirrored or repeated parts can share UV space (`uv.pack({ stack: true })`), halving the
-  texel cost. A mirrored island flips the tangent sign; export splits those corners, and the
+- Repeated parts can share UV space (`uv.pack({ stack: true })`); a mirrored half-body shares it with
+  `uv.plan({ mirror: 'mirrored' })` then `uv.pack({ stack: 'mirrored' })`, halving the texel cost (a moved or
+  edited copy reports `unpaired` and keeps its own texels). A mirrored island flips the tangent sign; export splits those corners, and the
   `tangent-seam` and `stack-conflict` bake checks tell you when the difference matters.
 - Mark a seam on a closed surface: an island with no boundary cannot be flattened and fails
   `model-precondition` with the hint to mark one (`markSeam(selector)`).
@@ -98,11 +102,21 @@ buried faces into the maps and waste texels, so combine them first with `m.lowpo
 - `rotate` (default true) turns islands to their bounding rectangle; `{ step: 45 }` adds
   eighth turns; `normalize` (default true) scales islands to their 3D area so density is even.
 - `stack: true` gives congruent islands one shared placement (metric `stacked`).
+- `stack: 'mirrored'` also stacks `mirror` copies on their partners with reflected UVs; plan with
+  `uv.plan({ mirror: 'mirrored' })` so both halves are cut alike (info `pairs`, `mirroredPairs`, `unpaired`,
+  `texelsSaved`; warns when partners differ in material or tags).
 - `density: { target, tolerance? }` packs at a fixed texels-per-metre target and may shrink
   to target x (1 - tolerance) or fail `model-precondition`.
 - `with: [models]` shares one atlas across sessions: pass the same list to every session.
+- `resolveOverlaps: n` (0..8, default 0) re-unwraps the faces of any overlapping triangle pair on
+  their own and packs again, up to n passes; the pack info carries `overlaps` (pairs left) and
+  `overlapPasses`. It writes no seam flag. `uvOverlapPairs(mesh, faces)` is the finder `validate`
+  uses.
 
-Measure rather than guess: `measureUv(mesh, channel?)` gives per-island and total density;
+Measure rather than guess: `measureUv(mesh, channel?)` gives per-island and total density, plus
+`faceStretch` and `faceDensity` per face id (density relative to the mean);
+`uvHeatmapTexture(mesh, { metric: 'density' | 'stretch' })` paints them in UV space and
+`uvCheckerTexture()` makes the position-tinted checker, both as plain `TextureAsset` values;
 `validate({ texelDensity: { resolution, target, tolerance? (0.2), channel? } })` raises one
 `texel-density` warning with `min`, `max`, `outside` and the worst islands, or
 `missing-channel` for faces lacking the channel. `validate({ uniqueUv: true })` reports

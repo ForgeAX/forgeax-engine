@@ -7,13 +7,15 @@ import { Transform } from '@forgeax/engine-scene';
 import { createMaterialProgramArtifactReceipt, ShaderRegistry } from '@forgeax/engine-shader';
 import { type MeshAsset, ok } from '@forgeax/engine-types';
 import { WATER_SYSTEM_RESOURCE, WaterSystem } from '@forgeax/engine-water';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { runSingleViewFeatureFrame } from '../../__tests__/single-view-feature-fixture';
-import { MeshFilter, MeshRenderer } from '../../components';
+import { Camera, MeshFilter, MeshRenderer } from '../../components';
+import * as featureBuiltins from '../../features/builtins';
 import { createFullscreenRenderFeature } from '../../features/fullscreen';
 import { createRenderFeatureHost } from '../../features/host';
 import type { RenderFeature } from '../../features/types';
+import * as featureView from '../../features/view';
 import {
   captureMaterialSource,
   materialSourceReferences,
@@ -30,6 +32,68 @@ import {
 import { worldRenderResources } from '../resource-scope';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
+
+it('projects each moving source view once for built-ins and keeps extension inputs detached', () => {
+  const assets = new AssetRegistry();
+  const world = new World({ assets });
+  const camera = world
+    .spawn(
+      { component: Transform, data: { pos: [0, 0, 5] } },
+      { component: Camera, data: { fov: 1, aspect: 1, near: 0.1, far: 100 } },
+    )
+    .unwrap();
+  const alter: RenderFeature<number> = {
+    identity: 'game::alter-feature-view',
+    extract(context) {
+      const position = context.views[0]?.selectedView?.position;
+      if (position === undefined) throw new Error('Expected the selected camera position');
+      position[0] = 999;
+      return ok(position[0]);
+    },
+    plan: () => ok({ work: [] }),
+  };
+  const read: RenderFeature<number | undefined> = {
+    identity: 'game::read-feature-view',
+    extract: (context) => ok(context.views[0]?.selectedView?.position[0]),
+    plan: () => ok({ work: [] }),
+  };
+  const installed: RenderFeature<unknown>[] = [alter, read];
+  const project = vi.spyOn(featureView, 'renderFeatureCameraView');
+  const resolveRoster = vi.spyOn(featureBuiltins, 'withBuiltinRenderFeatures');
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    { source: 'feature-views', epoch: 1 },
+    undefined,
+    installed,
+  );
+  try {
+    for (let frame = 0; frame < 60; frame++) {
+      if (frame === 29) installed.splice(0, 1);
+      if (frame === 39) installed.unshift(alter);
+      world.set(camera, Transform, { pos: [frame, 0, 5] }).unwrap();
+      world.update(1 / 60).unwrap();
+      project.mockClear();
+      const candidate = publisher.prepare(frame / 60).unwrap();
+      expect(candidate.packet.features.find((row) => row.identity === read.identity)?.data).toBe(
+        frame,
+      );
+      expect(candidate.packet.features.find((row) => row.identity === alter.identity)?.data).toBe(
+        installed.length === 2 ? 999 : undefined,
+      );
+      expect(project).toHaveBeenCalledTimes(1 + installed.length);
+      const storage = renderPublicationTransfers(candidate.message);
+      candidate.accept();
+      publisher.recycle(candidate.packet.revision, storage).unwrap();
+    }
+    expect(resolveRoster).toHaveBeenCalledTimes(3);
+  } finally {
+    publisher.dispose();
+    project.mockRestore();
+    resolveRoster.mockRestore();
+    assets.dispose();
+  }
+});
 
 it('resends retained exact material bytes and its old program to a new receiver epoch', () => {
   const assets = new AssetRegistry({

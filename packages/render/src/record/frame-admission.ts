@@ -139,6 +139,28 @@ function assertAtmosphereAdmission(
   pipelineState: PipelineState,
 ): void {
   const environment = frameState.environmentFrame?.source;
+  const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
+  const caps = internals.device.caps;
+  if (
+    environment?.kind === 'atmosphere' &&
+    !environment.atmosphere.backgroundOnly &&
+    profile?.atmosphereLutModel === 'ue5-desktop' &&
+    profile.renderPath === 'forward' &&
+    !(
+      caps.rg11b10ufloatRenderable &&
+      caps.compute &&
+      caps.storageBuffer &&
+      caps.storageTexture &&
+      pipelineState.atmosphereAvailable === true
+    )
+  ) {
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected:
+        'UE5 atmosphere requires renderable rg11b10ufloat, compute and full atmosphere bindings',
+      hint: 'Use a WebGPU device that admits the packed HDR attachments and the native atmosphere View layout.',
+    });
+  }
   if (
     environment?.kind !== 'atmosphere' ||
     atmosphereFrameAdmissible({

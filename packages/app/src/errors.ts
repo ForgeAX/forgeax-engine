@@ -466,3 +466,12 @@ export function createRendererInspectionError(
     detail: { reason, ...(cause === undefined ? {} : { cause }) },
   });
 }
+
+export function makeAppError<C extends AppErrorCode>(
+  code: C,
+  expected: string,
+  hint: string,
+  detail: AppErrorDetailFor<C>,
+): AppError {
+  return new AppError({ code, expected, hint, detail }) as AppError;
+}

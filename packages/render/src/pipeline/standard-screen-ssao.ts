@@ -21,7 +21,7 @@ import {
   type SsaoScreenBinding,
   type SsaoScreenStage,
 } from '../ssao-screen-program';
-import { buildScreenAoUniformPayload, SCREEN_AO_UNIFORM_BYTES } from '../ssao-uniform';
+import { SCREEN_AO_UNIFORM_BYTES, ScreenAoUniformPage } from '../ssao-uniform';
 import type { StandardPipelineBuildContext } from './standard-build-context';
 import { type ReadViewHzb, standardAoHzbLevels, viewHzb } from './standard-view-hzb';
 
@@ -156,13 +156,15 @@ export function addScreenSsaoParameters(
   const label = `ssao-screen-parameters-${level}`;
   const buffer = graph.createBuffer(label, { size: SCREEN_AO_UNIFORM_BYTES });
   if (!buffer.ok) return buffer;
+  const uniforms = new ScreenAoUniformPage();
   const populated = graph.addCopyPass(label, {
     accesses: [{ resource: buffer.value, usage: 'copy-dst' }],
     encodeDirect: (_encoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const active = internal.frameState.installedPipelineConfig?.ambientOcclusion ?? config;
       const resolved = getSsaoParameters(active);
-      const values = buildScreenAoUniformPayload(internal.camera, active, size);
+      uniforms.writeCamera(internal.camera, size);
+      const values = uniforms.data;
       values.set(
         [
           resolved.intensity,

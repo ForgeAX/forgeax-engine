@@ -9,6 +9,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { shaderSourceDescriptor } from '@forgeax/engine-types';
+import { stockUtilityShaderFactory } from '../assembly/utility-shader-prewarm';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { createAtmosphereBackgroundGroup, createAtmosphereBackgroundLayout } from './background';
 import { atmosphereVisibilityGroup, atmosphereVisibilityLayout } from './visibility';
@@ -39,7 +40,7 @@ export function recordAtmosphereCaptureBackground(
   let state = formats.get(format);
   if (state === undefined) {
     const source = frame.atmosphereShaders?.background;
-    const factory = frame.runtime.shaderModuleFactory;
+    const factory = stockUtilityShaderFactory(frame.runtime);
     if (source === undefined || factory === undefined)
       throw new RhiError({
         code: 'shader-compile-failed',

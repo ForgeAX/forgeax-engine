@@ -54,6 +54,7 @@ export async function tryCreateRendererFromBackend(
   const ctxResult = pack.rhi.acquireCanvasContext(canvas);
   if (!ctxResult.ok) return { kind: 'rhi-err', error: ctxResult.error };
   const context: RhiCanvasContext = ctxResult.value;
+  bundler?.onDeviceAdmitted?.(device);
 
   const lostRegistry = new LostListenerRegistry();
   const errorRegistry = new RhiErrorListenerRegistry();

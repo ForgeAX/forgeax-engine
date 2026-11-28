@@ -88,7 +88,7 @@ describe('learn-render 5.1 advanced-lighting pixel-readback gate', () => {
   it('renders a lit (non-black) surface, not just ambient', async () => {
     if (typeof navigator.gpu === 'undefined') {
       throw new Error(
-        "[5.1.lit-pixels] code: 'webgpu-unavailable'; vitest.config.ts launches chrome-beta with WebGPU flags",
+        "[5.1.lit-pixels] code: 'webgpu-unavailable'; vitest.config.ts launches chrome with WebGPU flags",
       );
     }
 

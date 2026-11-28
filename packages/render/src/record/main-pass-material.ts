@@ -11,6 +11,7 @@ import { derivedRenderState } from '../material-render-state';
 import { materialResource } from '../material-resource';
 import { materialSourceScope } from '../material-source';
 import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
+import { CapturedSceneTransform, type ScenePoseStorage } from '../scene/captured-transform';
 import { resolveTargetEnvironment } from '../targets/environment';
 import { renderTextureSourceKey } from '../textures/source-token';
 import { recordContext } from '../world/view-record-context';
@@ -829,7 +830,7 @@ function defaultViewForParameter(
  * `renderableIndex` per RendererState lifetime via the `seenIndices` Set
  * (the same warn-once anchor pattern used for missing-texture sprites).
  *
- * @param transformWorld The entity's resolved GlobalTransform.world mat4 (16 floats column-major).
+ * @param transformWorld The entity's addressed column-major world matrix.
  * @param slices         The four anchor distances `[left, top, right, bottom]`
  *                       (sentinel `bottom < 0` for tile mode is consumed via abs()).
  * @param renderableIndex The entity index into the validated renderables list.
@@ -838,7 +839,7 @@ function defaultViewForParameter(
  * @internal — exported for unit-test access (w17).
  */
 export function detectNineSliceScaleTooSmall(
-  transformWorld: Float32Array,
+  transformWorld: ScenePoseStorage,
   slices: readonly [number, number, number, number],
   renderableIndex: number,
   seenIndices: Set<number>,
@@ -846,8 +847,10 @@ export function detectNineSliceScaleTooSmall(
 ): void {
   const anyNonZero = slices[0] !== 0 || slices[1] !== 0 || slices[2] !== 0 || slices[3] !== 0;
   if (!anyNonZero) return;
-  const sx = Math.hypot(transformWorld[0] ?? 1, transformWorld[1] ?? 0, transformWorld[2] ?? 0);
-  const sy = Math.hypot(transformWorld[4] ?? 0, transformWorld[5] ?? 1, transformWorld[6] ?? 0);
+  const world = CapturedSceneTransform.column(transformWorld);
+  const at = CapturedSceneTransform.offset(transformWorld);
+  const sx = Math.hypot(world[at] ?? 1, world[at + 1] ?? 0, world[at + 2] ?? 0);
+  const sy = Math.hypot(world[at + 4] ?? 0, world[at + 5] ?? 1, world[at + 6] ?? 0);
   const horizontalAnchor = Math.abs(slices[0]) + Math.abs(slices[2]);
   const verticalAnchor = Math.abs(slices[1]) + Math.abs(slices[3]);
   if (sx < horizontalAnchor || sy < verticalAnchor) {
@@ -1581,22 +1584,7 @@ function materialAssemblyGraphViews(
   if (facts === undefined || hasSurfaceMedium) return facts;
   const backdrop = facts.views.find(([role]) => role === 'backdrop');
   if (backdrop === undefined) return undefined;
-  return facts.views.length === 1 ? facts : { graph: facts.graph, views: [backdrop] };
-}
-
-/** Physical group and address prepared together from the accepted material resources. */
-export function resolveMaterialReflection(
-  deps: PerSubmeshMaterialBgDeps,
-  material: MaterialSnapshot,
-  world: RenderResourceScope,
-  entityKey: number | undefined,
-  resourceClass: string | undefined,
-) {
-  return deps.resolveReflectionProbeResources?.(
-    materialSourceScope(world, material.sourceAssets),
-    entityKey,
-    resourceClass,
-  );
+  return facts.views.length === 1 ? facts : { resources: facts.resources, views: [backdrop] };
 }
 
 /** Synchronously filled from the exact uniform page used to issue the group. */
@@ -1604,6 +1592,8 @@ export interface MaterialBindingAddress {
   capture?: { current: (() => boolean) | undefined };
   byteOffset: number;
   dynamicOffsetCount: 0 | 1;
+  /** Raster consumers include the field when they need the selected primitive reflection. */
+  reflection?: MainPassMaterialBinding['reflection'];
 }
 
 export interface MainPassMaterialBinding {
@@ -1613,17 +1603,13 @@ export interface MainPassMaterialBinding {
   readonly reflection?: import('../reflection/primitive-bindings').PrimitiveReflection;
 }
 
-export interface RasterMaterialAddress extends MaterialBindingAddress {
-  reflection?: MainPassMaterialBinding['reflection'];
-}
-
 /** The recorder owns the output address until it submits this draw. */
 export type MainPassMaterialBindingResolver = (
   slot: number,
   material: MaterialSnapshot,
   entityKey: number | undefined,
   world: RenderResourceScope,
-  address: RasterMaterialAddress,
+  address: MaterialBindingAddress,
   shader?: string,
   standardMaterialLayoutIndex?: number,
   selectedLayout?: RasterMaterialLayout,
@@ -1638,7 +1624,9 @@ export function buildPerSubmeshMaterialBg(
   _materialSlot = 0,
   resourceClass?: string,
   standardMaterialLayoutIndex = 0,
-  reflection?: ReturnType<typeof resolveMaterialReflection> | null,
+  reflection?: ReturnType<
+    NonNullable<PerSubmeshMaterialBgDeps['resolveReflectionProbeResources']>
+  > | null,
   address?: MaterialBindingAddress,
   selectedLayout?: RasterMaterialLayout,
 ): BindGroup {
@@ -1647,9 +1635,18 @@ export function buildPerSubmeshMaterialBg(
   const { runtime, pipelineState, store } = deps;
   const primitiveReflection = isCanonicalStandardPbrMaterialShader(materialShaderId);
   const transmissionBackdropView = primitiveReflection ? undefined : deps.transmissionBackdropView;
-  const selectedProbe = primitiveReflection
-    ? undefined
-    : selectedMaterialProbe(deps, materialWorld, entityKey, resourceClass, reflection);
+  // The primitive and material layouts share source admission, while their
+  // reflection bindings may live at different group addresses.
+  const probe = resolveAcceptedMaterialProbe(
+    deps,
+    materialWorld,
+    entityKey,
+    resourceClass,
+    reflection,
+    primitiveReflection,
+    address,
+  );
+  const selectedProbe = primitiveReflection ? undefined : probe;
   const effectiveSkylightResources = selectedProbe?.resources ?? deps.skylightResources;
   const smMaterialHandle = submeshMaterial.materialHandle;
   const probeIndex = selectedProbe?.probeIndex;
@@ -1738,7 +1735,7 @@ export function buildPerSubmeshMaterialBg(
             standardMaterialLayoutIndex,
             cached,
           );
-        return installed;
+        return finishMaterialBinding(installed, address, probe, deps.skylightResources);
       }
     }
     if (cached?.canvas !== undefined)
@@ -1783,7 +1780,19 @@ export function buildPerSubmeshMaterialBg(
     resident: true,
     missingBaseColor: false,
   };
-  return assembleMaterialBg(deps, assembly, fluidSimulation, address);
+  const binding = assembleMaterialBg(deps, assembly, fluidSimulation, address);
+  return finishMaterialBinding(binding, address, probe, deps.skylightResources);
+}
+
+function finishMaterialBinding(
+  group: BindGroup,
+  address: MaterialBindingAddress | undefined,
+  probe: ReturnType<typeof resolveAcceptedMaterialProbe>,
+  skylight: SkylightBindGroupResources,
+): BindGroup {
+  if (address !== undefined && 'reflection' in address)
+    address.reflection = probe?.resources ?? skylight;
+  return group;
 }
 
 /** The cooked shader owns the resource ABI even when the material only authored a subset. */
@@ -1798,13 +1807,19 @@ function bindingParameterSchema(
   );
 }
 
-function selectedMaterialProbe(
+function resolveAcceptedMaterialProbe(
   deps: PerSubmeshMaterialBgDeps,
   world: RenderResourceScope,
   entityKey: number | undefined,
   resourceClass: string | undefined,
-  reflection: ReturnType<typeof resolveMaterialReflection> | null | undefined,
+  reflection: ReturnType<
+    NonNullable<PerSubmeshMaterialBgDeps['resolveReflectionProbeResources']>
+  > | null,
+  primitiveReflection: boolean,
+  address: MaterialBindingAddress | undefined,
 ) {
+  if (primitiveReflection && (address === undefined || !('reflection' in address)))
+    return undefined;
   return reflection === undefined
     ? deps.resolveReflectionProbeResources?.(world, entityKey, resourceClass)
     : (reflection ?? undefined);

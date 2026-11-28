@@ -552,6 +552,11 @@ test('source-only CI planner Focus skips package preparation and keeps every ass
 test('CPU-only Focus preparation validates package receipts without cooking unused Engine shaders', () => {
   const selector = 'scripts/ci/__tests__/build-app-shard.test.mjs';
   assert.equal(focusPlan('node', selector).packagesOnly, true);
+  const coverageDiscovery = 'scripts/ci/__tests__/run-split-vitest-coverage.test.mjs';
+  assert.deepEqual(focusBuildArgs(focusPlan('node', coverageDiscovery)), [
+    'scripts/build.mjs',
+    '--packages-only',
+  ]);
   for (const selector of ['ecs-ratios', 'render-ratios'])
     assert.equal(focusPlan('performance', selector).packagesOnly, true);
   assert.notEqual(focusPlan('performance', 'hello-lod-occlusion').packagesOnly, true);

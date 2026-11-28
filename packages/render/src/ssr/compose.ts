@@ -92,7 +92,10 @@ export function addSsrCompositionPass(
       if (source === undefined) return;
       const device = frame.runtime.device;
       if (state === undefined) {
-        const factory = frame.runtime.shaderModuleFactory;
+        const factory =
+          device.caps.backendKind === 'webgpu'
+            ? (frame.runtime.immediateShaderModuleFactory ?? frame.runtime.shaderModuleFactory)
+            : frame.runtime.shaderModuleFactory;
         if (factory === undefined)
           throw new RhiError({
             code: 'rhi-not-available',

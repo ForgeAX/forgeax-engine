@@ -8,7 +8,9 @@ import {
 } from '../../device/gpu-residency';
 import {
   createIblPipelines,
+  getIblProbeBackgroundSource,
   getOrCreateIblCache,
+  publishIblProgramDeclarations,
   type RunIblPrecomputeOptions,
   runIblPrecompute,
 } from '../../ibl/IblPipelineCache';
@@ -63,6 +65,53 @@ afterEach(() => {
 });
 
 describe('IBL precompute completion boundaries', () => {
+  it('resolves IBL source only for the requested live device scope', async () => {
+    const device = unwrap(await new RhiNullAdapter().requestDevice());
+    const active = DeviceScope.create(1, 'ibl-active');
+    const candidate = DeviceScope.create(2, 'ibl-candidate');
+    const publish = (scope: DeviceScope, version: string) => {
+      const read = vi.fn(() => version);
+      const entry = {
+        hash: version,
+        get wgsl() {
+          return read();
+        },
+        glsl: undefined,
+        bindings: '',
+      };
+      publishIblProgramDeclarations(scope, {
+        equirectToCube: entry,
+        prefilter: entry,
+        brdfLut: entry,
+        probeBackground: entry,
+      });
+      return read;
+    };
+    const activeRead = publish(active, 'active');
+    const candidateRead = publish(candidate, 'candidate');
+    expect(activeRead).not.toHaveBeenCalled();
+    expect(candidateRead).not.toHaveBeenCalled();
+    const sourceUsed = vi.fn<(label: string | undefined, source: string) => void>();
+    try {
+      unwrap(
+        await createIblPipelines(active, device, (owner, descriptor) => {
+          sourceUsed(descriptor.label, descriptor.code);
+          return createShaderModule(owner, descriptor);
+        }),
+      );
+      expect(sourceUsed).toHaveBeenCalledWith('ibl-prefilter', 'active');
+      expect(sourceUsed).not.toHaveBeenCalledWith('ibl-prefilter', 'candidate');
+      expect(getIblProbeBackgroundSource(active)?.read()).toBe('active');
+      expect(candidateRead).not.toHaveBeenCalled();
+      candidate.dispose();
+      expect(getIblProbeBackgroundSource(candidate)).toBeUndefined();
+      expect(candidateRead).not.toHaveBeenCalled();
+    } finally {
+      active.dispose();
+      candidate.dispose();
+    }
+  });
+
   it('filters an existing GPU cube without reprojecting equirect radiance', async () => {
     const { scope, device, options } = await fixture();
     const { equirectView: _equirect, ...cube } = options;

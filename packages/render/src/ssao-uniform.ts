@@ -50,10 +50,7 @@ export class SsaoUniformPage {
   }
 
   private pack(camera: CameraSnapshot, config: AoConfig): Float32Array {
-    const projection = computeProjectionMatrix(camera, this.projection);
-    jitterCameraProjection(projection, projection, camera.temporal?.currentJitterUv);
-    computeViewMatrix(camera, this.view);
-    mat4.invert(this.inverse, projection);
+    writeAoCamera(camera, this.view, this.projection, this.inverse);
     const parameters = getSsaoParameters(config?.enabled === true ? config : undefined);
     const out = this.data;
     out[48] = parameters.intensity;
@@ -70,14 +67,31 @@ export class SsaoUniformPage {
 
 export const buildSsaoUniformPayload = SsaoUniformPage.snapshot;
 
-/** Screen AO carries the render extent used to address its padded view HZB. */
-export function buildScreenAoUniformPayload(
+function writeAoCamera(
   camera: CameraSnapshot,
-  config: AoConfig,
-  size: { readonly width: number; readonly height: number },
-): Float32Array {
-  const values = new Float32Array(SCREEN_AO_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
-  values.set(buildSsaoUniformPayload(camera, config));
-  values.set([size.width, size.height], SSAO_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
-  return values;
+  view: ReturnType<typeof mat4.create>,
+  projection: ReturnType<typeof mat4.create>,
+  inverse: ReturnType<typeof mat4.create>,
+): void {
+  computeProjectionMatrix(camera, projection);
+  jitterCameraProjection(projection, projection, camera.temporal?.currentJitterUv);
+  computeViewMatrix(camera, view);
+  mat4.invert(inverse, projection);
+}
+
+/** The physical AO pass owns its synchronous uniform upload storage. */
+export class ScreenAoUniformPage {
+  readonly data = new Float32Array(SCREEN_AO_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
+  readonly view = mat4.view(this.data, 0);
+  readonly projection = mat4.view(this.data, 1);
+  private readonly inverse = mat4.view(this.data, 2);
+
+  writeCamera(
+    camera: CameraSnapshot,
+    size: { readonly width: number; readonly height: number },
+  ): void {
+    writeAoCamera(camera, this.view, this.projection, this.inverse);
+    this.data[64] = size.width;
+    this.data[65] = size.height;
+  }
 }

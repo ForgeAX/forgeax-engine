@@ -7,7 +7,12 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { fetchWithRetry, streamFile, verifySdkViewRuntime } from './sdk-lib.mjs';
+import {
+  fetchWithRetry,
+  isBundledEngineMemberName,
+  streamFile,
+  verifySdkViewRuntime,
+} from './sdk-lib.mjs';
 import { SDK_NPM_CONSUMER_PARTITIONS } from './sdk-pr-preflight.mjs';
 import { verifySdkSource } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
@@ -90,7 +95,7 @@ const packageArchives = await Promise.all(
 const carrier = await packageArchive(carrierPath);
 const all = [...packageArchives, carrier];
 const names = new Set(packageArchives.map(({ manifest }) => manifest.name));
-if ([...names].some((name) => name.startsWith('@forgeax/engine-')))
+if ([...names].some((name) => isBundledEngineMemberName(name) || name === '@forgeax/engine-sdk'))
   throw new Error('release-focused-package-forbidden');
 const umbrella = packageArchives.find(({ manifest }) => manifest.name === '@forgeax/engine');
 if (umbrella === undefined) throw new Error('npm-umbrella-package-missing');
@@ -114,7 +119,9 @@ for (const item of all) {
         throw new Error(`npm-workspace-specifier: ${item.manifest.name} -> ${name}@${range}`);
       }
       if (
-        (name === '@forgeax/engine' || name.startsWith('@forgeax/engine-')) &&
+        (name === '@forgeax/engine' ||
+          name === '@forgeax/engine-sdk' ||
+          isBundledEngineMemberName(name)) &&
         range !== version
       ) {
         throw new Error(
@@ -190,7 +197,9 @@ const registry = createServer(async (request, response) => {
     }
     if (
       name === '@forgeax/view' ||
-      (name.startsWith('@forgeax/engine-') && name !== '@forgeax/engine-sdk')
+      (name.startsWith('@forgeax/engine-') && name !== '@forgeax/engine-sdk') ||
+      name === '@forgeax/modeling-kernel' ||
+      name === '@forgeax/modeling-kernel-wasm'
     ) {
       recordRegistryRequest(request, 404, 'forbidden-focused-package');
       response.writeHead(404).end();

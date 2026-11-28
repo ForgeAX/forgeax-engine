@@ -245,31 +245,32 @@ export class FrameSet implements ReadonlySet<number> {
    * bitmap page and its path are copied once, not once per key.
    */
   edit(edits: ReadonlyMap<number, boolean>): FrameSet {
-    const pages = new Map<number, { bits: Int32Array; weight: number }>();
+    let pages: Map<number, { bits: Int32Array; weight: number }> | undefined;
     edits.forEach((present, key) => {
       if (!Number.isSafeInteger(key) || key < 0)
         throw new RangeError('FrameSet keys are non-negative safe integers');
       const page = Math.floor(key / PAGE_BITS);
-      let edited = pages.get(page);
+      const lane = key - page * PAGE_BITS;
+      const word = lane >>> 5;
+      const mask = 1 << (lane & 31);
+      let edited = pages?.get(page);
+      const node = edited === undefined ? this.#page(page) : undefined;
+      const before = edited?.bits[word] ?? node?.value[word] ?? 0;
+      const after = present ? before | mask : before & ~mask;
+      if (after === before) return;
       if (edited === undefined) {
-        const node = this.#page(page);
         edited = {
           bits: node === undefined ? new Int32Array(PAGE_WORDS) : node.value.slice(),
           weight: node?.weight ?? 0,
         };
+        pages ??= new Map();
         pages.set(page, edited);
       }
-      const lane = key - page * PAGE_BITS;
-      const word = lane >>> 5;
-      const mask = 1 << (lane & 31);
-      const before = edited.bits[word] as number;
-      const after = present ? before | mask : before & ~mask;
-      if (after === before) return;
       edited.bits[word] = after;
       edited.weight += present ? 1 : -1;
     });
     let root = this.#root;
-    pages.forEach(({ bits, weight }, page) => {
+    pages?.forEach(({ bits, weight }, page) => {
       const node = this.#page(page);
       if (node !== undefined && node.weight === weight) {
         let same = true;

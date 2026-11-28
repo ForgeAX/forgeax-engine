@@ -1,5 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
 import type { AssetHandle, TextureAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
@@ -8,7 +9,7 @@ import { captureMaterialSnapshot, MaterialResource } from '../material-resource'
 import { worldRenderResources } from '../publication/resource-scope';
 import { createFoldedDrawRecorder } from '../record/fold-instance-buffer';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
-import type { FoldBucket } from '../record/mesh-ssbo';
+import { buildFoldDispatchPlan, type FoldBucket } from '../record/mesh-ssbo';
 import type { RenderSystemInternals } from '../record/render-context';
 import {
   type DispatchEntry,
@@ -56,6 +57,74 @@ it('does not borrow same-numbered draws across stable Worlds or confuse numeric 
   expect(draws.hasTerrain(first, 0)).toBe(false);
   expect(draws.hasTerrain(second, 0)).toBe(true);
 });
+it('reads each submitted mesh range directly through one source-bound reader', () => {
+  const material = MaterialResource.from(defaultMaterialSnapshot());
+  const scope = worldRenderResources(new World());
+  const mesh = { submeshes: [{}, {}, {}, {}] };
+  const getMeshGpuHandles = vi.fn(() => mesh);
+  const read = vi.fn(() => mesh);
+  const meshResidencyReader = vi.fn(() => read);
+  const internals = {
+    gpuStore: { getMeshGpuHandles, meshResidencyReader },
+  } as unknown as RenderSystemInternals;
+  const rows = [17, 40].map(
+    (entityKey): RenderableSnapshot => ({
+      entityKey,
+      assetHandle: 3,
+      transform: { world: new Float32Array(16) },
+      material,
+      materials: [material],
+      materialBindingSources: [],
+    }),
+  );
+  const draws = createPresentationDraws();
+  for (const entity of [17, 40]) {
+    draws.record(entity, 0);
+    draws.record(entity, 1);
+    draws.record(entity, 3);
+  }
+  draws.record(17, 2);
+  const single = vi.spyOn(draws, 'hasSubmesh');
+  expect(missingDrawEvidence(rows, draws, scope, internals)).toEqual({
+    code: 'draw-submesh-missing',
+    entity: 40,
+    submesh: 2,
+  });
+  expect(meshResidencyReader).toHaveBeenCalledExactlyOnceWith(scope);
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(getMeshGpuHandles).not.toHaveBeenCalled();
+  expect(single).not.toHaveBeenCalled();
+});
+
+it('reads live source and generated residency after an empty scope retires and reopens', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const store = new GpuResidencyCache();
+  store.configureGpuDevice(device, undefined, device.caps);
+  const source = worldRenderResources(new World());
+  const other = worldRenderResources(new World());
+  const mesh = createPrimitiveMesh('quad').unwrap();
+  const handle = 2 as AssetHandle<'mesh'>;
+  const read = store.meshResidencyReader(source);
+  const readOther = store.meshResidencyReader(other);
+  try {
+    expect(read(handle)).toBeUndefined();
+    const original = store.ensureResident(handle, mesh, source).unwrap();
+    const foreign = store.ensureResident(handle, mesh, other).unwrap();
+    const generated = store.ensureGeneratedMesh(mesh).unwrap();
+    expect(read(handle)).toBe(original);
+    expect(readOther(handle)).toBe(foreign);
+    expect(read(handle, mesh)).toBe(generated);
+    store.evictMesh(handle, source);
+    expect(read(handle)).toBeUndefined();
+    expect(readOther(handle)).toBe(foreign);
+    const next = store.ensureResident(handle, mesh, source).unwrap();
+    expect(next).not.toBe(original);
+    expect(read(handle)).toBe(next);
+  } finally {
+    store.destroyAll();
+  }
+});
+
 it('keeps primary draw bits across page revisits and independent recording attempts', () => {
   const a = createPresentationDraws();
   const b = createPresentationDraws();
@@ -377,16 +446,30 @@ it('attributes one submitted sprite fold to every validated source member', () =
   const tail = { renderableIndex: 3 } as ValidatedRenderable;
   const unrelated = { renderableIndex: 12 } as ValidatedRenderable;
   const record = vi.fn();
-  const submitted = createFoldedDrawRecorder({
-    validatedOrdered: [tail, unrelated, head],
-    onRenderableDraw: record,
-  });
+  const validatedOrdered = [tail, unrelated, head];
+  const scan = vi.spyOn(validatedOrdered, 'flatMap');
+  const reads = vi.spyOn(validatedOrdered, 'at');
+  const submitted = createFoldedDrawRecorder({ validatedOrdered, onRenderableDraw: record });
   const bucket = {
     entries: [{ renderableIndex: 8 }, { renderableIndex: 3 }, { renderableIndex: 99 }],
+    bucketSize: 3,
+    transforms: new Float32Array(48),
   } as unknown as FoldBucket;
+  const plan = buildFoldDispatchPlan(
+    [bucket],
+    new Map([
+      [8, 2],
+      [3, 0],
+    ]),
+  );
+  const draw = plan.headBuckets.get(2);
+  expect(draw?.bucketSize).toBe(3);
+  expect(draw?.memberPositions).toEqual([2, 0]);
   expect(record).not.toHaveBeenCalled();
-  submitted(head, 0, undefined, bucket);
+  submitted(head, 0, undefined, draw);
   expect(record.mock.calls.map(([entry]) => entry)).toEqual([head, tail]);
+  expect(scan).not.toHaveBeenCalled();
+  expect(reads.mock.calls).toEqual([[2], [0]]);
   expect(record.mock.calls.every(([, submesh]) => submesh === 0)).toBe(true);
   record.mockClear();
   submitted(unrelated, 2);
@@ -447,7 +530,7 @@ it('settles rotating sparse draw receipts with one geometry walk and the first c
   const mesh = { submeshes: [{}] };
   const getView = vi.fn<() => unknown>(() => undefined);
   const internals = {
-    gpuStore: { getMeshGpuHandles: () => mesh },
+    gpuStore: { meshResidencyReader: () => () => mesh },
     dynamicTextureStore: { getView },
   } as unknown as RenderSystemInternals;
   const walk = vi.spyOn(SceneSlotFrame.prototype, 'findContent');
@@ -488,6 +571,74 @@ it('settles rotating sparse draw receipts with one geometry walk and the first c
   }
 });
 
+it('checks selected capture rows against submitted draws without building a display roster', () => {
+  const scope = worldRenderResources(new World());
+  const ordinary = MaterialResource.from(defaultMaterialSnapshot());
+  const video = MaterialResource.from({
+    ...defaultMaterialSnapshot(),
+    videoTextureFields: new Map([['clip', 1 as AssetHandle<'video'>]]),
+  });
+  const matrix = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+  const renderables = [0, 1, 2, 3, 4].map(
+    (entityKey): RenderableSnapshot => ({
+      entityKey,
+      assetHandle: 1,
+      transform: { world: matrix },
+      material: ordinary,
+      materials: entityKey === 1 ? [ordinary] : [ordinary, video],
+      materialBindingSources: [],
+    }),
+  );
+  const filter = vi.spyOn(renderables, 'filter');
+  const draws = createPresentationDraws();
+  const rowAdmits = vi.fn((row: RenderableSnapshot) => row.entityKey !== 0);
+  const admits = vi.fn(
+    (_row: RenderableSnapshot, material: MaterialResource) => material === video,
+  );
+  const onPending = vi.fn();
+  const getView = vi.fn<() => unknown>(() => undefined);
+  const internals = {
+    gpuStore: {
+      meshResidencyReader: () => () => ({ submeshes: [{ materialSlot: 0 }, { materialSlot: 1 }] }),
+    },
+    dynamicTextureStore: { getView },
+  } as unknown as RenderSystemInternals;
+  const report = () =>
+    projectFramePresentation({
+      renderables,
+      draws,
+      rowAdmits,
+      admits,
+      preparedSourceScope: scope,
+      internals,
+      onPending,
+    });
+
+  draws.record(2, 1);
+  expect(report()).toBe('pending');
+  expect(onPending).toHaveBeenLastCalledWith({ code: 'draw-entity-missing', entity: 3 });
+  expect(rowAdmits.mock.calls.map(([row]) => row.entityKey)).toEqual([0, 1, 2, 3]);
+  expect(getView).not.toHaveBeenCalled();
+
+  draws.record(3, 0);
+  draws.record(4, 1);
+  expect(report()).toBe('pending');
+  expect(onPending).toHaveBeenLastCalledWith({
+    code: 'draw-submesh-missing',
+    entity: 3,
+    submesh: 1,
+  });
+  expect(getView).not.toHaveBeenCalled();
+
+  draws.record(3, 1);
+  expect(report()).toBe('pending');
+  expect(onPending).toHaveBeenLastCalledWith({ code: 'material-residency', entity: 2 });
+  expect(getView).toHaveBeenCalledTimes(1);
+  getView.mockReturnValue({});
+  expect(report()).toBe('ready');
+  expect(filter).not.toHaveBeenCalled();
+});
+
 it('reads changing display evidence in occupied row order without requesting poses', () => {
   const world = new World({ assets: new AssetRegistry() });
   const scope = worldRenderResources(world);
@@ -515,7 +666,9 @@ it('reads changing display evidence in occupied row order without requesting pos
   );
   const handles = { submeshes: [{}] };
   const getMeshGpuHandles = vi.fn(() => handles);
-  const internals = { gpuStore: { getMeshGpuHandles } } as unknown as RenderSystemInternals;
+  const internals = {
+    gpuStore: { meshResidencyReader: () => getMeshGpuHandles },
+  } as unknown as RenderSystemInternals;
   const views = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     const live = rows.filter((row) => row.entityKey % 3 !== 1);
@@ -605,6 +758,90 @@ it('reads changing display evidence in occupied row order without requesting pos
     });
   } finally {
     views.mockRestore();
+  }
+});
+
+it.each([
+  false,
+  true,
+])('checks a native display subset without another scene roster (capture: %s)', (capture) => {
+  const scene = new RenderScene();
+  const material = MaterialResource.from(captureMaterialSnapshot(defaultMaterialSnapshot()));
+  const video = MaterialResource.from({
+    ...defaultMaterialSnapshot(),
+    videoTextureFields: new Map([['clip', 1 as AssetHandle<'video'>]]),
+  });
+  const rows = Array.from(
+    { length: 68 },
+    (_, entityKey): RenderableSnapshot => ({
+      entityKey,
+      assetHandle: 1,
+      transform: { world: new Float32Array(16) },
+      material: entityKey === 32 ? video : material,
+      materials: [entityKey === 32 ? video : material],
+      renderLayers: entityKey === 65 ? 2 : 1,
+      materialBindingSources: [],
+    }),
+  );
+  scene.apply(
+    rows.map((snapshot) => ({ kind: 'update', entityKey: snapshot.entityKey, snapshot })),
+  );
+  scene.apply([{ kind: 'remove', entityKey: 1 }]);
+  const getView = vi.fn(() => undefined);
+  const renderables = scene.materialize();
+  const select = vi.spyOn(SceneSlotFrame.prototype, 'selectContent');
+  const pose = vi.spyOn(SceneSlotPage.prototype, 'read');
+  const camera = { cullMask: 1 };
+  const mesh = { submeshes: [{}] };
+  const readMesh = vi.fn(() => mesh);
+  const internals = {
+    gpuStore: { meshResidencyReader: () => readMesh },
+    dynamicTextureStore: { getView },
+  } as unknown as RenderSystemInternals;
+  const onPending = vi.fn();
+  const draws = createPresentationDraws();
+  const scope = worldRenderResources(new World());
+  const dispatch = [64, 31, 0, 31, 66].map(
+    (renderableIndex): DispatchEntry =>
+      ({
+        renderableIndex,
+        tags: { LightMode: renderableIndex === 66 ? 'ShadowCaster' : 'Forward' },
+      }) as DispatchEntry,
+  );
+  try {
+    draws.record(0, 0);
+    const settle = () =>
+      projectFramePresentation(
+        {
+          renderables,
+          draws,
+          preparedSourceScope: scope,
+          internals,
+          onPending,
+          ...(capture ? { admits: () => true } : {}),
+        },
+        dispatch,
+        camera,
+      );
+    expect(settle()).toBe('pending');
+    expect(onPending).toHaveBeenLastCalledWith({ code: 'draw-entity-missing', entity: 32 });
+    expect(getView).not.toHaveBeenCalled();
+    draws.record(32, 0);
+    readMesh
+      .mockImplementationOnce(() => mesh)
+      .mockImplementationOnce(() => {
+        camera.cullMask = 2;
+        return mesh;
+      });
+    expect(settle()).toBe('pending');
+    expect(onPending).toHaveBeenLastCalledWith({ code: 'material-residency', entity: 32 });
+    expect(getView).toHaveBeenCalledOnce();
+    expect(camera.cullMask).toBe(2);
+    expect(select).not.toHaveBeenCalled();
+    if (!capture) expect(pose).not.toHaveBeenCalled();
+  } finally {
+    select.mockRestore();
+    pose.mockRestore();
   }
 });
 

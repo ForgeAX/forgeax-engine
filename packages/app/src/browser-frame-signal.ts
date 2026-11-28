@@ -10,7 +10,7 @@
 import {
   freezeBarrelDistortionMapping,
   freezeSubmittedEditorAssistanceFrame,
-} from '@forgeax/engine-render';
+} from '@forgeax/engine-render/internal/host-data';
 import { loadTimelineNow, recordLoadTimeline } from '@forgeax/engine-types';
 
 export const FORGEAX_FRAME_SUBMITTED_EVENT = 'forgeax:frame-submitted';

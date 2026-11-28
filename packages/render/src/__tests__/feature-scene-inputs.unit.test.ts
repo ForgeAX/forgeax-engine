@@ -18,9 +18,9 @@ import type { RenderSystemInternals } from '../record/render-context';
 import type { CubeCaptureGraphWork } from '../record/target-capture-graph';
 import { RenderCaptureGraphEncodeOrder, RenderFeatureGraphEncodeOrder } from '../system-order';
 import { ViewCaptureWork } from '../world/capture-systems';
-import { ViewGraphSeal, type ViewGraphSealState } from '../world/graph-seal-systems';
 import { awaitsRenderRecord } from '../world/graph-systems';
 import { RenderRecord } from '../world/render-world';
+import { ViewRecordAttempt, type ViewRecordAttemptState } from '../world/view-record-attempt';
 import { abortFeatureFrame, prepareFeatureFrame, stageFeatureFrame } from './feature-frame-driver';
 import { type FrameRecording, submitFrameRecordings } from './frame-recording-driver';
 
@@ -355,12 +355,19 @@ describe('Renderer scene inputs', () => {
       })),
     );
     expect(outcome.kind).toBe('sealed');
-    const captureState: ViewGraphSealState = { frame: 1, prepared: undefined, outcome: undefined };
+    const captureState: Pick<
+      ViewRecordAttemptState,
+      'frame' | 'prepared' | 'outcome' | 'captures'
+    > = {
+      frame: 1,
+      prepared: undefined,
+      outcome: undefined,
+    };
     host.world
       .spawn(
         {
-          component: ViewGraphSeal,
-          data: { state: host.world.allocUniqueRef('ViewGraphSeal', captureState) },
+          component: ViewRecordAttempt,
+          data: { state: host.world.allocUniqueRef('ViewRecordAttempt', captureState) },
         },
         {
           component: ViewCaptureWork,
@@ -380,7 +387,7 @@ describe('Renderer scene inputs', () => {
       name: 'test-scene-input-encode',
       after: [RenderCaptureGraphEncodeOrder],
       before: [RenderFeatureGraphEncodeOrder],
-      queries: [{ write: [ViewGraphSeal] }],
+      queries: [{ write: [ViewRecordAttempt] }],
       fn: () => {
         expect(compute).not.toHaveBeenCalled();
         events.push('depth');

@@ -1,4 +1,8 @@
-import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
+import type {
+  GraphBuffer,
+  RenderGraphBuilder,
+  RenderGraphError,
+} from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
   BindGroupLayout,
@@ -10,6 +14,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { stockUtilityShaderFactory } from '../assembly/utility-shader-prewarm';
 import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
 import {
   ATMOSPHERE_SKY_FACES,
@@ -18,7 +23,11 @@ import {
 } from '../record/gpu-pass-timing/sky-pass-names';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
+import type {
+  RenderPipelineFrame,
+  RenderPipelineTarget,
+  RenderPipelineTopology,
+} from '../render-pipeline';
 import { addAtmosphereIbl, type GraphEnvironment } from './ibl';
 import { addAtmosphereLuts } from './luts';
 import { addAtmospherePackedLuts } from './packed-tables';
@@ -85,21 +94,82 @@ export function createAtmosphereBackgroundGroup(
     .unwrap();
 }
 
+type AtmosphereBackgroundOptions =
+  | {
+      readonly mode: 'full';
+      readonly computeSkySh?: boolean;
+      readonly fastAerialPerspective?: boolean | undefined;
+      readonly clusters?: StandardClusterGraphBuffers | null | undefined;
+      readonly ue5?: boolean;
+      readonly realtimeSkyCapture?: boolean;
+    }
+  | { readonly mode: 'sky'; readonly computeSkySh?: boolean };
+
+function addFullAtmosphereTables(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  options: AtmosphereBackgroundOptions,
+  parameters: GraphBuffer,
+  dirty: (frame: RenderPipelineFrame) => boolean,
+  visibility: AtmosphereVisibility,
+) {
+  if (options.mode !== 'full') return undefined;
+  if (options.clusters?.kind === 'texture' && options.ue5 !== true)
+    return addAtmospherePackedLuts(
+      graph,
+      options.clusters,
+      parameters,
+      dirty,
+      visibility,
+      options.fastAerialPerspective,
+    );
+  return addAtmosphereLuts(
+    graph,
+    parameters,
+    dirty,
+    visibility,
+    options.fastAerialPerspective,
+    options.ue5,
+    options.realtimeSkyCapture,
+  );
+}
+
+function atmosphereBackgroundCapture(options: AtmosphereBackgroundOptions) {
+  const ue5 = options.mode === 'full' && options.ue5 === true;
+  const directCapture = options.mode === 'full' && ue5 && options.realtimeSkyCapture !== true;
+  return { ue5, directCapture };
+}
+
 /** One device-owned sky cube feeds the graph background; the sun disc is added only there. */
+export function addStandardAtmosphere(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
+  color: RenderPipelineTarget,
+  visibility: AtmosphereVisibility,
+  clusters?: StandardClusterGraphBuffers | null,
+): Result<GraphEnvironment | undefined, RenderGraphError> {
+  if (topology.atmosphere !== true) return ok(undefined);
+  const computeSkySh = topology.lane.compute && topology.lane.storageBuffer;
+  if (topology.atmosphereBackgroundOnly === true)
+    return addAtmosphereBackground(graph, color, {}, { mode: 'sky', computeSkySh });
+  return addAtmosphereBackground(graph, color, visibility, {
+    mode: 'full',
+    clusters,
+    computeSkySh,
+    fastAerialPerspective:
+      topology.standardProfile?.atmosphere?.aerialPerspectiveQuality === 'fast',
+    ue5: topology.standardProfile?.atmosphereLutModel === 'ue5-desktop',
+    realtimeSkyCapture: topology.standardProfile?.realtimeSkyCapture === true,
+  });
+}
+
 export function addAtmosphereBackground(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   color: RenderPipelineTarget,
   visibility: AtmosphereVisibility = {},
-  options:
-    | {
-        readonly mode: 'full';
-        readonly computeSkySh?: boolean;
-        readonly fastAerialPerspective?: boolean | undefined;
-        readonly clusters?: StandardClusterGraphBuffers | null | undefined;
-      }
-    | { readonly mode: 'sky'; readonly computeSkySh?: boolean } = { mode: 'full' },
+  options: AtmosphereBackgroundOptions = { mode: 'full' },
 ): Result<GraphEnvironment, RenderGraphError> {
   const mode = options.mode;
+  const { ue5, directCapture } = atmosphereBackgroundCapture(options);
   const cube = graph.importTexture(
     'atmosphere-sky',
     {
@@ -137,8 +207,11 @@ export function addAtmosphereBackground(
         backgroundPipeline: RenderPipeline;
         backgroundLayout: BindGroupLayout;
         sampler: Sampler;
-        cubeGroup?: BindGroup;
-        backgroundGroup?: BindGroup;
+        cubeBinding?: {
+          readonly params: Buffer;
+          readonly sky: TextureView;
+          readonly group: BindGroup;
+        };
       }
     | undefined;
   const frameOf = (frame: RenderPipelineFrame) => frame as _InternalRenderPipelineContext;
@@ -147,11 +220,9 @@ export function addAtmosphereBackground(
     frameOf(frame).frameState.environmentFrame?.environmentSignature !==
       atmosphereStorage(frame).submittedSignature &&
     atmosphereStorage(frame).recordedEncoder !== frame.encoder;
+  const values = new Float32Array(VIEW_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
   const upload = graph.addCopyPass('atmosphere-prepare', {
-    accesses: [
-      { resource: params.value, usage: 'copy-dst' },
-      { resource: vertices.value, usage: 'copy-dst' },
-    ],
+    accesses: [{ resource: params.value, usage: 'copy-dst' }],
     executeIf: dirty,
     encodeDirect: (_graphencoder, frame, resources) => {
       const environment = frameOf(frame).frameState.environmentFrame;
@@ -164,50 +235,26 @@ export function addAtmosphereBackground(
         });
       }
       const settings = environment.source.atmosphere;
-      const values = new Float32Array(VIEW_UNIFORM_BYTES / 4);
-      values.set(
-        sun.direction.map((v) => -v),
-        16,
-      );
-      values.set(
-        sun.color.map((v) => v * sun.intensity),
-        20,
-      );
+      for (let axis = 0; axis < 3; axis++) {
+        values[16 + axis] = -(sun.direction[axis] ?? 0);
+        values[20 + axis] = (sun.color[axis] ?? 0) * sun.intensity;
+      }
       values.set(settings.capturePosition, 24);
-      writeAtmosphereUniform(values, 292, settings);
+      writeAtmosphereUniform(values, 292, settings, 0, ue5 ? 0 : undefined);
       frame.runtime.device.queue
         .writeBuffer(resources.buffer(params.value).unwrap(), 0, values)
-        .unwrap();
-      const triangles = new Float32Array(6 * 9);
-      for (let face = 0; face < ATMOSPHERE_SKY_FACES; face += 1) {
-        triangles.set([-1, -1, face + 1, 3, -1, face + 1, -1, 3, face + 1], face * 9);
-      }
-      frame.runtime.device.queue
-        .writeBuffer(resources.buffer(vertices.value).unwrap(), 0, triangles)
         .unwrap();
     },
   });
   if (!upload.ok) return upload;
-  const full =
-    options.mode === 'full'
-      ? options.clusters?.kind === 'texture'
-        ? addAtmospherePackedLuts(
-            graph,
-            options.clusters,
-            params.value,
-            dirty,
-            visibility,
-            options.fastAerialPerspective,
-          )
-        : addAtmosphereLuts(graph, params.value, dirty, visibility, options.fastAerialPerspective)
-      : undefined;
+  const full = addFullAtmosphereTables(graph, options, params.value, dirty, visibility);
   if (full !== undefined && !full.ok) return full;
   const tables = full ?? addAtmosphereSkyLuts(graph, { parameters: params.value, dirty });
   if (!tables.ok) return tables;
   const ensureState = (frame: RenderPipelineFrame) => {
     if (state !== undefined) return state;
     const sources = frame.atmosphereShaders;
-    const factory = frame.runtime.shaderModuleFactory;
+    const factory = stockUtilityShaderFactory(frame.runtime);
     if (sources === undefined || factory === undefined) {
       throw new RhiError({
         code: 'shader-compile-failed',
@@ -230,7 +277,26 @@ export function addAtmosphereBackground(
             visibility: 2,
             buffer: { type: 'uniform', minBindingSize: VIEW_UNIFORM_BYTES },
           },
-          { binding: 1, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
+          ...(directCapture
+            ? [
+                {
+                  binding: 4,
+                  visibility: 2,
+                  texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+                },
+                {
+                  binding: 5,
+                  visibility: 2,
+                  texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+                },
+              ]
+            : [
+                {
+                  binding: 1,
+                  visibility: 2,
+                  texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+                },
+              ]),
           { binding: 3, visibility: 2, sampler: { type: 'filtering' } },
         ],
       })
@@ -252,7 +318,7 @@ export function addAtmosphereBackground(
         },
         fragment: {
           module: cubeModule,
-          entryPoint: 'atmosphere_cubemap_fs',
+          entryPoint: directCapture ? 'atmosphere_cubemap_ue5_fs' : 'atmosphere_cubemap_fs',
           targets: [{ format: 'rgba16float' }],
         },
         primitive: { topology: 'triangle-list', cullMode: 'none' },
@@ -294,39 +360,59 @@ export function addAtmosphereBackground(
         { resource: faceView.value, usage: 'color-attachment' },
         { resource: params.value, usage: 'uniform-read' },
         { resource: vertices.value, usage: 'vertex-read' },
-        { resource: tables.value.captureSky, usage: 'sampled-read' },
+        ...(directCapture
+          ? [tables.value.transmittance, tables.value.multipleScattering]
+          : [tables.value.captureSky]
+        ).map((resource) => ({ resource, usage: 'sampled-read' as const })),
       ],
       colorAttachments: [{ view: faceView.value, loadOp: 'clear', storeOp: 'store' }],
       executeIf: dirty,
       encodeDirect: (pass, frame, resources) => {
         const current = ensureState(frame);
-        current.cubeGroup = frame.runtime.device
-          .createBindGroup({
-            layout: current.cubeLayout,
-            entries: [
-              {
-                binding: 0,
-                resource: {
-                  kind: 'buffer',
-                  value: {
-                    buffer: resources.buffer(params.value).unwrap(),
-                    size: VIEW_UNIFORM_BYTES,
+        const uniform = resources.buffer(params.value).unwrap();
+        const sky = resources.textureView(tables.value.captureSky).unwrap();
+        if (current.cubeBinding?.params !== uniform || current.cubeBinding.sky !== sky) {
+          const captureBindings = directCapture
+            ? [
+                {
+                  binding: 4,
+                  resource: {
+                    kind: 'textureView' as const,
+                    value: resources.textureView(tables.value.transmittance).unwrap(),
                   },
                 },
-              },
-              {
-                binding: 1,
-                resource: {
-                  kind: 'textureView',
-                  value: resources.textureView(tables.value.captureSky).unwrap(),
+                {
+                  binding: 5,
+                  resource: {
+                    kind: 'textureView' as const,
+                    value: resources.textureView(tables.value.multipleScattering).unwrap(),
+                  },
                 },
-              },
-              { binding: 3, resource: { kind: 'sampler', value: current.sampler } },
-            ],
-          })
-          .unwrap();
+              ]
+            : [{ binding: 1, resource: { kind: 'textureView' as const, value: sky } }];
+          const group = frame.runtime.device
+            .createBindGroup({
+              layout: current.cubeLayout,
+              entries: [
+                {
+                  binding: 0,
+                  resource: {
+                    kind: 'buffer',
+                    value: {
+                      buffer: uniform,
+                      size: VIEW_UNIFORM_BYTES,
+                    },
+                  },
+                },
+                ...captureBindings,
+                { binding: 3, resource: { kind: 'sampler', value: current.sampler } },
+              ],
+            })
+            .unwrap();
+          current.cubeBinding = { params: uniform, sky, group };
+        }
         pass.setPipeline(current.cubePipeline);
-        pass.setBindGroup(0, current.cubeGroup);
+        pass.setBindGroup(0, current.cubeBinding.group);
         pass.setVertexBuffer(0, resources.buffer(vertices.value).unwrap());
         pass.draw(3, 1, face * 3, 0);
         if (face === 5) {
@@ -357,7 +443,7 @@ export function addAtmosphereBackground(
     colorAttachments: [{ view: color.view, loadOp: 'clear', storeOp: 'store' }],
     encodeDirect: (pass, frame, resources) => {
       const current = ensureState(frame);
-      current.backgroundGroup = createAtmosphereBackgroundGroup(
+      const backgroundGroup = createAtmosphereBackgroundGroup(
         frame.runtime.device,
         current.backgroundLayout,
         {
@@ -370,7 +456,7 @@ export function addAtmosphereBackground(
         },
       );
       pass.setPipeline(current.backgroundPipeline);
-      pass.setBindGroup(0, current.backgroundGroup);
+      pass.setBindGroup(0, backgroundGroup);
       pass.setBindGroup(
         1,
         atmosphereVisibilityGroup(

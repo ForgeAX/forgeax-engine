@@ -18,7 +18,7 @@ import { createRenderPublisher } from '../../publication/publisher';
 import { encodeRenderPublication, renderPublicationTransfers } from '../../publication/record';
 import { RenderViewInput } from '../render-views';
 import { RenderPrepare, RenderQueue, RenderRecord, renderSubmission } from '../render-world';
-import { ViewRecordAttempt, type ViewRecordAttemptState } from '../view-record-systems';
+import { ViewRecordAttempt, type ViewRecordAttemptState } from '../view-record-attempt';
 
 async function fixture(
   published = false,

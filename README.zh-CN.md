@@ -294,7 +294,6 @@ flowchart LR
 | **网络** | Session 拥有复制、ACK、重试、baseline / delta 与连接恢复；WebSocket 只提供传输 | [Net](packages/net/README.md) · [WebSocket](packages/net-websocket/README.md) |
 | **物理** | ECS 物理契约与 Rapier 2D / 3D 后端分离；同步输入、推进模拟、写回状态 | [Physics](packages/physics/README.md) |
 | **动画 / 蒙皮** | 动画图、clip 与播放系统独立于 Renderer；Skin 负责骨骼绑定与关节路径解析 | [Animation](packages/animation/README.md) · [Skinning](packages/skinning/README.md) |
-| **运行时智能服务** | 可选的 provider 无关 Activity / Session；有界输出、取消与轮询；异步服务不阻塞 ECS 帧循环 | [Intelligence](packages/intelligence/README.md) |
 | **输入 / UI / 音频** | 帧起点冻结输入快照；Shadow DOM UI；realm 无关的音频意图交给 Host Web Audio 播放 | [Input](packages/input/README.md) · [UI](packages/ui/README.md) · [Audio](packages/audio/README.md) |
 
 </details>

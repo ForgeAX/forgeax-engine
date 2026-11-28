@@ -77,8 +77,7 @@ function captureSourceViews(
       device: owner.internals.device,
       production: owner.gpuDriven,
       pipeline: context.getPipelineState(),
-      graph: owner.frameState.compiledFrameGraph,
-      graphGeneration: owner.frameState.compiledFrameGraphGeneration,
+      binding: owner.frameState.compiledFrameGraph?.nativeResources,
     };
   });
   const device = facts[0]?.device;
@@ -120,9 +119,8 @@ function captureSourceViews(
           fact.owner.internals.device === fact.device &&
           fact.context.getPipelineState() === fact.pipeline &&
           fact.owner.gpuDriven === fact.production &&
-          fact.owner.frameState.compiledFrameGraph === fact.graph &&
-          fact.owner.frameState.compiledFrameGraphGeneration === fact.graphGeneration &&
-          (fact.graph === null || !fact.graph.graph.isRetired()) &&
+          fact.owner.frameState.compiledFrameGraph?.nativeResources === fact.binding &&
+          fact.binding?.isRetired() !== true &&
           fact.scope.isAlive(),
       )
     );
@@ -461,7 +459,7 @@ function* prepareInitialShadowViews(
     const requests = gpuShadowViewRequests(
       lights,
       topology.topology.shadowMapSize,
-      owner.frameState.compiledFrameGraphGeneration,
+      owner.frameState.graphGeneration,
       lights.cascades?.cascadeCount,
       topology.topology.spotShadowMapSize ?? 1024,
       owner.internals.options?.staticShadowBudgetBytes,
@@ -584,19 +582,23 @@ function* prepareInitialMainGraphs(
       gpuDriven: native.projection,
     });
     const graph = holdSourceMainGraph(owner, outcome, scope);
+    const bindingsOwner = graph.installed.nativeResources;
     scope.graphs.push({
       isCurrent: () =>
-        graph.isCurrent() && native.isCurrent() && graph.installed.graph.preparedResourcesCurrent(),
+        graph.isCurrent() && native.isCurrent() && bindingsOwner.preparedResourcesCurrent(),
       retire: () => graph.retire(),
     });
     yield;
     if (!current() || !native.isCurrent()) throw invalid('current compiled main graph');
-    (yield* native.attachGraph(graph.installed)).unwrap();
+    (yield* native.attachPassResources(
+      bindingsOwner,
+      graph.installed.prepareGpuDrivenSource,
+    )).unwrap();
     graph.accept().unwrap();
     yield;
     yield* prepareSourceMainPipelines(owner, native, graph, current);
     const currentResources = () => current() && graph.isCurrent() && native.isCurrent();
-    const resources = yield* graph.installed.graph.prepareResources(currentResources);
+    const resources = yield* bindingsOwner.prepareResources(currentResources);
     // Frame recording can supersede this View graph while its native work is suspended.
     if (!currentResources()) {
       scope.viewObsolete = true;
@@ -703,12 +705,10 @@ function holdSourceMainGraph(
   outcome: ReturnType<typeof compileSourceViewGraph>,
   scope: InitialSourceScope,
 ): PreparedViewGraph {
+  if (outcome.kind === 'ordered-display')
+    return holdPreparedViewGraph(owner.internals, owner.frameState, outcome.installed);
   if (outcome.kind !== 'failed' && outcome.effects.rejectedGraph !== undefined) {
-    const retired = retireRejectedSourceGraph(
-      owner.internals,
-      owner.frameState,
-      outcome.effects.rejectedGraph,
-    );
+    const retired = retireRejectedSourceGraph(owner.frameState, outcome.effects.rejectedGraph);
     scope.graphs.push({ isCurrent: () => false, retire: () => retired });
   }
   if (outcome.kind === 'failed') throw outcome.cause;

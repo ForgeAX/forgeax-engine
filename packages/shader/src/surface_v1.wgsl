@@ -26,6 +26,9 @@ struct SurfaceInput {
   objectToWorld : mat3x3<f32>,
   // Renderer frame elapsed seconds; ray hit shading without a View uses zero.
   frameTime : f32,
+  // Automatic surface texture mip bias (UE View.MaterialTextureMipBias). Raster
+  // sampling adds it; shadow, card and ray hit shading supply zero.
+  materialTextureMipBias : f32,
 };
 
 // Surface output is consumed by the Standard BRDF and pass family.

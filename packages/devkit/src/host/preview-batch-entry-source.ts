@@ -8,16 +8,14 @@ export function previewBatchEntrySource(): string {
   return `import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { runtimeBinding, createRuntimeAssetImportTransport } from 'virtual:forgeax/pack-runtime';
 import { createApp } from '@forgeax/engine/app/browser';
-import { captureEngineWorkspaceAssetBinding, createEngineWorkspaceAppPreview, createTextureWorkspacePreview, createWorkspaceMeshDisplay, createWorkspaceMaterialPreview, fitToolPreviewCameraToAabb, loadEngineWorkspaceMaterialSlots } from '@forgeax/engine/app';
+import { createEngineWorkspaceAppPreview } from '@forgeax/engine/app';
 import { createCatalogSource, createCatalogHotSubscription } from '@forgeax/engine/assets-runtime';
-import { THUMBNAIL_PREVIEW, previewThumbnailInput, textureViewSource } from '@forgeax/engine/preview';
-import { createPrimitiveMesh } from '@forgeax/engine/geometry';
+import { THUMBNAIL_PREVIEW, previewThumbnailInput } from '@forgeax/engine/preview';
 import { mat4 } from '@forgeax/engine/math';
 import { physicsComponentsPlugin } from '@forgeax/engine/physics';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer, Skylight, SkyboxBackground, TONEMAP_REINHARD_EXTENDED, materialSampledTextureBudget } from '@forgeax/engine/render';
+import { Camera, SkyboxBackground } from '@forgeax/engine/render';
 import { Transform } from '@forgeax/engine/scene';
 import { skinningPlugin } from '@forgeax/engine/skinning';
-import { ParticleEffectPlayer } from '@forgeax/engine/vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine/vfx-render';
 
 const canvas = document.querySelector('canvas');

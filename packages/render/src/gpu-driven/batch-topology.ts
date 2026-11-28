@@ -11,9 +11,11 @@ import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { TreeFrame } from '../scene/frame-tree-list';
 import type { MaterialFrame } from '../scene/material-dispatch';
+import { drawPoseReflected, drawPoseStorage, SceneDrawSlot, slotContent } from '../scene/mesh-draw';
 import type { MeshFrame } from '../scene/mesh-frame';
 import { hasRasterDemand } from '../scene/raster-demand';
 import type { RenderSceneApplyResult, RenderSceneSlot } from '../scene/render-scene-types';
+import type { RowContent } from '../scene/row-contents';
 import { sphereProjectedHeight } from '../scene/visibility/lod-selector';
 import { type BatchGeometry, captureBatchGeometry } from './batch-execution';
 import { batchVisibleSpan } from './batch-layout';
@@ -436,7 +438,7 @@ class MembershipColumn {
  */
 let recentEligible:
   | {
-      readonly snapshot: RenderableSnapshot;
+      readonly content: RowContent;
       readonly reflected: boolean;
       readonly rowGroup: RowGroup | undefined;
       readonly draws: readonly MembershipCandidate[];
@@ -446,7 +448,7 @@ let recentMembership:
   | { readonly draws: readonly EligibleGpuDrivenDraw[]; readonly projection: MembershipProjection }
   | undefined;
 
-function sameEligibleInputs(a: RenderableSnapshot, b: RenderableSnapshot): boolean {
+function sameEligibleInputs(a: RowContent, b: RowContent): boolean {
   return (
     a.assetHandle === b.assetHandle &&
     a.gpuDrivenDraws === b.gpuDrivenDraws &&
@@ -475,30 +477,34 @@ function eligibleDraws(
   slot: RenderSceneSlot,
   rows: Pick<RowMaterialMembers<object, unknown>, 'group'>,
 ): readonly MembershipCandidate[] {
-  const snapshot = slot.snapshot;
+  const content = slotContent(slot);
   // Hidden and unpublished geometry has no raster membership to classify.
-  if (!hasRasterDemand(snapshot) || !snapshot.gpuDrivenDraws?.length) return noMembershipCandidates;
-  const reflected = isReflectedTransform(snapshot.transform.world);
-  const rowGroup = rows.group(snapshot);
+  if (!hasRasterDemand(content) || !content.gpuDrivenDraws?.length) return noMembershipCandidates;
+  const reflected =
+    slot instanceof SceneDrawSlot
+      ? isReflectedTransform(slot.poseColumn, slot.poseOffset)
+      : CapturedSceneTransform.reflected(slot.snapshot.transform);
+  const rowGroup = rows.group(content);
   const recent = recentEligible;
   if (
     recent !== undefined &&
     recent.reflected === reflected &&
     recent.rowGroup === rowGroup &&
-    sameEligibleInputs(recent.snapshot, snapshot)
+    sameEligibleInputs(recent.content, content)
   )
     return recent.draws;
-  const draws = eligibleDrawsUncached(snapshot, rowGroup);
-  recentEligible = { snapshot, reflected, rowGroup, draws };
+  const draws = eligibleDrawsUncached(content, reflected, rowGroup);
+  recentEligible = { content, reflected, rowGroup, draws };
   return draws;
 }
 
 function eligibleDrawsUncached(
-  snapshot: RenderableSnapshot,
+  snapshot: RowContent,
+  reflected: boolean,
   rowGroup: RowGroup | undefined,
 ): readonly MembershipCandidate[] {
   const rowClass = rowGroup?.text;
-  const draws = rowMaterialDraws(eligibleGpuDrivenDraws(snapshot), snapshot, rowGroup);
+  const draws = rowMaterialDraws(projectGpuDrivenDraws(snapshot, reflected), snapshot, rowGroup);
   const first = draws[0];
   if (first === undefined) return [];
   const source: MeshBatchSource = Object.freeze({
@@ -552,7 +558,7 @@ function eligibleDrawsUncached(
  */
 function rowMaterialDraws(
   draws: readonly EligibleGpuDrivenDraw[],
-  snapshot: RenderableSnapshot,
+  snapshot: RowContent,
   rowGroup: RowMaterialGroup | undefined,
 ): readonly EligibleGpuDrivenDraw[] {
   if (rowGroup === undefined) return draws;
@@ -567,7 +573,7 @@ function rowMaterialDraws(
   );
 }
 
-export function gpuDrivenGeometryEligible(snapshot: RenderableSnapshot): boolean {
+export function gpuDrivenGeometryEligible(snapshot: RowContent): boolean {
   if (
     snapshot.instances?.instanceCount === 0 ||
     (snapshot.localAabb === undefined && snapshot.skinBinding === undefined) ||
@@ -581,10 +587,17 @@ export function gpuDrivenGeometryEligible(snapshot: RenderableSnapshot): boolean
 export function eligibleGpuDrivenDraws(
   snapshot: RenderableSnapshot,
 ): readonly EligibleGpuDrivenDraw[] {
+  return projectGpuDrivenDraws(snapshot, snapshot);
+}
+
+function projectGpuDrivenDraws(
+  snapshot: RowContent,
+  pose: boolean | Pick<RenderableSnapshot, 'transform'>,
+): readonly EligibleGpuDrivenDraw[] {
   if (snapshot.assetHandle === undefined) return [];
   const draws = snapshot.gpuDrivenDraws;
   if (draws === undefined || draws.length === 0 || !gpuDrivenGeometryEligible(snapshot)) return [];
-  const reflected = isReflectedTransform(snapshot.transform.world);
+  const reflected = typeof pose === 'boolean' ? pose : drawPoseReflected(pose);
   // Morphed rows deform LOD0 vertices by their own GPU Scene weights.
   const morph = snapshot.morph !== undefined;
   const result: EligibleGpuDrivenDraw[] = [];
@@ -632,8 +645,8 @@ export function eligibleGpuDrivenDraws(
 }
 
 function drawLod(
-  draw: NonNullable<RenderSceneSlot['snapshot']['gpuDrivenDraws']>[number],
-  snapshot: RenderSceneSlot['snapshot'],
+  draw: NonNullable<RowContent['gpuDrivenDraws']>[number],
+  snapshot: RowContent,
 ): Pick<EligibleGpuDrivenDraw, 'lod'> {
   if (snapshot.lods === undefined) return {};
   const ranges = draw.lodRanges;
@@ -672,7 +685,7 @@ function membershipProjection(
   slot: RenderSceneSlot,
   draws: readonly EligibleGpuDrivenDraw[],
 ): MembershipProjection {
-  const instanceCount = slot.snapshot.instances?.instanceCount ?? 1;
+  const instanceCount = slotContent(slot).instances?.instanceCount ?? 1;
   if (!Number.isSafeInteger(instanceCount) || instanceCount < 0)
     throw new RangeError('GPU batch instanceCount must be a non-negative safe integer');
   const recent = recentMembership;
@@ -740,6 +753,12 @@ export function projectedHeightForCandidate(
   slot: RenderSceneSlot,
   camera: LodHeightCamera,
 ): number {
+  if (slot instanceof SceneDrawSlot) {
+    const aabb = slot.content.localAabb;
+    return aabb === undefined || aabb.length < 6
+      ? Number.NaN
+      : projectedHeightForBounds(aabb, slot.poseColumn, camera, slot.poseOffset);
+  }
   return projectedHeightForSnapshot(slot.snapshot, camera);
 }
 
@@ -750,7 +769,7 @@ export function projectedHeightForSnapshot(
 ): number {
   const aabb = snapshot.localAabb;
   if (aabb === undefined || aabb.length < 6) return Number.NaN;
-  const pose = CapturedSceneTransform.storage(snapshot.transform);
+  const pose = drawPoseStorage(snapshot);
   return projectedHeightForBounds(
     aabb,
     CapturedSceneTransform.column(pose),
@@ -953,7 +972,8 @@ export class BatchTopology {
     projection: MembershipProjection,
     draw: MembershipCandidate | undefined,
   ): boolean {
-    const material = rowMaterialResource(slot.snapshot);
+    const content = slotContent(slot);
+    const material = rowMaterialResource(content);
     if (material === undefined || this.rowMaterials.materialOf(slot.slot) === material)
       return false;
     const batch =
@@ -965,7 +985,7 @@ export class BatchTopology {
     const binding = this.rowMaterials.retarget(
       batch,
       slot.slot,
-      slot.snapshot,
+      content,
       draw.binding,
       draw.memberGroup,
     );
@@ -1234,8 +1254,9 @@ export class BatchTopology {
   ): boolean {
     this.residency.admit(slot);
     draws ??= eligibleDraws(slot, this.rowMaterials);
+    const content = slotContent(slot);
     if (draws.length === 0) {
-      this.unbatched = hasRasterDemand(slot.snapshot)
+      this.unbatched = hasRasterDemand(content)
         ? this.unbatched.with(slot.slot)
         : this.unbatched.without(slot.slot);
       return false;
@@ -1269,14 +1290,14 @@ export class BatchTopology {
         this.batches.set(text, batch);
       }
       if (draw.memberGroup !== undefined)
-        this.rowMaterials.add(batch, slot.slot, slot.snapshot, draw.binding, draw.memberGroup);
+        this.rowMaterials.add(batch, slot.slot, content, draw.binding, draw.memberGroup);
       const pending = pendingMembers?.get(batch);
       const firstMember = pending === undefined && batch.members.length === 0;
       batch.contentEpoch += instanceCount - (firstMember ? 1 : 0);
       const member = {
         primitiveIndex: slot.slot,
         generation: slot.generation,
-        entityKey: slot.snapshot.entityKey,
+        entityKey: slot.entityKey,
         drawItemIndex: draw.sourceDrawIndex,
         instanceCount,
       };

@@ -461,7 +461,7 @@ fn fs_oit(in : VsOut, @builtin(front_facing) frontFacing : bool) -> OitOutput {
 #endif
   applyUnlitClipping(in.worldPos, in.clip.xy, false);
   let color = shaded.color;
-  return oitAccumulate(color.rgb * color.a, color.a, distance(in.worldPos, view.cameraPos));
+  return oitAccumulate(color.rgb * color.a, color.a, in.clip.z, view.temporalProjection);
 }
 
 // Weighted blended OIT accumulation for premultiplied blend states.
@@ -476,7 +476,7 @@ fn fs_oit_premultiplied(in : VsOut, @builtin(front_facing) frontFacing : bool) -
 #endif
   applyUnlitClipping(in.worldPos, in.clip.xy, false);
   let color = shaded.color;
-  return oitAccumulate(color.rgb, color.a, distance(in.worldPos, view.cameraPos));
+  return oitAccumulate(color.rgb, color.a, in.clip.z, view.temporalProjection);
 }
 
 // Depth-only shadow variant. Keep alpha clipping identical to the color path,

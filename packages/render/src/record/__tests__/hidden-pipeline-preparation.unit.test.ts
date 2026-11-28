@@ -477,7 +477,7 @@ it('uses accepted material demand before walking native residual shadow rows', a
   f.acceptMaterials();
   Object.assign(f.entry.source, { authorVisible: true, pipelinePreparation: undefined });
   const rows = [f.entry];
-  const visit = vi.spyOn(rows, Symbol.iterator);
+  const visit = vi.spyOn(rows, 'at');
   Object.assign(f.c, {
     shadowValidatedOrdered: rows,
     pipelinePreparationEntries: [],

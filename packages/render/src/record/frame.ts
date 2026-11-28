@@ -1,11 +1,13 @@
 import { createViewportHitCapture } from '../assembly/viewport-hit-proxy';
+import { viewFeaturesOf } from '../features/view-feature-work';
 import {
   currentForwardShadowReceiver,
   inspectForwardShadow,
 } from '../pipeline/forward-shadow-admission';
+import { recordedGtaoHistoryLength } from '../pipeline/gtao-history';
 import { standardViewRecording } from '../pipeline/standard-forward-output';
 import { cameraAdmitsLayers } from '../render-layers';
-import type { DrawRows } from './frame-snapshot';
+import { type DrawRows, viewGraphDeviceIsCurrent } from './frame-snapshot';
 import { capturePresentation } from './target-capture-graph';
 // @forgeax/engine-runtime - RendererState record stage: frame.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
@@ -51,7 +53,10 @@ import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
 import type { TransparencyInspection } from '../oit/view';
 import { captureStandardLighting } from '../pipeline/standard-lighting/inspection';
-import { standardLightingTopologySignature } from '../pipeline/standard-lighting/topology';
+import {
+  matchesStandardLightingDeclaration,
+  standardLightingDeclaration,
+} from '../pipeline/standard-lighting/topology';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { inspectPointShadow } from '../point-shadow-inspection';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -66,6 +71,7 @@ import type {
   SkylightSnapshot,
 } from '../render-system-extract';
 import { markPipelinePreparationPending } from '../render-system-presentation';
+import { prepareGeneratedDrawTextures } from '../render-system-residency';
 import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import type { MaterialFrame } from '../scene/material-dispatch';
@@ -85,7 +91,6 @@ import {
 import {
   admitVolumeHistory,
   consumeViewHistoryAdmission,
-  type VolumeHistoryAdmission,
 } from '../world/history-admission-systems';
 import type { ViewLights } from '../world/render-lights';
 import { viewTemporalStageOf } from '../world/temporal-systems';
@@ -105,6 +110,7 @@ import {
   shadowMeshReadsForQuery,
 } from './directional-shadow-cache';
 import { directionalShadowSimple, leanLightingFrame } from './directional-shadow-simple';
+import { drawSourceAt } from './draw-row-pages';
 import {
   buildDispatchPlan,
   cleanPerFrameCaches,
@@ -123,19 +129,18 @@ import {
   type DispatchCounts,
   type FrameObservationSource,
   getTextureIdentity,
+  type InstalledFrameGraph,
   type ReflectionFallbackReadbackRequest,
   type RenderFrameState,
-  type ValidatedRenderable,
   validateGraphTargetCaptureReadback,
 } from './frame-snapshot';
 import {
   emitGpuDrivenDrawReceipts,
-  type RenderableDrawReceipt,
+  type RenderableDrawRecorder,
   summarizeGpuDrivenDraws,
 } from './gpu-draw-receipts';
 import { canRetainMaterialBindings, type MaterialRelationFrame } from './material-binding-index';
 import { materialGeometry } from './material-geometry';
-import { foldRenderableSnapshot } from './mesh-ssbo';
 import {
   type CaptureRecording,
   captureRecordingRequests,
@@ -308,13 +313,13 @@ import {
   shouldDeferImageDisplay,
 } from './frame-admission';
 import {
+  type CaptureGraphBatch,
+  type CaptureGraphCompileInput,
   type CaptureGraphOutcome,
-  type CubeCaptureFrame,
   captureGraphFrames,
   executeCaptureFrames,
-  type PlanarCaptureFrame,
-  type ProbeCaptureFrame,
   planarCaptureRecorder,
+  requestProbeCapturePipelines,
 } from './frame-capture';
 import { consumeViewDiffuseGi, reprojectDiffuseGiHistory } from './frame-diffuse-gi';
 import {
@@ -351,7 +356,12 @@ import {
   resolveFrameTemporal,
 } from './frame-temporal';
 import { GpuTimingCapture } from './gpu-timing';
-import { adoptViewGraph, type ViewGraphCompileOutcome } from './graph-adoption';
+import {
+  adoptOrderedDisplay,
+  adoptViewGraph,
+  type OrderedDisplayOutcome,
+  type ViewGraphCompileOutcome,
+} from './graph-adoption';
 import { computeViewProjectionMatrix } from './helpers';
 import { createMainPassMaterialSelectionOwner } from './main-pass';
 import { computeSplitLdrSprite } from './main-pass-sprite-draws';
@@ -360,7 +370,6 @@ import {
   type CubeCaptureGraphState,
   compileViewGraph,
   ensureShadowDepthLayers,
-  getRenderFeatureGraphState,
   recordCompiledFrameGraph,
   settleEncodedFrameGraph,
 } from './typed-frame-graph';
@@ -426,22 +435,54 @@ export function preparePlanarCapture(
   return state.planar.prepare(planarCamera, planarPhysical, frameNumber);
 }
 
+const EMPTY_CUBE_CAPTURE_WORK: CaptureGraphCompileInput['work'] = Object.freeze([]);
+const EMPTY_RECORD_CAPTURES = Object.freeze({
+  cubeCaptureWork: EMPTY_CUBE_CAPTURE_WORK,
+  captureGraph: undefined,
+});
+
+/** Publish capture state for the display planner, and request recording only for actual faces. */
 function prepareCubeCapture(
-  input: CubeCaptureFrameInput | undefined,
-): readonly import('./typed-frame-graph').CubeCaptureGraphWork[] {
-  if (input === undefined) return [];
-  if (input.reflectionProbes === undefined) delete input.state.reflectionProbes;
-  else input.state.reflectionProbes = input.reflectionProbes.graph;
-  const physicalWork = input.faces.map((face) => face.work);
-  input.state.work = physicalWork;
+  capture: CubeCaptureFrameInput | undefined,
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  pipelineState: PipelineState,
+  cameraEntityKey: number | undefined,
+  shadowMapSize: number | undefined,
+  terrainReceivers: CaptureGraphCompileInput['terrainReceivers'],
+): {
+  readonly cubeCaptureWork: CaptureGraphCompileInput['work'];
+  readonly captureGraph: CaptureGraphCompileInput | undefined;
+} {
+  if (capture === undefined) return EMPTY_RECORD_CAPTURES;
+  const probes = capture.reflectionProbes?.graph;
+  if (probes === undefined) delete capture.state.reflectionProbes;
+  else capture.state.reflectionProbes = probes;
+  const work =
+    capture.faces.length === 0 ? EMPTY_CUBE_CAPTURE_WORK : capture.faces.map((face) => face.work);
+  capture.state.work = work;
   if (
-    physicalWork.length === 0 &&
-    !input.state.reflectionProbes?.work.some(
-      (work) => work.rawCaptureFace !== undefined && work.faceCamera !== undefined,
+    work.length === 0 &&
+    !probes?.work.some(
+      (entry) => entry.rawCaptureFace !== undefined && entry.faceCamera !== undefined,
     )
-  )
-    disposeTargetCaptureLighting(input.state);
-  return physicalWork;
+  ) {
+    disposeTargetCaptureLighting(capture.state);
+    return EMPTY_RECORD_CAPTURES;
+  }
+  return {
+    cubeCaptureWork: work,
+    captureGraph: {
+      internals,
+      cameraEntityKey,
+      frameState,
+      pipelineState,
+      capture,
+      work,
+      shadowMapSize,
+      terrainReceivers,
+    },
+  };
 }
 
 const EMPTY_ENTITY_KEYS: ReadonlySet<number> = new Set<number>();
@@ -611,21 +652,19 @@ async function mapReflectionFallbackReadback(
  * admitted here through the same rule. False when the upload fails.
  */
 function prepareVolumetricFogHistory(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  volume: FrameVolumetricFog,
-  admission: VolumeHistoryAdmission | undefined,
-  graph: CaptureRecording,
-  camera: CameraSnapshot,
-  lights: ViewLights,
-  width: number,
-  height: number,
+  prepared: PreparedFrameGraph,
+  queued: ResolvedFrameTemporal,
+  display: InstalledFrameGraph | undefined,
+  captureRecording: CaptureRecording | undefined,
 ):
   | false
   | { readonly context: VolumetricFogFrameContext; readonly signature: VolumeTemporalSignature }
-  | { readonly context: undefined; readonly signature: undefined } {
-  if (volume.graphFog?.status !== 'available' || volume.baseContext === undefined)
-    return { context: undefined, signature: undefined };
+  | undefined {
+  const { volume } = prepared;
+  if (volume.graphFog?.status !== 'available' || volume.baseContext === undefined) return undefined;
+  const { internals, frameState, history, camera, lights } = prepared;
+  const { targetW: width, targetH: height } = queued;
+  const admission = history.fog;
   const admitted =
     admission !== undefined &&
     admission.signature.width === width &&
@@ -640,23 +679,30 @@ function prepareVolumetricFogHistory(
           width,
           height,
         );
-  const historyReadSlot = frameState.volumetricFogHistoryGraph === graph ? admitted.readSlot : null;
+  const graph = display?.graph ?? captureRecording;
+  const historyReadSlot =
+    graph !== undefined && frameState.volumetricFogHistoryGraph === graph
+      ? admitted.readSlot
+      : null;
   const context: VolumetricFogFrameContext = {
     ...volume.baseContext,
     historyReadSlot,
     historyWriteSlot: historyReadSlot === 0 ? 1 : 0,
     historyValid: historyReadSlot !== null,
   };
-  const historyParams = new Float32Array([
-    context.historyValid ? 1 : 0,
-    admitted.signature.worldTimeSeconds ?? 0,
-    admitted.elapsedSeconds,
-  ]);
-  frameState.volumetricFogParams.pending?.params.set(historyParams, 31);
+  const pending = frameState.volumetricFogParams.pending;
+  if (pending === null || pending.buffer !== context.paramsBuffer) return false;
+  const params = pending.params;
+  const historyOffset = 31;
+  params[historyOffset] = Number(context.historyValid);
+  params[historyOffset + 1] = admitted.signature.worldTimeSeconds ?? 0;
+  params[historyOffset + 2] = admitted.elapsedSeconds;
   const historyParamsWritten = internals.device.queue.writeBuffer(
-    context.paramsBuffer,
-    31 * Float32Array.BYTES_PER_ELEMENT,
-    historyParams,
+    pending.buffer,
+    historyOffset * Float32Array.BYTES_PER_ELEMENT,
+    params,
+    historyOffset,
+    3,
   );
   if (!historyParamsWritten.ok) {
     internals.errorRegistry.fire(historyParamsWritten.error);
@@ -686,11 +732,10 @@ export interface GpuDrivenRecordInput {
   readonly deviceGeneration?: number;
   readonly surfaceDynamicInput?: SurfaceDynamicInputFrame;
   readonly geometryLane?: 'automatic' | 'direct';
-  /** Uncompacted GPU-lane frame: receipts visit residual rows; `submitted` covers the rest. */
-  readonly gpuOwned?: {
-    readonly frame: GpuOwnedFrame;
-    readonly submitted: (selection: GpuDrawSelection) => void;
-  };
+  /** Uncompacted frame whose selection leaves only residual work on the CPU. */
+  readonly gpuOwned?: GpuOwnedFrame;
+  /** Exact encoded selection, usable even before extraction enters the uncompacted route. */
+  readonly onSubmittedSelection?: (selection: GpuDrawSelection) => void;
 }
 
 /**
@@ -708,9 +753,7 @@ export interface FrameRecordingAttempt {
   ownsCaptureGraphs: boolean;
   preparedGpuDriven: PreparedGpuDrivenFrame | undefined;
   shadowMeshLease: ShadowMeshInput | undefined;
-  captureFrames: readonly CubeCaptureFrame[];
-  probeCaptureFrames: readonly ProbeCaptureFrame[];
-  planarCaptureFrame: PlanarCaptureFrame | undefined;
+  captureBatch: CaptureGraphBatch | undefined;
   completion: Promise<unknown> | undefined;
   fallbackReadback:
     | Promise<{
@@ -739,9 +782,7 @@ export function createFrameRecordingAttempt(
     ownsCaptureGraphs: false,
     preparedGpuDriven: undefined,
     shadowMeshLease: undefined,
-    captureFrames: [],
-    probeCaptureFrames: [],
-    planarCaptureFrame: undefined,
+    captureBatch: undefined,
     completion: undefined,
     fallbackReadback: undefined,
     captureCompletion: undefined,
@@ -800,33 +841,30 @@ function completeReflectionProbeSubmission(
   frameState.reflectionFallbackObservationSource = undefined;
 }
 
-function attemptCaptureFrames(
-  attempt: FrameRecordingAttempt,
-): readonly (CubeCaptureFrame | ProbeCaptureFrame)[] {
-  return captureGraphFrames({
-    cube: attempt.captureFrames,
-    probes: attempt.probeCaptureFrames,
-    planar: attempt.planarCaptureFrame,
-  });
-}
-
 /** Consume the installed display roster directly and append actual capture contributions in order. */
-function frameScenePassRequests(graph: CaptureRecording, attempt: FrameRecordingAttempt) {
-  const display = captureRecordingRequests(graph);
+function frameScenePassRequests(
+  graph: CaptureRecording | undefined,
+  installed: InstalledFrameGraph | undefined,
+  batch: CaptureGraphBatch | undefined,
+) {
+  const display =
+    installed?.scenePasses ?? (graph === undefined ? [] : captureRecordingRequests(graph));
+  if (batch === undefined) return display;
   let combined: Set<(typeof display)[number]> | undefined;
-  for (const capture of attemptCaptureFrames(attempt)) {
-    if (capture.recording === graph) continue;
+  for (const capture of captureGraphFrames(batch)) {
+    if (capture.recording === graph || capture.recording === installed?.graph) continue;
     const requests = captureRecordingRequests(capture.recording);
     if (requests.length === 0) continue;
     combined ??= new Set(display);
     for (const request of requests) combined.add(request);
   }
-  return combined ?? display.values();
+  return combined ?? display;
 }
 
 function retireCaptureGraphs(attempt: FrameRecordingAttempt): void {
-  const completion = attempt.captureCompletion;
-  for (const { recording } of attemptCaptureFrames(attempt)) {
+  const { captureBatch, captureCompletion: completion } = attempt;
+  if (captureBatch === undefined) return;
+  for (const { recording } of captureGraphFrames(captureBatch)) {
     if (recording instanceof NativeCaptureRecording) continue;
     if (completion === undefined) void recording.retire();
     else
@@ -884,11 +922,12 @@ export function releaseFrameRecordingAttempt(
   const submitted = attempt.submitted;
   for (const pending of attempt.lightTextureResamples) pending.work.discard();
   attempt.lightTextureResamples.length = 0;
-  for (const capture of attemptCaptureFrames(attempt)) {
-    for (const pending of capture.frameState.pendingLightTextureResamples ?? [])
-      pending.work.discard();
-    delete capture.frameState.pendingLightTextureResamples;
-  }
+  if (attempt.captureBatch !== undefined)
+    for (const capture of captureGraphFrames(attempt.captureBatch)) {
+      for (const pending of capture.frameState.pendingLightTextureResamples ?? [])
+        pending.work.discard();
+      delete capture.frameState.pendingLightTextureResamples;
+    }
   if (!attempt.captureSettled) {
     attempt.captureSettled = true;
     completeReflectionProbeSubmission(internals, frameState, attempt, cubeCapture, {
@@ -964,29 +1003,45 @@ function observePreparedResourceGeneration(
   );
 }
 
-function emitSubmittedDrawReceipts(
+function publishSubmittedDrawEvidence(
   renderables: FrameList<RenderableSnapshot>,
   selection: PreparedGpuDrivenFrame['selection'],
   onRenderableDraw: Parameters<typeof emitGpuDrivenDrawReceipts>[2] | undefined,
   frameGpuDriven: GpuDrivenRecordInput | undefined,
 ): void {
-  if (onRenderableDraw === undefined || frameGpuDriven === undefined) return;
+  if (frameGpuDriven === undefined) return;
   const owned = frameGpuDriven.gpuOwned;
-  if (selection !== EMPTY_GPU_DRAW_SELECTION)
-    emitGpuDrivenDrawReceipts(
-      owned?.frame.residual(selection) ?? renderables,
-      selection,
-      onRenderableDraw,
-    );
-  owned?.submitted(selection);
+  const publish = frameGpuDriven.onSubmittedSelection;
+  if (publish !== undefined) publish(selection);
+  else {
+    if (onRenderableDraw === undefined) return;
+    if (selection !== EMPTY_GPU_DRAW_SELECTION)
+      emitGpuDrivenDrawReceipts(renderables, selection, onRenderableDraw);
+  }
   frameGpuDriven.owner.recordDrawSummary(() => {
     if (owned === undefined) return summarizeGpuDrivenDraws(renderables, selection);
-    const residual = owned.frame.residualSet(selection);
+    const residual = owned.residualSet(selection);
     return summarizeGpuDrivenDraws(renderables, selection, (row) => {
-      const slot = owned.frame.slots.identitySlot(row.entityKey);
+      const slot = owned.slots.identitySlot(row.entityKey);
       return slot !== undefined && residual.has(slot);
     });
   });
+}
+
+/** A published atlas needs either a local read lease or a cascade cadence witness.
+ * This admits observation only. Frame settlement still validates the witness. */
+function canObserveDirectionalShadowAtlas(
+  fixedDomain: boolean,
+  lease: RenderReadLease | undefined,
+  lights: ViewLights,
+  casters: PersistentShadowCasterProjection | undefined,
+): boolean {
+  return (
+    fixedDomain &&
+    (lease !== undefined ||
+      (lights.directionalCsmConfig?.staggerCascades === true &&
+        casters?.content.publicationSource !== undefined))
+  );
 }
 
 /** The lease still has to collect mesh reads unless the accepted cache already holds them. */
@@ -1071,38 +1126,35 @@ export function planMissingError(
 }
 
 /**
- * The compiled graph is the acceptance boundary for the prepared Standard
- * lighting declaration. Upload the same declaration only after that graph is
- * current; a failed candidate therefore cannot leave an old graph consuming a
- * new buffer generation.
+ * Fixed lighting bindings belong to the selected graph. Ordered Forward
+ * storage reads the current preparation and admits its physical ports separately.
  */
 function uploadAcceptedStandardLighting(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
+  installed: InstalledFrameGraph | undefined,
   pipelineState: PipelineState,
   camera: CameraSnapshot,
   standard: StandardTopologyInputValue,
   profilePhase: RecordProfileRunner | undefined,
   projectorLightSlot: number | undefined,
-  captureOnly: boolean,
   attempt: FrameRecordingAttempt,
 ): boolean {
-  if (captureOnly) return true;
-  const currentSignature = standardLightingTopologySignature(
-    standard,
-    frameState.standardClusterMembership?.graphLayout,
-  );
-  if (frameState.standardLightingGraphSignature !== currentSignature) {
+  if (installed === undefined) return true;
+  if (
+    installed.standardLighting !== 'current' &&
+    !matchesStandardLightingDeclaration(installed.standardLighting, standard)
+  ) {
     internals.errorRegistry.fire(
       new RendererOperationError('device-operation-failed', {
         operation: 'draw',
         cause: {
           code: 'standard-graph-generation-mismatch',
-          expected: 'compiled graph and prepared Standard lighting share one topology signature',
+          expected: 'the selected graph admits the prepared Standard lighting bindings',
           hint: 'retry the frame after the Standard graph candidate is accepted',
           detail: {
-            expected: currentSignature,
-            actual: frameState.standardLightingGraphSignature,
+            expected: standardLightingDeclaration(standard),
+            actual: installed.standardLighting,
           },
         },
       }),
@@ -1141,16 +1193,6 @@ function uploadAcceptedStandardLighting(
   return true;
 }
 
-function cubeCaptureLayerWrites(
-  cubeCaptureWork: readonly import('./typed-frame-graph').CubeCaptureGraphWork[],
-) {
-  return cubeCaptureWork.map((work) => ({
-    target: work.target,
-    layer: work.layer,
-    ...(work.mipLevel === undefined ? {} : { mipLevel: work.mipLevel }),
-  }));
-}
-
 function captureSwapTarget(
   cubeCaptureWork: readonly import('./typed-frame-graph').CubeCaptureGraphWork[],
 ) {
@@ -1169,37 +1211,18 @@ function captureSwapTarget(
  * legacy mesh slots. Every material row is kept: alpha/custom Shadow groups
  * still bind that table, and its getters/diagnostics remain observed.
  */
-/** Facts unbatched validation reads beside rows and materials: residency and asset scopes. */
-function directGeometryTokens(
-  internals: RenderSystemInternals,
-  sourceScope: RenderResourceScope,
-): readonly unknown[] {
-  return [
-    recordContext(internals).deviceScope,
-    internals.gpuStore.meshResidencyEpoch,
-    sourceScope,
-    sourceScope.revision,
-  ];
-}
-
 function gpuOwnsShadowGeometryFor(
   rendererRecording: boolean,
-  captureOnly: boolean,
   attempt: FrameRecordingAttempt,
   cubeCapture: CubeCaptureFrameInput | undefined,
-  frameState: RenderFrameState,
-  preflightGraph: CaptureRecording,
+  display: InstalledFrameGraph | undefined,
   raster: PreparedGpuDrivenFrame | undefined,
 ): boolean {
   return (
     rendererRecording &&
-    !captureOnly &&
-    attempt.captureFrames.length === 0 &&
-    attempt.probeCaptureFrames.length === 0 &&
-    attempt.planarCaptureFrame === undefined &&
+    attempt.captureBatch === undefined &&
     !hasCubeCaptureViews(cubeCapture) &&
-    frameState.compiledFrameGraph?.graph === preflightGraph &&
-    frameState.compiledFrameGraph.directionalShadowViewCount !== undefined &&
+    display?.directionalShadowViewCount !== undefined &&
     raster?.shadowDirectRequired === false &&
     raster.shadowViewPool !== undefined
   );
@@ -1207,7 +1230,15 @@ function gpuOwnsShadowGeometryFor(
 
 /** Cleanup consumes rows only when a per-entity resource owner needs them. */
 function* cacheRows(groups: readonly DrawRows[]) {
-  for (const rows of groups) yield* rows;
+  let entry: { source: RenderableSnapshot } | undefined;
+  for (const rows of groups)
+    for (let index = 0; index < rows.length; index++) {
+      const source = drawSourceAt(rows, index);
+      if (source === undefined) continue;
+      entry ??= { source };
+      entry.source = source;
+      yield entry;
+    }
 }
 
 function pipelinePreparationSources(
@@ -1268,7 +1299,6 @@ function capsuleShadowLightFor(
  * clear-pass-only path skips the writeBuffer round-trips.
  */
 function frameNeedsViewUploads(
-  internals: RenderSystemInternals,
   frameState: RenderFrameState,
   meshRows: boolean,
   raster: PreparedGpuDrivenFrame | undefined,
@@ -1280,7 +1310,7 @@ function frameNeedsViewUploads(
   return (
     meshRows ||
     (raster !== undefined && materialSlotCount > 0) ||
-    getRenderFeatureGraphState(internals).plans.some(({ plan }) => plan.passes.length > 0) ||
+    viewFeaturesOf(frameState).work.plans.some(({ plan }) => plan.passes.length > 0) ||
     skyboxActive ||
     frameState.environmentFrame?.source.kind === 'atmosphere' ||
     activeVolume !== undefined ||
@@ -1364,20 +1394,19 @@ function writePlanarReflectionUniform(
 /** Prepare the compiled graph's scene and shadow pipelines; pending work defers the picture. */
 function prepareFramePipelineSources(
   frameState: RenderFrameState,
-  graph: CaptureRecording,
+  display: InstalledFrameGraph | undefined,
   runtime: RenderSystemInternals,
   validatedOrdered: DrawRows,
 ): void {
-  const installed = frameState.compiledFrameGraph;
-  if (installed?.graph !== graph) return;
-  for (const prepare of installed.scenePipelinePreparations ?? []) {
+  if (display === undefined) return;
+  for (const prepare of display.scenePipelinePreparations ?? []) {
     prepare.prepareSource?.({ frameState, runtime, validatedOrdered });
   }
 }
 
 function prepareFramePipelines(
   frameState: RenderFrameState,
-  preflightGraph: CaptureRecording,
+  display: InstalledFrameGraph | undefined,
   passCtx: _InternalRenderPipelineContext,
   hasShadowViews: boolean,
   rendererRecording: boolean,
@@ -1386,9 +1415,9 @@ function prepareFramePipelines(
 ): void {
   // The current compiled graph owns material and utility PSO demand together.
   // Registering work never records a detached graph or acquires a surface.
-  if (frameState.compiledFrameGraph?.graph === preflightGraph) {
+  if (display !== undefined) {
     const prepare = () => {
-      for (const prepare of frameState.compiledFrameGraph?.scenePipelinePreparations ?? []) {
+      for (const prepare of display.scenePipelinePreparations ?? []) {
         // The typed owner requests its selected material and geometry PSOs
         // without attachments. Waiting for raster recording serializes hidden
         // material preparation behind unrelated capture/resource readiness.
@@ -1402,8 +1431,7 @@ function prepareFramePipelines(
   }
   frameState.candidatePipelinePreparations?.process(passCtx, hasShadowViews);
   if (
-    frameState.compiledFrameGraph?.graph === preflightGraph &&
-    frameState.compiledFrameGraph.prepareGpuDrivenPipelines?.(
+    display?.prepareGpuDrivenPipelines?.(
       passCtx.pipelinePreparationEntries,
       materialArtifacts,
       (reason) => {
@@ -1418,12 +1446,19 @@ function prepareFramePipelines(
     prepareShadowMaterialPipelines(
       passCtx,
       rendererRecording,
-      frameState.compiledFrameGraph?.graph === preflightGraph
-        ? frameState.compiledFrameGraph.requiresShadowPipelinePreparation
-        : undefined,
+      display?.requiresShadowPipelinePreparation,
     );
   if (passCtx.assets.shaderRegistry.hasPendingMaterialPreparations())
     markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
+  // A pending native pipeline prevents material binding from reaching the
+  // generators. Start the selected draw textures while the pipeline runs.
+  if (frameState.pipelinePreparationPending)
+    prepareGeneratedDrawTextures(
+      passCtx.validatedOrdered,
+      materials,
+      passCtx.resourceScopes ?? passCtx.world,
+      passCtx.store,
+    );
 }
 
 function stageReflectionFallbackReadback(
@@ -1443,11 +1478,8 @@ function stageReflectionFallbackReadback(
 function submittedShadowGraphGenerationFor(
   rendererRecording: boolean,
   frameState: RenderFrameState,
-  preflightGraph: CaptureRecording,
 ): number | undefined {
-  return rendererRecording &&
-    standardViewRecording(frameState.activePipeline) &&
-    frameState.compiledFrameGraph?.graph === preflightGraph
+  return rendererRecording && standardViewRecording(frameState.activePipeline)
     ? frameState.graphGeneration
     : undefined;
 }
@@ -1500,16 +1532,14 @@ function submittedFrameInspection(
   capsuleShadowDirectional: boolean,
 ): NonNullable<RenderFrameState['submittedInspection']> {
   const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
-  const submittedGraph = frameState.compiledFrameGraph?.graph;
+  const submittedBinding = frameState.compiledFrameGraph;
   const receiver = currentForwardShadowReceiver(frameState);
   const readStandardLighting = captureStandardLighting(standard, {
     config: frameState.installedPipelineConfig?.ambientOcclusion,
-    get graph() {
-      return submittedGraph?.inspect();
-    },
-    installedGraphGeneration: frameState.compiledFrameGraph?.targets.graphGeneration,
+    graph: submittedBinding?.ambientOcclusion,
+    installedGraphGeneration: submittedBinding?.targets.graphGeneration,
     deviceGeneration: recordContext(internals).deviceScope.generation,
-    gtaoHistoryFrames: frameState.gtaoHistory?.frameIndex,
+    gtaoHistoryFrames: recordedGtaoHistoryLength(frameState),
   });
   return {
     ...(receiver === undefined ? {} : { forwardShadow: inspectForwardShadow(receiver, standard) }),
@@ -1605,13 +1635,7 @@ export interface FrameRecordingInput {
   readonly volumetricFog: ExtractedVolumetricFog | undefined;
   readonly timingCapture: GpuTimingCapture | undefined;
   readonly shadowCasterProjection: PersistentShadowCasterProjection | undefined;
-  readonly onRenderableDraw:
-    | ((
-        entry: Pick<ValidatedRenderable, 'source'> & Partial<Pick<ValidatedRenderable, 'mesh'>>,
-        submeshIndex?: number,
-        receipt?: RenderableDrawReceipt,
-      ) => void)
-    | undefined;
+  readonly onRenderableDraw: RenderableDrawRecorder | undefined;
   readonly analyticFog: FogFrame | undefined;
   readonly sampleTimeSeconds: number | undefined;
   readonly temporalReset: boolean | undefined;
@@ -1712,15 +1736,33 @@ function capsuleShadowPolicy(
   lights: ViewLights,
   renderables: FrameList<RenderableSnapshot>,
 ) {
+  const shaders = internals.standardSceneShaders;
   const capsuleShadowDirectional =
     standard.prepared.renderPath === 'deferred' ||
-    (internals.standardSceneShaders?.forwardContact !== undefined &&
-      internals.standardSceneShaders.forwardScreenCompose !== undefined);
+    (shaders !== undefined && 'forwardContact' in shaders && 'forwardScreenCompose' in shaders);
   const capsuleShadows =
     capsuleShadowDirectional &&
     lights.cascades?.directionalShadowQuality !== undefined &&
     hasCapsuleShadowDemand(renderables);
   return { capsuleShadowDirectional, capsuleShadows };
+}
+
+function stageVolumePreparation(
+  frameState: RenderFrameState,
+  attempt: FrameRecordingAttempt,
+  volume: FrameVolumetricFog,
+): void {
+  if (volume.preparingPrograms) {
+    markPipelinePreparationPending(frameState, {
+      code: 'scene-pipeline-preparation',
+      pass: 'volumetric-fog',
+    });
+    return;
+  }
+  attempt.volumeInspectionReady = true;
+  attempt.volumeCapability = volume.capability;
+  attempt.viewVolumetricFog = volume.viewFog;
+  attempt.preparedVolumetricFog = volume.prepared;
 }
 
 /** CPU preparation before graph compilation; its product lives on the recording view. */
@@ -1804,11 +1846,8 @@ export function prepareFrameGraphInputs(
       () =>
         gpuDriven?.scene !== undefined && shadowCasterProjection !== undefined
           ? []
-          : computeFoldBuckets(
-              world,
-              frameState,
-              transparentDispatch,
-              renderables.map((source) => foldRenderableSnapshot(source, source.material.snapshot)),
+          : computeFoldBuckets(world, frameState, transparentDispatch, (index) =>
+              renderables.at(index),
             ),
     );
 
@@ -1897,10 +1936,7 @@ export function prepareFrameGraphInputs(
       analyticFog,
     }),
   );
-  attempt.volumeInspectionReady = true;
-  attempt.volumeCapability = volume.capability;
-  attempt.viewVolumetricFog = volume.viewFog;
-  attempt.preparedVolumetricFog = volume.prepared;
+  stageVolumePreparation(frameState, attempt, volume);
   const directionalPreparationLimit = directionalShadowPreparationLimit(
     directionalShadowCascadeCount,
     frameState.compiledFrameGraph,
@@ -1913,7 +1949,15 @@ export function prepareFrameGraphInputs(
   let materialBindingClasses: ReadonlyMap<string, string> | undefined;
   let directShadowValidated: DrawRows | undefined;
   let directShadowMaterials: MaterialRelationFrame | undefined;
-  const cubeCaptureWork = prepareCubeCapture(cubeCapture);
+  const { cubeCaptureWork, captureGraph } = prepareCubeCapture(
+    cubeCapture,
+    internals,
+    frameState,
+    pipelineState,
+    camera.entityKey,
+    graphShadowMapSize,
+    terrainReceivers,
+  );
   const captureViewWork = prepareCaptureView(internals, camera);
   if (captureViewWork === undefined) return { kind: 'rejected' as const };
   // `render-ssr-admission` admitted this view's SSR in RenderQueue.
@@ -1974,15 +2018,20 @@ export function prepareFrameGraphInputs(
     lights,
     effectiveShadowMapSize,
   );
-  // Keep the original physical read boundary across preparation, even though the
-  // complete set of direct casters is known only after draw phase emission.
-  const meshChanges = fixedShadowDomain ? internals.gpuStore.meshChanges : undefined;
+  // Capture the physical epoch before preparing any direct caster rows.
+  const meshChanges = canObserveDirectionalShadowAtlas(
+    fixedShadowDomain,
+    renderReadLease,
+    lights,
+    shadowCasterProjection,
+  )
+    ? internals.gpuStore.meshChanges
+    : undefined;
   const meshEpoch = meshChanges?.epoch;
   const meshGeneration = meshChanges?.generation;
   let directMeshDomain: object | null = null;
   // CPU material-derived selection has no fixed source witness yet.
   let shadowGeometryFixed = fixedShadowDomain;
-  const directGeometry = directGeometryTokens(internals, sourceScope);
   const shadowLodSelection = selectDirectionalShadowLod(internals, frameState, fixedShadowDomain);
   const shadowLodRows = cpuLaneLodRows(internals.device.caps, camera, shadowLodSelection);
   frameState.drawPhases ??= new ViewDrawPhases();
@@ -1997,9 +2046,9 @@ export function prepareFrameGraphInputs(
     prepareSources,
     viewDraws: shadowCasterProjection?.content.viewDraws,
     prepareGeometry,
-    geometry: directGeometry,
+    meshResidency: internals.gpuStore.meshChanges,
     lodRows: shadowLodRows,
-    retainMeshDomain: fixedShadowDomain && !gpuInput.shadowViews,
+    retainMeshDomain: meshChanges !== undefined && !gpuInput.shadowViews,
   });
   // `render-subsurface-admission` admitted this view's diffusion lane in RenderQueue.
   const subsurface = consumeViewSubsurface(internals, cubeCapture, captureOnly, () =>
@@ -2121,9 +2170,7 @@ export function prepareFrameGraphInputs(
     );
   }
 
-  // Compile the single frame graph only after GPU preparation has projected
-  // the current frame. This keeps the graph topology and its execution
-  // closure on the same prepared GPU-owned draw set.
+  // Compilation and encoding both consume the projected view of this attempt.
   // `view-diffuse-gi` prepared this view's resolution and GI in RenderPrepare.
   const { resolution, renderExtent, gi } = consumeViewDiffuseGi(
     internals,
@@ -2143,6 +2190,7 @@ export function prepareFrameGraphInputs(
     pipelineState,
     cubeCapture,
     cubeCaptureWork,
+    captureGraph,
     graphShadowMapSize,
     terrainReceivers,
     profilePhase,
@@ -2181,7 +2229,6 @@ export function prepareFrameGraphInputs(
     prepareSources,
     prepareGeometry,
     gpuDriven,
-    directGeometry,
     drawPhases,
     transparentDispatch,
     manualDraws,
@@ -2289,39 +2336,6 @@ export type QueuedFrameTemporalOutcome =
   | { readonly kind: 'failed'; readonly cause: unknown };
 type ResolvedFrameTemporal = Extract<QueuedFrameTemporalOutcome, { kind: 'resolved' }>;
 
-function sealFrameHistory(
-  prepared: PreparedFrameGraph,
-  preflightGraph: CaptureRecording,
-  queued: ResolvedFrameTemporal,
-) {
-  const { internals, frameState, volume, history, camera, lights } = prepared;
-  const { clock, temporal, temporalView, targetW, targetH } = queued;
-  const volumeHistory = prepareVolumetricFogHistory(
-    internals,
-    frameState,
-    volume,
-    history.fog,
-    preflightGraph,
-    camera,
-    lights,
-    targetW,
-    targetH,
-  );
-  if (volumeHistory === false) {
-    return { kind: 'rejected' as const };
-  }
-  const activeVolumetricFogContext = volumeHistory.context;
-
-  return {
-    kind: 'history' as const,
-    clock,
-    temporal,
-    temporalView,
-    volumeHistory,
-    activeVolumetricFogContext,
-  };
-}
-
 function forwardProjectsSun(frameState: RenderFrameState): boolean {
   const receiver = currentForwardShadowReceiver(frameState);
   return receiver?.mode === 'screen' && receiver.directional !== false;
@@ -2331,24 +2345,20 @@ function forwardProjectsSun(frameState: RenderFrameState): boolean {
 function standardClusterTextureExtentForGraph(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
-  preflightGraph: CaptureRecording,
-  captureOnly: boolean,
+  display: InstalledFrameGraph | undefined,
 ): RenderFrameState['standardClusterTextureExtent'] {
-  const installedGraph = frameState.compiledFrameGraph;
   const environment = frameState.environmentFrame?.source;
   const atmosphere =
     !internals.device.caps.storageBuffer &&
     environment?.kind === 'atmosphere' &&
     !environment.atmosphere.backgroundOnly;
-  if (captureOnly || installedGraph?.graph !== preflightGraph)
-    return atmosphere ? { atmosphere: true } : undefined;
+  if (display === undefined) return atmosphere ? { atmosphere: true } : undefined;
   const receiver = currentForwardShadowReceiver(frameState);
   if (receiver?.mode === 'screen' && receiver.ambientOcclusion)
     return { screen: { width: receiver.width, height: receiver.height } };
   // The uploader and the pass sample the same physical Cluster generation.
-  if (installedGraph.displayPorts !== undefined)
-    return installedGraph.displayPorts.clusterTextureExtent;
-  const atlas = installedGraph.targets.getColorTargetDescriptor('forward-screen-data');
+  if (display.displayPorts !== undefined) return display.displayPorts.clusterTextureExtent;
+  const atlas = display.targets.getColorTargetDescriptor('forward-screen-data');
   const screen =
     atlas === undefined
       ? undefined
@@ -2396,10 +2406,27 @@ function forwardShadowProjectionInputs(frameState: RenderFrameState, lights: Vie
     : undefined;
 }
 
-export function sealFrameGraph(
+export function usesUe5Atmosphere(
+  frame: RenderFrameState,
+  defaultProfile: RenderSystemInternals['standardProfile'],
+  captureOnly: boolean,
+): boolean {
+  const profile = frame.cameraStandardProfile ?? defaultProfile;
+  const source = frame.environmentFrame?.source;
+  return (
+    !captureOnly &&
+    profile?.renderPath === 'forward' &&
+    profile.atmosphereLutModel === 'ue5-desktop' &&
+    source?.kind === 'atmosphere' &&
+    !source.atmosphere.backgroundOnly
+  );
+}
+
+function prepareViewCommands(
   prepared: PreparedFrameGraph,
-  preflightGraph: CaptureRecording,
+  display: InstalledFrameGraph | undefined,
   queued: ResolvedFrameTemporal,
+  captureRecording: CaptureRecording | undefined,
 ) {
   const {
     internals,
@@ -2428,7 +2455,6 @@ export function sealFrameGraph(
     prepareSources,
     prepareGeometry,
     gpuDriven,
-    directGeometry,
     drawPhases,
     transparentDispatch,
     manualDraws,
@@ -2465,19 +2491,18 @@ export function sealFrameGraph(
   frameState.standardClusterTextureExtent = standardClusterTextureExtentForGraph(
     internals,
     frameState,
-    preflightGraph,
-    captureOnly,
+    display,
   );
   if (
     !uploadAcceptedStandardLighting(
       internals,
       frameState,
+      display,
       pipelineState,
       camera,
       standard,
       profilePhase,
       volume.spotLightProjector?.lightSlotIndex,
-      captureOnly,
       attempt,
     )
   ) {
@@ -2490,16 +2515,21 @@ export function sealFrameGraph(
   const target: { current: ReturnType<typeof acquireSwapChainTarget> | undefined } = {
     current: undefined,
   };
-  const { targetW, targetH } = queued;
+  const { clock, temporal, temporalView, targetW, targetH } = queued;
   const submittedBarrelMapping =
-    captureOnly || preflightGraph instanceof NativeCaptureRecording
+    display === undefined
       ? undefined
-      : resolveSubmittedBarrelMapping(frameState, preflightGraph, camera, targetW, targetH);
+      : resolveSubmittedBarrelMapping(
+          frameState,
+          display.hasBarrelDistortionPass,
+          camera,
+          targetW,
+          targetH,
+        );
 
-  const sealedHistory = sealFrameHistory(prepared, preflightGraph, queued);
-  if (sealedHistory.kind === 'rejected') return { kind: 'rejected' as const };
-  const { clock, temporal, temporalView, volumeHistory, activeVolumetricFogContext } =
-    sealedHistory;
+  const volumeHistory = prepareVolumetricFogHistory(prepared, queued, display, captureRecording);
+  if (volumeHistory === false) return { kind: 'rejected' as const };
+  const activeVolumetricFogContext = volumeHistory?.context;
 
   // The clear color is read from the active CameraSnapshot's single
   // `clearColor` field; the zero-camera fallback carries [0, 0, 0, 1]. A
@@ -2529,11 +2559,9 @@ export function sealFrameGraph(
   const geometryDepthKey: string | null = null;
   const gpuOwnsShadowGeometry = gpuOwnsShadowGeometryFor(
     rendererRecording,
-    captureOnly,
     attempt,
     cubeCapture,
-    frameState,
-    preflightGraph,
+    display,
     rasterGpuDriven,
   );
 
@@ -2545,29 +2573,33 @@ export function sealFrameGraph(
     const sceneWork =
       nativeScene === undefined || shadowCasterProjection === undefined
         ? undefined
-        : prepareScenePasses(frameScenePassRequests(preflightGraph, attempt), {
-            scene: nativeScene,
-            currentTransparency: prepared.passPlan.transparent.topology,
-            currentTransmissionDemand: prepared.passPlan.transmission.demand,
-            retainMaterialBindings: canRetainMaterialBindings(materialBindingClasses),
-            materials: shadowCasterProjection.content.materials,
-            gpu: gpuSelection,
-            meshes: gpuDrivenMeshes,
-            sourceScope,
-            prepareUnbatched: prepareSources,
-            viewDraws: shadowCasterProjection.content.viewDraws ?? [],
-            prepareGeometry,
-            fold: (dispatch, sources) => computeFoldBuckets(world, frameState, dispatch, sources),
-            lod: selectGpuLodLane(internals.device.caps),
-            world,
-            camera,
-            boundsOf: shadowCasterProjection.worldBoundsOf,
-            captureVisibility: capture?.observe,
-            cameraVisible: gpuDriven?.cameraVisible,
-            cameraAdmission: gpuDriven?.cameraAdmission,
-            geometry: directGeometry,
-            phases: drawPhases,
-          });
+        : prepareScenePasses(
+            frameScenePassRequests(captureRecording, display, attempt.captureBatch),
+            {
+              scene: nativeScene,
+              currentTransparency: prepared.passPlan.transparent.topology,
+              currentTransmissionDemand: prepared.passPlan.transmission.demand,
+              retainMaterialBindings: canRetainMaterialBindings(materialBindingClasses),
+              materials: shadowCasterProjection.content.materials,
+              gpu: gpuSelection,
+              meshes: gpuDrivenMeshes,
+              sourceScope,
+              prepareUnbatched: prepareSources,
+              viewDraws: shadowCasterProjection.content.viewDraws ?? [],
+              prepareGeometry,
+              fold: (dispatch, read, materials) =>
+                computeFoldBuckets(world, frameState, dispatch, read, materials),
+              lod: selectGpuLodLane(internals.device.caps),
+              world,
+              camera,
+              boundsOf: shadowCasterProjection.worldBoundsOf,
+              captureVisibility: capture?.observe,
+              cameraVisible: gpuDriven?.cameraVisible,
+              cameraAdmission: gpuDriven?.cameraAdmission,
+              meshResidency: internals.gpuStore.meshChanges,
+              phases: drawPhases,
+            },
+          );
     return sceneWork;
   };
   const sceneWork = prepareOwnedSceneWork();
@@ -2601,7 +2633,7 @@ export function sealFrameGraph(
     ),
   );
   const validatedOrdered = dispatchPlan.validatedOrdered;
-  prepareFramePipelineSources(frameState, preflightGraph, internals, validatedOrdered);
+  prepareFramePipelineSources(frameState, display, internals, validatedOrdered);
   const waterMaterialDrawClosure = finalizeWaterMaterialAdmissionDraws(
     validatedOrdered,
     sceneWork === undefined ? undefined : nativeScene?.drawSnapshotAt,
@@ -2640,7 +2672,6 @@ export function sealFrameGraph(
   const vertexHeightFog = frameUsesVertexHeightFog(prepared);
   if (
     frameNeedsViewUploads(
-      internals,
       frameState,
       meshRows,
       rasterGpuDriven,
@@ -2694,6 +2725,8 @@ export function sealFrameGraph(
           frameState.activeTemporalGpuState?.valid === true &&
           frameState.activeTemporalGpuState.width === targetW &&
           frameState.activeTemporalGpuState.height === targetH,
+        usesUe5Atmosphere(frameState, internals.standardProfile, captureOnly),
+        temporal.currentUnjitteredViewProjection,
       );
       writeShadowCasterUniforms(
         internals.device.queue,
@@ -2711,7 +2744,6 @@ export function sealFrameGraph(
     'record/scene-state/directional-shadow-cache',
     () =>
       prepareDirectionalShadowCache(
-        internals,
         frameState,
         sourceScope,
         renderReadLease,
@@ -2768,9 +2800,8 @@ export function sealFrameGraph(
     temporalView,
     targetH,
     submittedBarrelMapping,
-    getRenderFeatureGraphState(internals).fullscreenEffects,
-    frameState.compiledFrameGraph?.graph === preflightGraph &&
-      frameState.compiledFrameGraph.displayPorts?.standardPost?.nativeGrade === true,
+    viewFeaturesOf(frameState).fullscreenEffects,
+    display?.displayPorts?.standardPost?.nativeGrade === true,
   );
 
   observePreparedResourceGeneration(frameState, attempt.preparedGpuDriven);
@@ -2929,14 +2960,13 @@ export function sealFrameGraph(
   };
   prepareFramePipelines(
     frameState,
-    preflightGraph,
+    display,
     passCtx,
     hasShadowViews,
     rendererRecording,
     acceptedMaterialArtifacts,
     fixedMaterials,
   );
-
   return {
     kind: 'sealed' as const,
     target,
@@ -2955,10 +2985,10 @@ export function sealFrameGraph(
   };
 }
 
-export type SealedFrameGraph = Extract<ReturnType<typeof sealFrameGraph>, { kind: 'sealed' }>;
+type PreparedViewCommands = Extract<ReturnType<typeof prepareViewCommands>, { kind: 'sealed' }>;
 
-/** Direct harness compile input; production graph compilation reads the existing view components. */
-export function compileDirectPreparedGraph(prepared: PreparedFrameGraph): ViewGraphCompileOutcome {
+/** Plan the passes from the exact inputs already admitted by this record attempt. */
+export function compilePreparedViewGraph(prepared: PreparedFrameGraph): ViewGraphCompileOutcome {
   const {
     internals,
     frameState,
@@ -2997,7 +3027,10 @@ export function compileDirectPreparedGraph(prepared: PreparedFrameGraph): ViewGr
     cubeCaptureState: recordContext(internals).captureView?.state ?? cubeCapture?.state,
     clearOnly: cameras.length === 0,
     passPlan,
-    unfoggedOpaque: fixedMaterials.hasUnfoggedOpaque,
+    unfoggedOpaque:
+      internals.viewEntity === undefined
+        ? fixedMaterials.hasUnfoggedOpaque
+        : passPlan.unfoggedOpaque,
     capsuleShadows: prepared.capsuleShadows,
     volumetricFog: volume.graphFog,
     volumeTopologyCandidate: volume.topologyCandidate,
@@ -3005,7 +3038,7 @@ export function compileDirectPreparedGraph(prepared: PreparedFrameGraph): ViewGr
     ssr: ssrAdmission,
     renderExtent,
     analyticFog: analyticFogActive,
-    cloudShadowResolution: cloudShadowProjection?.rawResolution,
+    cloudShadowLayout: cloudShadowProjection?.spatialLayout,
     terrainReceivers,
     subsurface: subsurface.value,
     rendererRecording,
@@ -3014,11 +3047,12 @@ export function compileDirectPreparedGraph(prepared: PreparedFrameGraph): ViewGr
 }
 
 export type ViewGraphSealOutcome =
+  | { readonly kind: 'pending' }
   | {
       readonly kind: 'sealed';
       readonly configurationRevision?: number | undefined;
-      readonly graph: CaptureRecording;
-      readonly value: SealedFrameGraph;
+      readonly display: InstalledFrameGraph | undefined;
+      readonly value: PreparedViewCommands;
     }
   | {
       readonly kind: 'rejected';
@@ -3034,32 +3068,13 @@ export type ViewGraphSealOutcome =
       readonly error: RendererOperationError<'graph-build-failed'> | ProjectedDecalInvalidError;
     };
 
-/** Consume compiler products, adopt the selected graph and seal its actual resource domain. */
-export function sealCompiledViewGraph(
+function prepareViewCommandOutcome(
   prepared: PreparedFrameGraph,
-  compiled: ViewGraphCompileOutcome | undefined,
-  captures: CaptureGraphOutcome,
+  display: InstalledFrameGraph | undefined,
   temporal: QueuedFrameTemporalOutcome | undefined,
+  configurationRevision: number | undefined,
+  captureRecording?: CaptureRecording,
 ): ViewGraphSealOutcome {
-  const { internals, frameState, attempt, captureOnly, profilePhase, resolution, renderExtent } =
-    prepared;
-  if (!captures.ok) {
-    internals.errorRegistry.fire(captures.error);
-    return { kind: 'rejected', code: 'capture-compile' };
-  }
-  attempt.captureFrames = captures.value.cube;
-  attempt.probeCaptureFrames = captures.value.probes;
-  attempt.planarCaptureFrame = captures.value.planar;
-  if (!captureOnly && compiled === undefined) return { kind: 'rejected', code: 'view-compile' };
-  const graph =
-    compiled === undefined
-      ? (attempt.captureFrames[0]?.recording ?? null)
-      : runRecordProfilePhase(profilePhase, 'record/render-graph', () =>
-          adoptViewGraph(internals, frameState, compiled),
-        );
-  if (graph === null) return { kind: 'rejected', code: 'graph-unavailable' };
-  if (retainedGraphExtentMismatch(frameState, resolution.submittedExtent, renderExtent))
-    return { kind: 'rejected', code: 'extent-mismatch' };
   if (temporal === undefined || temporal.kind === 'failed')
     return {
       kind: 'failed',
@@ -3075,19 +3090,83 @@ export function sealCompiledViewGraph(
       }),
     };
   if (temporal.kind === 'rejected') return { kind: 'rejected', code: 'resource-seal' };
-  const sealed = sealFrameGraph(prepared, graph, temporal);
+  const sealed = prepareViewCommands(prepared, display, temporal, captureRecording);
   if (sealed.kind === 'rejected') return { kind: 'rejected', code: 'resource-seal' };
+  return { kind: 'sealed', display, value: sealed, configurationRevision };
+}
+
+function captureBatchForRecording(batch: CaptureGraphBatch): CaptureGraphBatch | undefined {
+  return batch.cube.length !== 0 || batch.probes.length !== 0 || batch.planar !== undefined
+    ? batch
+    : undefined;
+}
+
+/** Admit current ordered display work directly from its physical binding. */
+export function prepareOrderedDisplayRecording(
+  prepared: PreparedFrameGraph,
+  ordered: OrderedDisplayOutcome,
+  temporal: QueuedFrameTemporalOutcome | undefined,
+  captures?: CaptureGraphBatch,
+): ViewGraphSealOutcome {
+  const { internals, frameState, profilePhase, attempt } = prepared;
+  if (captures !== undefined) attempt.captureBatch = captureBatchForRecording(captures);
+  const binding =
+    profilePhase === undefined
+      ? adoptOrderedDisplay(internals, frameState, ordered)
+      : runRecordProfilePhase(profilePhase, 'record/render-graph', () =>
+          adoptOrderedDisplay(internals, frameState, ordered),
+        );
+  return prepareViewCommandOutcome(prepared, binding, temporal, ordered.configurationRevision);
+}
+
+/** Consume compiler products, adopt the selected graph and seal its actual resource domain. */
+export function sealCompiledViewGraph(
+  prepared: PreparedFrameGraph,
+  compiled: Exclude<ViewGraphCompileOutcome, OrderedDisplayOutcome> | undefined,
+  captures: CaptureGraphOutcome,
+  temporal: QueuedFrameTemporalOutcome | undefined,
+): ViewGraphSealOutcome {
+  const { internals, frameState, attempt, captureOnly, profilePhase, resolution, renderExtent } =
+    prepared;
+  if (!captures.ok) {
+    internals.errorRegistry.fire(captures.error);
+    return { kind: 'rejected', code: 'capture-compile' };
+  }
+  attempt.captureBatch = captureBatchForRecording(captures.value);
+  if (!captureOnly && compiled === undefined) return { kind: 'rejected', code: 'view-compile' };
+  const display =
+    compiled === undefined
+      ? undefined
+      : (runRecordProfilePhase(profilePhase, 'record/render-graph', () =>
+          adoptViewGraph(internals, frameState, compiled),
+        ) ?? undefined);
+  const graph = compiled === undefined ? captures.value.cube[0]?.recording : display?.graph;
+  if (graph === undefined) {
+    if (compiled?.kind === 'rejected' && compiled.code === 'post-chain-pending') {
+      markPipelinePreparationPending(frameState, { code: 'pipeline-preparation' });
+      return { kind: 'pending' };
+    }
+    return { kind: 'rejected', code: 'graph-unavailable' };
+  }
+  if (retainedGraphExtentMismatch(frameState, resolution.submittedExtent, renderExtent))
+    return { kind: 'rejected', code: 'extent-mismatch' };
   // A retained graph draws the last admitted request. Accepted plans capture the
   // request at compile, even if it uses the same physical graph as the preceding scene.
   const configurationRevision =
     compiled?.kind === 'retained'
-      ? frameState.compiledFrameGraph?.configurationRevision
+      ? display?.configurationRevision
       : compiled?.kind === 'compiled' ||
           compiled?.kind === 'promoted' ||
           compiled?.kind === 'reused'
         ? compiled.effects.configurationRevision
         : undefined;
-  return { kind: 'sealed', graph, value: sealed, configurationRevision };
+  return prepareViewCommandOutcome(
+    prepared,
+    display,
+    temporal,
+    configurationRevision,
+    display === undefined ? graph : undefined,
+  );
 }
 
 export type FrameCaptureEncodeOutcome =
@@ -3095,22 +3174,40 @@ export type FrameCaptureEncodeOutcome =
   | { readonly kind: 'pending' }
   | { readonly kind: 'rejected' };
 
+const FRAME_CAPTURE_READY: FrameCaptureEncodeOutcome = Object.freeze({ kind: 'ready' });
+
 export function encodePreparedFrameCaptures(
   prepared: PreparedFrameGraph,
-  sealed: SealedFrameGraph,
+  sealed: PreparedViewCommands,
 ): FrameCaptureEncodeOutcome {
-  const { frameState, volume, cloudShadowProjection, light, bindGroupCounts } = prepared;
-  const { passCtx, clock, meshRows } = sealed;
-
-  const { internals, attempt } = prepared;
+  const { frameState, attempt } = prepared;
+  const batch = attempt.captureBatch;
+  // Forward display and probe-capture PSO requests are independent of shadow/capture
+  // completion. Start them together on WebGPU while normal encoding retains readiness.
+  if (!prepared.captureOnly && prepared.internals.device.caps.backendKind === 'webgpu') {
+    const hasCaptureWork =
+      batch !== undefined &&
+      (batch.cube.length !== 0 || batch.probes.length !== 0 || batch.planar !== undefined);
+    if (hasCaptureWork || frameState.pipelinePreparationPending) {
+      for (const prepare of frameState.compiledFrameGraph?.scenePipelinePreparations ?? [])
+        prepare.prepareVisible?.(sealed.passCtx);
+    }
+    if (frameState.pipelinePreparationPending && batch !== undefined && batch.probes.length !== 0)
+      requestProbeCapturePipelines(sealed.passCtx, batch.probes);
+  }
   if (frameState.pipelinePreparationPending) return { kind: 'pending' };
+  if (batch === undefined) return FRAME_CAPTURE_READY;
+
+  const { internals, volume, cloudShadowProjection, light, bindGroupCounts } = prepared;
+  const { passCtx, clock, meshRows } = sealed;
+  const { cube, probes, planar } = batch;
   markCaptureGraphsEncoded(internals);
   try {
     executeCaptureFrames(
       internals,
       frameState,
       passCtx,
-      captureGraphFrames({ cube: attempt.captureFrames, probes: attempt.probeCaptureFrames }),
+      captureGraphFrames({ cube, probes }),
       light,
       volume.spotLightProjector?.spotIndex,
       cloudShadowProjection,
@@ -3124,13 +3221,13 @@ export function encodePreparedFrameCaptures(
     throw cause;
   }
   passCtx.planarReflectionCapture =
-    attempt.planarCaptureFrame === undefined
+    planar === undefined
       ? undefined
       : planarCaptureRecorder(
           internals,
           frameState,
           passCtx,
-          attempt.planarCaptureFrame,
+          planar,
           light,
           volume.spotLightProjector?.spotIndex,
           cloudShadowProjection,
@@ -3140,7 +3237,7 @@ export function encodePreparedFrameCaptures(
           attempt.lightTextureResamples,
         );
 
-  return { kind: frameState.pipelinePreparationPending ? 'pending' : 'ready' };
+  return frameState.pipelinePreparationPending ? { kind: 'pending' } : FRAME_CAPTURE_READY;
 }
 
 export type PreparedViewEncoding =
@@ -3163,7 +3260,8 @@ export function encodePreparedViewGraph(
   prepared: PreparedFrameGraph,
   seal: Extract<ViewGraphSealOutcome, { kind: 'sealed' }>,
 ): ViewFrameEncodeOutcome {
-  const preflightGraph = seal.graph;
+  const { display } = seal;
+  const captureOnly = display === undefined;
   const sealed = seal.value;
   const {
     frameState,
@@ -3172,7 +3270,6 @@ export function encodePreparedViewGraph(
     cubeCapture,
     cubeCaptureWork,
     profilePhase,
-    captureOnly,
     rasterGpuDriven,
     volume,
     rendererRecording,
@@ -3193,6 +3290,20 @@ export function encodePreparedViewGraph(
 
   const { internals, attempt } = prepared;
   if (frameState.pipelinePreparationPending) return { kind: 'pending' };
+  if (
+    display !== undefined &&
+    (frameState.compiledFrameGraph !== display ||
+      !viewGraphDeviceIsCurrent(display, recordContext(internals).deviceScope))
+  ) {
+    internals.errorRegistry.fire(
+      new RendererOperationError('frame-submit-rejected', {
+        operation: 'draw',
+        stage: 'submit',
+        accepted: false,
+      }),
+    );
+    return { kind: 'rejected' };
+  }
   target.current = runRecordProfilePhase(profilePhase, 'record/swapchain', () =>
     captureOnly || captureViewWork.length > 0
       ? captureSwapTarget(captureOnly ? cubeCaptureWork : captureViewWork)
@@ -3207,14 +3318,7 @@ export function encodePreparedViewGraph(
       kind: 'encoded',
       value: {
         kind: 'capture',
-        work: encodeCaptureOnlyFrame(
-          internals,
-          frameState,
-          attempt,
-          encoder,
-          cubeCaptureLayerWrites(cubeCaptureWork),
-          nativeScene,
-        ),
+        work: encodeCaptureOnlyFrame(internals, attempt, encoder, nativeScene),
       },
     };
   const fallbackReadbackRequest = stageReflectionFallbackReadback(internals, frameState);
@@ -3223,7 +3327,7 @@ export function encodePreparedViewGraph(
   stageGpuDrivenCommit(
     frameState,
     attempt,
-    submittedShadowGraphGenerationFor(rendererRecording, frameState, preflightGraph),
+    submittedShadowGraphGenerationFor(rendererRecording, frameState),
   );
   for (const pending of attempt.lightTextureResamples) {
     const encoded = pending.work.execute(encoder, recordContext(internals).framePassNames);
@@ -3250,11 +3354,11 @@ export function encodePreparedViewGraph(
     recordCompiledFrameGraph(
       internals,
       frameState,
+      display,
       passCtx,
       encoder,
       undefined,
       frameHooks,
-      cubeCaptureWork.length === 0 ? undefined : cubeCaptureLayerWrites(cubeCaptureWork),
       (done) => {
         attempt.completion = done;
         frameState.surfaceSubmissionObservation?.submit(done, frameState.graphGeneration);
@@ -3297,9 +3401,9 @@ export function settlePreparedViewGraph(
   if (encoding.kind === 'capture')
     return settleCaptureOnlyFrame(internals, prepared.frameState, attempt, result);
   const { fallbackReadbackRequest, sampleResolution, frameTiming } = encoding;
-  const preflightGraph = seal.graph;
-  if (preflightGraph instanceof NativeCaptureRecording)
-    throw new Error('Display submission requires its display recording');
+  const displayRecording = seal.display;
+  if (displayRecording === undefined)
+    throw new Error('Display submission requires its selected display recording');
   const sealed = seal.value;
   const {
     frameState,
@@ -3367,14 +3471,14 @@ export function settlePreparedViewGraph(
         isTemporalAntialias(prepared.camera.antialias),
     });
   }
-  emitSubmittedDrawReceipts(renderables, gpuSelection, onRenderableDraw, frameGpuDriven);
+  publishSubmittedDrawEvidence(renderables, gpuSelection, onRenderableDraw, frameGpuDriven);
   stageSubmittedShadows(frameState, cascadeCadence, directionalShadowCache);
   frameState.volumetricFogCandidate = {
     volumetricFog,
     volume,
     context: activeVolumetricFogContext,
-    signature: volumeHistory.signature,
-    graph: preflightGraph,
+    signature: volumeHistory?.signature,
+    graph: displayRecording.graph,
     inspection: stagedVolumeInspection(attempt, lights),
   };
   frameState.submittedInspection = submittedFrameInspection(

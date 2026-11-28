@@ -1182,18 +1182,15 @@ describe('selected GPU material graph dependencies', () => {
       );
       const state = defined(f.input.materialPipelineState);
       const skinLayout = buildGpuDrivenPrimitiveBindGroupLayout(f.device, true);
+      const programs = defined(state.gpuDrivenPbrPrograms);
+      const rigidProgram = defined(programs.get(defined(standardPbrProgramKey(main.material))));
+      const skinKey = defined(standardPbrProgramKey(skinArtifact.material));
       const materialPipelineState = {
         ...state,
-        gpuDrivenPbrPrograms: new Map([
-          ...defined(state.gpuDrivenPbrPrograms),
-          [
-            defined(standardPbrProgramKey(skinArtifact.material)),
-            {
-              module: defined([...defined(state.gpuDrivenPbrPrograms).values()][0]).module,
-              artifact: skinArtifact,
-            },
-          ],
-        ]),
+        gpuDrivenPbrPrograms: {
+          get: (key: string) =>
+            key === skinKey ? { ...rigidProgram, artifact: skinArtifact } : programs.get(key),
+        },
         gpuDrivenPbrSkinPipelineLayout: defined(state.gpuDrivenPbrPipelineLayout),
         gpuDrivenSkinPrimitiveBindGroupLayout: skinLayout,
       };

@@ -1,0 +1,51 @@
+{
+  "cases": [
+    {
+      "name": "clear",
+      "offset": 6,
+      "kind": "clear",
+      "part": "sleeve",
+      "gap": 6,
+      "depth": 0,
+      "errorBound": 0.0008228731719022164,
+      "witnessLength": 6,
+      "samples": 0,
+      "partsByKind": {
+        "clear": 1,
+        "skipped": 11
+      }
+    },
+    {
+      "name": "touching",
+      "offset": 0,
+      "kind": "touching",
+      "part": "sleeve",
+      "gap": 0.00008489183666701109,
+      "depth": 0,
+      "errorBound": 0.00008489183666701109,
+      "witnessLength": 0.00008489183666701109,
+      "samples": 834,
+      "partsByKind": {
+        "touching": 1,
+        "skipped": 11
+      }
+    },
+    {
+      "name": "interfering",
+      "offset": -2,
+      "kind": "interfering",
+      "part": "sleeve",
+      "gap": 0,
+      "depth": 1.9999999632328567,
+      "errorBound": 6.778727589240029e-15,
+      "witnessLength": 6.778727589240029e-15,
+      "samples": 834,
+      "partsByKind": {
+        "interfering": 1,
+        "skipped": 11
+      }
+    }
+  ],
+  "failed": [],
+  "sheet": "sheet.png"
+}

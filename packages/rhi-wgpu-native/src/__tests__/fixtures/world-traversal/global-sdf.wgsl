@@ -1277,6 +1277,9 @@ fn traceWorld(ray: Ray, maxSteps: u32, minStepFactor: f32) -> Hit {
  }
  return Hit(state,surface.metrics,surface.position,surface.normal);
 }
+fn traceWorldVisibility(ray: Ray, maxSteps: u32, minStepFactor: f32) -> Hit {
+ return traceWorld(ray,maxSteps,minStepFactor);
+}
 fn worldHitCandidates(hit: Hit) -> Candidates {
  if(hit.state.x==1u && (hit.state.y&0x80000000u)!=0u){return Candidates(vec4u(1u,0u,hit.state.x,1u),vec4u(hit.state.w,0xffffffffu,0xffffffffu,0xffffffffu));}
  return findCandidates(SdfHit(hit.state,hit.metrics,hit.position,hit.normal));

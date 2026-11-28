@@ -1,4 +1,4 @@
-import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
+import type { BoundRenderGraphResources } from '@forgeax/engine-render-graph';
 import {
   type BindGroup,
   type BindGroupEntry,
@@ -11,7 +11,6 @@ import {
 import type { GpuViewInputPreparation } from '../gpu-driven/view-input-bindings';
 import type { GpuSceneTableBindingTarget } from '../gpu-scene';
 import { materialResource } from '../material-resource';
-import type { RenderPipelineFrame } from '../render-pipeline';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { BindGroupCounts, MaterialBgAssemblyCacheEntry } from './frame-snapshot';
 import {
@@ -480,10 +479,10 @@ export class MaterialBgAssemblyCache {
     }
   }
 
-  /** Forget graph-specific native views at the same owner event as graph retirement. */
-  retireGraph(graph: CompiledRenderGraph<RenderPipelineFrame>): void {
+  /** Drop entries at the physical view owner's retirement boundary. */
+  retirePassResources(resources: BoundRenderGraphResources): void {
     this.preparation?.release();
-    this.removeEntries((entry) => entry.graphViews?.graph === graph);
+    this.removeEntries((entry) => entry.graphViews?.resources === resources);
   }
 
   /** Retire a changed physical source even when its successor uses a fallback or fails. */

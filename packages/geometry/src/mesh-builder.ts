@@ -12,6 +12,19 @@ import {
   type Submesh,
   type VertexAttributeMap,
 } from '@forgeax/engine-types';
+import {
+  type AllocatedIndexView,
+  type AllocatedVertexViews,
+  createKernelMeshBuilder,
+  getModelingKernelWasm,
+  type AttributeKey as KernelAttributeKey,
+  type KernelBackendPolicy,
+  type KernelError,
+  type KernelMeshBuilder,
+  type RawMeshData,
+  type VertexLayoutDeclaration,
+} from '@forgeax/modeling-kernel';
+import { meshAttributeLayout } from './mesh-storage';
 import { computeTangentVec4, writeNormalPlaneTangent } from './tangent';
 import {
   CANONICAL_KEYS,
@@ -44,6 +57,10 @@ export interface MeshBuilderOptions {
   readonly indices?: ArrayLike<number>;
   readonly submeshes?: readonly MeshBuilderSubmesh[];
   readonly materialSlots?: readonly MeshMaterialSlot[];
+  /** Execution backend policy (`'auto'` uses Rust WASM when initialized, else TS). */
+  readonly backend?: KernelBackendPolicy;
+  /** Emit `'interleaved'` to omit duplicate per-channel arrays on the resulting MeshAsset. */
+  readonly attributeStorage?: 'interleaved';
 }
 
 /** One indexed triangle section, or a reserved draw range with no geometry. */
@@ -59,6 +76,36 @@ export interface MeshBuilderSectionsOptions {
   readonly attributes?: never;
   readonly indices?: never;
   readonly submeshes?: never;
+  /** Execution backend policy (`'auto'` uses Rust WASM when initialized, else TS). */
+  readonly backend?: KernelBackendPolicy;
+  /** Emit `'interleaved'` to omit duplicate per-channel arrays on the resulting MeshAsset. */
+  readonly attributeStorage?: 'interleaved';
+}
+
+export interface StagingMeshBuilderOptions {
+  readonly layout: readonly (KernelAttributeKey | VertexLayoutDeclaration)[];
+  readonly materialSlots?: readonly MeshMaterialSlot[];
+  readonly vertexCapacity?: number;
+  readonly indexCapacity?: number;
+  readonly backend?: KernelBackendPolicy;
+}
+
+export interface StagingMeshBuildOptions {
+  /** Emit `'interleaved'` (default) to avoid retaining duplicate per-channel CPU arrays. */
+  readonly attributeStorage?: 'interleaved' | 'channels';
+  /** Dispose the underlying kernel staging buffer automatically after build (default false). */
+  readonly dispose?: boolean;
+}
+
+/** Zero-copy staging MeshBuilder over `@forgeax/modeling-kernel` returning a ForgeaX MeshAsset. */
+export interface StagingMeshBuilder {
+  readonly backend: 'rust' | 'ts';
+  readonly disposed: boolean;
+  allocateVertices(count: number): Result<AllocatedVertexViews, AssetError>;
+  allocateIndices(count: number): Result<AllocatedIndexView, AssetError>;
+  addSubmesh(submesh: MeshBuilderSubmesh): Result<void, AssetError>;
+  build(options?: StagingMeshBuildOptions): Result<MeshAsset, AssetError>;
+  dispose(): void;
 }
 
 export interface MeshBuilder {
@@ -483,24 +530,135 @@ function completeSurfaceStream(
   return { ...source, normal, uv, tangent };
 }
 
+function kernelFailure(error: KernelError): Result<never, AssetError> {
+  return failure(error.field, error.code, error.reason);
+}
+
+function layoutDeclarationsToMap(layout: readonly VertexLayoutDeclaration[]): VertexAttributeMap {
+  const result: VertexAttributeMap = {};
+  const storage = new ArrayBuffer(0);
+  const floats = new Float32Array(storage);
+  for (const entry of layout) {
+    const ArrayType = vertexAttributeArrayType(entry.format);
+    Reflect.set(result, entry.key, ArrayType === Float32Array ? floats : new ArrayType(storage));
+  }
+  return result;
+}
+
+function rawToMeshAsset(
+  raw: RawMeshData,
+  materialSlots: readonly MeshMaterialSlot[],
+  attributeStorage: 'interleaved' | undefined,
+): MeshAsset {
+  const attributes: VertexAttributeMap =
+    attributeStorage === 'interleaved'
+      ? layoutDeclarationsToMap(raw.layout)
+      : ((raw.channels ?? {}) as VertexAttributeMap);
+  const mesh: MeshAsset = {
+    kind: 'mesh',
+    vertices: raw.interleaved ?? new Float32Array(0),
+    ...(raw.indices === undefined ? {} : { indices: raw.indices }),
+    attributes,
+    ...(attributeStorage === 'interleaved' ? { attributeStorage: 'interleaved' as const } : {}),
+    aabb: raw.aabb,
+    submeshes: Object.freeze(raw.submeshes.map((sub) => Object.freeze({ ...sub }))),
+    materialSlots: Object.freeze(materialSlots.map((slot) => ({ ...slot }))),
+  };
+  return Object.freeze(mesh);
+}
+
+function finishMeshViaKernel(
+  attributes: VertexAttributeMap,
+  positionView: Float32Array,
+  indexArray: Uint16Array | Uint32Array | undefined,
+  submeshes: readonly Submesh[],
+  materialSlots: readonly MeshMaterialSlot[],
+  backend: KernelBackendPolicy,
+  attributeStorage: 'interleaved' | undefined,
+): Result<MeshAsset, AssetError> {
+  const projection = deriveVertexLayoutProjection(attributes);
+  const layout: VertexLayoutDeclaration[] = projection.attributes.map((entry) => ({
+    key: entry.key as KernelAttributeKey,
+    format: entry.format,
+  }));
+  const vertexCount = positionView.length / 3;
+  const builderRes = createKernelMeshBuilder({
+    layout,
+    materialSlotNames: materialSlots.map((slot) => slot.slotName),
+    vertexCapacity: vertexCount,
+    indexCapacity: indexArray?.length ?? 0,
+    backend,
+  });
+  if (!builderRes.ok) return kernelFailure(builderRes.error);
+  const kb = builderRes.value;
+  try {
+    const verts = kb.allocateVertices(vertexCount);
+    if (!verts.ok) return kernelFailure(verts.error);
+    for (const entry of projection.attributes) {
+      const dst = verts.value.channels[entry.key as KernelAttributeKey];
+      const src = attributes[entry.key];
+      if (dst !== undefined && src !== undefined) {
+        const view = sourceView(entry.key, src);
+        if (view !== undefined) {
+          (dst as Float32Array).set(view as Float32Array);
+        }
+      }
+    }
+    if (indexArray !== undefined && indexArray.length > 0) {
+      const idxs = kb.allocateIndices(indexArray.length);
+      if (!idxs.ok) return kernelFailure(idxs.error);
+      idxs.value.indices.set(indexArray);
+    }
+    for (const sub of submeshes) {
+      const added = kb.addSubmesh(sub);
+      if (!added.ok) return kernelFailure(added.error);
+    }
+    const built = kb.build({
+      outputMode: attributeStorage === 'interleaved' ? 'interleaved' : 'interleaved-with-channels',
+      dispose: true,
+    });
+    if (!built.ok) return kernelFailure(built.error);
+    return ok(rawToMeshAsset(built.value, materialSlots, attributeStorage));
+  } finally {
+    kb.dispose();
+  }
+}
+
 function finishMesh(
   attributes: VertexAttributeMap,
   positionView: Float32Array,
   indexArray: Uint16Array | Uint32Array | undefined,
   submeshes: readonly Submesh[],
   materialSlots: readonly MeshMaterialSlot[],
+  backend: KernelBackendPolicy = 'auto',
+  attributeStorage?: 'interleaved',
 ): Result<MeshAsset, AssetError> {
+  if (backend === 'rust' || (backend === 'auto' && getModelingKernelWasm() !== undefined)) {
+    return finishMeshViaKernel(
+      attributes,
+      positionView,
+      indexArray,
+      submeshes,
+      materialSlots,
+      backend,
+      attributeStorage,
+    );
+  }
   const vertexCount = positionView.length / 3;
   const source = completeSurfaceStream(attributes, positionView, submeshes, indexArray);
   const packed = packInterleavedVertexAttributes(source, vertexCount);
   if (!packed.ok) return packed;
   const aabb = box3.fromPositions(box3.create(), positionView);
-  const copiedAttributes = copyBuilderAttributes(source);
+  const finalAttributes =
+    attributeStorage === 'interleaved'
+      ? meshAttributeLayout(source)
+      : copyBuilderAttributes(source);
   const mesh: MeshAsset = {
     kind: 'mesh',
     vertices: packed.value.vertices,
     ...(indexArray === undefined ? {} : { indices: indexArray }),
-    attributes: copiedAttributes,
+    attributes: finalAttributes,
+    ...(attributeStorage === 'interleaved' ? { attributeStorage: 'interleaved' as const } : {}),
     aabb,
     submeshes,
     materialSlots: Object.freeze(materialSlots.map((slot) => ({ ...slot }))),
@@ -514,7 +672,15 @@ function createSectionBuilder(options: MeshBuilderSectionsOptions): Pick<MeshBui
   const { attributes, indices, submeshes, materialSlots } = prepared.value;
   return {
     build: () =>
-      finishMesh(attributes, attributes.position, indices.slice(), submeshes, materialSlots),
+      finishMesh(
+        attributes,
+        attributes.position,
+        indices.slice(),
+        submeshes,
+        materialSlots,
+        options.backend ?? 'auto',
+        options.attributeStorage,
+      ),
   };
 }
 
@@ -824,6 +990,8 @@ export function createMeshBuilder(
       indexArray,
       ranges.value,
       materialSlots,
+      options.backend ?? 'auto',
+      options.attributeStorage,
     );
   };
 
@@ -855,4 +1023,68 @@ export function createMeshBuilder(
   }
   for (const submesh of options.submeshes ?? []) submeshes.push({ ...submesh });
   return { appendVertices, appendIndices, addSubmesh, build };
+}
+
+/**
+ * Create a zero-copy staging builder backed by `@forgeax/modeling-kernel`.
+ * Callers write directly into pre-allocated linear-memory staging buffers via
+ * `allocateVertices()` / `allocateIndices()` and emit a `MeshAsset` in `build()`.
+ */
+export function createStagingMeshBuilder(
+  options: StagingMeshBuilderOptions,
+): Result<StagingMeshBuilder, AssetError> {
+  const materialSlots = copySlots(options.materialSlots);
+  const slotCheck = validateSlots(materialSlots);
+  if (!slotCheck.ok) return slotCheck;
+
+  const kbRes = createKernelMeshBuilder({
+    layout: options.layout,
+    materialSlotNames: materialSlots.map((slot) => slot.slotName),
+    ...(options.vertexCapacity === undefined ? {} : { vertexCapacity: options.vertexCapacity }),
+    ...(options.indexCapacity === undefined ? {} : { indexCapacity: options.indexCapacity }),
+    ...(options.backend === undefined ? {} : { backend: options.backend }),
+  });
+  if (!kbRes.ok) return kernelFailure(kbRes.error);
+  const kb: KernelMeshBuilder = kbRes.value;
+
+  const builder: StagingMeshBuilder = {
+    get backend() {
+      return kb.backend;
+    },
+    get disposed() {
+      return kb.disposed;
+    },
+    allocateVertices(count: number) {
+      const res = kb.allocateVertices(count);
+      return res.ok ? ok(res.value) : kernelFailure(res.error);
+    },
+    allocateIndices(count: number) {
+      const res = kb.allocateIndices(count);
+      return res.ok ? ok(res.value) : kernelFailure(res.error);
+    },
+    addSubmesh(submesh: MeshBuilderSubmesh) {
+      const res = kb.addSubmesh(submesh);
+      return res.ok ? ok(res.value) : kernelFailure(res.error);
+    },
+    build(buildOptions: StagingMeshBuildOptions = {}) {
+      const storage = buildOptions.attributeStorage ?? 'interleaved';
+      const outputMode = storage === 'interleaved' ? 'interleaved' : 'interleaved-with-channels';
+      const built = kb.build({
+        outputMode,
+        ...(buildOptions.dispose === undefined ? {} : { dispose: buildOptions.dispose }),
+      });
+      if (!built.ok) return kernelFailure(built.error);
+      return ok(
+        rawToMeshAsset(
+          built.value,
+          materialSlots,
+          storage === 'interleaved' ? 'interleaved' : undefined,
+        ),
+      );
+    },
+    dispose() {
+      kb.dispose();
+    },
+  };
+  return ok(builder);
 }

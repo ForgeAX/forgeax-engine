@@ -277,7 +277,7 @@ const TABLE_CHAR_WIDTH = 0.6;
 
 function tableWidths(t: DrawnTable, textSize: number): number[] {
   return t.columns.map((head, c) => {
-    const longest = Math.max(head.length, ...t.rows.map((r) => String(r[c] ?? '').length));
+    const longest = Math.max(head.length, maxOf(t.rows.map((r) => String(r[c] ?? '').length)));
     return (longest * TABLE_CHAR_WIDTH + 0.8) * textSize;
   });
 }
@@ -381,7 +381,7 @@ function layout(
   });
   const wide = (b: (typeof boxes)[number]) => (b.box[2] - b.box[0]) * b.k;
   const tall = (b: (typeof boxes)[number]) => (b.box[3] - b.box[1]) * b.k;
-  const span = Math.max(0.1, ...boxes.map((b) => Math.max(wide(b), tall(b))));
+  const span = Math.max(0.1, maxOf(boxes.map((b) => Math.max(wide(b), tall(b)))));
   const pad = options.sheet === undefined ? 0.12 * span : 8 / scale;
   const line = options.sheet === undefined ? 0.03 * span : Math.max(0.03 * span, 3.2 / scale);
   const notes = views.map((view) => ('detail' in view ? [] : noteLines(d, view.id, bases)));
@@ -404,7 +404,7 @@ function layout(
         1,
   );
   const tableWide = tables.map((ts) =>
-    Math.max(0, ...ts.map((t) => t.widths.reduce((a, b) => a + b, 0))),
+    Math.max(0, maxOf(ts.map((t) => t.widths.reduce((a, b) => a + b, 0)))),
   );
   const slots = viewSlots(views, columns, options.projection);
   const rows = slots.reduce((a, [, r]) => Math.max(a, r + 1), 0);
@@ -419,12 +419,15 @@ function layout(
   const height = (b: (typeof boxes)[number], n: number) =>
     tall(b) + 2 * pad + Math.max(notes[n]?.length ?? 0, tableLines[n] ?? 0) * line;
   const colW = Array.from({ length: cols }, (_, c) =>
-    Math.max(0, ...inSlot(c, -1).flatMap(({ b, n, slot }) => (slot[0] === c ? [width(b, n)] : []))),
+    Math.max(
+      0,
+      maxOf(inSlot(c, -1).flatMap(({ b, n, slot }) => (slot[0] === c ? [width(b, n)] : []))),
+    ),
   );
   const rowH = Array.from({ length: rows }, (_, r) =>
     Math.max(
       0,
-      ...inSlot(-1, r).flatMap(({ b, n, slot }) => (slot[1] === r ? [height(b, n)] : [])),
+      maxOf(inSlot(-1, r).flatMap(({ b, n, slot }) => (slot[1] === r ? [height(b, n)] : []))),
     ),
   );
   const cells = views.map((view, n): Cell => {
@@ -641,6 +644,16 @@ type Box4 = readonly [number, number, number, number];
 
 const inBox = (p: Point2, b: Box4) => p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3];
 
+/** Whether a whole circle lies inside `box`, so it is kept exact instead of clipped to runs. */
+function circleInBox(
+  circle: { readonly center: Point2; readonly radius: number },
+  box: Box4,
+): boolean {
+  const [x, y] = circle.center;
+  const r = circle.radius;
+  return x - r >= box[0] && x + r <= box[2] && y - r >= box[1] && y + r <= box[3];
+}
+
 /** Pieces of `points` inside `box`, as open runs. */
 function clipRuns(points: readonly Point2[], closed: boolean, box: Box4): Point2[][] {
   const runs: Point2[][] = [];
@@ -677,6 +690,8 @@ interface CellContent {
     readonly role: DrawingRole;
     readonly closed: boolean;
     readonly points: readonly Point2[];
+    /** The exact circle, kept only while the curve is whole (a clipped curve is a polyline). */
+    readonly circle?: { readonly center: Point2; readonly radius: number };
   }[];
   readonly hatches: readonly Segment2[];
   readonly points: readonly DrawnPoint[];
@@ -702,9 +717,17 @@ function cellContent(
   const clip = 'detail' in c.view ? c.view.detail.box : undefined;
   const curves = d.curves
     .filter((k) => own(k.view))
-    .flatMap((k) =>
-      clip === undefined
-        ? [{ id: k.id, role: k.role, closed: k.closed, points: k.points }]
+    .flatMap((k): CellContent['curves'][number][] =>
+      clip === undefined || (k.circle !== undefined && circleInBox(k.circle, clip))
+        ? [
+            {
+              id: k.id,
+              role: k.role,
+              closed: k.closed,
+              points: k.points,
+              ...(k.circle === undefined ? {} : { circle: k.circle }),
+            },
+          ]
         : clipRuns(k.points, k.closed, clip).map((points) => ({
             id: k.id,
             role: k.role,
@@ -937,6 +960,16 @@ export function drawingSvg(
         `<g${layer} data-role="${role}" stroke="${s.color}" stroke-width="${s.width}"${s.dash ? ` stroke-dasharray="${s.dash}"` : ''} fill="none">`,
       );
       for (const x of curves) {
+        if (x.circle !== undefined && s.dash === undefined) {
+          // The exact solid circle: the raster strokes it at any magnification, so no facets reach it.
+          // Dashed roles keep their polyline (the raster has no trigonometry to dash a circle).
+          const [cx, cy] = X(x.circle.center);
+          const r = Math.abs(X([x.circle.center[0] + x.circle.radius, x.circle.center[1]])[0] - cx);
+          out.push(
+            `<circle data-id="${escapeXml(x.id)}" cx="${f(cx)}" cy="${f(cy)}" r="${f(r)}"/>`,
+          );
+          continue;
+        }
         out.push(
           `<${x.closed ? 'polygon' : 'polyline'} data-id="${escapeXml(x.id)}" points="${x.points.map((p) => pt(X(p))).join(' ')}"/>`,
         );

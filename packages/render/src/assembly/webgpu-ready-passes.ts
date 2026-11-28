@@ -32,7 +32,13 @@ import {
   type PipelineSpec,
   PipelineSpecError,
 } from '../pipeline-spec';
-import type { PerPassResources } from '../record/render-context';
+import type {
+  FxaaPassResources,
+  LegacyGtaoResources,
+  LegacySsaoResources,
+  PerPassResources,
+  SkyboxPassResources,
+} from '../record/render-context';
 import type { DeferredAoNormalLayout } from '../ssao-config';
 import { runShimSyncStep } from './renderer-helpers';
 import { HDR_COLOR_ATTACHMENT_FORMAT } from './webgpu-ready-contract';
@@ -124,13 +130,14 @@ function fragmentPipelineLabel(
 export function createReadyPipelineDeviceProvider(
   device: RhiDevice,
   modules: EngineShaderModules,
-  unlitPipelineLayout: PipelineLayout,
+  unlitPipelineLayout: PipelineLayout | null,
   pbrPipelineLayout: PipelineLayout,
 ): PipelineDeviceProvider {
   const normalizeDescriptor = (descriptor: Record<string, unknown>) => {
     const d = { ...descriptor } as Record<string, unknown>;
     if (d.layout === undefined) {
       d.layout =
+        unlitPipelineLayout !== null &&
         (d.fragment as { module?: unknown } | undefined)?.module === modules.unlit
           ? unlitPipelineLayout
           : pbrPipelineLayout;
@@ -379,13 +386,13 @@ function createClampSampler(device: RhiDevice, label: string, expected: string):
  * FXAA reads one texture through a linear clamp sampler (no edge bleed) plus
  * its output-policy UBO, and writes the non-sRGB final target.
  */
-function createFxaaPassResources(
+export function createFxaaPassResources(
   device: RhiDevice,
   provider: PipelineDeviceProvider,
   cache: PipelineCache,
   fxaaModule: NonNullable<EngineShaderModules['fxaa']>,
   colorFormat: PipelineSpec['attachments']['colorFormats'][number],
-): Pick<FullscreenPassResources, 'fxaaPipeline' | 'fxaaBindGroupLayout' | 'fxaaSampler'> {
+): FxaaPassResources {
   const bindGroupLayout = runShimSyncStep(
     () =>
       device.createBindGroupLayout({
@@ -449,7 +456,7 @@ function buildSkyboxMsaaPipeline(
     ) as RenderPipeline;
   } catch (msaaErr) {
     console.warn(
-      `[forgeax] skybox MSAA pipeline variant build failed at renderer init; ` +
+      `[forgeax] skybox MSAA pipeline variant preparation failed; ` +
         `non-MSAA skybox unaffected. (cause: ${String(msaaErr)})`,
     );
     return null;
@@ -460,21 +467,13 @@ function buildSkyboxMsaaPipeline(
  * Skybox samples a cubemap (clamp avoids face seams) with the View and rotation
  * UBOs, writing HDR colour for the later tonemap pass.
  */
-function createSkyboxPassResources(
+export function createSkyboxPassResources(
   device: RhiDevice,
   provider: PipelineDeviceProvider,
   cache: PipelineCache,
   skyboxModule: NonNullable<EngineShaderModules['skybox']>,
   createPersistentBuffer: RhiDevice['createBuffer'],
-): Pick<
-  FullscreenPassResources,
-  | 'skyboxPipeline'
-  | 'skyboxPipelineMsaa'
-  | 'skyboxScenePipeline'
-  | 'skyboxBindGroupLayout'
-  | 'skyboxSampler'
-  | 'skyboxRotationBuffer'
-> {
+): SkyboxPassResources {
   const bindGroupLayout = runShimSyncStep(
     () =>
       device.createBindGroupLayout({
@@ -606,25 +605,14 @@ const SSAO_BGL_ENTRIES: readonly BindGroupLayoutEntry[] = [
  * cache keys. Packed normals use textureLoad; float noise and depth use
  * nearest sampling, so RGBA32F noise needs no float32-filterable feature.
  */
-function createSsaoPassResources(
+export function createLegacySsaoResources(
   device: RhiDevice,
   provider: PipelineDeviceProvider,
   cache: PipelineCache,
   ssaoModule: NonNullable<EngineShaderModules['ssao']>,
   gbufferV2: boolean,
   compactGBuffer: boolean,
-): Pick<
-  FullscreenPassResources,
-  | 'ssaoCalcPipeline'
-  | 'ssaoBlurPipeline'
-  | 'ssaoBgl'
-  | 'ssaoDepthCalcPipeline'
-  | 'ssaoDepthBlurPipeline'
-  | 'ssaoDepthBgl'
-  | 'ssaoScreenPipeline'
-  | 'gtaoScreenComputePipeline'
-  | 'ssaoGBufferPipelines'
-> {
+): LegacySsaoResources {
   const bindGroupLayout = runShimSyncStep(
     () => device.createBindGroupLayout({ label: 'ssao-bgl', entries: SSAO_BGL_ENTRIES }),
     'webgpu-runtime-error',
@@ -698,6 +686,22 @@ function createSsaoPassResources(
     return gbuffer;
   };
   const depth = createSsaoDepthPipelines(device, provider, cache, ssaoModule);
+  return {
+    ssaoGBufferPipelines: gbufferV2 || compactGBuffer ? ssaoGBufferPipelines : undefined,
+    ssaoCalcPipeline: calc,
+    ssaoBlurPipeline: blur,
+    ssaoBgl: bindGroupLayout.value,
+    ...depth,
+  };
+}
+
+/** Current screen-space passes select their own program and never need legacy layouts. */
+export function createSsaoScreenPrograms(
+  device: RhiDevice,
+  provider: PipelineDeviceProvider,
+  cache: PipelineCache,
+  readModule: () => NonNullable<EngineShaderModules['ssao']>,
+): Required<Pick<FullscreenPassResources, 'ssaoScreenPipeline' | 'gtaoScreenComputePipeline'>> {
   const screenPrograms = new Map<
     string,
     ReturnType<NonNullable<PerPassResources['ssaoScreenPipeline']>>
@@ -744,6 +748,7 @@ function createSsaoPassResources(
         : normalLayout === 'standard-gbuffer/2'
           ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS
           : undefined;
+    const module = readModule();
     const pipeline = buildPipelineOrThrow(
       constants === undefined
         ? descriptor
@@ -751,7 +756,9 @@ function createSsaoPassResources(
       provider,
       cache,
       {
-        ...baseModules,
+        vertex: module,
+        fragment: module,
+        vertexEntryPoint: 'vs_ssao',
         layout: createSinglePipelineLayout(
           device,
           `ssao-${stage}-pl`,
@@ -825,7 +832,7 @@ function createSsaoPassResources(
         label: `standard-gtao-${key}`,
         layout: pipelineLayout,
         compute: {
-          module: ssaoModule,
+          module: readModule(),
           entryPoint: normal ? 'cs_gtao_normal' : 'cs_gtao_depth',
           ...(constants === undefined ? {} : { constants }),
         },
@@ -835,15 +842,7 @@ function createSsaoPassResources(
     gtaoComputePrograms.set(key, prepared);
     return prepared;
   };
-  return {
-    ssaoGBufferPipelines: gbufferV2 || compactGBuffer ? ssaoGBufferPipelines : undefined,
-    ssaoCalcPipeline: calc,
-    ssaoBlurPipeline: blur,
-    ssaoBgl: bindGroupLayout.value,
-    ...depth,
-    ssaoScreenPipeline,
-    gtaoScreenComputePipeline,
-  };
+  return { ssaoScreenPipeline, gtaoScreenComputePipeline };
 }
 
 /**
@@ -895,14 +894,11 @@ function createSsaoDepthPipelines(
   };
 }
 
-function createGtaoComputeResources(
+export function createLegacyGtaoResources(
   device: RhiDevice,
   module: NonNullable<EngineShaderModules['gtaoCompute']>,
   gbufferV2: boolean,
-): Pick<
-  FullscreenPassResources,
-  'gtaoComputePipeline' | 'gtaoComputeBgl' | 'gtaoGBufferComputePipeline'
-> {
+): LegacyGtaoResources {
   const layout = device.createBindGroupLayout({
     label: 'gtao-compute-bgl',
     entries: [
@@ -980,7 +976,7 @@ export function createFullscreenPassResources(
   const ssao =
     modules.ssao === null
       ? empty
-      : createSsaoPassResources(
+      : createLegacySsaoResources(
           device,
           provider,
           cache,
@@ -991,7 +987,10 @@ export function createFullscreenPassResources(
   const gtaoCompute =
     modules.gtaoCompute === null
       ? empty
-      : createGtaoComputeResources(device, modules.gtaoCompute, modules.gtaoGBufferV2 === true);
+      : createLegacyGtaoResources(device, modules.gtaoCompute, modules.gtaoGBufferV2 === true);
+  const module = modules.ssao;
+  const screen =
+    module === null ? empty : createSsaoScreenPrograms(device, provider, cache, () => module);
   return {
     fxaaPipeline: fxaa.fxaaPipeline,
     fxaaBindGroupLayout: fxaa.fxaaBindGroupLayout,
@@ -1007,12 +1006,12 @@ export function createFullscreenPassResources(
     ssaoCalcPipeline: ssao.ssaoCalcPipeline,
     ssaoBlurPipeline: ssao.ssaoBlurPipeline,
     ssaoBgl: ssao.ssaoBgl,
-    gtaoComputePipeline: gtaoCompute.gtaoComputePipeline,
-    gtaoComputeBgl: gtaoCompute.gtaoComputeBgl,
-    ssaoDepthCalcPipeline: ssao.ssaoDepthCalcPipeline,
-    ssaoDepthBlurPipeline: ssao.ssaoDepthBlurPipeline,
-    ssaoDepthBgl: ssao.ssaoDepthBgl,
-    ssaoScreenPipeline: ssao.ssaoScreenPipeline,
-    gtaoScreenComputePipeline: ssao.gtaoScreenComputePipeline,
+    gtaoComputePipeline: gtaoCompute.gtaoComputePipeline ?? null,
+    gtaoComputeBgl: gtaoCompute.gtaoComputeBgl ?? null,
+    ssaoDepthCalcPipeline: ssao.ssaoDepthCalcPipeline ?? null,
+    ssaoDepthBlurPipeline: ssao.ssaoDepthBlurPipeline ?? null,
+    ssaoDepthBgl: ssao.ssaoDepthBgl ?? null,
+    ssaoScreenPipeline: screen.ssaoScreenPipeline,
+    gtaoScreenComputePipeline: screen.gtaoScreenComputePipeline,
   };
 }

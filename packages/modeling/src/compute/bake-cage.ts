@@ -1,8 +1,8 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { atan2 } from '../dmath';
+import { atan2, hypot3 } from '../dmath';
 import { type ModelingError, modelingError } from '../errors';
 import { cross, dot, length, newell, normalize, sub, type Tuple3 } from '../geom';
-import { type EditMesh, NONE } from '../mesh';
+import { type EditMesh, FACE_FLOAT, NONE } from '../mesh';
 import { TriangleBvh } from './bvh';
 import type { BakeCage, BakeDirection, BakeJobParams } from './job';
 
@@ -63,13 +63,14 @@ export function faceGroups(
   return ok({ ids: names, face });
 }
 
-/** Faces of a mesh carrying a tag (empty when the tag is absent). */
-export function taggedFaces(mesh: EditMesh, tag: string | undefined): Uint8Array {
+/** Floater faces of a detail: the floater tag's faces and floating detail shells. */
+export function floaterFaces(mesh: EditMesh, tag: string | undefined): Uint8Array {
   const out = new Uint8Array(mesh.faceHighWater);
-  if (tag === undefined) return out;
-  const t = mesh.tagNames.indexOf(tag);
-  if (t < 0) return out;
-  for (const f of mesh.faces()) if (mesh.hasTag(f, t)) out[f] = 1;
+  const t = tag === undefined ? -1 : mesh.tagNames.indexOf(tag);
+  for (const f of mesh.faces()) {
+    const floating = ((mesh.fFlags[f] as number) & FACE_FLOAT) !== 0;
+    if (floating || (t >= 0 && mesh.hasTag(f, t))) out[f] = 1;
+  }
   return out;
 }
 
@@ -573,37 +574,83 @@ export function steepFraction(
   detailTris: readonly number[],
   direction: BakeDirection,
   hard: HardEdges | undefined,
+  sharedBaseBvh?: TriangleBvh,
 ): number {
   if (baseTris.length === 0 || detailTris.length === 0) return 0;
-  const local = new Uint32Array(baseTris.length * 3);
-  for (const [i, t] of baseTris.entries()) {
-    for (let k = 0; k < 3; k++) local[i * 3 + k] = base.indices[t * 3 + k] as number;
+  let bvh = sharedBaseBvh;
+  if (bvh === undefined) {
+    const local = new Uint32Array(baseTris.length * 3);
+    for (let i = 0; i < baseTris.length; i++) {
+      const t = baseTris[i] as number;
+      local[i * 3] = base.indices[t * 3] as number;
+      local[i * 3 + 1] = base.indices[t * 3 + 1] as number;
+      local[i * 3 + 2] = base.indices[t * 3 + 2] as number;
+    }
+    bvh = new TriangleBvh(base.position, local);
   }
-  const bvh = new TriangleBvh(base.position, local);
+  const dPos = detail.position;
+  const dIdx = detail.indices;
+  const bPos = base.position;
+  const bIdx = base.indices;
   let steep = 0;
   let total = 0;
-  for (const t of detailTris) {
-    const a = cornerOf(detail, t, 0);
-    const n = cross(sub(cornerOf(detail, t, 1), a), sub(cornerOf(detail, t, 2), a));
-    const area = length(n) / 2;
+  const centroid: [number, number, number] = [0, 0, 0];
+  const w: [number, number, number] = [0, 0, 0];
+  const p: [number, number, number] = [0, 0, 0];
+  for (let di = 0; di < detailTris.length; di++) {
+    const t = detailTris[di] as number;
+    const i0 = (dIdx[t * 3] as number) * 3;
+    const i1 = (dIdx[t * 3 + 1] as number) * 3;
+    const i2 = (dIdx[t * 3 + 2] as number) * 3;
+    const ax = dPos[i0] as number;
+    const ay = dPos[i0 + 1] as number;
+    const az = dPos[i0 + 2] as number;
+    const bx = dPos[i1] as number;
+    const by = dPos[i1 + 1] as number;
+    const bz = dPos[i1 + 2] as number;
+    const cx = dPos[i2] as number;
+    const cy = dPos[i2 + 1] as number;
+    const cz = dPos[i2 + 2] as number;
+    const e1x = bx - ax;
+    const e1y = by - ay;
+    const e1z = bz - az;
+    const e2x = cx - ax;
+    const e2y = cy - ay;
+    const e2z = cz - az;
+    const nx = e1y * e2z - e1z * e2y;
+    const ny = e1z * e2x - e1x * e2z;
+    const nz = e1x * e2y - e1y * e2x;
+    const nLen = hypot3(nx, ny, nz);
+    const area = nLen * 0.5;
     if (!(area > 0)) continue;
     total += area;
-    const centroid: Tuple3 = [0, 0, 0];
-    for (let k = 0; k < 3; k++) {
-      const p = cornerOf(detail, t, k);
-      for (let c = 0; c < 3; c++) centroid[c] = (centroid[c] as number) + (p[c] as number) / 3;
-    }
+    centroid[0] = (ax + bx + cx) / 3;
+    centroid[1] = (ay + by + cy) / 3;
+    centroid[2] = (az + bz + cz) / 3;
     const near = bvh.nearest(centroid);
     if (near === undefined) continue;
     const bt = baseTris[near.triangle] as number;
-    const w = [1 - near.u - near.v, near.u, near.v];
-    const p: Tuple3 = [0, 0, 0];
-    for (let k = 0; k < 3; k++) {
-      const v = cornerOf(base, bt, k);
-      for (let c = 0; c < 3; c++) p[c] = (p[c] as number) + (w[k] as number) * (v[c] as number);
-    }
-    const c = rayDirection(base, bt, w, direction, p, hard);
-    if (Math.abs(dot(normalize(n), c)) < STEEP_COS) steep += area;
+    const w0 = 1 - near.u - near.v;
+    const w1 = near.u;
+    const w2 = near.v;
+    w[0] = w0;
+    w[1] = w1;
+    w[2] = w2;
+    const bi0 = (bIdx[bt * 3] as number) * 3;
+    const bi1 = (bIdx[bt * 3 + 1] as number) * 3;
+    const bi2 = (bIdx[bt * 3 + 2] as number) * 3;
+    p[0] = w0 * (bPos[bi0] as number) + w1 * (bPos[bi1] as number) + w2 * (bPos[bi2] as number);
+    p[1] =
+      w0 * (bPos[bi0 + 1] as number) +
+      w1 * (bPos[bi1 + 1] as number) +
+      w2 * (bPos[bi2 + 1] as number);
+    p[2] =
+      w0 * (bPos[bi0 + 2] as number) +
+      w1 * (bPos[bi1 + 2] as number) +
+      w2 * (bPos[bi2 + 2] as number);
+    const ray = rayDirection(base, bt, w, direction, p, hard);
+    const cosAngle = Math.abs((nx * ray[0] + ny * ray[1] + nz * ray[2]) / nLen);
+    if (cosAngle < STEEP_COS) steep += area;
   }
   return total > 0 ? steep / total : 0;
 }

@@ -2,8 +2,6 @@
 // never an existing violation count. New packages inherit the runtime rules.
 export const TOOL_OWNERS = new Map([
   ['devkit', 'Node project build, development and CLI host'],
-  ['dsh', 'Node AI CLI process host'],
-  ['intelligence-dsh', 'Node AI CLI transport'],
   ['mesh-io', 'Node-only source-format import and static mesh export workers'],
   ['vfx-compiler', 'Offline VFX program compiler'],
   ['vite-plugin-pack', 'Explicit Vite asset adapter'],
@@ -51,6 +49,7 @@ export const HOST_ENVIRONMENT_ENTRIES = new Map([
 
 export const NODE_SOURCE_SCOPES = new Map([
   ['packages/rhi-wgpu-native/src/', 'Explicit opt-in Node native GPU backend'],
+  ['packages/render-kernel/src/desktop/', 'Explicit opt-in Node native wgpu render thread backend'],
   ['packages/dawn-node/src/', 'Explicit Node GPU provider'],
   ['packages/modeling/src/tools/', 'Explicit Node modeling tool entry'],
 ]);

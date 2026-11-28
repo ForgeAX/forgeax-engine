@@ -2,6 +2,11 @@ import { cloudHistoryExtent } from '../cloud/reconstruction/history';
 import { type Antialias, isTemporalAntialias } from '../components/camera';
 import { ssrColorExtent } from '../ssr/scene-color-input';
 import { TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL } from '../tsr/layout';
+import {
+  TSR_RESURRECTION_GUIDE_BYTES,
+  TSR_RESURRECTION_OUTPUT_BYTES,
+  TSR_RESURRECTION_SLOTS,
+} from '../tsr/resurrection';
 import { createTemporalCoverage } from './coverage';
 import type { TemporalGpuState } from './gpu';
 import type { TemporalHistory } from './history';
@@ -33,7 +38,7 @@ export interface TemporalInspection {
   readonly resources: TemporalResourceInspection;
   readonly tsr?: {
     readonly historyScale: 1;
-    readonly layout: 'rgba8-guide-fp16-moire-separate-support';
+    readonly layout: 'fp16-guide-fp16-moire-separate-support';
     readonly analysisCapacity: { readonly width: number; readonly height: number };
     readonly committedInput: { readonly width: number; readonly height: number };
     readonly analysisValid: boolean;
@@ -49,12 +54,18 @@ function gpuBytes(state: TemporalGpuState | undefined): number {
       : state.tsr === undefined
         ? createTemporalCoverage(state.width, state.height).bytes
         : 40 * state.width * state.height +
-          TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL * state.tsr.width * state.tsr.height;
+          TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL * state.tsr.width * state.tsr.height +
+          TSR_RESURRECTION_SLOTS *
+            (TSR_RESURRECTION_GUIDE_BYTES * state.tsr.width * state.tsr.height +
+              TSR_RESURRECTION_OUTPUT_BYTES * state.width * state.height);
   const extent = cloudHistoryExtent(state.width, state.height);
-  // Two half-resolution slots, each with far/near transport and RGBA32F meter depth.
+  // Two half-resolution slots, each with far/near transport and depth.
   const transportBytes = state.cloudHistoryFormat === 'rgba32float' ? 16 : 8;
   const cloudBytes = state.cloudHistoryEnabled
-    ? extent.width * extent.height * 2 * (2 * transportBytes + 16)
+    ? extent.width *
+      extent.height *
+      2 *
+      (2 * transportBytes + (state.cloudHistoryDepthFormat === 'rgba16float' ? 8 : 16))
     : 0;
   return taaBytes + cloudBytes;
 }
@@ -71,7 +82,7 @@ function inspectTsr(
   return {
     tsr: Object.freeze({
       historyScale: 1 as const,
-      layout: 'rgba8-guide-fp16-moire-separate-support' as const,
+      layout: 'fp16-guide-fp16-moire-separate-support' as const,
       analysisCapacity: Object.freeze({ width: active.tsr.width, height: active.tsr.height }),
       committedInput: Object.freeze({
         width: active.tsr.inputWidth,

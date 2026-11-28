@@ -63,6 +63,8 @@ export interface StandardTransparencyInput {
   readonly color: RenderPipelineTarget;
   /** Single-sample scene color paired with an MSAA `color`. */
   readonly resolve?: RenderPipelineTarget | undefined;
+  /** Later scene features may still write the original multisampled color. */
+  readonly retainMsaaComposite?: boolean;
   readonly depth: RenderPipelineTarget;
   readonly size: GraphExtent;
   readonly transparency: RenderPipelineTopology['transparency'];
@@ -173,16 +175,22 @@ function recordCurrentTranslucency(
  *
  * - `sorted` (or no eligible draw): the `transparent` pass, skipped per frame
  *   when its CPU selection is empty and it owns neither GPU work nor a resolve.
- * - `weighted-blended` with eligible draws: `oit-accumulate` (eligible draws
- *   into accum + weight, depth test only), `oit-composite` (full screen onto
- *   scene color), then `transparent` for the ineligible draws if any exist.
+ * - `weighted-blended` with eligible draws: `transparent` adds ineligible
+ *   draws to the background, `oit-accumulate` gathers eligible draws, and
+ *   `oit-composite` blends the weighted result over scene color.
  */
 export function addStandardTransparentPasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: StandardTransparencyInput,
 ): Result<void, RenderGraphError> {
-  const sorted = (recordMode: 'transparent' | 'oit-residual') =>
-    addTypedScenePass(
+  // The weighted contribution is already resolved before compositing. Blending
+  // the same contribution into each scene sample commutes with resolving it.
+  const compositeColor = input.retainMsaaComposite ? input.color : (input.resolve ?? input.color);
+  const sorted = (recordMode: 'transparent' | 'oit-residual') => {
+    // A residual is the last multisampled scene writer before a 1x composite.
+    const resolve =
+      recordMode === 'transparent' || compositeColor !== input.color ? input.resolve : undefined;
+    return addTypedScenePass(
       graph,
       {
         ...input.template,
@@ -194,11 +202,14 @@ export function addStandardTransparentPasses(
             : {}),
         color: input.color,
         depth: input.depth,
-        ...(input.resolve === undefined ? {} : { resolve: input.resolve }),
+        ...(resolve === undefined ? {} : { resolve }),
+        ...(recordMode === 'oit-residual' && resolve === undefined
+          ? { colorStoreOp: 'store' as const }
+          : {}),
         selector: FORWARD_PASS_SELECTOR,
         executeIf:
           input.template.executeIf === undefined &&
-          (input.resolve !== undefined ||
+          (resolve !== undefined ||
             input.color.resolveTarget !== undefined ||
             (input.template.gpuDriven !== undefined &&
               input.template.gpuDriven.currentCameraWork === undefined))
@@ -211,7 +222,7 @@ export function addStandardTransparentPasses(
                 if (
                   (input.template.gpuDriven !== undefined &&
                     (input.template.gpuDriven.currentCameraWork?.() ?? true)) ||
-                  input.resolve !== undefined ||
+                  resolve !== undefined ||
                   input.color.resolveTarget !== undefined
                 )
                   return true;
@@ -251,12 +262,17 @@ export function addStandardTransparentPasses(
       },
       input.currentTransparency ? currentResidualRaster(input) : undefined,
     );
+  };
   if (input.currentTransparency) {
-    const weighted = addCurrentWeightedPasses(graph, input);
-    if (!weighted.ok) return weighted;
-    return sorted('oit-residual');
+    const background = sorted('oit-residual');
+    if (!background.ok) return background;
+    return addCurrentWeightedPasses(graph, input);
   }
   if (input.transparency?.weightedBlended !== true) return sorted('transparent');
+  if (input.transparency.residual) {
+    const background = sorted('oit-residual');
+    if (!background.ok) return background;
+  }
 
   const msaa = input.color.sampleCount === 4;
   const accumTarget = (label: string, format: 'rgba16float' | 'r16float') => {
@@ -296,15 +312,15 @@ export function addStandardTransparentPasses(
     transparentDepthWrite: false,
   });
   if (!accumulate.ok) return accumulate;
-  const composite = addOitCompositePass(graph, {
-    color: input.color,
+  return addOitCompositePass(graph, {
+    color: compositeColor,
     colorStoreOp: input.template.colorStoreOp,
-    ...(input.resolve === undefined ? {} : { resolve: input.resolve }),
+    ...(compositeColor === input.color && input.resolve !== undefined
+      ? { resolve: input.resolve }
+      : {}),
     accum: accum.value.resolveTarget ?? accum.value.view,
     weight: weight.value.resolveTarget ?? weight.value.view,
   });
-  if (!composite.ok) return composite;
-  return input.transparency.residual ? sorted('oit-residual') : ok(undefined);
 }
 
 const OIT_COMPOSITE_WGSL = /* wgsl */ `
@@ -623,7 +639,7 @@ function currentResidualRaster(input: StandardTransparencyInput): PhysicalSceneR
                 return required(color);
               },
               loadOp: 'load',
-              storeOp: input.template.colorStoreOp === 'discard' ? 'discard' : 'store',
+              storeOp: 'store',
             },
           ],
           depthStencilAttachment: {

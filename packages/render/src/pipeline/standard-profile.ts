@@ -265,6 +265,11 @@ export interface StandardAtmosphereProfile {
 export interface StandardProfile {
   /** App configuration revision acknowledged by a submitted scene using this profile. */
   readonly configurationRevision?: number;
+  /** Opt in to the desktop UE atmosphere table formats and sampling contract. */
+  readonly atmosphereLutModel?: 'ue5-desktop';
+  readonly cloudMode0Model?: 'ue5-desktop';
+  /** Allocate a separate sky LUT for the environment capture position. */
+  readonly realtimeSkyCapture?: boolean;
   /** Concrete budgets derived from the active engine quality selection. */
   readonly quality?: import('../quality').RenderQualityBudgets;
   /** Versioned color ordering; omitted retains the saved V1 pipeline contract. */

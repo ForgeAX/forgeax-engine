@@ -27,7 +27,7 @@ try {
   const { runUnifiedCli } = await import(pathToFileURL(join(engine, 'packages/engine/dist/facades/devkit.mjs')).href);
   const binding = await runUnifiedCli(['project', 'engine', 'use-local', engine, '--root', root, '--json']);
   assert.equal(binding.ok, true, JSON.stringify(binding));
-  browser = await chromium.launch({ headless: false, ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}), chromiumSandbox: true });
+  browser = await chromium.launch({ headless: false, ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }), chromiumSandbox: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.on('pageerror', error => { errors.push(error.message); console.error('PAGE', error.message); });
   page.on('console', message => { if (message.type() === 'error') console.error('CONSOLE', message.text()); });

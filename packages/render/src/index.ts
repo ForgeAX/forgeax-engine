@@ -362,8 +362,8 @@ export {
   createDynamicGeometryLifecycle,
   DynamicGeometryError,
   MeshResidencyError,
-  validateDynamicGeometryMeshBudget,
 } from './dynamic-geometry.js';
+export { validateDynamicGeometryMeshBudget } from './dynamic-geometry-budget.js';
 export { resolveEntityMaterialHandles } from './entity-materials.js';
 // The environment selector owns this structured recovery error. Keep the
 // class on the public environment path so consumers can branch by `code` and
@@ -807,6 +807,7 @@ export {
   type DiffuseGiTierScene,
   parseDiffuseGiTier,
   resolveDiffuseGiTier,
+  skyEnvironmentFromSun,
 } from './raytracing/diffuse-gi-tier.js';
 export {
   IRRADIANCE_VOLUME_KIND,
@@ -1098,6 +1099,18 @@ export {
 } from './transmission/single-layer-medium.js';
 export type { ViewportHitRequest, ViewportHitResult } from './viewport-hit';
 export {
+  defaultViewportOutputInspection,
+  isViewportOutputMode,
+  VIEWPORT_OUTPUT_MODES,
+  type ViewportOutputCaveat,
+  type ViewportOutputExtension,
+  type ViewportOutputInspection,
+  type ViewportOutputMode,
+  type ViewportOutputResolution,
+  type ViewportOutputTopologyBucket,
+  type ViewportOutputUnavailableReason,
+} from './viewport-output-contract';
+export {
   hasVolumetricFogCapability,
   type IntegratedVolumeResource,
   resolveIntegratedVolumeConsumer,
@@ -1137,6 +1150,7 @@ export {
   type WaterFluidFeatureOptions,
 } from './water/fluid-feature';
 export type { WaterFluidFoamOptions } from './water/fluid-foam';
+export { waterGerstnerSurfaceBindings } from './water/surface-source.js';
 export {
   createWaterInfoFeature,
   type WaterInfoDescriptorRow,

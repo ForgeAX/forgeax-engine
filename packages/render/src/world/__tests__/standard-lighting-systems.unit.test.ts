@@ -146,7 +146,12 @@ function viewOwner() {
   const cause = new Error('pipeline state unavailable');
   const frameState = {
     installedPipelineHandle: 4,
-    standardInstall: { configured: undefined, built: 4, cameraSignature: '', cameraFailure: '' },
+    standardInstall: {
+      configured: undefined,
+      built: 4,
+      cameraConfigured: false,
+      cameraFailure: '',
+    },
   } as unknown as RenderFrameState & Record<string, unknown>;
   const internals = {
     device: {
@@ -242,16 +247,16 @@ describe('render-standard-lighting system', () => {
     const { owner, frameState, cause } = viewOwner();
     const { world, staged, held } = setup(() => ({ kind: 'not-admitted' }), owner);
     beginRenderFrame(world, 1);
-    // A changed camera signature brands a new installed pipeline and retires its graph state.
+    // Initial camera admission brands the installed pipeline and resets its Feature state.
     expect(frameState.installedPipelineHandle).toBe(5);
     expect(frameState.standardInstall).toMatchObject({
       built: 5,
-      cameraSignature: JSON.stringify([undefined, undefined]),
+      cameraConfigured: true,
     });
     expect(viewStandardLightingOf(world, staged)).toEqual({ kind: 'failed', cause });
     expect(viewStandardLightingOf(world, held)).toBeUndefined();
     endRenderFrame(world);
-    // The same camera signature keeps the installed pipeline on the next frame.
+    // The unchanged camera configuration keeps the installed pipeline on the next frame.
     beginRenderFrame(world, 2);
     expect(frameState.installedPipelineHandle).toBe(5);
     endRenderFrame(world);

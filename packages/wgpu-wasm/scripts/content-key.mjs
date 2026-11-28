@@ -97,6 +97,8 @@ async function collectRustSources(srcDir) {
  * output. Path is included in the hash so a rename alone shifts the key.
  */
 export async function computeContentSha256() {
+  const kernelCoreRoot = join(PKG_ROOT, '../render-kernel/rust/crates/kernel-core');
+  const kernelWgpuRoot = join(PKG_ROOT, '../render-kernel/rust/crates/kernel-wgpu');
   const inputs = [
     join(PKG_ROOT, '../../scripts/lib/rust-build-paths.mjs'),
     ...(await collectRustSources(join(PKG_ROOT, 'src'))),
@@ -104,6 +106,10 @@ export async function computeContentSha256() {
     join(PKG_ROOT, 'Cargo.lock'),
     join(PKG_ROOT, 'rust-toolchain.toml'),
     join(PKG_ROOT, 'build.sh'),
+    join(kernelCoreRoot, 'Cargo.toml'),
+    ...(await collectRustSources(join(kernelCoreRoot, 'src'))),
+    join(kernelWgpuRoot, 'Cargo.toml'),
+    ...(await collectRustSources(join(kernelWgpuRoot, 'src'))),
   ];
   const hash = createHash('sha256');
   for (const path of inputs) {

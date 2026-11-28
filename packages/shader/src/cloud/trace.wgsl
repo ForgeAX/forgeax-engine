@@ -4,7 +4,7 @@
 #import forgeax_cloud::medium::{CloudDensityPoint, CloudDensityControls, MediumSample, evaluate_uniform_medium, evaluate_reference_conservative, evaluate_reference_medium}
 #import forgeax_cloud::lighting::{cloud_double_henyey_greenstein, cloud_optical_octaves, cloud_solar_light, cloud_sky_light}
 #import forgeax_view::common::{AtmosphereMedium}
-#import forgeax_cloud::shadow::{cloud_shadow_segment, cloud_shadow_ray_octave_tau, cloud_shadow_map_octave_tau, cloud_shadow_map_load, cloud_shadow_optical_depth}
+#import forgeax_cloud::shadow::{cloud_shadow_segment, cloud_shadow_ray_octave_tau, cloud_shadow_map_octave_tau, cloud_shadow_query_tau, cloud_shadow_uv}
 
 struct CloudTraceLighting {
   directionToLight: vec3f,
@@ -283,12 +283,8 @@ fn trace_sampled_cloud_lit(
       if lighting.shadow.x > 0.5 {
         if useBeerMap {
           let relative = cameraPositionMeters + offsetMeters - lighting.mapOrigin.xyz;
-          let uv = vec2f(dot(relative, lighting.mapRight.xyz), dot(relative, lighting.mapUp.xyz)) /
-            lighting.mapOrigin.w + 0.5;
-          // UE's bilinear clamp extends the edge texels for cloud self-shadowing.
-          // External receivers keep their own finite-coverage policy.
-          lightTau = cloud_shadow_optical_depth(cloud_shadow_map_load(shadowMap, clamp(uv, vec2f(0.0), vec2f(1.0))),
-            clamp(dot(relative, -lighting.mapDirection.xyz), 0.0, lighting.mapRight.w));
+          let uv = cloud_shadow_uv(relative, lighting.mapRight.xyz, lighting.mapUp.xyz, lighting.mapOrigin.w);
+          lightTau = cloud_shadow_query_tau(shadowMap, uv, dot(relative, -lighting.mapDirection.xyz), lighting.mapRight.w);
         } else {
           lightTau = cloud_secondary_optical_depth(cameraPositionMeters + offsetMeters,
             cameraRelativeToPlanetMeters + offsetMeters, cameraPositionMeters,

@@ -1,19 +1,14 @@
 import { defineSystem, World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { type ViewFeatureWork, viewFeaturesOf } from '../../features/view-feature-work';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import { MaterialBgAssemblyCache } from '../../record/material-bg-assembly-cache';
 import type { RenderSystemInternals } from '../../record/render-context';
 import {
   commitFeatureCandidate,
-  getRenderFeatureGraphState,
   type RenderFeatureGraphCandidate,
 } from '../../record/typed-frame-graph';
-import {
-  RENDER_GRAPH_SETTLE_SYSTEM,
-  registerGraphSystems,
-  ViewGraphCandidate,
-  type ViewGraphCandidateSlot,
-} from '../graph-systems';
+import { RENDER_GRAPH_SETTLE_SYSTEM, registerGraphSystems } from '../graph-systems';
 import { RenderView, ViewRecorder, ViewSubmission } from '../render-views';
 import {
   beginRenderFrame,
@@ -43,20 +38,21 @@ function adoptedView(beforeRegister?: (world: World) => void) {
   registerGraphSystems(world);
   const accepted = fakeGraph('accepted');
   const next = fakeGraph('next');
-  const acceptedInstall = { graph: accepted, targets: { graphGeneration: 1 } };
+  const acceptedInstall = {
+    graph: accepted,
+    standardLighting: 'current',
+    targets: { graphGeneration: 1 },
+  };
+  const nextInstall = { graph: next, targets: { graphGeneration: 2 } };
   const frameState = {
     frameNumber: 7,
-    compiledFrameGraph: { graph: next, targets: { graphGeneration: 2 } },
+    compiledFrameGraph: nextInstall,
     graphGeneration: 2,
-    compiledFrameGraphGeneration: 2,
-    standardLightingGraphSignature: 'next',
     compiledFrameGraphCandidate: {
-      graph: next,
+      installed: nextInstall,
       previous: {
         installed: acceptedInstall,
         graphGeneration: 1,
-        compiledGeneration: 1,
-        lightingSignature: 'accepted',
       },
     },
     retiredCompiledFrameGraphs: new Set(),
@@ -67,13 +63,31 @@ function adoptedView(beforeRegister?: (world: World) => void) {
   const errorRegistry = { fire: vi.fn() };
   const internals = { errorRegistry } as unknown as RenderSystemInternals;
   const acceptedPlans = [{ plan: { passes: [] }, featureIdentity: 'accepted' }];
-  getRenderFeatureGraphState(internals).plans = acceptedPlans as never;
+  const acceptedFeature = {
+    ...viewFeaturesOf(frameState),
+    work: {
+      plans: acceptedPlans,
+      executions: [{ featureIdentity: 'accepted' }],
+      atomic: undefined,
+    } as unknown as ViewFeatureWork,
+  };
+  frameState.viewFeatures = acceptedFeature;
   const candidatePlans = [{ plan: { passes: [] }, featureIdentity: 'candidate' }];
-  commitFeatureCandidate(internals, {
+  const candidateWork = {
     plans: candidatePlans,
-    fullscreenEffects: new Map(),
-    postProcessIdentities: ['candidate'],
-  } as unknown as RenderFeatureGraphCandidate);
+    executions: [{ featureIdentity: 'candidate' }],
+    atomic: undefined,
+  } as unknown as ViewFeatureWork;
+  commitFeatureCandidate(
+    internals,
+    frameState,
+    {
+      plans: candidateWork.plans,
+      fullscreenEffects: new Map(),
+      postProcessIdentities: ['candidate'],
+    } as RenderFeatureGraphCandidate,
+    candidateWork,
+  );
   const state = world.allocUniqueRef('ViewRecorder', { owner: { frameState, internals } });
   const view = world
     .spawn(
@@ -96,14 +110,6 @@ function adoptedView(beforeRegister?: (world: World) => void) {
     });
     endRenderFrame(world);
   };
-  const settled = () =>
-    world.hasComponent(view, ViewGraphCandidate)
-      ? world
-          .resolveUniqueRef<ViewGraphCandidateSlot>(
-            world.get(view, ViewGraphCandidate).unwrap().state,
-          )
-          .unwrap().settled
-      : undefined;
   return {
     world,
     frameState,
@@ -112,10 +118,9 @@ function adoptedView(beforeRegister?: (world: World) => void) {
     accepted,
     acceptedInstall,
     next,
-    acceptedPlans,
-    candidatePlans,
+    acceptedFeature,
+    candidateWork,
     settle,
-    settled,
   };
 }
 
@@ -128,7 +133,6 @@ describe('render-graph-settle system', () => {
     expect(settle?.before).toContain('RenderCommit');
     expect(settle?.queries[0]).toMatchObject({
       read: ['ViewRecorder', 'ViewSubmission'],
-      optional: ['ViewGraphCandidate'],
     });
     expect(commit?.systems.some((system) => system.name === RENDER_RECORD_COMMIT_SYSTEM)).toBe(
       true,
@@ -159,14 +163,8 @@ describe('render-graph-settle system', () => {
     expect(view.accepted.retire).toHaveBeenCalledOnce();
     expect(view.next.retire).not.toHaveBeenCalled();
     expect(view.frameState.frameNumber).toBe(8);
-    expect(getRenderFeatureGraphState(view.internals).plans).toBe(view.candidatePlans);
-    expect(getRenderFeatureGraphState(view.internals).rollback).toBeUndefined();
-    expect(view.settled()).toEqual({
-      frame: 3,
-      kind: 'settled',
-      accepted: true,
-      graph: 'promoted',
-    });
+    expect(viewFeaturesOf(view.frameState).work).toBe(view.candidateWork);
+    expect(view.frameState.previousViewFeatures).toBeUndefined();
   });
 
   it('stashes an unencoded graph when a queue-accepted preparation barrier has no scene submission', () => {
@@ -175,11 +173,10 @@ describe('render-graph-settle system', () => {
     view.settle(true, 3, false);
     expect(view.frameState.compiledFrameGraph).toBe(view.acceptedInstall);
     expect(view.frameState.graphGeneration).toBe(1);
-    expect(view.frameState.compiledFrameGraphGeneration).toBe(1);
-    expect(view.frameState.unsubmittedCompiledFrameGraph?.installed.graph).toBe(view.next);
+    expect(view.frameState.unsubmittedCompiledFrameGraph?.graph).toBe(view.next);
     expect(view.accepted.retire).not.toHaveBeenCalled();
     expect(view.next.retire).not.toHaveBeenCalled();
-    expect(getRenderFeatureGraphState(view.internals).plans).toBe(view.acceptedPlans);
+    expect(viewFeaturesOf(view.frameState)).toBe(view.acceptedFeature);
   });
 
   it('rolls back the graph and Feature state of a queue-accepted view while scene inputs are pending', () => {
@@ -188,21 +185,15 @@ describe('render-graph-settle system', () => {
     view.settle(false);
     expect(view.frameState.compiledFrameGraph).toBe(view.acceptedInstall);
     expect(view.frameState.graphGeneration).toBe(1);
-    expect(view.frameState.compiledFrameGraphGeneration).toBe(1);
-    expect(view.frameState.standardLightingGraphSignature).toBe('accepted');
+    expect(view.frameState.compiledFrameGraph?.standardLighting).toBe('current');
     expect(view.next.retire).toHaveBeenCalledOnce();
     expect(view.accepted.retire).not.toHaveBeenCalled();
-    const feature = getRenderFeatureGraphState(view.internals);
-    expect(feature.plans).toBe(view.acceptedPlans);
+    const feature = viewFeaturesOf(view.frameState);
+    expect(feature).toBe(view.acceptedFeature);
+    expect(feature.work.executions).toBe(view.acceptedFeature.work.executions);
     expect(feature.postProcessIdentities).toEqual([]);
-    expect(feature.rollback).toBeUndefined();
+    expect(view.frameState.previousViewFeatures).toBeUndefined();
     expect(view.frameState.frameNumber).toBe(8);
-    expect(view.settled()).toEqual({
-      frame: 3,
-      kind: 'settled',
-      accepted: false,
-      graph: 'rolled-back',
-    });
   });
 
   it('stashes a rejected candidate that waits on pipeline preparation', () => {
@@ -210,9 +201,8 @@ describe('render-graph-settle system', () => {
     view.frameState.pipelinePreparationPending = true;
     view.settle(false);
     expect(view.frameState.compiledFrameGraph).toBe(view.acceptedInstall);
-    expect(view.frameState.unsubmittedCompiledFrameGraph?.installed.graph).toBe(view.next);
+    expect(view.frameState.unsubmittedCompiledFrameGraph?.graph).toBe(view.next);
     expect(view.next.retire).not.toHaveBeenCalled();
-    expect(view.settled()).toMatchObject({ kind: 'settled', graph: 'stashed' });
   });
 
   it('leaves a view that did not record this frame untouched', () => {
@@ -220,10 +210,9 @@ describe('render-graph-settle system', () => {
     view.settle(true, 2);
     expect(view.frameState.compiledFrameGraphCandidate).toBeDefined();
     expect(view.frameState.frameNumber).toBe(7);
-    expect(view.settled()).toBeUndefined();
   });
 
-  it('stores a thrown settlement as data without poisoning the World', () => {
+  it('reports a thrown settlement without poisoning the World', () => {
     const view = adoptedView();
     const cause = new Error('settle exploded');
     Object.defineProperty(view.frameState, 'compiledFrameGraphCandidate', {
@@ -232,7 +221,6 @@ describe('render-graph-settle system', () => {
       },
     });
     expect(() => view.settle(true)).not.toThrow();
-    expect(view.settled()).toEqual({ frame: 3, kind: 'failed', cause });
     expect(view.errorRegistry.fire).toHaveBeenCalledOnce();
     expect(view.frameState.frameNumber).toBe(8);
     view.settle(true);

@@ -36,7 +36,7 @@ function matrix() {
       product,
       distribution: 'zip',
       artifact: { path: `screenshots/${product}.png`, sha256: 'c'.repeat(64) },
-      backend: { kind: 'chromium', identity: 'chrome-beta' },
+      backend: { kind: 'chromium', identity: 'chrome' },
       expected: 'visible product result',
       observed: 'visible product result',
       verdict: 'pass',

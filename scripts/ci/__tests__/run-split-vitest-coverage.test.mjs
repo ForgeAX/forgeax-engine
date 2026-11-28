@@ -899,9 +899,28 @@ import {
   parseArgs,
   projectGroups,
   rerootCoverage,
+  retiredCoverageProjects,
   scheduledGroupOrder,
   validateShardManifests,
 } from '../run-split-vitest-coverage.mjs';
+
+test('retired packages keep their chunk identity but never reach a Vitest command', () => {
+  const projects = allProjectNames();
+  const groups = coverageGroups(projects, 8);
+  for (const retired of retiredCoverageProjects) {
+    assert.ok(projects.includes(retired), retired);
+    const group = groups.find((candidate) => candidate.projects.includes(retired));
+    assert.ok(group.label.split(':')[0].split(',').includes(retired), group.label);
+    const args = buildGroupArgs({ cliPath: 'vitest', group, maxWorkers: 1, coverage: false });
+    assert.equal(args.includes(retired), false, group.label);
+    assert.ok(args.includes('--project'), 'a retired package never empties its group');
+  }
+  const typecheck = buildTypecheckArgs({ cliPath: 'vitest', projects, maxWorkers: 1 });
+  assert.equal(
+    typecheck.some((arg) => retiredCoverageProjects.includes(arg)),
+    false,
+  );
+});
 
 test('complete Standard cold cooks share the existing exclusive source-contract child', () => {
   const file = 'packages/vite-plugin-shader/src/__tests__/standard-material-cold-cook.unit.test.ts';

@@ -148,6 +148,15 @@ export interface ShutLineStats {
   readonly p90: number;
 }
 
+export interface ShutLineUncovered {
+  /** The first out-of-reach station of the stretch. */
+  readonly from: Tuple3;
+  /** The last out-of-reach station of the stretch. */
+  readonly to: Tuple3;
+  /** Gap between the measured stations (or chain ends) that bound the stretch, m. */
+  readonly length: number;
+}
+
 export interface ShutLineRow {
   readonly id: string;
   readonly parts: readonly [string, string];
@@ -166,6 +175,16 @@ export interface ShutLineRow {
   readonly skipped: number;
   /** Measured share of the line's stations away from its ends. */
   readonly coverage: number;
+  /** Arc length of the declared chains (each chain whole, end to end), m. */
+  readonly declaredLength?: number;
+  /** `declaredLength` less the uncovered stretches, m. */
+  readonly measuredLength?: number;
+  /**
+   * Declared stretches whose stations are out of reach, each from the last measured station
+   * before it (or the chain's start) to the next one (or the chain's end). A stretch longer than
+   * the station spacing leaves the row `unmeasured` unless the row carries an exception.
+   */
+  readonly uncovered?: readonly ShutLineUncovered[];
   /**
    * Gap on the theoretical line along the two skin lines' mean direction (their bisector
    * frame), m. A panel's skin line: probing its section every 0.25 mm from 10 mm back toward
@@ -706,8 +725,8 @@ export function measureShutLines(
     readonly end: boolean;
   }
   /**
-   * The station at `p` on edge `e` (tangent `t`): far (no partner edge within reach), skipped,
-   * or measured. Its section is square to the edge, or at a vertex (`vertex`) points at the
+   * The station at `p` on edge `e` (tangent `t`): far (no partner edge within reach), beside
+   * (in reach, but past the other panel's end), skipped, or measured. Its section is square to the edge, or at a vertex (`vertex`) points at the
    * nearest point of the other panel's edges.
    */
   const measureAt = (
@@ -718,7 +737,7 @@ export function measureShutLines(
     own: number,
     other: number,
     theirs: readonly Edge[],
-  ): Omit<Station, 'end'> | 'far' | 'skipped' => {
+  ): Omit<Station, 'end'> | 'far' | 'beside' | 'skipped' => {
     let best: { q: Tuple3; d: number; e: Edge } | undefined;
     for (const f of theirs) {
       const c = closest(p, f);
@@ -737,7 +756,7 @@ export function measureShutLines(
     ]);
     // A section square to its edge facing the other panel's nearest point more along the edge
     // than across it (past the other panel's end) cuts no seam.
-    if (!vertex && Math.abs(dot(d, t)) > Math.abs(dot(d, square))) return 'skipped';
+    if (!vertex && Math.abs(dot(d, t)) > Math.abs(dot(d, square))) return 'beside';
     const across =
       norm(g) > 1e-9
         ? unit(g)
@@ -863,15 +882,26 @@ export function measureShutLines(
 
   /**
    * Stations every `step` along each chain of a panel's outer edges, at the edges' ends too.
-   * A chain belongs to the line between its first and last station with the other panel in
-   * reach (on a loop: all but its longest stretch out of reach); stations within `ends` of
-   * those ends are excluded from the coverage, the rest are measured or skipped.
+   * A chain belongs to the line when at least one of its stations has the other panel in reach;
+   * the line then declares the whole chain, end to end. Its out-of-reach stations are not
+   * dropped: each stretch between measured stations is reported as uncovered. Stations within
+   * `ends` of an open chain's ends are excluded from the coverage; a closed loop has no ends.
    */
-  const measureRow = (row: DtsRow): { stations: Station[]; counted: number; skipped: number } => {
+  const measureRow = (
+    row: DtsRow,
+  ): {
+    stations: Station[];
+    counted: number;
+    skipped: number;
+    declared: number;
+    uncovered: ShutLineUncovered[];
+  } => {
     const [A, B] = [parts.indexOf(row.parts[0]), parts.indexOf(row.parts[1])];
     const out: Station[] = [];
+    const uncovered: ShutLineUncovered[] = [];
     let counted = 0;
     let skipped = 0;
+    let declared = 0;
     for (const [own, other] of [
       [A, B],
       [B, A],
@@ -880,7 +910,18 @@ export function measureShutLines(
       if (theirs.length === 0) continue;
       for (const chain of chains(own)) {
         const { segments } = chain;
-        const sampled: { s: number; r: Omit<Station, 'end'> | 'far' | 'skipped' }[] = [];
+        const sampled: {
+          s: number;
+          p: Tuple3;
+          seg: number;
+          /** A regular station, not a vertex: only these anchor a declared run. */
+          mid: boolean;
+          /** In reach and square to the other panel, not past its end. */
+          facing: boolean;
+          r: Omit<Station, 'end'> | 'far' | 'skipped';
+        }[] = [];
+        const segStart: number[] = [];
+        const segLen: number[] = [];
         let s = 0;
         const stepsOf = (seg: Chain['segments'][number]) =>
           Math.max(1, Math.round(norm(sub(seg.to, seg.from)) / step));
@@ -902,13 +943,22 @@ export function measureShutLines(
           const side = sides.has(seg.edge);
           const at = (k: number, vertex = false) => {
             const r = measureAt(point(seg, k), t, vertex, seg.edge, own, other, theirs);
-            sampled.push({ s: s + len * k, r: side && r !== 'far' ? 'skipped' : r });
+            sampled.push({
+              s: s + len * k,
+              p: point(seg, k),
+              seg: i,
+              mid: !vertex,
+              facing: r !== 'far' && r !== 'beside',
+              r: r === 'beside' || (side && r !== 'far') ? 'skipped' : r,
+            });
           };
           const prev = segments[i > 0 ? i - 1 : chain.closed ? segments.length - 1 : -1];
           const neighbors = [point(seg, 0.5 / steps)];
           if (prev !== undefined) neighbors.push(point(prev, 1 - 0.5 / stepsOf(prev)));
           if (extreme(seg.from, neighbors)) at(0, true);
           for (let k = 0; k < steps; k++) at((k + 0.5) / steps);
+          segStart.push(s);
+          segLen.push(len);
           s += len;
           if (
             !chain.closed &&
@@ -918,40 +968,83 @@ export function measureShutLines(
             at(1, true);
         }
         const total = s;
-        const near = sampled.flatMap((x, i) => (x.r === 'far' ? [] : [i]));
-        if (near.length === 0) continue;
-        let [first, last] = [near[0] as number, near[near.length - 1] as number];
-        let full = false;
+        const n = segments.length;
+        const tangent = (i: number) => {
+          const g = segments[i] as Chain['segments'][number];
+          return unit(sub(g.to, g.from));
+        };
+        const turns = (i: number, j: number) => dot(tangent(i), tangent(j)) >= Math.SQRT1_2;
+        // Declared runs: consecutive segments that keep their direction within 45 degrees, where a
+        // regular station faces the other panel squarely or at least half of them are in reach.
+        // A corner turning away ends a run, so a panel's perpendicular edges and its far side stay
+        // outside the seam even where their first stations brush the other panel's corner; a
+        // declared run's out-of-reach stations are its uncovered stretches. The rule reads the
+        // run, not its segments, so it does not depend on how finely the edge is tessellated.
+        const anchored = (run: readonly number[]) => {
+          const members = new Set(run);
+          const own = sampled.filter((x) => members.has(x.seg) && x.mid);
+          return (
+            own.some((x) => x.facing) ||
+            (own.length > 0 && own.filter((x) => x.r !== 'far').length * 2 >= own.length)
+          );
+        };
+        let order = [...segments.keys()];
+        let loop = false;
         if (chain.closed) {
-          // The line is the loop without its longest stretch out of reach.
-          let widest = -1;
-          for (let k = 0; k < near.length; k++) {
-            const i = near[k] as number;
-            const j = near[(k + 1) % near.length] as number;
-            if ((i + 1) % sampled.length === j) continue;
-            const span = ((sampled[j]?.s as number) - (sampled[i]?.s as number) + total) % total;
-            if (span > widest) [widest, last, first] = [span, i, j];
-          }
-          full = widest < 0;
+          const cut = order.findIndex((i) => !turns(i, (i + 1) % n));
+          if (cut < 0) loop = true;
+          else order = [...order.slice(cut + 1), ...order.slice(0, cut + 1)];
         }
-        const s0 = sampled[first]?.s as number;
-        const from = (x: number) => (chain.closed ? (x - s0 + total) % total : x - s0);
-        const length = full ? total : from(sampled[last]?.s as number);
-        for (let k = 0; k < sampled.length; k++) {
-          const i = (first + k) % sampled.length;
-          const x = sampled[i] as (typeof sampled)[number];
-          const pos = full ? 0 : from(x.s);
-          if (!full && pos > length) break;
-          const end = !full && (pos < ends || length - pos < ends);
-          if (!end) counted++;
-          if (typeof x.r === 'string') {
-            if (!end) skipped++;
-          } else out.push({ ...x.r, end });
-          if (!chain.closed && i === sampled.length - 1) break;
+        const runs: number[][] = [];
+        if (loop) {
+          if (anchored(order)) runs.push(order);
+        } else {
+          let current: number[] = [];
+          for (const [k, i] of order.entries()) {
+            current.push(i);
+            const next = order[k + 1];
+            if (next === undefined || !turns(i, next)) {
+              if (anchored(current)) runs.push(current);
+              current = [];
+            }
+          }
+        }
+        for (const run of runs) {
+          const members = new Set(run);
+          const length = run.reduce((acc, i) => acc + (segLen[i] ?? 0), 0);
+          const start = segStart[run[0] as number] as number;
+          const wrap = (v: number) => ((v % total) + total) % total;
+          const seq = sampled.filter((x) => members.has(x.seg)).map((x) => ({ x, s: x.s }));
+          // A loop starts at a measured station; a run starts at its first segment.
+          const origin = loop ? (seq.find((y) => y.x.r !== 'far')?.s ?? start) : start;
+          const at = seq
+            .map(({ x, s: v }) => ({ x, pos: chain.closed ? wrap(v - origin) : v - origin }))
+            .sort((a, b) => a.pos - b.pos);
+          declared += length;
+          for (let k = 0; k < at.length; k++) {
+            if (at[k]?.x.r !== 'far') continue;
+            let j = k;
+            while (j + 1 < at.length && at[j + 1]?.x.r === 'far') j++;
+            const before = k > 0 ? (at[k - 1]?.pos ?? 0) : 0;
+            const after = j < at.length - 1 ? (at[j + 1]?.pos ?? length) : length;
+            uncovered.push({
+              from: (at[k] as (typeof at)[number]).x.p,
+              to: (at[j] as (typeof at)[number]).x.p,
+              length: after - before,
+            });
+            k = j;
+          }
+          for (const { x, pos } of at) {
+            const end = !loop && (pos < ends || length - pos < ends);
+            if (!end) counted++;
+            if (typeof x.r === 'string') {
+              if (!end) skipped++;
+            } else out.push({ ...x.r, end });
+          }
         }
       }
     }
-    return { stations: out, counted, skipped };
+    return { stations: out, counted, skipped, declared, uncovered };
   };
 
   const measured = new Map<string, ReturnType<typeof measureRow>>();
@@ -981,8 +1074,16 @@ export function measureShutLines(
     const zone = row.zone ?? 'A';
     const limits = limitsOf.get(row.id) as ShutLineLimits;
     const exception = exceptionOf.get(row.id);
-    const { stations: s, counted, skipped } = measured.get(row.id) as ReturnType<typeof measureRow>;
+    const {
+      stations: s,
+      counted,
+      skipped,
+      declared,
+      uncovered,
+    } = measured.get(row.id) as ReturnType<typeof measureRow>;
     const coverage = counted === 0 ? (s.length > 0 ? 1 : 0) : (counted - skipped) / counted;
+    // A gap wider than one station spacing means a station of the declared chain went unmeasured.
+    const holes = uncovered.some((u) => u.length > step);
     const base = {
       id: row.id,
       parts: row.parts,
@@ -991,6 +1092,9 @@ export function measureShutLines(
       samples: s.length,
       skipped,
       coverage,
+      declaredLength: declared,
+      measuredLength: declared - uncovered.reduce((a, u) => a + u.length, 0),
+      uncovered,
       ...(exception === undefined ? {} : { exception }),
     };
     if (s.length < 3)
@@ -1024,6 +1128,8 @@ export function measureShutLines(
     limited('parallelism', (l) => parallelism > l.parallelism);
     limited('symmetry', (l) => symmetryDelta !== undefined && symmetryDelta > l.symmetry);
     if (coverage < LINE_COVERAGE) failures.push('coverage');
+    // The exception carries the uncovered stretches; without one they make the row unmeasured.
+    if (holes) (exception === undefined ? failures : excepted).push('unmeasured');
     limited('visualGap', (l) => visualGap.max > l.visualGap);
     const drawn = breaks.get(row.id);
     let brk: { readonly max: number; readonly back: number; readonly coverage: number } | undefined;
@@ -1048,7 +1154,13 @@ export function measureShutLines(
       ...(brk === undefined ? {} : { break: brk }),
       failures,
       excepted,
-      status: failures.length > 0 ? 'fail' : excepted.length > 0 ? 'excepted' : 'pass',
+      status: failures.includes('unmeasured')
+        ? 'unmeasured'
+        : failures.length > 0
+          ? 'fail'
+          : excepted.length > 0
+            ? 'excepted'
+            : 'pass',
     };
   });
   const counts = { pass: 0, fail: 0, excepted: 0, unmeasured: 0 };

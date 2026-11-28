@@ -2,7 +2,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
 import type { MaterialSnapshot } from '../render-system-extract';
 import type { FrameList } from '../scene/frame-list';
-import { FrameListBase, FrameProjection } from '../scene/frame-list';
+import { EMPTY_FRAME_ROWS, FrameListBase, FrameProjection } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { changes, type Node, nodes, put, remove } from '../scene/frame-tree';
 import {
@@ -10,6 +10,7 @@ import {
   type MaterialFrame,
   usesAcceptedSpriteGeometry,
 } from '../scene/material-dispatch';
+import { drawBindingReaderAt } from './draw-row-pages';
 import type { MaterialBinding, MaterialBindingSlots, MaterialTable } from './fold-buckets';
 import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import { getOpaqueResourceIdentity } from './frame-snapshot';
@@ -326,27 +327,53 @@ class Relations extends FrameListBase<Tuple> {
   }
 }
 
+function bindingForReader(
+  material: MaterialResource,
+  index: number,
+  primary: DrawRows,
+  shadow: DrawRows,
+  before: MaterialBinding | undefined,
+): MaterialBinding {
+  const row =
+    index < primary.length
+      ? drawBindingReaderAt(primary, index)
+      : drawBindingReaderAt(shadow, index - primary.length);
+  if (row === undefined) throw new Error('Material reader has no submitted row');
+  const world = row.world;
+  const entityKey = row.source.entityKey;
+  if (before !== undefined && before.world === world && before.entityKey === entityKey)
+    return before;
+  return Object.freeze({
+    material,
+    resourceClass: '',
+    ...(world === undefined ? {} : { world }),
+    entityKey,
+  });
+}
+
 /**
- * The view owns actual material-reader membership, not a per-frame result cache.
- * Bitmaps retire absent resources; old projections hold their own fixed pages.
+ * The view owns material-reader membership and each current published slot.
+ * Bitmaps retire absent resources; old submissions hold their own fixed tables.
  */
 export class MaterialBindingIndex {
   private relations = new Relations([]);
   private readonly readers = new Map<MaterialResource, FrameSet>();
   private readonly shadows = new MaterialRelations();
   private slots: FrameList<readonly number[]> = [];
-  private resources: readonly MaterialResource[] = [];
+  private bindings: readonly MaterialBinding[] = EMPTY_FRAME_ROWS;
+  private snapshots: readonly MaterialSnapshot[] = EMPTY_FRAME_ROWS;
   private firstReaders: readonly number[] = [];
   private bindingSlots: MaterialBindingSlots = new Map();
   readonly work = { changedRows: 0, indexedRows: 0, rebuilt: 0 };
 
   clear(): void {
     this.shadows.clear();
-    if (this.relations.segments.length === 0) return;
+    if (this.relations.segments.length === 0 && this.readers.size === 0) return;
     this.relations = new Relations([]);
     this.readers.clear();
     this.slots = [];
-    this.resources = [];
+    this.bindings = EMPTY_FRAME_ROWS;
+    this.snapshots = EMPTY_FRAME_ROWS;
     this.firstReaders = [];
     this.bindingSlots = new Map();
   }
@@ -367,47 +394,76 @@ export class MaterialBindingIndex {
     } else {
       this.shadows.clear();
     }
-    const segments: Segment[] = [];
-    let offset = 0;
-    for (const frame of frames) {
-      segments.push({ frame, offset });
-      offset += frame.length;
+    if (this.sameRelations(frames, shadow)) {
+      this.publishBindingScopes(rows, shadows);
+    } else {
+      const segments: Segment[] = [];
+      let offset = 0;
+      for (const frame of frames) {
+        segments.push({ frame, offset });
+        offset += frame.length;
+      }
+      segments.push({ frame: shadow, offset });
+      this.adopt(new Relations(segments), rows, shadows);
     }
-    segments.push({ frame: shadow, offset });
-    if (
-      segments.length !== this.relations.segments.length ||
-      segments.some((segment, index) => {
-        const before = this.relations.segments[index];
-        return before?.frame !== segment.frame || before.offset !== segment.offset;
-      })
-    )
-      this.adopt(new Relations(segments));
-    const slots = this.resources.map(
-      (resource) => requireAcceptedMaterial(resource, materials).snapshot,
-    );
-    // This descriptor belongs to this submission: capacity clipping and shared
-    // GPU bindings may replace/append its small resource tables independently.
-    const bindings = this.resources.map((resource, slot): MaterialBinding => {
-      const first = this.firstReaders[slot] as number;
-      const row = first < rows.length ? rows.at(first) : shadows.at(first - rows.length);
-      if (row === undefined) throw new Error('Material reader has no submitted row');
-      return {
-        material: resource,
-        resourceClass: '',
-        ...(row.world === undefined ? {} : { world: row.world }),
-        entityKey: row.source.entityKey,
-      };
-    });
+    this.publishSnapshots(materials);
     return {
       slotIndices: this.slots,
-      slots,
-      bindings,
+      slots: this.snapshots,
+      bindings: this.bindings,
       bindingSlots: this.bindingSlots,
-      slotCount: slots.length,
+      slotCount: this.snapshots.length,
     };
   }
 
-  private adopt(next: Relations): void {
+  private sameRelations(
+    frames: readonly MaterialRelationFrame[],
+    shadow: MaterialRelationFrame,
+  ): boolean {
+    const segments = this.relations.segments;
+    if (segments.length !== frames.length + 1 || segments[frames.length]?.frame !== shadow)
+      return false;
+    for (let index = 0; index < frames.length; index++)
+      if (frames[index] !== segments[index]?.frame) return false;
+    return true;
+  }
+
+  private publishBindingScopes(rows: DrawRows, shadows: DrawRows): void {
+    const bindings = this.bindings;
+    let next: MaterialBinding[] | undefined;
+    for (let slot = 0; slot < bindings.length; slot++) {
+      const before = bindings[slot] as MaterialBinding;
+      const binding = bindingForReader(
+        before.material,
+        this.firstReaders[slot] as number,
+        rows,
+        shadows,
+        before,
+      );
+      if (binding === before) continue;
+      next ??= bindings.slice();
+      next[slot] = binding;
+    }
+    if (next !== undefined) this.bindings = Object.freeze(next);
+  }
+
+  private publishSnapshots(materials: MaterialFrame): void {
+    const previous = this.snapshots;
+    const bindings = this.bindings;
+    let next: MaterialSnapshot[] | undefined;
+    for (let slot = 0; slot < bindings.length; slot++) {
+      const { material } = bindings[slot] as MaterialBinding;
+      const snapshot = requireAcceptedMaterial(material, materials).snapshot;
+      if (snapshot === previous[slot]) continue;
+      next ??= previous.slice(0, bindings.length);
+      next[slot] = snapshot;
+    }
+    if (next !== undefined) this.snapshots = Object.freeze(next);
+    else if (previous.length !== bindings.length)
+      this.snapshots = Object.freeze(previous.slice(0, bindings.length));
+  }
+
+  private adopt(next: Relations, rows: DrawRows, shadows: DrawRows): void {
     const edits = new Map<MaterialResource, Map<number, boolean>>();
     const edit = (resource: MaterialResource, index: number, present: boolean) => {
       let keys = edits.get(resource);
@@ -470,18 +526,28 @@ export class MaterialBindingIndex {
       return { resource, first: first as number, lane: row.indexOf(resource) };
     });
     ordered.sort((left, right) => left.first - right.first || left.lane - right.lane);
+    this.firstReaders = ordered.map(({ first }) => first);
+    const before = this.bindings;
     if (
-      ordered.length !== this.resources.length ||
-      ordered.some((entry, slot) => this.resources[slot] !== entry.resource)
+      ordered.length !== before.length ||
+      ordered.some((entry, slot) => before[slot]?.material !== entry.resource)
     ) {
       const slots = new Map<MaterialResource, ReadonlyMap<string, number>>();
-      this.resources = ordered.map(({ resource }, slot) => {
-        slots.set(resource, new Map([['', slot]]));
-        return resource;
-      });
+      this.bindings = Object.freeze(
+        ordered.map(({ resource, first }, slot) => {
+          slots.set(resource, new Map([['', slot]]));
+          const previous = this.bindingSlots.get(resource)?.get('');
+          return bindingForReader(
+            resource,
+            first,
+            rows,
+            shadows,
+            previous === undefined ? undefined : before[previous],
+          );
+        }),
+      );
       this.bindingSlots = slots;
-    }
-    this.firstReaders = ordered.map(({ first }) => first);
+    } else this.publishBindingScopes(rows, shadows);
     const slots = this.bindingSlots;
     const tuples = new WeakMap<Tuple, readonly number[]>();
     const singletons: (readonly number[] | undefined)[] = [];

@@ -8,7 +8,7 @@ louvers, vents), or when a triangle budget forces detail into textures. The API 
 `bakeTrimSheet`, `trimReport`, `thinHole`); the checks it runs are listed in
 [`reference/validation.md`](../reference/validation.md). UV layout (seams, unwrap, pack) is the
 companion topic in [uv-cuts-lowpoly.md](uv-cuts-lowpoly.md); export normals are in
-[`reference/export.md`](../reference/export.md). This page covers what to decide, what the
+[`reference/export.md`](../reference/export.md). The order of the whole chain is in [game-asset-pipeline.md](game-asset-pipeline.md). This page covers what to decide, what the
 tools measure, and how to recover from each failure code.
 
 ## Decide first: should this detail be a texture at all
@@ -99,7 +99,7 @@ with the same mode. Examples pin one constant for both (`armor-bake`). If a bake
 shows faint seams along hard edges, compare against `normalObject` first: if it is clean, the
 frame, not the bake, is at fault.
 
-Mirrored or stacked UVs flip the tangent sign. Export splits corners where uv0 handedness
+Mirrored or stacked UVs (`uv.pack({ stack: 'mirrored' })` makes them on purpose) flip the tangent sign. Export splits corners where uv0 handedness
 changes, and the `tangent-seam` issue flags corners that disagree. Mirrored halves are fine;
 just do not weld across the mirror line and expect one smooth normal.
 
@@ -143,6 +143,27 @@ creases (about 9.5 degrees p95 on a 45 degree chamfer). Use `filter: 'none'` for
 creases (about 0.3). `samples` (1, 4, 9, 16) supersamples per texel. A fillet narrower than
 about 6 texels shows a step at the seam: give it more texels or leave it as geometry.
 
+## Exact position, normal and height from the patches
+
+When the detail is `m.surface` patches and the low carries their domain (any base made from the same patches, then `uv.auto`), `bake({ analytic: true })` reads position, normals and height from the exact surface instead of from its tessellation, so a coarse detail mesh no longer bends them. It is an opt-in: the default bake is unchanged. Check `provenance.analytic` after the bake: `raySamples` and each group's `reason` say what stayed on rays (untagged detail faces, a `wrap` period, ray-only maps such as `ao` and `curvature`), and an `analytic-mismatch` warning means the verifier found a patch that disagreed with the ray bake and ray-baked that group. The verifier defaults to `'all'` (every sub-sample, about 4.2x the cost of the ray bake at 256x256 and 1.7x the cost of `'off'`); `'sample'` checks 256 points per group and can miss a local error, and `'off'` leaves only the stale-descriptor guard (a patch that moved away from the detail corners falls back to rays, reason `detail-moved`). The guard compares every face up to 2048 faces per patch and a deterministic stride above that, and it never sees a deleted detail face, so under `'off'` a local edit of a large patch can pass; `'sample'` and `'all'` see both. Keep `'all'` unless a measured budget says otherwise.
+
+## Straight edges and grain direction
+
+Hand-painted or trim-sheet texturing wants island borders on texel rows. `m.uv.straighten()`
+puts wavy boundary runs of any island on their chords and keeps an island unchanged when the
+move would flip, overlap or stretch it beyond `maxStretch`; read the warn diagnostic for the
+islands it kept (verdicts `flipped` for an input with a folded or zero-area triangle, `blocked`, `stretch`,
+`overlap`). Mirror-image islands, such as BK54 mirrored copies, are straightened like the
+others. Do it before `uv.pack`. For wood grain or brushed metal, `uv.pack({ orient:
+'worldUp' })` turns each island so world up is +v and never quarter-turns it, so the grain
+stays vertical on every part.
+
+When a model needs more than one texture set, pack tiles instead of shrinking everything into one atlas:
+`uv.pack({ groups: ['hull', 'cockpit'], tiles: { across: 2, by: 'zone', zones: { hull: [0, 0], cockpit: [1, 0] } } })`
+puts each part in its own unit cell, which is also its material zone for `validate({ surface })`. Use
+`by: 'fit'` when only capacity matters, and `priority: { cockpit: 1 }` when one part must keep its density
+while the rest give way. `fill: 'tight'` buys a few points of utilization for roughly seven times the work.
+
 ## Trim sheets: shared detail for many parts
 
 A trim sheet bakes repeated strips and cells once and lets many parts map into them.
@@ -156,7 +177,7 @@ modules to use spare space.
 
 Module sources: `{ kind: 'mesh' }`, `{ kind: 'analytic' }`, or `{ kind: 'flat' }`. The
 `stamp.*` helpers (`boltHex`, `rivet`, `hole`, `slot`, `groove`, `perforation`, `treadPlate`,
-`knurl`, `weldBead`, `text`) each return a Result with `size`, `tiling?`, `period?`,
+`knurl`, `weldBead`, `text`, `outline`) each return a Result with `size`, `tiling?`, `period?`,
 `source` and `signature`.
 
 Use the sheet on geometry with `m.uv.trim({ faces, region, axis?, fit?: 'metric' | 'fit' |
@@ -192,6 +213,19 @@ Compare renders, not just maps. `tools` offers `flip`, `ssim`, `deltaE2000`, `im
 scene with thresholds (p95 3 degrees, p99 8 degrees, AO mean error 0.05). The CLI route is
 `forgeax model bake --source a.pack.ts --base <session> --detail <session> --resolution N`
 (report `forgeax.model.bake/1`, `--out`, `--compare true`).
+
+## Where the seams show
+
+Every island border is a place where a texture can mismatch, and a seam nobody can see costs nothing.
+`m.seamVisibility()` measures, for each seam edge, the share of facing viewpoints that cannot see it
+(occluders default to `form` and `detail`), and reports a length-weighted `hiddenScore`, the chains that
+stay most visible and per-island scores. Use it to compare two cut plans of one asset and to find the long
+exposed chains worth moving; it does not know where a player looks and says nothing about how a seam
+looks. A turret low scores about 0.70 hidden, so roughly 30 percent of the seam length is exposed
+from some outside viewpoint: read the numbers as relative, not as a pass mark. See reference/uv-bake.md.
+Two limits to keep in mind: a seam that no viewpoint can face scores as hidden, and the faces next to a
+seam never block it, so a crease between open sheets reads as visible (a V-groove of two sheets scores 0
+where about 0.67 is true). Close the shell before trusting the score on such parts.
 
 ## Runnable shape (examples/armor-bake)
 

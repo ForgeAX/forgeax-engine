@@ -85,7 +85,10 @@ describe('persistent material reader membership', () => {
     }));
     const next = capture(owner, moved);
     expect(next).toBe(first);
-    expect(index.build([next], [], accepted, moved).slotIndices).toBe(table.slotIndices);
+    const current = index.build([next], [], accepted, moved);
+    expect(current.slotIndices).toBe(table.slotIndices);
+    expect(current.bindings).toBe(table.bindings);
+    expect(current.slots).toBe(table.slots);
     expect(index.work).toEqual(work);
     expect(owner.work).toEqual(storage);
   });
@@ -195,6 +198,7 @@ describe('persistent material reader membership', () => {
     const nextFrame = accepted.with(a, 1, snapshot);
     const next = index.build([relations], [], nextFrame, rows);
     expect(next.slotIndices).toBe(old.slotIndices);
+    expect(next.bindings).toBe(old.bindings);
     expect(next.slots[0]).toBe(snapshot);
     expect(old.slots[0]).toBe(accepted.get(a)?.snapshot);
   });
@@ -221,6 +225,9 @@ describe('persistent material reader membership', () => {
     );
     expect(gpu.materialBindingSlots.get(a)?.get('extra')).toBe(1);
     expect(cpu.bindingSlots.get(a)?.has('extra')).toBe(false);
+    expect(cpu.bindings).toHaveLength(1);
+    expect(cpu.slots).toHaveLength(1);
+    expect(gpu.materialBindings[0]).toBe(cpu.bindings[0]);
     const moved = rows.map((entry, i) => ({
       ...entry,
       source: { ...entry.source, entityKey: i + 1 },
@@ -270,9 +277,17 @@ describe('persistent material reader membership', () => {
     const owner = new MaterialRelations();
     const index = new MaterialBindingIndex();
     const main = [row(1)];
-    const shadow = [{ ...row(2, ab), world: { identity: 'shadow' } as RenderResourceScope }];
-    const table = index.build([capture(owner, main)], shadow, accepted, main);
+    const shadowRow = { ...row(2, ab), world: { identity: 'shadow' } as RenderResourceScope };
+    const shadow = [shadowRow];
+    const mainFrame = capture(owner, main);
+    const table = index.build([mainFrame], shadow, accepted, main);
     expectOrdinary(table, [...main, ...shadow]);
+    const shifted = [{ ...shadowRow, world: scope }];
+    const current = index.build([mainFrame], shifted, accepted, main);
+    expectOrdinary(current, [...main, ...shifted]);
+    expect(current.bindings[0]).toBe(table.bindings[0]);
+    expect(current.bindings[1]).not.toBe(table.bindings[1]);
+    expect(table.bindings[1]?.world).toBe(shadow[0]?.world);
     expectOrdinary(index.build([capture(owner, [])], shadow, accepted, []), shadow);
   });
 

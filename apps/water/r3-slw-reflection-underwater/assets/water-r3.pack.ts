@@ -21,6 +21,13 @@ import {
 } from '@forgeax/engine/water';
 import { presentationGuid } from '../../presentation-identity';
 import { terrainPresentation } from '../../terrain-presentation';
+import {
+  CAUSTICS_FIELD,
+  CAUSTICS_GRID,
+  CAUSTICS_PLANE_Y,
+  CAUSTICS_SUN_DIRECTION,
+  CAUSTICS_SUN_INTENSITY,
+} from '../src/caustics-policy';
 import { WATER_R3_PACKAGE } from '../src/identity';
 import { CLEAR_WATER_MATERIAL_KEYS, CLEAR_WATER_VALUES } from '../src/material-presets';
 
@@ -87,6 +94,30 @@ export default definePack({
     });
     if (!waves.ok) return waves;
     const waveSetGuid = guid('waves/basin');
+    const focusWaves = cookWaterAsset({
+      kind: 'water-wave-set',
+      waveSource: {
+        kind: 'predefined',
+        waves: [
+          { directionXZ: [0.8, 0.6], wavelengthM: 8, amplitudeM: 0.12, steepness: 0.08 },
+          { directionXZ: [-0.3, 0.953939], wavelengthM: 3.5, amplitudeM: 0.045, steepness: 0.06 },
+          { directionXZ: [1, 0], wavelengthM: 1.7, amplitudeM: 0.025, steepness: 0.09 },
+          { directionXZ: [0.28, 0.96], wavelengthM: 1.3, amplitudeM: 0.018, steepness: 0.06 },
+          { directionXZ: [-0.92, 0.391918], wavelengthM: 2.2, amplitudeM: 0.035, steepness: 0.08 },
+          {
+            directionXZ: [0.707107, -0.707107],
+            wavelengthM: 1.1,
+            amplitudeM: 0.012,
+            steepness: 0.05,
+          },
+          { directionXZ: [-0.2, -0.979796], wavelengthM: 3.2, amplitudeM: 0.04, steepness: 0.08 },
+        ],
+      },
+      depthMaskM: 2,
+      maxWaveHeightM: 0.35,
+      timeSource: 'scene-clock',
+    });
+    if (!focusWaves.ok) return focusWaves;
     const zoneGuid = guid('zone/main');
     const customMeshGuid = guid('mesh/custom-surface');
     const customCollisionGuid = guid('mesh/custom-collision');
@@ -256,6 +287,11 @@ export default definePack({
         },
         'body/lake': lake,
         'body/lake-peer': lake,
+        'body/caustics': {
+          ...lake,
+          maxWaveHeightM: 0.35,
+          flags: { ...lake.flags, affectsWaterInfo: false },
+        },
         'body/river': river,
         'body/ocean': ocean,
         'body/custom': custom,
@@ -298,6 +334,74 @@ export default definePack({
         Object.entries(terrain.value).map(([key, asset]) => [`terrain/coast/${key}`, asset]),
       ),
       'waves/basin': waves.value,
+      'waves/caustics': focusWaves.value,
+      'generator/caustics-pattern': {
+        kind: 'texture-generator',
+        values: {},
+        inputs: {},
+        transient: {},
+        outputs: {
+          pattern: {
+            shape: { viewDimension: '2d', extent: { width: 512, height: 512 } },
+            format: 'rgba8unorm',
+            colorSpace: 'linear',
+            mips: { kind: 'generate' },
+          },
+        },
+        passes: [
+          {
+            kind: 'raster',
+            program: { module: 'water_r3::caustics_pattern', fragmentEntry: 'pattern' },
+            reads: {},
+            writes: ['pattern'],
+          },
+        ],
+      },
+      'texture/caustics-pattern': {
+        kind: 'gpu-texture',
+        shape: { viewDimension: '2d', extent: { width: 512, height: 512 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'generate' },
+        source: {
+          kind: 'generated',
+          generator: guid('generator/caustics-pattern'),
+          output: 'pattern',
+        },
+      },
+      'material/caustics-field': {
+        kind: 'material',
+        parameters: [
+          { name: 'causticsIncident', type: 'vec3', default: CAUSTICS_SUN_DIRECTION },
+          { name: 'causticsGrid', type: 'u32', default: CAUSTICS_GRID },
+          { name: 'causticsPlaneY', type: 'f32', default: CAUSTICS_PLANE_Y },
+          { name: 'causticsLight', type: 'f32', default: CAUSTICS_SUN_INTENSITY },
+          { name: 'causticsMode', type: 'f32', default: 2 },
+          { name: 'causticsPattern', type: 'texture' },
+          { name: 'causticsSourceSpanM', type: 'f32', default: 44 },
+          { name: 'causticsReceiverHalfExtentM', type: 'f32', default: 16 },
+          { name: 'causticsNormalStencilM', type: 'f32', default: 0.02 },
+          { name: 'causticsMaximumConcentration', type: 'f32', default: 6 },
+          { name: 'causticsFieldResolution', type: 'f32', default: CAUSTICS_FIELD.resolution },
+        ],
+        values: {
+          causticsIncident: CAUSTICS_SUN_DIRECTION,
+          causticsGrid: CAUSTICS_GRID,
+          causticsPlaneY: CAUSTICS_PLANE_Y,
+          causticsLight: CAUSTICS_SUN_INTENSITY,
+          causticsMode: 2,
+          causticsPattern: guid('texture/caustics-pattern'),
+        },
+        passes: [
+          {
+            name: 'Forward',
+            program: {
+              module: 'forgeax_water::caustics::gerstner_field',
+              bindings: 'render-material',
+            },
+          },
+        ],
+      },
       'mesh/custom-surface': customMesh,
       'mesh/custom-collision': customCollision,
       'mesh/box': createBoxGeometry(1, 1, 1).unwrap(),

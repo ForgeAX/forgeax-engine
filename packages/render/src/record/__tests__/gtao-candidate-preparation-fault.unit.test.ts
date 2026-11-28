@@ -6,6 +6,7 @@ import { ShadowDepthLayers } from '../../shadow-depth-layers';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../../temporal/frame';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../frame-snapshot';
 import { adoptViewGraph } from '../graph-adoption';
+import { inspectRenderGraphGenerationAllocation } from '../graph-allocation-owner';
 import {
   armGtaoCandidatePreparationFault,
   clearGtaoCandidatePreparationFault,
@@ -13,7 +14,7 @@ import {
 } from '../gtao-candidate-preparation-fault';
 import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../render-context';
-import { compileViewGraph, inspectRenderGraphGenerationAllocation } from '../typed-frame-graph';
+import { compileViewGraph } from '../typed-frame-graph';
 
 describe('GTAO candidate-preparation fault owner', () => {
   it('is default-off, preserves non-AO attempts, consumes once, and clears across generations', () => {
@@ -91,8 +92,6 @@ describe('GTAO candidate-preparation fault owner', () => {
       temporalView: new TemporalViewHistory(),
       compiledFrameGraph: null,
       graphGeneration: 0,
-      compiledFrameGraphGeneration: 0,
-      standardLightingGraphSignature: '',
       retiredCompiledFrameGraphs: new Set(),
       materialBgAssemblyCache: new MaterialBgAssemblyCache(),
       meshBindGroupCache: new WeakMap(),
@@ -139,14 +138,13 @@ describe('GTAO candidate-preparation fault owner', () => {
           surface: { width: 2, height: 2 },
           shadowDepthLayers,
         }),
-      );
+      )?.graph ?? null;
 
     const rejected = compile();
     expect(rejected).toBeNull();
     expect(frameState.compiledFrameGraph).toBeNull();
     expect(frameState.compiledFrameGraphCandidate).toBeUndefined();
     expect(frameState.graphGeneration).toBe(0);
-    expect(frameState.compiledFrameGraphGeneration).toBe(0);
     expect(frameState.gtaoCandidatePreparationFailureGeneration).toBeUndefined();
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({

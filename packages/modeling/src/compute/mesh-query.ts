@@ -1,3 +1,4 @@
+import { maxOf } from '../arrays';
 import { atan2 } from '../dmath';
 import type { Tuple3 } from '../geom';
 
@@ -380,8 +381,8 @@ export class PrimitiveGrid {
       const f = p[d] - (this.min[d] + c[d] * h);
       inner = Math.min(inner, f, h - f);
     }
-    const reach = Math.max(
-      ...AXES.map((d) => Math.max(Math.abs(c[d]), Math.abs(this.dims[d] - 1 - c[d]))),
+    const reach = maxOf(
+      AXES.map((d) => Math.max(Math.abs(c[d]), Math.abs(this.dims[d] - 1 - c[d]))),
     );
     let bestD2 = Infinity;
     let bestT = -1;

@@ -52,7 +52,7 @@ const browserMocks = vi.hoisted(() => {
             captureReady,
             fatalError: null,
             rendererError,
-            userAgent: 'Chrome Beta fixture',
+            userAgent: 'Chrome fixture',
           }
         : String(callback).includes('innerWidth')
           ? { width: 1280, height: 720 }
@@ -345,7 +345,7 @@ describe('software browser session', () => {
       vi.stubEnv('WAYLAND_DISPLAY', undefined);
       vi.stubEnv('FORGEAX_TEST_BROWSER_SECRET', 'fixture');
       linux.accessSetpriv.mockResolvedValue(undefined);
-      linux.passwd.mockResolvedValue('pwuser:x:1000:1000::/home/you:/bin/sh');
+      linux.passwd.mockResolvedValue('pwuser:x:1000:1000::/browser-fixture/pwuser:/bin/sh');
       linux.chown.mockRejectedValueOnce(
         Object.assign(new Error('unmapped identity'), { code: 'EINVAL' }),
       );
@@ -423,7 +423,7 @@ describe('software browser session', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     vi.stubEnv('DISPLAY', ':fixture');
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-no-adapter-'));
-    const executable = resolve(root, 'chrome-beta');
+    const executable = resolve(root, 'chrome');
     await Promise.all([
       writeFile(executable, ''),
       writeFile(
@@ -554,7 +554,7 @@ describe('software browser session', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     vi.stubEnv('DISPLAY', ':fixture');
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-single-html-browser-'));
-    const executable = resolve(root, 'chrome-beta');
+    const executable = resolve(root, 'chrome');
     const candidate = resolve(root, 'release', 'game-offline.html');
     await mkdir(resolve(root, 'release'), { recursive: true });
     await Promise.all([
@@ -619,7 +619,7 @@ describe('software browser session', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     vi.stubEnv('DISPLAY', ':fixture');
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-renderer-error-'));
-    const executable = resolve(root, 'chrome-beta');
+    const executable = resolve(root, 'chrome');
     await Promise.all([
       writeFile(executable, ''),
       writeFile(
@@ -683,7 +683,7 @@ describe('software browser session', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     vi.stubEnv('DISPLAY', ':fixture');
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-software-session-'));
-    const executable = resolve(root, 'chrome-beta');
+    const executable = resolve(root, 'chrome');
     await Promise.all([
       writeFile(executable, ''),
       writeFile(
@@ -823,7 +823,7 @@ describe('software browser session', () => {
     vi.stubEnv('DISPLAY', ':fixture');
     browserMocks.setUiWitness(0, 15);
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-software-ui-witness-'));
-    const executable = resolve(root, 'chrome-beta');
+    const executable = resolve(root, 'chrome');
     await Promise.all([
       writeFile(executable, ''),
       writeFile(
@@ -886,7 +886,7 @@ describe('software browser session', () => {
       browserMocks.setCanvasRendered(true);
     });
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-settled-composition-'));
-    const executable = resolve(root, 'chrome-beta');
+    const executable = resolve(root, 'chrome');
     await Promise.all([
       writeFile(executable, ''),
       writeFile(
@@ -929,7 +929,7 @@ describe('software browser session', () => {
     vi.stubEnv('DISPLAY', ':fixture');
     browserMocks.setCanvasRendered(false);
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-software-canvas-witness-'));
-    const executable = resolve(root, 'chrome-beta');
+    const executable = resolve(root, 'chrome');
     await Promise.all([
       writeFile(executable, ''),
       writeFile(

@@ -8,6 +8,17 @@ import { BrowserPluginProgramArchive } from '../plugin-programs-browser.js';
 
 const capabilities = Array.from({ length: 12 }, (_, index) => `cap${index}`);
 
+function staticClosure(chunks: ReadonlyMap<string, Rollup.OutputChunk>, entryFile: string) {
+  const closure = new Set<string>();
+  const visit = (file: string) => {
+    if (closure.has(file)) return;
+    closure.add(file);
+    for (const dependency of chunks.get(file)?.imports ?? []) visit(dependency);
+  };
+  visit(entryFile);
+  return closure;
+}
+
 it.each([
   'javascript',
   'html',
@@ -45,6 +56,11 @@ it.each([
         `globalThis.capabilities = [${capabilities.join(', ')}];`,
         "globalThis.program = () => import('../game.js');",
       ].join('\n'),
+    );
+    const taskEntry = resolve(host, 'task.js');
+    await writeFile(
+      taskEntry,
+      "import { cap0 } from '@forgeax/engine-cap0'; globalThis.taskCapability = cap0;",
     );
     await writeFile(
       resolve(root, 'game.js'),
@@ -85,7 +101,7 @@ it.each([
         modulePreload: false,
         rollupOptions: {
           preserveEntrySignatures: 'allow-extension',
-          input: { [kind === 'html' ? 'index' : 'main']: entry },
+          input: { [kind === 'html' ? 'index' : 'main']: entry, task: taskEntry },
         },
       },
     });
@@ -109,14 +125,22 @@ it.each([
     if (kind === 'html') {
       expect(main.fileName).toMatch(/^assets\/index-[^/]+\.js$/);
     }
-    const closure = new Set<string>();
-    const visit = (file: string) => {
-      if (closure.has(file)) return;
-      closure.add(file);
-      for (const dependency of chunks.get(file)?.imports ?? []) visit(dependency);
-    };
-    visit(main.fileName);
+    const closure = staticClosure(chunks, main.fileName);
     expect(closure.size).toBeLessThanOrEqual(4);
+    const task = [...chunks.values()].find(
+      (chunk) => chunk.facadeModuleId === normalizePath(taskEntry),
+    );
+    if (!task) throw new Error('missing task entry');
+    const taskModules = [...staticClosure(chunks, task.fileName)].flatMap((file) =>
+      Object.keys(chunks.get(file)?.modules ?? {}),
+    );
+    expect(taskModules).toContain(
+      normalizePath(resolve(root, 'node_modules/@forgeax/engine-cap0/index.js')),
+    );
+    for (const capability of capabilities.slice(1))
+      expect(taskModules).not.toContain(
+        normalizePath(resolve(root, `node_modules/@forgeax/engine-${capability}/index.js`)),
+      );
     // Every capability is still published as its own facade for programs.
     const published = [...chunks.values()].filter((chunk) =>
       capabilities.some((name) => chunk.exports.includes(name) && chunk.isEntry),
@@ -124,6 +148,66 @@ it.each([
     expect(published).toHaveLength(capabilities.length);
     for (const file of closure)
       expect(published.map((chunk) => chunk.fileName)).not.toContain(file);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('keeps an independent Runtime Pack capability free of its host siblings', async () => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), 'forgeax-runtime-capability-')));
+  try {
+    const main = resolve(root, 'main.js');
+    const facade = resolve(root, 'facade.js');
+    const leaf = resolve(root, 'leaf.js');
+    const hostOnly = resolve(root, 'host-only.js');
+    await writeFile(leaf, 'export const value = { mesh: 42 };');
+    await writeFile(hostOnly, 'export const host = { canvas: 1 };');
+    await writeFile(facade, 'export { value } from "./leaf.js";');
+    await writeFile(
+      main,
+      'import { value } from "./leaf.js"; import { host } from "./host-only.js"; globalThis.host = [value, host];',
+    );
+    const facades = new Set([normalizePath(facade)]);
+    const archive = new BrowserPluginProgramArchive();
+    const result = await build({
+      root,
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [
+        {
+          name: 'portable-facade-closure-probe',
+          buildStart() {
+            this.emitFile({ type: 'chunk', id: facade, preserveSignature: 'strict' });
+          },
+          buildEnd() {
+            archive.prepareGroups(this, facades, facades);
+          },
+          outputOptions(output) {
+            return archive.groupedOutput(output);
+          },
+        },
+      ],
+      build: {
+        write: false,
+        modulePreload: false,
+        rollupOptions: { input: main, preserveEntrySignatures: 'allow-extension' },
+      },
+    });
+    const output = (Array.isArray(result) ? result[0] : result) as Rollup.RollupOutput;
+    const chunks = new Map(
+      output.output
+        .filter((chunk): chunk is Rollup.OutputChunk => chunk.type === 'chunk')
+        .map((chunk) => [chunk.fileName, chunk]),
+    );
+    const capability = [...chunks.values()].find((chunk) =>
+      facades.has(chunk.facadeModuleId ?? ''),
+    );
+    if (!capability) throw new Error('missing portable capability');
+    const imports = [...staticClosure(chunks, capability.fileName)].flatMap((file) =>
+      Object.keys(chunks.get(file)?.modules ?? {}),
+    );
+    expect(imports).toContain(normalizePath(leaf));
+    expect(imports).not.toContain(normalizePath(hostOnly));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

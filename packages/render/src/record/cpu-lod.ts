@@ -9,6 +9,7 @@ import { selectGpuLodLane } from '../gpu-driven/view-gpu';
 import type { DrawRows } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { CapturedSceneTransform } from '../scene/captured-transform';
+import { drawPoseStorage } from '../scene/mesh-draw';
 import { targetLodLevel } from '../scene/visibility/lod-selector';
 import type { ValidatedRenderable } from './frame-snapshot';
 
@@ -100,7 +101,7 @@ export function cpuInstanceLodRuns(
       : [{ first: 0, count: instances.instanceCount, level: 0 }];
   }
   const world = matrix ?? mat4.create();
-  const pose = CapturedSceneTransform.storage(source.transform);
+  const pose = drawPoseStorage(source);
   const root = CapturedSceneTransform.column(pose);
   const rootOffset = CapturedSceneTransform.offset(pose);
   const hysteresis = source.lodHysteresis ?? DEFAULT_LOD_HYSTERESIS;

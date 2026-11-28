@@ -17,6 +17,7 @@ import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
   artifact,
+  isBundledEngineMemberName,
   mapConcurrent,
   SDK_SOURCE_EXCLUDED_PATHS,
   SDK_SOURCE_GIT_DEPENDENCIES,
@@ -75,7 +76,12 @@ export async function seedSourcePackageBuilds({ repositoryRoot, sdkRoot, sourceR
       if (cause.code === 'ENOENT') continue;
       throw cause;
     }
-    if (!manifest.name?.startsWith('@forgeax/engine')) continue;
+    if (
+      manifest.name !== '@forgeax/engine' &&
+      manifest.name !== '@forgeax/engine-sdk' &&
+      !isBundledEngineMemberName(manifest.name ?? '')
+    )
+      continue;
     // Public owners use the normalized package bytes also bundled into Engine.
     // Private native wrappers keep their ordinary JS build, without an addon.
     const builtRoot = manifest.private === true ? repositoryRoot : sdkRoot;

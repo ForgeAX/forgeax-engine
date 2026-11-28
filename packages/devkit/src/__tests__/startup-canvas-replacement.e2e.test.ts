@@ -38,7 +38,9 @@ it('keeps the ordinary guide inert while keyboard users enter slow Reload and fa
   if (!program || program.type !== 'chunk') throw new Error('Expected the guide controller chunk');
   const executablePath = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,
-    '/opt/google/chrome-beta/chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/google-chrome',
     chromium.executablePath(),
   ].find((path): path is string => path !== undefined && existsSync(path));
   const browser = await chromium.launch({
@@ -217,7 +219,9 @@ it.each([
 ])('shows runtime failure and reloads with %s after entering gameplay', async (key) => {
   const executablePath = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,
-    '/opt/google/chrome-beta/chrome',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/opt/google/chrome/chrome',
+    '/usr/bin/google-chrome',
     chromium.executablePath(),
   ].find((path): path is string => path !== undefined && existsSync(path));
   const browser = await chromium.launch({
@@ -332,7 +336,9 @@ it('enters the generated game after its canvas is replaced during startup', asyn
     const html = await readFile(resolve(root, '.forgeax/generated/index.html'), 'utf8');
     const executablePath = [
       process.env.FORGEAX_BROWSER_EXECUTABLE,
-      '/opt/google/chrome-beta/chrome',
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/opt/google/chrome/chrome',
+      '/usr/bin/google-chrome',
       chromium.executablePath(),
     ].find((path): path is string => path !== undefined && existsSync(path));
     record('browser-launch');

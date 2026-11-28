@@ -58,7 +58,7 @@ session signal (`model-work-budget`, `model-cancelled`).
   edge collapses by priority until `targetFaces` triangles remain or the next collapse's
   RMS plane distance would exceed `maxError`. `quadric`: `plane`, `volume` (default; the
   Lindstrom-Turk constraint keeps the enclosed volume) or `attribute` (vertex normals as
-  a quadric attribute). Constrained feature curves add perpendicular plane quadrics.
+  a quadric attribute). Constrained feature curves add perpendicular plane quadrics. On a closed mesh with sharp edges and no seam, label, material or direction constraint, the queue also weighs edge length (flat regions coarsen evenly) and aspect-lowering flips follow each collapse, so box-like parts do not end in long slivers.
   `clearance` (meters) refuses any collapse that brings a triangle closer than that to a
   triangle it shares no vertex with, among the processed faces and every face passing
   through, unless the pair was already that close (exact contact test plus vertex and
@@ -90,15 +90,15 @@ session signal (`model-work-budget`, `model-cancelled`).
   takes, so simplify with `maxAspect: 4` first, or run `cleanup.tiling`.
 - `m.lowpoly(faces?, { targetFaces, union?, hardAngle?, silhouette?, quads?, slivers?, uv?, tags? })`
   composes the existing ops into one game-ready shell. The parts (vertex-connected
-  components) are unioned: `union.mode` `'auto'` (default) runs the exact boolean part by
-  part; a part that fails against the partial shell (order-fragile: flush or coplanar
+  components) are unioned: `union.mode` `'auto'` (default) runs the mesh boolean (BSP CSG on the
+  triangle meshes, not the B-rep boolean) part by part; a part that fails against the partial shell (order-fragile: flush or coplanar
   contacts) is deferred and retried against the finished shell, which resolves most of
   them. A part that still fails `model-partial` or a precondition (pure edge contact) is
   `voxel.union`ed with `radius: 0` and sharp features together with only the shell
   components its bounds touch (`union.voxelSize`, default two voxels across the thinnest
   part: half its shortest bounds side, clamped to [1/64, 1/16] of the whole set's longest
   side), so labels and materials are lost only there (`union: 'mixed'`, `clusters`);
-  `'exact'` returns that failure, `'voxel'` skips the boolean and rebuilds the whole set. Edges above `hardAngle`
+  `'exact'` (the mesh boolean only) returns that failure, `'voxel'` skips the boolean and rebuilds the whole set. Edges above `hardAngle`
   (default 45 degrees) are marked sharp, the shell is simplified to `targetFaces` export
   triangles (a quad counts 2; as `simplify`, with `silhouette: { views, weight? }`, weight
   default 1), `cleanup.tiling` (within 1e-4 of the diagonal) flips the QEM fans toward
@@ -112,10 +112,11 @@ session signal (`model-work-budget`, `model-cancelled`).
   (IoU below 0.97), `quad-ratio` (below 0.85), `planarity`, `valence`, `over-budget`),
   `union` (`none`, `exact`, `mixed`, `voxel`), `fallback`, `exactError`, `clusters`,
   `voxelSize` (voxel union only), `slivers` (see below), `lost` (voxel or mixed union,
-  `labels`, `materials` face counts by name and `corners` set-corner counts by
-  channel that the rebuild drops, plus `bySource` the same three counts per input tag, or
-  `untagged`; names and sources with no loss are absent, keys ascend, so a clean fallback
-  is four empty records), `parts`, `partVolumes`,
+  net loss, input minus rebuilt output, so an attribute the output still carries is not
+  lost: `labels`, `materials` and `roles` (non-form) face counts by name, `corners`
+  set-corner counts by channel, `seams` edge count, plus `bySource` the labels, materials
+  and corners counts per input tag, or `untagged`; names and sources with no loss are
+  absent, keys ascend, so a clean fallback is empty records and `seams: 0`), `parts`, `partVolumes`,
   `components` (`tag`, `faces`, `closed`, `volume`, `sources`: the input tags it holds),
   `tris`, the `quadMetrics`, `hausdorff`/`hausdorffMean`, `signed` (`inside` and
   `outside`, each `{ max, p95 }`: how far the low surface sinks below or rises above the
@@ -131,7 +132,7 @@ session signal (`model-work-budget`, `model-cancelled`).
   `assertNoSlivers` gates them (all 12 groups: zero, volume change below 1e-3, the worst
   move 1.8 mm). Pitfall: the definition is the largest vertex distance from the longest
   edge's line, so a long n-gon strip is not a sliver; a width of 5 mm on the forearm group
-  can end in `model-degenerate` (rolled back), keep widths at or below 2 mm. Six 1.1 x 1.1 x 0.1 m plates flush on a 1 m hub, shifted 5 cm: the exact
+  can end in `model-degenerate` (rolled back), keep widths at or below 2 mm. Six 1.1 x 1.1 x 0.1 m plates flush on a 1 m hub, shifted 5 cm: the mesh-boolean
   union succeeds through the retry; `mode: 'voxel'` at `voxelSize: 0.1`, 300 triangles: closed, volume 1.694
   (parts 1 to 1.726), quad area ratio 0.96, one valence-7 pole (11 without the tiling pass),
   about 0.2 s; the default voxel size (0.05) takes about 1 s (longest / 64 took 15 s). Pitfalls: the deviation is
@@ -143,7 +144,7 @@ session signal (`model-work-budget`, `model-cancelled`).
   planes; IoU is reported only with `silhouette` views.
 - **Union once, triangulate once (surfaces that overlap).** A game mesh whose parts overlap
   (a plate over a hub, a hose across a bracket) is one surface: combine it with
-  `m.lowpoly(rigid, { targetFaces: <large>, quads: false })` (the exact union, no
+  `m.lowpoly(rigid, { targetFaces: <large>, quads: false })` (the mesh boolean union, no
   simplification) before `markSharp`, `uv.auto` or any bake, then triangulate and unwrap that
   result once. Parts only `append`ed side by side stay separate closed shells that cross each
   other: the buried faces bake as rays that hit the wrong skin, cast shadows and AO inside the
@@ -153,7 +154,7 @@ session signal (`model-work-budget`, `model-cancelled`).
   ram that moves against the body). Recipe (`scifi-mech` `mergeRigid`): leave out only what moves
   against the body (rams, rods, springs) and decals; hoses and cables are static at game
   resolution and join the union. Pitfall: appending every
-  instance (14,842 triangles, overlapping shells); an exact union that falls back to voxels
+  instance (14,842 triangles, overlapping shells); a mesh-boolean union that falls back to voxels
   loses labels and materials (`lost`), so read `union` and `fallback` in the report; a
   designed overlap (a rod through a bore) is a separate component, so count it in `expected`.
 - `m.cleanup.tiling(faces?, { maxError, maxAspect?, iterations?, clearance?, preserve? })`:
@@ -167,12 +168,29 @@ session signal (`model-work-budget`, `model-cancelled`).
   `passes`, `prevented`; a tiling with nothing to change is `model-op-no-effect`. The QEM
   plane above goes from aspect p90 62 and smallest-angle p10 0.9 degrees to 3.0 and 26.6.
 - `m.remesh(faces?, { targetEdgeLength, iterations, smoothing?, clearance?, adaptive? })`: Botsch-Kobbelt passes
-  (split above 4/3 L, collapse below 4/5 L without creating edges beyond 0.9 x 4/3 L,
-  flips toward valence 6 (4 on boundaries) that keep creases under about 25 degrees,
+  (split above 4/3 L (on a closed, unconstrained-by-seam/label/material mesh with sharp edges and no direction, repeating within an iteration until the halves are short too); collapse below 4/5 L without creating edges beyond 0.9 x 4/3 L,
+  flips toward valence 6 (4 on boundaries; on that same kind of mesh also flips that cut a needle of aspect above 3), that keep
+  creases under about 25 degrees,
   tangential uniform smoothing at speed `smoothing` (default 0.1) with every vertex
   reprojected onto the input), over a dirty-vertex queue that stops early. Collapses keep
   new triangle centroids within L/16 of the input and turn no triangle by more than 45
   degrees; finer curvature keeps finer triangles.
+  Output size on that shape-aware path follows `targetEdgeLength` and the surface area (about
+  1.2x an equilateral tiling at that length; `MAX_SPLIT_ROUNDS` 12 lets one iteration split until
+  the halves are short too) and varies by about 10 % with `iterations`; a box 1 x 0.4 x 2 at 0.05
+  is 7202 triangles in 0.5 s (768 triangles and 39 ms before this path, which stopped after one
+  split pass per iteration). A mesh with a seam, label, material, boundary or direction
+  constraint, a partial selection or `preserve.sharp: false` keeps the single pass. Callers that
+  pin a face count or a time should re-measure. Every halving of the edge length costs about
+  4x the triangles and 4x the time (0.01 on that box: 161k triangles, 12 s).
+  Measured limits (remesh 0.05 x3, then simplify to 200 faces; each holds only for the shapes
+  listed): aspect over 6 after remesh, 2.4 % on the box, 3.3 % on the torus (21.6 % before),
+  2.9 % on three overlapping boxes (a 2 x 0.6 x 0.6 bar with two 0.6 x 1.6 x 0.6 posts). `maxAspect 4` worst triangle 5.1 on the box, 5.5 on the torus
+  and 8.6 on three overlapping boxes; it refuses collapses that make a triangle worse and does
+  not repair slivers off the collapse path, so no worst-triangle bound is claimed in general.
+  Plain simplify still leaves isolated long slivers (aspect 570 on the box, 100 on the torus,
+  2800 on three overlapping boxes against 1200 before); the bounds that hold are on p90 and on
+  the share above 6.
   `clearance` guards every split, collapse, flip and smoothing move as in simplify, so a
   remesh after QEM evens out slivers and fans without touching neighbouring layers.
   `adaptive: { error, minEdge }` replaces the uniform length with a sizing field: at each input vertex the curvature k (largest normal turn per meter toward a
@@ -249,11 +267,11 @@ fails the cook with a hint to regenerate it. Under a capture the job runs in pla
 Packs at once, and a build stays until each of its outputs has been cooked once (the two
 most recent completed builds stay for re-cooks). `createMeshJobCooker(jobs, { executor })`
 runs rig and assets jobs that name their `module` elsewhere; `buildMeshJobSet` is the one
-build both paths run, and an executor resolving `undefined` declines a request so it
+build both paths run. A job's cache identity hashes its `build` text and `export`; values the build closes over and helper modules it imports are not text of `build`, so declare them in `fingerprint` (JSON; `moduleDigest(import.meta.url)` from `./tools` digests a module and its relative imports), and an executor resolving `undefined` declines a request so it
 builds inline. `module` is plain data: DevKit bundles build plugins, so `import.meta.url`
 names the bundle, and the project build plugin sets it to the authored file (resolved from
 the build's working directory). `meshJobWorkers({ maxJobs?, minFreeGb?, defaultPeakGb?,
-maxHeapMb?, cacheWaitMs? })` in `./tools` is the Node executor: up to `maxJobs` persistent Workers, each
+maxHeapMb?, cacheWaitMs?, jobTimeoutMs?, maxQueue?, moduleRoots? })` in `./tools` is the Node executor (a job past `jobTimeoutMs`, default 10 min, ends its Worker and fails `model-work-budget`; a full queue fails new requests the same way; bad options fail every request `model-invalid-argument` instead of throwing; `moduleRoots` confines job modules): up to `maxJobs` persistent Workers, each
 building one job at a time; a build prefers an idle Worker that already loaded its module, so
 state a job module shares between its jobs (a common base form) is computed once per Worker. A Worker
 imports the job's module (a `.ts` module needs Node type stripping, Node >= 23.6; older

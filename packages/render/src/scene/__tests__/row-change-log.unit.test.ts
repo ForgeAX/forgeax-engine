@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import type { RenderableSnapshot } from '../../render-system-extract';
-import type { RowChange } from '../row-change-log';
+import { CONTENT_CHANGED, type RowChange } from '../row-change-log';
 import { type SceneSlotFrame, SceneSlots } from '../scene-slots';
 import { setSceneRow } from './scene-row-writes';
 
@@ -127,7 +127,10 @@ it('publishes final row versions in first-write order to independent consumers',
   expect(collect(third, second)).toEqual([[95, 0]]);
   expect(collect(second, second)).toEqual([]);
   expect(replay).not.toHaveBeenCalled();
-  expect(lookup).not.toHaveBeenCalled();
+  // Repeated writes resolve the exact final values from the captured frame.
+  expect(lookup.mock.results.map((result) => result.value)).toEqual(
+    Array.from({ length: 4 }, () => expected.map((value) => value[1])).flat(),
+  );
 
   const gap = collect(third, first);
   expect(new Map(gap?.map(([slot, version]) => [slot, version]))).toEqual(
@@ -138,4 +141,63 @@ it('publishes final row versions in first-write order to independent consumers',
   expect(collect(second, populated(132).capture())).toBeUndefined();
   slots.clear();
   expect(collect(slots.capture(), third)).toBeUndefined();
+});
+
+it('reads adjacent distinct writes from existing journal storage and declines overwritten cursors', () => {
+  const slots = populated(128);
+  const initial = slots.capture();
+  const journal = slots.journal;
+  const backing = journal.backingBytes;
+  journal.appendContent(0, CONTENT_CHANGED);
+  const pose = new Float32Array(16);
+  pose[12] = 47;
+  for (const slot of [67, 4, 31, 91]) slots.writePose(slot, pose);
+  setSceneRow(slots, 17, undefined);
+  const first = slots.capture();
+  const expected = [67, 4, 31, 91, 17].map((slot) => [slot, first.versionAt(slot)]);
+  const lookup = vi.spyOn(first, 'versionAt');
+  const values: number[][] = [];
+  expect(first.visitChangedVersions(initial, (slot, version) => values.push([slot, version]))).toBe(
+    true,
+  );
+  expect(values).toEqual(expected);
+  expect(lookup).not.toHaveBeenCalled();
+  expect(Object.hasOwn(first, 'rowVersions')).toBe(false);
+  for (let frame = 0; frame < 40; frame++) {
+    pose[12] = frame;
+    for (let slot = 18; slot < 128; slot++) slots.writePose(slot, pose);
+    slots.capture();
+  }
+  expect(journal.backingBytes).toBe(backing);
+  const stale = vi.fn();
+  expect(first.visitChangedVersions(initial, stale)).toBe(false);
+  expect(stale).not.toHaveBeenCalled();
+  expect(first.slotAt(67)?.snapshot.transform.world[12]).toBe(47);
+});
+
+it.each([
+  'wrap',
+  'reset',
+] as const)('finishes an in-progress publication read across journal %s', (mode) => {
+  const slots = populated(8);
+  const before = slots.capture();
+  const pose = new Float32Array(16);
+  for (const slot of [3, 1, 7, 4]) slots.writePose(slot, pose);
+  const after = slots.capture();
+  const seen: number[][] = [];
+  expect(
+    after.visitChangedVersions(before, (slot, version) => {
+      seen.push([slot, version]);
+      if (slot !== 3) return;
+      if (mode === 'reset') {
+        slots.clear();
+        for (let next = 0; next < 8; next++) setSceneRow(slots, next, row(next));
+        for (let step = 0; step < 1015; step++) slots.writePose(step % 8, pose);
+      } else {
+        for (let step = 0; step < 1028; step++) slots.writePose(step % 8, pose);
+      }
+      slots.capture();
+    }),
+  ).toBe(true);
+  expect(seen).toEqual([3, 1, 7, 4].map((slot) => [slot, after.versionAt(slot)]));
 });

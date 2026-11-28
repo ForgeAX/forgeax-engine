@@ -15,6 +15,18 @@ Part of the [`@forgeax/engine/modeling` reference](../README.md).
 | `surface` | `weighted`, with exact patch normals on `m.surface` faces (rule under Export, step 1); keeps the default weighted path off patches |
 | `transfer` `{ from, sourceNormals? }` | each render vertex takes the interpolated normal of the nearest point of `from` (an FXEM snapshot; bake params carry it as base64) whose face points the same side; `from` exports with `sourceNormals` (default smooth); vertices split only at sharp edges |
 
+`split: 'seams'` (any mode except `flat`, which rejects it with `model-invalid-argument`) is the
+seam-bounded split for baked assets: an edge the shading would harden stays smooth unless uv0 is
+discontinuous across it, so no hard edge lies inside a UV island and the baked normal map carries
+the crease. UV continuity decides, so an author `markSharp` edge (infinite crease) inside an
+island exports smooth under `split: 'seams'`; keep such an edge as a seam to keep it hard.
+`edgeKinds(mesh, normals)` returns the derived per-edge `EDGE_KIND` bits (boundary, seam, hard,
+crease, smooth) for inspection and tests; export normal groups and the UV planners use its
+single-edge queries. Simplify, remesh and lowpoly run before any UV exists and read the author
+`markSharp` flag directly, so the table is observational for them. `uv.plan` / `uv.auto`
+`respectSharp` is a boolean (author sharp flags) or a `NormalMode` (cut every edge that mode's
+shading hardens, e.g. an `autoSmooth` angle); other values fail with `model-invalid-argument`.
+
 Gates (`normals-export.unit.test.ts`): a 1 cm chamfer on a 1 m box keeps its large faces
 within 0.5 degrees of flat with `bevelBorrow: 60` (measured 0; area weighting alone 0.81,
 smooth 28.9); a flat 8 x 8 grid takes a dome's normals within 1 degree (measured 0.06; its
@@ -63,6 +75,16 @@ base with the mode it was baked with.
    `createMeshBuilder`.
 
 The report gives faces, triangles, GPU vertex count, slot names, bounds and dropped slivers.
+
+`toMesh` / `exportMesh` also return a `sidecar` (BK47) that re-attaches author data to the
+render buffers without any GPU attribute: `vertexCorner` (render vertex to compacted
+half-edge), `triangleFace`, `triangleEdge` (three per triangle, side k = corner k to k + 1,
+`-1` for a fan diagonal), and the compacted per-face tables (`faceLabel`, `faceRole`,
+`faceFlags` with the part-role bits, `faceTags` with `tagWords`) and per-edge `edgeFlags`
+(sharp, seam and crease level; decode with `flagSharpness`) plus the name tables. Slivers
+dropped at f32 leave `triangleFace` and `triangleEdge` together. The tables are owned
+copies: changing them never changes the session or later exports (typed arrays cannot be
+frozen).
 
 With `checkTopology: true` (`toMesh`, `finish`; default off, so existing reports are
 unchanged) the report adds `topology: { freeEdges, nonManifoldEdges, components }`. It welds

@@ -35,6 +35,8 @@ import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from '../browser';
+// Load the local fixture graph before the runner starts the assertions.
+import '../browser-local';
 
 const constructRuntimeRendererHost = vi.hoisted(() => vi.fn());
 

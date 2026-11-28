@@ -20,11 +20,16 @@ await build({
                  from '@forgeax/engine-import';`
           : undefined,
       generateBundle(_, bundle) {
+        const emitted = new Set(Object.keys(bundle));
         for (const output of Object.values(bundle)) {
           if (output.type !== 'chunk') continue;
           modules.push(...Object.keys(output.modules));
           exports.push(...output.exports);
-          imports.push(...output.imports, ...output.dynamicImports);
+          // Only external/unresolved imports fail the self-contained browser closure;
+          // lazy internal chunks emitted into the same bundle stay inside the build.
+          for (const specifier of [...output.imports, ...output.dynamicImports]) {
+            if (!emitted.has(specifier)) imports.push(specifier);
+          }
         }
       },
     },

@@ -1,3 +1,4 @@
+import type { BoundRenderGraphResources } from '@forgeax/engine-render-graph';
 import { type Buffer, err, ok, type Result, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import type { InstalledFrameGraph } from '../record/frame-snapshot';
@@ -72,7 +73,10 @@ export interface NativeMainGraphPreparation {
   readonly materialBindings: readonly GpuDrivenMaterialBinding[];
   readonly materialBuffer: Buffer;
   isCurrent(): boolean;
-  attachGraph(graph: InstalledFrameGraph): Generator<void, Result<void, RhiError>>;
+  attachPassResources(
+    resources: BoundRenderGraphResources,
+    prepare: InstalledFrameGraph['prepareGpuDrivenSource'],
+  ): Generator<void, Result<void, RhiError>>;
   pipelineRequests(): Result<Iterable<() => boolean>, RhiError>;
   prepareBundles(input: SourceRasterPassBindings): Generator<void, Result<void, RhiError>>;
   shadowRows(): Generator<void, readonly SourceShadowRow[]>;
@@ -389,13 +393,16 @@ export function prepareNativeMainGraph(
           materialBindings: frame.filtered.materialBindings,
           materialBuffer: scene.scene.materialBuffer,
           isCurrent: () => physicalCurrent() && preparations.isCurrent(projection),
-          *attachGraph(graph: InstalledFrameGraph) {
-            if (!isCurrent() || graph.graph.isRetired()) return invalid();
-            const work = graph.prepareGpuDrivenSource?.(projection, () => !graph.graph.isRetired());
+          *attachPassResources(
+            resources: BoundRenderGraphResources,
+            prepare: InstalledFrameGraph['prepareGpuDrivenSource'],
+          ) {
+            if (!isCurrent() || resources.isRetired()) return invalid();
+            const work = prepare?.(projection, () => !resources.isRetired());
             if (work === undefined) return invalid();
             const result = yield* work;
             if (!result.ok) return result;
-            if (!isCurrent() || graph.graph.isRetired() || !result.value.isCurrent())
+            if (!isCurrent() || resources.isRetired() || !result.value.isCurrent())
               return invalid();
             attached = result.value;
             return ok(undefined);

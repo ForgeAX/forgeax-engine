@@ -238,6 +238,8 @@ it('publishes texture roles in canonical binding order even when authored parame
           frame: { frameNumber: 1 },
           targets: [
             { name: 'motion-output', kind: 'color', format: 'rgba16float', sampleCount: 1 },
+            { name: 'cloud-shadow-raw', kind: 'color', format: 'rgba16float', sampleCount: 1 },
+            { name: 'cloud-shadow', kind: 'color', format: 'rgba16float', sampleCount: 1 },
             { name: 'depth', kind: 'depth', format: 'depth32float-stencil8', sampleCount: 1 },
           ],
           sceneData: createSceneDataCatalog({

@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { expect, it } from 'vitest';
+import { validateDepthOfFieldParams } from '../../features/depth-of-field/depth-of-field-params';
+import { LENS_FLARE_PREFILTER_ID } from '../../features/lens-flare';
 import type { CameraSnapshot } from '../../render-contract';
 import { createTemporalView, type TemporalView } from '../../temporal/view';
 import { validateVolumetricFog } from '../../volume/component';
@@ -151,7 +153,9 @@ it.each([
   const payload = uploadedView(r.view, r.current);
   expect(payload.subarray(212, 228)).toEqual(r.prior?.currentUnjitteredViewProjection);
   expect(payload[235]).toBe(0);
-  let giPrevious: { viewProjection: ArrayLike<number> } | undefined;
+  let giPrevious:
+    | { viewProjection: ArrayLike<number>; jitterUv?: readonly [number, number] }
+    | undefined;
   reprojectDiffuseGiHistory(
     {
       screenProbe: {
@@ -166,6 +170,8 @@ it.each([
     r.continuousGeometry,
   );
   expect(giPrevious).toBeDefined();
+  // The retained screen-probe history sits on the previous frame's jittered raster.
+  expect(giPrevious?.jitterUv).toBe(r.prior?.currentJitterUv);
   const point = [0.3, 0.2, -2];
   expect(uv(payload.subarray(212, 228), point)).toEqual(
     uv(giPrevious?.viewProjection ?? [], point),
@@ -197,7 +203,56 @@ it('retains the ordinary continuous history pair', () => {
   expect(r.continuousGeometry).toBe(true);
   expect(r.view.previousUnjitteredViewProjection).toBe(r.prior?.currentUnjitteredViewProjection);
   expect(r.view.previousCameraPosition).toBe(r.prior?.currentCameraPosition);
-  expect(uploadedView(r.view, r.current)[235]).toBe(1);
+  const payload = uploadedView(r.view, r.current);
+  expect(payload[235]).toBe(1);
+  expect(payload[348]).toBe(r.view.materialTextureMipBias);
+  expect(payload[348]).toBeLessThan(0);
+});
+
+it('publishes current optical parameters for native Grade and borrows a dormant map', () => {
+  const r = resolve();
+  const borrowed = new Map<string, Uint8Array>();
+  const project = (current: CameraSnapshot, motionBlurDemand = false) =>
+    buildFramePostProcessParams(
+      r.internals as never,
+      r.frameState as never,
+      current,
+      borrowed,
+      motionBlurDemand,
+      r.deltaSeconds,
+      r.view,
+      32,
+      undefined,
+      new Map(),
+      true,
+    );
+  const active = {
+    ...r.current,
+    depthOfField: validateDepthOfFieldParams({}, r.current).unwrap(),
+    lensFlare: {
+      intensity: 1,
+      threshold: 4,
+      bokehSize: 2,
+      tint: [1, 1, 1],
+      ghostTints: [1, 1, 1],
+      ghostScales: [0.5],
+    },
+  };
+  expect(project(r.current)).toBe(borrowed);
+  expect(project({ ...active, postProcessing: false })).toBe(borrowed);
+  const optics = project(active);
+  expect(optics.get('forgeax.dof.tiles')).toBeDefined();
+  expect(optics.get('forgeax.dof.tiles')).toBe(optics.get('forgeax.dof.coc'));
+  const flare = optics.get(LENS_FLARE_PREFILTER_ID);
+  expect(flare).toBeDefined();
+  expect(new DataView(flare?.buffer ?? new ArrayBuffer(0)).getFloat32(0, true)).toBe(4);
+  const blur = project(r.current, true).get('forgeax.motion-blur');
+  expect(blur).toBeDefined();
+  const packed = new DataView(blur?.buffer ?? new ArrayBuffer(0));
+  expect(packed.getFloat32(0, true)).toBe(180);
+  expect(packed.getUint32(8, true)).toBe(8);
+  expect(packed.getUint32(12, true)).toBe(0);
+  expect(borrowed.size).toBe(0);
 });
 
 it.each([false, true])('preserves volume history admission after environment reset=%s', (reset) => {

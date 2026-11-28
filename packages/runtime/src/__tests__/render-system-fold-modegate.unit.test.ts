@@ -15,11 +15,11 @@
 
 import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { MaterialResource } from '../../../render/src/material-resource';
 import { foldDispatchBuckets } from '../../../render/src/record/mesh-ssbo';
 import {
   type DispatchEntry,
   defaultMaterialSnapshot,
-  type MaterialSnapshot,
 } from '../../../render/src/render-system-extract';
 import {
   TRANSPARENT_SORT_MODE_DISTANCE,
@@ -55,7 +55,7 @@ function mockRenderable(
   ty = 0,
 ): {
   transform: { world: Float32Array };
-  material: MaterialSnapshot;
+  material: MaterialResource;
 } {
   const world = new Float32Array(16);
   world[0] = 1;
@@ -70,11 +70,11 @@ function mockRenderable(
   // discriminator was removed in M3 / w15 and replaced with `transparent`).
   return {
     transform: { world },
-    material: {
+    material: new MaterialResource({
       ...defaultMaterialSnapshot(),
       transparent: true,
       passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
-    },
+    }),
   };
 }
 
@@ -104,7 +104,11 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
 
   it('mode 0 (LAYER_Z) — N equal-key entries collapse to 1 bucket', () => {
     const { entries, renderables } = makeUniformInputs(5);
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
     expect(buckets).toHaveLength(1);
     const b = buckets[0];
     expect(b).toBeDefined();
@@ -114,7 +118,11 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
 
   it('mode 1 (LAYER_Y) — N equal-posY entries collapse to 1 bucket', () => {
     const { entries, renderables } = makeUniformInputs(5);
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Y, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Y,
+      (index) => renderables[index],
+    );
     expect(buckets).toHaveLength(1);
     const b = buckets[0];
     expect(b).toBeDefined();
@@ -139,7 +147,11 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
       );
       renderables.push(mockRenderable(0, i * 16)); // posY = 0, 16, 32, 48
     }
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Y, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Y,
+      (index) => renderables[index],
+    );
     expect(buckets).toEqual([]);
   });
 
@@ -159,7 +171,11 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
       );
       renderables.push(mockRenderable(0, 3.0));
     }
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Y, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Y,
+      (index) => renderables[index],
+    );
     expect(buckets).toHaveLength(1);
     const b = buckets[0];
     expect(b).toBeDefined();
@@ -169,13 +185,21 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
 
   it('mode 2 (LAYER_YZ) — N entries bypass to no fold buckets (no fold)', () => {
     const { entries, renderables } = makeUniformInputs(5);
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_YZ, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_YZ,
+      (index) => renderables[index],
+    );
     expect(buckets).toEqual([]);
   });
 
   it('mode 3 (DISTANCE) — N entries bypass to no fold buckets (no fold)', () => {
     const { entries, renderables } = makeUniformInputs(5);
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_DISTANCE, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_DISTANCE,
+      (index) => renderables[index],
+    );
     expect(buckets).toEqual([]);
   });
 
@@ -184,10 +208,10 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
     // The pure helper does not have access to errorRegistry; "silent"
     // here means no thrown exception. Negative-space assertion.
     expect(() =>
-      foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_YZ, renderables),
+      foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_YZ, (index) => renderables[index]),
     ).not.toThrow();
     expect(() =>
-      foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_DISTANCE, renderables),
+      foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_DISTANCE, (index) => renderables[index]),
     ).not.toThrow();
   });
 });

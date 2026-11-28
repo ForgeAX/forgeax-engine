@@ -4,11 +4,9 @@ const read = 'vc-ue5.cloud';
 
 function adopted(state, mode) {
   const frame = state.completed;
-  return state.mode === mode && frame && Object.values(state.renderer?.layer ?? {}).some(({ completedAdoption }) =>
-    completedAdoption?.requestRevision === state.requestRevision &&
-    completedAdoption.worldIdentity === frame.worldIdentity &&
-    completedAdoption.deviceGeneration === frame.deviceGeneration &&
-    completedAdoption.frameId <= frame.frameId);
+  return state.mode === mode && frame && Object.values(state.renderer?.layer ?? {}).some(({ resourceStage, mode0 }) =>
+    resourceStage === 'accepted' && mode0?.materialIdentity === `${state.programIdentity}:${state.cookIdentity}` &&
+    mode0.deviceGeneration === frame.deviceGeneration && mode0.acceptedFrame > 0 && mode0.acceptedFrame <= frame.frameId);
 }
 
 async function verifyMaterial(play, mode, checkpoint) {
@@ -28,12 +26,17 @@ async function verifyMaterial(play, mode, checkpoint) {
 
 /** @param {import('@forgeax/engine/devkit').PlayContext} play */
 export default async function sharedAssets(play) {
-  const generated = await play.step('render the procedural shared material', () =>
-    verifyMaterial(play, 'shape', 'shared-procedural-clouds'));
+  const generated = await play.step('render the procedural shared material', async () => {
+    // The demo starts on Low, which intentionally disables atmospheric shadows.
+    await play.page.locator('[data-preset="quality-medium"]').click();
+    await play.waitFor(state => state.qualityPreset === 'quality-medium', { read });
+    return verifyMaterial(play, 'shape', 'shared-procedural-clouds');
+  });
   const ue = await play.step('switch to the shared UE texture material', async () => {
     await play.page.locator('[data-ui-action="cloud-sample-ue"]').click();
     const state = await verifyMaterial(play, 'sample-ue', 'shared-ue-clouds');
-    assert.notEqual(state.materialGuid, generated.materialGuid);
+    assert.equal(state.materialGuid, generated.materialGuid);
+    assert.notDeepEqual(state.textureGuids, generated.textureGuids);
     return state;
   });
   const restored = await play.step('restore the procedural material', async () => {

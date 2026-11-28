@@ -484,9 +484,7 @@ describe('camera-view LOD receipt observation', () => {
     const capturedInspection = makeInspection();
     const replacementInspection = makeInspection();
     let currentInspection = capturedInspection;
-    const graphOf = () => ({ inspect: () => ({ generation: 11 }) });
-    const graphIncarnation = graphOf();
-    let currentGraphIncarnation: object = graphIncarnation;
+    let currentBindingGeneration = 11;
     let readback: () => Promise<unknown> = async () => {
       currentInspection = replacementInspection;
       return undefined;
@@ -509,7 +507,7 @@ describe('camera-view LOD receipt observation', () => {
       },
       frameState: {
         get compiledFrameGraph() {
-          return { graph: currentGraphIncarnation };
+          return { targets: { graphGeneration: currentBindingGeneration } };
         },
       },
       gpuDriven: { inspect: () => ({ overflow: false, channels: [] }) },
@@ -531,7 +529,6 @@ describe('camera-view LOD receipt observation', () => {
           attachmentId: 'world-a',
           viewGeneration: 4,
           graphGeneration: 11,
-          graphIncarnation,
           state: 'rendered',
           owner,
           viewRef: {},
@@ -580,7 +577,7 @@ describe('camera-view LOD receipt observation', () => {
       views: [{ viewKey: '7', state: 'rendered' }],
     });
     currentInspection = capturedInspection;
-    currentGraphIncarnation = graphOf();
+    currentBindingGeneration++;
     readback = async () => undefined;
     const replacedGraph = await observeLodOcclusionCapture(
       { frameId: submit.frameId, deviceGeneration: submit.deviceGeneration },

@@ -27,7 +27,7 @@ export async function verifyContentBrowserQueryLifetime({ output = resolve(proce
     });
     await new Promise(done => server.listen(0, '127.0.0.1', done));
     browser = await chromium.launch({ headless: true,
-      ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}), chromiumSandbox: true });
+      ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }), chromiumSandbox: true });
     page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);

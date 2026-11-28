@@ -8,7 +8,7 @@ export function selectBrowserExecutable(defaults, env = process.env) {
     if (!isAbsolute(executablePath)) throw new Error('FORGEAX_BROWSER_EXECUTABLE must be absolute');
     return { ...options, executablePath };
   }
-  return { ...options, channel: env.FORGEAX_CHROME_CHANNEL || channel };
+  return { ...options, channel: env.FORGEAX_CHROME_CHANNEL || channel || 'chrome' };
 }
 
 /** The default is the declared software CI carrier; local native admission is explicit. */

@@ -217,7 +217,7 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
       { entry: 'fs_oit', facing: true, oit: 'straight' },
       { entry: 'fs_oit_premultiplied', facing: true, oit: 'premultiplied' },
     ] as const;
-    const view = buffer(1392, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    const view = buffer(1408, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     const materialLayout = derive(DEFAULT_UNLIT_PARAM_SCHEMA);
     const coordinates = materialLayout.coordinateRecords.find(
       (record) => record.parameter === 'baseColorTexture',
@@ -291,10 +291,11 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
     for (const mode of [0, 1, 2, 0]) {
       for (const composition of [0, 1, 2, 3]) {
         for (const cutoff of [0, 0.35, 0.45]) {
-          const values = new Float32Array(348);
+          const values = new Float32Array(352);
           values.set(identity, 0);
           values.set(identity, 44);
           values.set([0, 0, 3], 24);
+          values.set([0.1, 10, 0, 0], 228);
           values.set([0.1, 0.2, 0.3, 0.2], 284);
           values.set([0, 0.75, composition, 0], 288);
           device.queue.writeBuffer(view, 0, values);
@@ -335,10 +336,8 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
               const y = 1 - (Math.floor(i / 16) + 0.5) / 2;
               const distance = Math.hypot(x, y, 2.5);
               const opacity = 0.75 * (1 - Math.exp(-0.2 * distance));
-              const weight = Math.min(
-                500,
-                Math.max(0.01, 10 / (0.00001 + (distance / 5) ** 2 + (distance / 200) ** 6)),
-              );
+              const viewDepth = 0.1 / (0.5 + 0.5 * (0.1 / 10));
+              const weight = (alpha / 8) * (0.03 / ((viewDepth / 200) ** 4 + 1e-5));
               const auxiliary = oit ? [alpha * weight, 0, 0, alpha] : [...expectedCalls, 1];
               for (let channel = 0; channel < 4; channel++)
                 expect(

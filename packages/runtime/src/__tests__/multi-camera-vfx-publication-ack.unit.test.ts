@@ -67,7 +67,7 @@ describe('Multi-camera fixture publication acknowledgment', () => {
         }),
       onSourceFrameSubmitted: sourceSubmitted,
     };
-    const roster = withBuiltinRenderFeatures([feature], device.caps);
+    const roster = withBuiltinRenderFeatures([feature]);
     const identity = { source: 'fixture-ack', epoch: 1 };
     const publisher = createRenderPublisher(world, assets, identity, device.caps, roster);
     const receiver = new RenderPublicationReceiver(identity);

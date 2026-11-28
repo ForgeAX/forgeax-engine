@@ -597,6 +597,7 @@ export function projectedProbeCount(projection: ProbeBlendBufferProjection | und
 /** Renderer-owned bounded projection; admission is explicit and fail-closed. */
 export class ProbeBlendSceneProjection {
   private previous?: ProbeSceneProjectionInput;
+  private readonly receiverTranslations = new Float32Array(6);
   private records = new ProbeRecordFrame();
   private influences?: ProbeInfluences | undefined;
   private lastSky: ProbeSceneProjectionInput['sky'] = {
@@ -744,6 +745,7 @@ export class ProbeBlendSceneProjection {
       previous?.objects,
       reasons.size !== 0,
       reasons,
+      this.receiverTranslations,
     );
     const uniqueDirtyReasons = [...reasons];
     if (probeFactsChanged)

@@ -16,7 +16,7 @@ import { buildEngineShaderManifest, publishShaderManifest } from '@forgeax/engin
 import { PNG } from 'pngjs';
 import { afterAll, expect, it } from 'vitest';
 import { createRenderFixture } from './render-fixture';
-import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import { drawSceneFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 
 type V3 = [number, number, number];
 const fixture = process.env.TG_CASE_DIR === undefined ? createRenderFixture() : undefined;
@@ -168,7 +168,7 @@ it('tg case render', async () => {
     world.update(1 / 60).unwrap();
     device?.pushErrorScope('validation');
     const t0 = performance.now();
-    for (let i = 0; i < 3; i++) await drawReadyFrame(renderer, { source: lease });
+    for (let i = 0; i < 3; i++) await drawSceneFrame(renderer, lease);
     timing[job.out] = Math.round((performance.now() - t0) / 3);
     if (!device || !target) throw new Error('device not captured');
     const buffer = device.createBuffer({ size: bytesPerRow * H, usage: 0x0001 | 0x0008 });

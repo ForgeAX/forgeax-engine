@@ -21,16 +21,12 @@ function inspectResourceDescriptor<FrameCtx>(
   resource: CompiledResource<FrameCtx>,
 ): CompiledRenderGraphInfo['resources'][number]['descriptor'] {
   const texture =
-    resource.record.kind === 'texture'
-      ? (resource.record.descriptor as GraphTextureDescriptor)
-      : undefined;
+    resource.kind === 'texture' ? (resource.descriptor as GraphTextureDescriptor) : undefined;
   const buffer =
-    resource.record.kind === 'buffer'
-      ? (resource.record.descriptor as GraphBufferDescriptor)
-      : undefined;
+    resource.kind === 'buffer' ? (resource.descriptor as GraphBufferDescriptor) : undefined;
   const accelerationStructure =
-    resource.record.kind === 'acceleration-structure' ? resource.record.descriptor : undefined;
-  const extent = (resource.resolvedDescriptor ?? resource.textureDescriptor)?.size;
+    resource.kind === 'acceleration-structure' ? resource.descriptor : undefined;
+  const extent = (resource.resolvedDescriptor ?? resource.textureShape?.descriptor)?.size;
   return Object.freeze(
     accelerationStructure !== undefined
       ? {
@@ -129,10 +125,11 @@ function textureByteSize(
 export function allocationBytes<FrameCtx>(
   resource: CompiledResource<FrameCtx>,
 ): number | undefined {
-  if (resource.record.origin === 'imported' || resource.usage === 0) return undefined;
-  if (resource.record.kind === 'buffer') return resource.record.descriptor.size;
-  const texture = resource.record.descriptor;
-  const extent = (resource.resolvedDescriptor ?? resource.textureDescriptor)?.size;
+  if (resource.origin === 'imported' || resource.usage === 0) return undefined;
+  if (resource.kind === 'buffer') return resource.descriptor.size;
+  if (resource.textureAllocation !== undefined) return resource.textureAllocation.byteSize;
+  const texture = resource.descriptor;
+  const extent = (resource.resolvedDescriptor ?? resource.textureShape?.descriptor)?.size;
   return extent === undefined
     ? undefined
     : textureByteSize(
@@ -174,8 +171,7 @@ export function inspectPasses<FrameCtx extends RenderGraphFrame>(
       const id = accessResourceId(access);
       if (id === undefined) continue;
       const data = handleData(access.resource);
-      const range =
-        data?.kind === 'texture-view' ? physical.view(data.id)?.record.range : undefined;
+      const range = data?.kind === 'texture-view' ? physical.view(data.id)?.range : undefined;
       const mode = accessModeForPass(pass, access);
       let touches = history.get(id);
       if (touches === undefined) {
@@ -212,7 +208,7 @@ export function inspectPasses<FrameCtx extends RenderGraphFrame>(
           pass.pass.descriptor.accesses.map((access) => {
             const id = accessResourceId(access);
             return Object.freeze({
-              resource: physical.resource(id ?? -1)?.record.label ?? 'foreign',
+              resource: physical.resource(id ?? -1)?.label ?? 'foreign',
               usage: access.usage,
             });
           }),
@@ -227,15 +223,13 @@ export function inspectResource<FrameCtx>(
   resource: CompiledResource<FrameCtx>,
 ): CompiledRenderGraphInfo['resources'][number] {
   const texture =
-    resource.record.kind === 'texture'
-      ? (resource.record.descriptor as GraphTextureDescriptor)
-      : undefined;
-  const handle = resource.texture ?? resource.buffer;
+    resource.kind === 'texture' ? (resource.descriptor as GraphTextureDescriptor) : undefined;
+  const handle = resource.origin === 'created' ? resource.handle : undefined;
   const allocationKey = handle === undefined ? undefined : physicalAllocationKey(handle);
-  const extent = (resource.resolvedDescriptor ?? resource.textureDescriptor)?.size;
+  const extent = (resource.resolvedDescriptor ?? resource.textureShape?.descriptor)?.size;
   const knownByteSize = allocationBytes(resource);
   const byteSizeUnknownReason =
-    resource.record.origin === 'imported'
+    resource.origin === 'imported'
       ? ('imported-owner' as const)
       : resource.usage === 0
         ? ('not-allocated' as const)
@@ -243,9 +237,9 @@ export function inspectResource<FrameCtx>(
           ? ('format-or-layout-unknown' as const)
           : undefined;
   return Object.freeze({
-    label: resource.record.label,
-    kind: resource.record.kind,
-    origin: resource.record.origin,
+    label: resource.label,
+    kind: resource.kind,
+    origin: resource.origin,
     descriptor: inspectResourceDescriptor(resource),
     firstUse: resource.firstUse,
     lastUse: resource.lastUse,

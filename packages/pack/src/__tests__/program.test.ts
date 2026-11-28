@@ -102,6 +102,41 @@ describe('portable Pack programs', () => {
       error: { code: 'pack-program-load-failed' },
     });
   });
+  it('publishes shipped Worker programs directly and keeps new programs on the browser host', async () => {
+    const prepare = (value: number) =>
+      preparePackProgram({
+        entry: 'entry.js',
+        export: 'value',
+        modules: { 'entry.js': `export const value = ${value};` },
+      }).unwrap();
+    const shipped = prepare(7);
+    const imported = prepare(8);
+    const staticUrl = 'https://game.example/assets/shipped.js';
+    const importedUrl = 'data:text/javascript,export const value = 8;';
+    const published: string[] = [];
+    const host = createStaticPackProgramHost(
+      [{ modules: shipped.modules, load: async () => ({ value: 7 }), taskUrl: () => staticUrl }],
+      {},
+      {
+        async publish(program) {
+          published.push(program.digest);
+          return importedUrl;
+        },
+      },
+    );
+    expect(await host.publishForTask?.(shipped, {})).toBe(staticUrl);
+    expect((await loadPackProgram(shipped, {}, host)).unwrap()).toBe(7);
+    expect(published).toEqual([]);
+    await expect(host.importModule?.(importedUrl)).rejects.toThrow('not been admitted');
+    expect(await host.publishForTask?.(imported, {})).toBe(importedUrl);
+    expect((await loadPackProgram(imported, {}, host)).unwrap()).toBe(8);
+    expect(published).toEqual([imported.digest, imported.digest]);
+    await expect(
+      host.publishForTask?.({ ...imported, digest: shipped.digest }, {}),
+    ).rejects.toThrow();
+    expect(published).toEqual([imported.digest, imported.digest]);
+  });
+
   it('shares module state across selected exports and entries of the same closure', async () => {
     const modules = {
       'a.js': "export { state as first } from './shared.js';",

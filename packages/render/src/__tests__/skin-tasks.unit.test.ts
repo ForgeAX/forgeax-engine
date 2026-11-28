@@ -77,6 +77,48 @@ it('writes history directly after the actual palette when a smaller rig reuses s
   }
 });
 
+it('reuses uniform translation banks at acceptance and leaves discarded history intact', async () => {
+  const f = skinTaskFixture(1, undefined, true);
+  try {
+    await f.frames.submitFrame(f.frame, Promise.resolve(), true);
+    const translation = new Float32Array(3);
+    const pose = f.first.snapshot.transform.world.slice();
+    let accepted = pose[12];
+    const bank = (field: string): Float64Array =>
+      Reflect.get(Reflect.get(f.frames, field), 'rows') as Float64Array;
+    let backings: ReadonlySet<Float64Array> | undefined;
+    for (let frame = 1; frame <= 48; frame++) {
+      const x = frame * 3;
+      pose[12] = x;
+      f.scene.apply([{ kind: 'update', entityKey: f.first.entityKey, world: pose }]);
+      const next = f.frames.prepareFrame(f.scene.slotsSnapshot());
+      if (next?.previousTranslation === undefined) throw new Error('Missing submitted translation');
+      expect(next.previousTranslation(f.first.slot, f.second.entityKey, translation)).toBe(false);
+      expect(next.previousTranslation(f.first.slot, f.first.entityKey, translation)).toBe(true);
+      expect(translation[0]).toBe(accepted);
+      const currentBackings = new Set([bank('submittedTranslations'), bank('pendingTranslations')]);
+      backings ??= currentBackings;
+      expect(currentBackings.size).toBe(2);
+      for (const backing of currentBackings) expect(backings.has(backing)).toBe(true);
+      if (frame % 3 === 0) {
+        f.frames.discardFrame();
+      } else {
+        // Empty physical work still follows the actual history acceptance bit.
+        const accept = frame % 4 !== 0;
+        await f.frames.submitFrame(next, Promise.resolve(), accept);
+        if (accept) accepted = x;
+      }
+    }
+    const storage = f.frames.prepareFrame(f.scene.slotsSnapshot(), false);
+    expect(storage?.previousTranslation).toBeUndefined();
+    expect(bank('pendingTranslations').byteLength).toBe(0);
+    f.frames.resetHistory();
+    expect(bank('submittedTranslations').byteLength).toBe(0);
+  } finally {
+    f.dispose();
+  }
+});
+
 it('retains exact old buffer pairs across growth and defers destruction through physical completion', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap(),
     f = skinTaskFixture(),

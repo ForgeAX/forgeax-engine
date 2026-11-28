@@ -10,7 +10,7 @@ const guid = (key: string) => AssetGuid.format(AssetGuid.derive(packageId, key))
 /**
  * Case C-110 as an ordinary procedural asset: `mesh/armor` (the auto-UVed low-poly
  * shoulder plate), `mesh/armor-detail` (the high-poly source), the baked
- * `texture/armor-normal`, `texture/armor-ao` and `texture/armor-materialId` as
+ * `texture/armor-normal`, `texture/armor-ao` and `texture/armor-material-id` as
  * `modeling-bake` cook sources (baked by the NativeCooker outside the build timeout;
  * register `createBakeCooker()` in the build plugin) and `material/armor-baked`.
  */

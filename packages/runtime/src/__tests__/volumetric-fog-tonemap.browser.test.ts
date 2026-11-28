@@ -19,6 +19,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { verifyAnalyticFogMsaa } from './analytic-fog-msaa.fixture';
 import { compactTape } from './compact-tape.fixture';
@@ -135,9 +136,11 @@ it.each([
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const receipt = value(renderer.draw({ source: lease }));
-      context.drawImage(canvas, 0, 0);
-      value(await receipt.completed);
+      await drawReadyFrame(renderer, { source: lease }, undefined, {
+        afterSubmit: (receipt) => {
+          if (receipt.presentation === 'ready') context.drawImage(canvas, 0, 0);
+        },
+      });
       completedFrames++;
     };
     const capture = async (stage: string, frames: number) => {

@@ -9,10 +9,12 @@ import type { DispatchEntry } from '../../render-system-extract';
 import { CapturedSceneTransform } from '../../scene/captured-transform';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { FirstEntryMap } from '../first-entry-map';
+import { type ProbeCaptureFrame, requestProbeCapturePipelines } from '../frame-capture';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import type { RenderBundleCounters } from '../geometry-recording';
+import { requestVisibleForwardPipelines } from '../main-pass';
 import { recordGeometryDraws } from '../main-pass-geometry';
-import { flushMeshDrawUploads, MESH_PER_ENTITY_STRIDE, prepareMeshDraw } from '../mesh-ssbo';
+import { flushMeshDrawUploads, MESH_PER_ENTITY_STRIDE, MeshDrawUploads } from '../mesh-ssbo';
 import { ShadowDirectCommands } from '../shadow-direct-commands';
 import {
   CPU_SETUP_SHADER,
@@ -160,7 +162,7 @@ it.each([
     // Another view can write different bytes at this same address.
     const moved = first.source.transform.world.slice();
     moved[12] = 5;
-    prepareMeshDraw(f.c, {
+    MeshDrawUploads.forPass(f.c).stage({
       ...first,
       source: { ...first.source, transform: { world: moved } },
     });
@@ -238,7 +240,10 @@ it.each([
     // A different pass can change mesh bytes while keeping all command addresses.
     const world = first.source.transform.world.slice();
     world[12] = 5;
-    prepareMeshDraw(f.c, { ...first, source: { ...first.source, transform: { world } } });
+    MeshDrawUploads.forPass(f.c).stage({
+      ...first,
+      source: { ...first.source, transform: { world } },
+    });
     flushMeshDrawUploads(device.queue, f.c.pipelineState.meshStorageBuffer);
     const selectionReads = prepared.selectionReads;
     expect(record()).toBe(0);
@@ -903,7 +908,7 @@ it('binds the current view per admitted pipeline selection across changing draws
   }));
   Object.assign(f.c.runtime, { shaderRegistry: { findMaterialArtifact: inspect } });
   const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
-  const parity = vi.spyOn(CapturedSceneTransform, 'reflected');
+  const parity = vi.spyOn(CapturedSceneTransform, 'reflectedStorage');
   const pipelines = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
   try {
     for (let frame = 0; frame < 4; frame++) {
@@ -1253,6 +1258,87 @@ it('consumes alternating physical material addresses in direct and shadow encode
   } finally {
     projected.mockRestore();
     pass.end();
+    f.dispose();
+  }
+});
+
+it('starts visible forward and deduplicated probe-capture pipeline requests without encoding', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  nativeGeometryFixture(f);
+  const encoderSpy = vi.spyOn(device, 'createCommandEncoder');
+  const requested: Array<{
+    readonly shader: string;
+    readonly isHdr: boolean;
+    readonly passKind: unknown;
+  }> = [];
+  const preparePipeline = vi.fn(
+    (
+      shaderId: string,
+      isHdr: boolean,
+      _renderState: unknown,
+      _topology: unknown,
+      _indexFormat: unknown,
+      _variantSet: unknown,
+      passKind: unknown,
+    ) => {
+      requested.push({ shader: shaderId, isHdr, passKind });
+      return null;
+    },
+  );
+  Object.assign(f.c.runtime, {
+    prepareMaterialShaderPipelineEntry: preparePipeline,
+    getMaterialShaderPipelineEntry: preparePipeline,
+  });
+  for (const pass of f.c.dispatch ?? []) Object.assign(pass, { materialShaderId: 'game::paint' });
+  for (const row of f.entries) {
+    row.source.material.adopt(
+      captureMaterialSnapshot({
+        ...row.source.material.snapshot,
+        materialShaderId: 'game::paint',
+      }),
+    );
+  }
+  try {
+    f.acceptMaterials();
+    f.c.tonemapActive = true;
+    requestVisibleForwardPipelines(
+      f.c,
+      { LightMode: 'Forward' },
+      {
+        formats: ['rgba16float'],
+        sampleCount: 1,
+      },
+    );
+    expect(encoderSpy).not.toHaveBeenCalled();
+    expect(requested).toEqual(
+      f.entries.map(() => ({ shader: 'game::paint', isHdr: true, passKind: 'forward' })),
+    );
+
+    requested.length = 0;
+    const probeFrameState = { ...f.c.frameState, pipelinePreparationPending: undefined };
+    const parentPendingBefore = f.c.frameState.pipelinePreparationPending;
+    const probeCapture = {
+      frameState: probeFrameState,
+      outputFormat: 'rgba16float',
+      lighting: { kind: 'legacy' },
+      work: { faceCamera: f.c.camera },
+      pipeline: f.c.pipelineState,
+      runtime: f.c.runtime,
+      lights: f.c.lights,
+      viewFog: false,
+      capturedAtmosphere: undefined,
+    } as unknown as ProbeCaptureFrame;
+    // Six faces of the same probe share one (frameState, outputFormat) PSO request set.
+    requestProbeCapturePipelines(f.c, [probeCapture, probeCapture, probeCapture]);
+    expect(encoderSpy).not.toHaveBeenCalled();
+    expect(requested).toEqual(
+      f.entries.map(() => ({ shader: 'game::paint', isHdr: true, passKind: 'forward' })),
+    );
+    expect(f.c.frameState.pipelinePreparationPending).toBe(parentPendingBefore);
+  } finally {
+    encoderSpy.mockRestore();
     f.dispose();
   }
 });

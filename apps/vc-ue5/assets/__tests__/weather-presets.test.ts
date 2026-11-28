@@ -13,6 +13,8 @@ test('D weather descriptors round trip with valid R6 parameters and one fixed sh
     assert.equal(candidate.forgeax.clock.paused, true);
     assert.equal(candidate.forgeax.materialMode, 'shape');
     assert.equal(candidate.forgeax.parameters.useDetail, false);
+    const { bottomMeters, thicknessMeters, entryLimitMeters, traceLimitMeters } = candidate.forgeax.parameters;
+    assert.deepEqual([bottomMeters, thicknessMeters, entryLimitMeters, traceLimitMeters], [1_000, 9_000, 50_000, 50_000]);
     assert.deepEqual(candidate.shot, WEATHER_PRESETS.clear.shot);
     assert.equal(candidate.unreal.cvars['r.VolumetricRenderTarget.Mode'], 0);
     assert.ok(Object.isFrozen(candidate.forgeax.parameters));

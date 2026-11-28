@@ -472,7 +472,7 @@ export type EngineToHostMessage =
       readonly kind: 'frame-admission';
       readonly worldIdentity: string;
       readonly frameId: number;
-      readonly phase: 'render-wait' | 'source';
+      readonly phase: 'render-wait' | 'render-preparation' | 'source';
     }
   | ExecutionReadyMessage
   | ExecutionFrameSubmitted

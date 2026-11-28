@@ -68,6 +68,7 @@
     "test:fx": "vitest run --config scripts/vitest.fx.config.ts scripts/__tests__/fx.test.ts scripts/__tests__/worktree.test.ts scripts/__tests__/link-template-agents.test.ts",
     "check:code-file-lines": "node scripts/check-code-file-lines.mjs",
     "check:function-complexity": "node scripts/check-function-complexity.mjs",
+    "check:public-api": "node packages/engine/scripts/public-api.mjs",
     "check:dependency-vulnerabilities": "node scripts/ci/check-dependency-vulnerabilities.mjs",
     "test:layout": "node scripts/check-test-layout.mjs",
     "check:package-runtime-dependencies": "node scripts/forgeax/check-package-runtime-dependencies.mjs",

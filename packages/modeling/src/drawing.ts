@@ -603,6 +603,8 @@ export interface ResolvedDrawing {
     readonly role: DrawingRole;
     readonly closed: boolean;
     readonly points: readonly Point2[];
+    /** A full-turn arc: the exact circle, which the SVG writer emits instead of its polyline. */
+    readonly circle?: { readonly center: Point2; readonly radius: number };
   }[];
   /** Section hatching per base view (sorted by view id): lines at `hatchSpacing`, 45 degrees, over the even-odd interior of its closed section curves. */
   readonly hatches: readonly { readonly view: string; readonly segments: readonly Segment2[] }[];
@@ -624,6 +626,8 @@ export interface ResolvedDrawing {
  */
 export const DRAWING_POINT_LIMIT = 50_000;
 const DEFAULT_CURVE_TOLERANCE = 0.002;
+/** Chord error of curves that a detail view magnifies: 0.25 px at the 20 px/mm detail picture. */
+const DETAIL_CHORD_PAPER_MM = 0.0125;
 const MEASURES: readonly DrawnDimension['measure'][] = ['distance', 'dx', 'dy', 'angle', 'radius'];
 const BASES = ['public', 'blueprint', 'estimate', 'derived'] as const;
 const AXIS = { x: 0, y: 1, z: 2 } as const;
@@ -948,12 +952,36 @@ export function resolveCurveSpec(
   });
 }
 
-function sampleCurve(item: DrawnLine): Result<readonly Point2[], ModelingError> {
+/** The finest scale of a detail view that magnifies `base` (mm per m), or undefined when none does. */
+function finestDetailScale(
+  views: ReadonlyMap<string, DrawingView>,
+  base: string,
+): number | undefined {
+  let finest: number | undefined;
+  for (const v of views.values()) {
+    if ('detail' in v && v.of === base) finest = Math.max(finest ?? 0, v.detail.scale);
+  }
+  return finest;
+}
+
+function sampleCurve(
+  item: DrawnLine,
+  detailScale: number | undefined,
+): Result<readonly Point2[], ModelingError> {
+  const tolerance =
+    item.tolerance ?? (detailScale === undefined ? undefined : DETAIL_CHORD_PAPER_MM / detailScale);
   const r = resolveCurveSpec(item.curve, {
     closed: item.closed === true,
-    ...(item.tolerance === undefined ? {} : { tolerance: item.tolerance }),
+    ...(tolerance === undefined ? {} : { tolerance }),
   });
   return r.ok ? ok(r.value.points) : r;
+}
+
+/** The exact circle of a full-turn arc, in the curve's own 2D coordinates. */
+function fullCircle(spec: CurveSpec): { center: Point2; radius: number } | undefined {
+  if (spec.kind !== 'arc') return undefined;
+  if (Math.abs(Math.abs(spec.to - spec.from) - 2 * Math.PI) > 1e-12) return undefined;
+  return { center: spec.center, radius: spec.radius };
 }
 
 /**
@@ -1122,7 +1150,7 @@ export function resolveDrawing(d: Drawing): Result<ResolvedDrawing, ModelingErro
           if (!inset.ok) return inset;
           if (item.inset < 0) return invalidDrawing(`${at}.inset is at least 0`, { at });
         }
-        const points = sampleCurve(item);
+        const points = sampleCurve(item, finestDetailScale(views, item.view));
         if (!points.ok) return points;
         total += points.value.length;
         if (total > DRAWING_POINT_LIMIT) {
@@ -1134,12 +1162,14 @@ export function resolveDrawing(d: Drawing): Result<ResolvedDrawing, ModelingErro
             ),
           );
         }
+        const circle = fullCircle(item.curve);
         curves.push({
           id: item.id,
           view: item.view,
           role: item.role,
           closed: item.closed === true,
           points: points.value,
+          ...(circle === undefined ? {} : { circle }),
         });
         break;
       }

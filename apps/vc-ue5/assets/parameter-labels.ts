@@ -1,7 +1,7 @@
 // The HUD, wire validation and R6 attribute table share these definitions.
 export type ParameterCondition = 'always' | 'enabled' | 'sampled' | 'program' | 'ray' | 'map' | 'surface' | 'atmosphere' | 'multiple';
 type Owner = 'Layer' | 'Material' | 'Sun' | 'Camera' | 'Clock';
-type Group = 'layer' | 'density' | 'motion' | 'sun' | 'scattering' | 'shadows' | 'tracing';
+type Group = 'layer' | 'density' | 'motion' | 'sun' | 'scattering' | 'shadows' | 'shadow-ray' | 'shadow-map' | 'tracing';
 interface Label {
   readonly part: string;
   readonly label: string;
@@ -30,10 +30,9 @@ export const cloudParameterLabels = {
   erosionWeight: num('cloud-erosion', '侵蚀强度', 'Noise_Strength (erosion blend)', 'ratio', 'Layer', 'density', 'sampled', 0, 1),
   coverageBias: num('cloud-coverage', '覆盖偏置', 'Cloud_GlobalCoverage', 'ratio', 'Layer', 'density', 'sampled', -1, 1),
   useDetail: flag('cloud-detail', '细节噪声', 'UseNoise3', 'Material', 'density', 'sampled', 'cooked-static'),
-  skipEmpty: flag('cloud-skip', '空域跳过', 'Conservative Density', 'Layer', 'density', 'sampled'),
-  windX: num('cloud-wind-x', '风速 X', 'Physical Wind X', 'm/s', 'Clock', 'motion', 'program', -200, 200),
-  windY: num('cloud-wind-y', '风速 Y', 'Physical Wind Y', 'm/s', 'Clock', 'motion', 'program', -200, 200),
-  windZ: num('cloud-wind-z', '风速 Z', 'Physical Wind Z', 'm/s', 'Clock', 'motion', 'program', -200, 200),
+  windX: num('cloud-wind-x', '风速 X', 'Physical Wind X', 'm/s', 'Clock', 'motion', 'program', -2000, 2000),
+  windY: num('cloud-wind-y', '风速 Y', 'Physical Wind Y', 'm/s', 'Clock', 'motion', 'program', -2000, 2000),
+  windZ: num('cloud-wind-z', '风速 Z', 'Physical Wind Z', 'm/s', 'Clock', 'motion', 'program', -2000, 2000),
   referenceTimeSeconds: num('cloud-time', '参考时间', 'Reference Time', 's', 'Clock', 'motion', 'always', 0, 9999999),
   sunElevation: num('sun-elevation', '太阳高度', 'Atmosphere Sun Light Elevation', '°', 'Sun', 'sun', 'always', -90, 180),
   sunAzimuth: num('sun-azimuth', '太阳方位', 'Atmosphere Sun Light Azimuth', '°', 'Sun', 'sun', 'always', -360, 360),
@@ -49,24 +48,28 @@ export const cloudParameterLabels = {
   atmosphereTransmittanceMode: num('atmosphere-mode', '太阳大气透射', 'Use Per Sample Atmospheric Light Transmittance', 'enum', 'Layer', 'scattering', 'program', 0, 1, true),
   enableDistantSkyLightSampling: flag('sky-sampling', '天空填充', 'Distant Sky Light Sampling', 'Layer', 'scattering', 'program'),
   selfShadow: flag('self-shadow', '云内自阴影', 'Ray March Volume Shadow / Self Shadow', 'Layer', 'shadows', 'program'),
+  shadowMode: num('shadow-mode', '自阴影路径', 'Ray March Volume Shadow (route)', 'enum', 'Layer', 'shadows', 'program', 0, 1, true),
   groundShadowEnabled: flag('ground-shadow', '地面云影', 'Cast Cloud Shadows (surface)', 'Layer', 'shadows', 'enabled'),
   atmosphereShadowEnabled: flag('atmosphere-shadow', '大气云影', 'Cast Cloud Shadows (atmosphere)', 'Layer', 'shadows', 'enabled'),
-  shadowMode: num('shadow-mode', '自阴影路径', 'Ray March Volume Shadow (route)', 'enum', 'Layer', 'shadows', 'program', 0, 1, true),
   surfaceShadowStrength: num('surface-shadow-strength', '地表混合', 'Cloud Shadow on Surface Strength', 'ratio', 'Layer', 'shadows', 'surface', 0, 1),
   atmosphereShadowStrength: num('atmosphere-shadow-strength', '大气混合', 'Cloud Shadow on Atmosphere Strength', 'ratio', 'Layer', 'shadows', 'atmosphere', 0, 1),
   entryLimitMeters: num('trace-entry', '入层距离上限', 'Tracing Start Max Distance', 'm', 'Layer', 'tracing', 'enabled', 1, 1000000),
   traceLimitMeters: num('trace-limit', '追踪距离上限', 'Tracing Max Distance', 'm', 'Layer', 'tracing', 'enabled', 1, 1000000),
+  viewBlueNoise: flag('cloud-blue-noise', '蓝噪声', 'View Ray Blue Noise', 'Layer', 'tracing', 'program'),
   viewSampleCountScale: num('cloud-samples', '视线采样倍率', 'View Sample Count Scale', '×', 'Layer', 'tracing', 'program', 0, 8),
   stopTransmittance: num('cloud-stop', '停止透射阈值', 'Stop Tracing Transmittance Threshold', 'ratio', 'Layer', 'tracing', 'program', 0, 1),
-  shadowSamples: num('shadow-samples', '光路样本', 'Shadow View Sample Count (absolute)', 'count', 'Layer', 'tracing', 'ray', 1, 64, true),
-  shadowDistanceMeters: num('shadow-distance', '光路长度', 'Shadow Tracing Distance', 'm', 'Layer', 'tracing', 'ray', 0, 100000),
-  shadowExtentMeters: num('shadow-extent', '图全宽', 'Cloud Shadow Full Width', 'm', 'Layer', 'tracing', 'map', 1, 600000),
-  shadowLightDistanceMeters: num('shadow-light-distance', '光平面距离', 'Cloud Shadow Light Distance', 'm', 'Layer', 'tracing', 'map', 1, 1000000),
-  shadowFarDepthMeters: num('shadow-far-depth', '图追踪深度', 'Cloud Shadow Far Depth', 'm', 'Layer', 'tracing', 'map', 1, 2000000),
-  shadowDepthBiasMeters: num('shadow-bias', '深度偏差', 'Cloud Shadow Depth Bias', 'm', 'Layer', 'tracing', 'map', -1000, 1000),
-  shadowStrength: num('shadow-strength', '阴影图强度', 'Cloud Shadow Strength', 'ratio', 'Layer', 'tracing', 'map', 0, 1),
-  shadowResolution: num('shadow-resolution', '阴影图分辨率', 'Cloud Shadow Map Resolution (absolute)', 'texels', 'Layer', 'tracing', 'map', 16, 2048, true),
-  shadowMapSamples: num('shadow-map-samples', '阴影图采样', 'Cloud Shadow Ray Sample Count (absolute)', 'count', 'Layer', 'tracing', 'map', 1, 256, true),
+  skipEmpty: flag('cloud-skip', '空域跳过', 'Conservative Density', 'Layer', 'tracing', 'sampled'),
+  shadowSamples: num('shadow-samples', '光路样本', 'Shadow View Sample Count (absolute)', 'count', 'Layer', 'shadow-ray', 'ray', 1, 64, true),
+  shadowDistanceMeters: num('shadow-distance', '光路长度', 'Shadow Tracing Distance', 'm', 'Layer', 'shadow-ray', 'ray', 0, 100000),
+  shadowExtentMeters: num('shadow-extent', '图全宽', 'Cloud Shadow Full Width', 'm', 'Layer', 'shadow-map', 'map', 1, 600000),
+  shadowLightDistanceMeters: num('shadow-light-distance', '光平面距离', 'Cloud Shadow Light Distance', 'm', 'Layer', 'shadow-map', 'map', 1, 1000000),
+  shadowFarDepthMeters: num('shadow-far-depth', '图追踪深度', 'Cloud Shadow Far Depth', 'm', 'Layer', 'shadow-map', 'map', 1, 2000000),
+  shadowDepthBiasMeters: num('shadow-bias', '深度偏差', 'Cloud Shadow Depth Bias', 'm', 'Layer', 'shadow-map', 'map', -1000, 1000),
+  shadowStrength: num('shadow-strength', '阴影图强度', 'Cloud Shadow Strength', 'ratio', 'Layer', 'shadow-map', 'map', 0, 1),
+  shadowResolution: num('shadow-resolution', '阴影图分辨率', 'Cloud Shadow Map Resolution (absolute)', 'texels', 'Layer', 'shadow-map', 'map', 16, 2048, true),
+  shadowMapSpatialPasses: num('shadow-map-spatial-passes', '云影空间滤波轮数', 'Cloud Shadow Spatial Filter Passes', 'count', 'Layer', 'shadow-map', 'map', 0, 4, true),
+  shadowMapUe5Reference: flag('shadow-map-ue5', 'UE 云影投影与采样', 'UE Cloud Shadow Projection and Sampling', 'Layer', 'shadow-map', 'map'),
+  shadowMapSamples: num('shadow-map-samples', '阴影图基础步数', 'Cloud Shadow Ray Base Sample Count', 'count', 'Layer', 'shadow-map', 'map', 1, 256, true),
 } as const;
 export type CloudParameterKey = keyof typeof cloudParameterLabels;
 

@@ -1,15 +1,23 @@
+import { writeFile } from 'node:fs/promises';
+import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import type { EntityHandle } from '@forgeax/engine-ecs';
 import { frustum, mat4 } from '@forgeax/engine-math';
 import { type CompiledRenderGraph, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type Buffer, type RhiCommandEncoder, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import type { SceneAsset } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
-import type { LevelCandidate } from '../../../app/src/levels/candidate';
+import { createLevelCandidate, type LevelCandidate } from '../../../app/src/levels/candidate';
+import { localLevelRenderHost } from '../../../app/src/levels/candidate-render-source';
 import { loadRhiPack } from '../assembly/backend-contract';
+import { levelSourceHost } from '../assembly/level-source-access';
 import {
   isObsoleteSourceViewFailure,
   type SourceViewPreparation,
 } from '../assembly/source-view-preparation';
+import { Camera } from '../components/camera';
+import { CameraView } from '../components/camera-view';
 import { DirectionalLight } from '../components/directional-light';
 import { PointLight } from '../components/point-light';
 import { PointLightShadow } from '../components/point-light-shadow';
@@ -17,6 +25,9 @@ import { SpotLight } from '../components/spot-light';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
 import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import type { GpuSceneResourceFrame } from '../gpu-scene';
+import { inspectRenderGraphGenerationAllocation } from '../record/graph-allocation-owner';
+import { ViewRecorder } from '../world/render-views';
+import type { ViewRecorderState } from '../world/view-output-systems';
 import {
   levelNativeResourcesFixture,
   levelShaderManifestFixture,
@@ -55,7 +66,7 @@ type InitialSourceMode =
 function hasPermanentMesh(mode: InitialSourceMode) {
   return mode === 'existing' || mode === 'two' || mode === 'shadow' || mode === 'masked-shadow';
 }
-async function nativeFirstSourceFixture(mode: InitialSourceMode) {
+async function nativeFirstSourceFixture(mode: InitialSourceMode, composed = false) {
   let native: GPUDevice | undefined;
   let target: GPUTexture | undefined;
   const errors: unknown[] = [];
@@ -86,6 +97,7 @@ async function nativeFirstSourceFixture(mode: InitialSourceMode) {
       hasPermanentMesh(mode),
       {
         ...shaders,
+        composed,
         canvas: { width: 64, height: 64, getContext: () => context },
         backend: loadRhiPack(webgpu),
       },
@@ -187,10 +199,196 @@ async function prepareCurrentNativeSource(
 async function retireCandidate(candidate: LevelCandidate) {
   for (let step = 0; candidate.inspect().phase !== 'retired' && step < 10000; step++) {
     const state = candidate.retireStep().unwrap();
-    if (state.render?.pending !== undefined) await state.render.pending;
+    if (state.pending !== undefined) await state.pending;
   }
   expect(candidate.inspect().phase).toBe('retired');
 }
+
+function viewRecorders(f: Awaited<ReturnType<typeof levelNativeResourcesFixture>>) {
+  const recorders: ViewRecorderState[] = [];
+  const world = f.internals.renderWorld;
+  assert(world);
+  for (const span of world
+    .query({ with: [ViewRecorder] })
+    .unwrap()
+    .spans()
+    .unwrap())
+    for (const entity of span.entities) {
+      const state = world
+        .resolveUniqueRef<ViewRecorderState>(
+          world.get(entity as EntityHandle, ViewRecorder).unwrap().state,
+        )
+        .unwrap();
+      recorders.push(state);
+    }
+  return recorders;
+}
+
+function physicalViews(f: Awaited<ReturnType<typeof levelNativeResourcesFixture>>) {
+  return [
+    ...new Set([
+      ...f.manager.currentOwner.gpuDriven.inputBindingViews(f.scene),
+      ...viewRecorders(f).flatMap((state) => state.owner.gpuDriven.inputBindingViews(f.scene)),
+    ]),
+  ];
+}
+
+async function prepareForActivation(candidate: LevelCandidate) {
+  for (let step = 0; step < 20000; step++) {
+    const result = candidate.step().unwrap();
+    if (result.phase === 'prepared' && result.current) return;
+    if (result.pending !== undefined) await result.pending;
+  }
+  throw Error(`Local Level never admitted its real View storage (${candidate.phase})`);
+}
+
+it('returns actual View and Scene storage after repeated Level unload and attachment resize', async () => {
+  const { f, target, native, errors } = await nativeFirstSourceFixture('existing', true);
+  const { device } = f.internals;
+  const destroyTexture = vi.spyOn(device, 'destroyTexture');
+  let candidate: LevelCandidate | undefined;
+  try {
+    const host = levelSourceHost(f.renderer, f.world);
+    assert(host);
+    await prepareFirstSourceLights(f, 'ordinary');
+    const instances = new Float32Array(4096 * 16);
+    const identity = mat4.identity(mat4.create());
+    for (let index = 0; index < 4096; index++) instances.set(identity, index * 16);
+    const sceneAsset = f.assets
+      .create<SceneAsset>({
+        kind: 'scene',
+        entities: {
+          members: {
+            components: {
+              Transform: {},
+              MeshFilter: { assetHandle: f.meshHandle },
+              MeshRenderer: { materials: [f.materialHandle] },
+              Instances: { transforms: instances },
+            },
+          },
+        },
+      })
+      .unwrap();
+    const cameraData = f.world.get(f.camera, Camera).unwrap();
+    const warmed = f.scene.inspect().tables.primitive.bytes;
+    const warmInputBytes = f.scene.inputs.arena.byteLength;
+    const retainedAssets = runtimeAssets(f.assets).inspect();
+    const settled: number[] = [];
+    const samples = [];
+    for (let cycle = 0; cycle < 8; cycle++) {
+      candidate = createLevelCandidate({
+        world: f.world,
+        assets: f.assets,
+        scene: sceneAsset,
+        render: localLevelRenderHost(host),
+      });
+      const resourcePages = f.scene.inputs.resourcePagesWritten;
+      await prepareForActivation(candidate);
+      expect(f.scene.inputs.resourcePagesWritten - resourcePages).toBe(4);
+      candidate.accept(true).unwrap();
+      expect((await f.draw()).presentation).toBe('ready');
+      expect(candidate.phase).toBe('active');
+      const views = physicalViews(f);
+      const primary = views.find((view) => view.inspect().candidateCapacity >= 2048);
+      assert(primary);
+      const peak = primary.inspect().resourceAllocation.liveBytes;
+      const camera = f.world
+        .spawn(
+          { component: Camera, data: cameraData },
+          { component: Transform, data: { pos: [0, 0, 4] } },
+          { component: CameraView, data: { resolutionScale: 0.5, order: 1 } },
+        )
+        .unwrap();
+      expect((await f.draw()).presentation).toBe('ready');
+      const smallOutput = viewRecorders(f).find((view) => view.camera === camera)?.output;
+      expect(smallOutput?.width).toBe(32);
+      f.world.set(camera, CameraView, { resolutionScale: 1 }).unwrap();
+      expect((await f.draw()).presentation).toBe('ready');
+      const largeOutput = viewRecorders(f).find((view) => view.camera === camera)?.output;
+      expect(largeOutput?.width).toBe(64);
+      assert(smallOutput && largeOutput);
+      expect(largeOutput.texture).not.toBe(smallOutput.texture);
+      const additional = physicalViews(f).filter((view) => !views.includes(view));
+      expect(additional.length).toBeGreaterThan(0);
+      f.world.despawn(camera).unwrap();
+      candidate.accept(false).unwrap();
+      expect((await f.draw()).presentation).toBe('ready');
+      expect(candidate.phase).toBe('prepared');
+      expect(primary.inspect().resourceAllocation.liveBytes).toBe(peak);
+      await retireCandidate(candidate);
+      candidate = undefined;
+      for (let frame = 0; frame < 42; frame++) {
+        f.world.set(f.camera, Transform, { pos: [0.001 * frame, 0, 4] }).unwrap();
+        expect((await f.draw()).presentation).toBe('ready');
+      }
+      await device.queue.onSubmittedWorkDone();
+      (await primary.settleRetirement()).unwrap();
+      expect(destroyTexture).toHaveBeenCalledWith(smallOutput.texture);
+      expect(destroyTexture).toHaveBeenCalledWith(largeOutput.texture);
+      expect(f.manager.inspect()).toHaveLength(1);
+      expect(f.scene.inspect().tables.primitive.bytes).toBeLessThanOrEqual(warmed);
+      expect(physicalViews(f)).toContain(primary);
+      const allocation = primary.inspect().resourceAllocation;
+      expect(allocation.liveBytes).toBeGreaterThan(0);
+      expect(allocation.liveBytes).toBeLessThan(peak / 4);
+      expect(allocation.pendingRetirementBytes).toBe(0);
+      settled.push(allocation.liveBytes);
+      const assets = runtimeAssets(f.assets).inspect();
+      expect(assets.snapshots).toBe(retainedAssets.snapshots);
+      expect(assets.snapshotBytes).toBe(retainedAssets.snapshotBytes);
+      const frameOwners = new Set([
+        f.manager.currentOwner,
+        ...viewRecorders(f).map((state) => state.owner),
+      ]);
+      const graphBytes = [...frameOwners].map((owner) => {
+        const resources = inspectRenderGraphGenerationAllocation(owner.frameState);
+        expect(resources.pendingRetirementBytes).toBe(0);
+        return resources.liveBytes;
+      });
+      const inputArenaBytes = f.scene.inputs.arena.byteLength;
+      expect(inputArenaBytes).toBeLessThanOrEqual(warmInputBytes * 1.5);
+      const inputBuffer = f.scene.inputs.uploadedBuffer();
+      assert(inputBuffer);
+      expect(inputBuffer.byteLength).toBe(inputArenaBytes);
+      samples.push({
+        cycle,
+        viewBytes: { large: peak, settled: allocation.liveBytes, peak: allocation.peakBytes },
+        scene: f.scene.inspect().tables,
+        inputArenaBytes,
+        inputBufferBytes: inputBuffer.byteLength,
+        resourcePages: {
+          written: f.scene.inputs.resourcePagesWritten,
+          released: f.scene.inputs.resourcePagesReleased,
+        },
+        graphBytes,
+        assetSnapshotBytes: assets.snapshotBytes,
+        outputDimensions: [
+          [smallOutput.width, smallOutput.height],
+          [largeOutput.width, largeOutput.height],
+        ],
+      });
+      for (const retired of additional) {
+        (await retired.settleRetirement()).unwrap();
+        expect(retired.inspect().resourceAllocation).toMatchObject({
+          liveBytes: 0,
+          pendingRetirementBytes: 0,
+        });
+      }
+    }
+    expect(new Set(settled).size).toBe(1);
+    expect(new Set(samples.map((sample) => sample.inputArenaBytes)).size).toBe(1);
+    expect(new Set(samples.map((sample) => JSON.stringify(sample.graphBytes))).size).toBe(1);
+    expect(errors).toEqual([]);
+    const output = process.env.FORGEAX_LEVEL_VIEW_RETIREMENT_OUT;
+    if (output !== undefined) await writeFile(output, JSON.stringify(samples));
+  } finally {
+    if (candidate !== undefined) await retireCandidate(candidate);
+    (await f.close()).unwrap();
+    destroyTexture.mockRestore();
+    target.destroy();
+    native.destroy();
+  }
+}, 60000);
 
 async function prepareSiblingSource(
   f: Awaited<ReturnType<typeof levelNativeResourcesFixture>>,
@@ -359,8 +557,7 @@ async function firstSourceNative(
       // A camera may already own the physical display while its first Level is hidden.
       // A distinct layout remains staged until its first real submission.
       const prepared =
-        owner.frameState.unsubmittedCompiledFrameGraph?.installed ??
-        owner.frameState.compiledFrameGraph;
+        owner.frameState.unsubmittedCompiledFrameGraph ?? owner.frameState.compiledFrameGraph;
       assert(prepared);
       const indirectBytes = view.inspect().indirectCapacity * 40;
       const commandReadback = f.internals.device

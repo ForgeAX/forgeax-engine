@@ -158,7 +158,6 @@ export async function main(
         if (
           entry.name === 'dist' ||
           entry.name === 'pkg' ||
-          path === join(stage, 'packages/dsh/lib') ||
           path === join(stage, 'packages/preview/assets/canonical-kit')
         ) {
           const destination = join(root, path.slice(stage.length + 1));

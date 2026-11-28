@@ -138,7 +138,7 @@ export class JoinedFrameRows<T> extends FrameListBase<T> {
     return range?.start === start && range.rows.length === length ? range.rows : undefined;
   }
 
-  private containing(index: number) {
+  protected containing(index: number) {
     let low = 0;
     let high = this.ranges.length - 1;
     while (low < high) {

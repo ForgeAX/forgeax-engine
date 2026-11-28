@@ -11,18 +11,21 @@ import {
   type UvPinRule,
 } from './compute/job';
 import { tsUvBackend } from './compute/uv-backend';
-import { decodeCornerUvs, orientation } from './compute/uv-ts';
+import { type PartList, partDensities, partList } from './compute/uv-parts';
+import { decodeCornerUvs, measureUv, orientation } from './compute/uv-ts';
 import { cos } from './dmath';
 import { type ModelingError, modelingError } from './errors';
-import { UnionFind } from './finish';
+import { isRespectSharp, type NormalMode, shadingHard, UnionFind } from './finish';
 import { decodeSnapshot, encodeSnapshot } from './fxem';
 import { cross, dot, length, newell, normalize, sub, type Tuple3, triangulateLoop } from './geom';
 import { EDGE_SEAM, EDGE_SHARP, type EditMesh, NONE } from './mesh';
+import { mirrorPairs } from './mirror-pairing';
 import type { Model } from './model';
 import type { OpDiagnostic, RoleCounts } from './ops';
 import { orient2d } from './predicates';
 import type { EdgeSelector } from './selectors';
 import type { TrimRegion } from './trim';
+import { uvOverlapPairs } from './uv-overlap';
 
 export type UvChannel = 'uv0' | 'uv1';
 
@@ -85,6 +88,9 @@ export function paddingTexels(padding: UvPadding): number {
   return Number.isInteger(k) && k >= 0 && k <= 10 ? 1 << (k + 1) : Number.NaN;
 }
 
+const byTag = ([a]: readonly [string, unknown], [b]: readonly [string, unknown]) =>
+  a < b ? -1 : a > b ? 1 : 0;
+
 export interface PackOptions {
   /** Square atlas size in texels; padding and the texel density metric refer to it. */
   readonly resolution: number;
@@ -98,6 +104,14 @@ export interface PackOptions {
    * (default true); `{ step: 45 }` also tries eighth turns (raster only).
    */
   readonly rotate?: boolean | { readonly step: 90 | 45 };
+  /**
+   * Island orientation when `rotate` is on. `'straight'` (default): the dominant boundary direction on
+   * an axis when enough of the boundary agrees, else the minimal rectangle. `'minimal'`: the minimal
+   * rectangle only. `'worldUp'`: world +Y projected onto the island points to +v (the area-weighted mean
+   * over its faces; wood grain, brushed metal) and no island is turned afterwards, so the pack only
+   * translates them; an island whose mean projection is under 0.2 of unit (a floor) keeps `'straight'`.
+   */
+  readonly orient?: 'minimal' | 'straight' | 'worldUp';
   /** Scale islands to their 3D area before packing, for one texel density (default true). */
   readonly normalize?: boolean;
   /**
@@ -106,13 +120,79 @@ export interface PackOptions {
    * concave parts of large ones.
    */
   readonly method?: 'skyline' | 'raster';
-  /** Congruent islands (same triangles, same shape up to quarter turns) share one placement and identical UVs. */
-  readonly stack?: boolean;
+  /**
+   * Congruent islands (same triangles, same shape up to quarter turns) share one placement and identical UVs.
+   * `'mirrored'` also stacks the island of every `FACE_MIRRORED` copy onto the island of the faces it reflects
+   * (`mirror` makes them; paired by position), each paired vertex taking its partner's UV: the copy's triangles
+   * come out inverted, which is the mirror image. Copies without a partner keep their own texels and are counted
+   * in `unpaired`; pairs whose material or tags differ are warned about. Plan with `uv.plan({ mirror: 'mirrored' })` so both halves are cut alike.
+   */
+  readonly stack?: boolean | 'mirrored';
+  /**
+   * Round every island's bounding rectangle to whole texels, so axis-aligned island edges sit
+   * on pixel boundaries (an island that would stretch more than 6% on an axis is only
+   * translated). Use it with a small atlas, where texel-exact trim-sheet edges matter.
+   */
+  readonly snap?: boolean;
+  /**
+   * Regular layout (raster only): face tags naming the parts. Islands whose faces mostly carry
+   * one tag share one rectangular atlas region; regions split the atlas by guillotine cuts
+   * proportional to their islands' area, largest part first, so a part reads as one block.
+   */
+  readonly groups?: readonly string[];
+  /**
+   * With `groups`: 'tight' also tries, per cut, the smallest region that holds the first side
+   * (binary search; about 7x slower, spends at most half of the work budget left when it starts
+   * and then falls back to the proportional layout, so the result can depend on `budget`). Default 'proportional'.
+   */
+  readonly fill?: 'proportional' | 'tight';
+  /**
+   * Several atlases in one call (raster only; at most 64): tile `t` is the unit cell
+   * `(t mod across, floor(t / across))` of the channel, so `floor(uv)` names the tile (an S1
+   * material zone when the tile is a zone). `by: 'group'` packs each `groups` entry into its own
+   * tile (tile = its index in `groups`); `by: 'zone'` places each `groups` tag in the cell
+   * `zones[tag]` (every part needs a cell; `validate({ surface: { zones } })` then passes);
+   * `by: 'fit'` fills tile 0 first, in priority then size order, and spills the rest to the next
+   * tiles (one sub-atlas per tile when `groups` is given). A part that does not fit a tile fails
+   * `model-precondition` with `detail.tile` and `detail.achievable`. `down` defaults to the rows
+   * the parts need (`fit`: 1). Stacked islands must stay inside their leader's tile.
+   */
+  readonly tiles?: {
+    readonly across: number;
+    readonly down?: number;
+    readonly by: 'group' | 'zone' | 'fit';
+    readonly zones?: Readonly<Record<string, readonly [number, number]>>;
+  };
+  /**
+   * Face tag -> priority (raster only). An island whose faces mostly carry the tag is placed before
+   * lower priorities, and with a `density.target` and tolerance the highest priority keeps the target
+   * density while the others may drop to its floor. Unlisted islands rank 0; equal priority keeps
+   * the area order. Absent: byte-identical to a pack without it.
+   */
+  readonly priority?: Readonly<Record<string, number>>;
   /**
    * Pack at `target` texels per meter instead of the largest scale that fits; the scale
-   * may drop to target x (1 - tolerance) (default 0) before `model-precondition`.
+   * may drop to target x (1 - tolerance) (default 0) before `model-precondition`, which
+   * names the density that does fit (`achievable`). Without `target` the base density is the
+   * largest that fits. With `normalize: false`, `target` is the mean density of the layout.
+   * `parts` (needs `normalize`): face tag -> multiplier above 0, so an island whose faces mostly
+   * carry the tag (the first of the sorted tags on a tie) is packed at multiplier x the base
+   * density (1 = base; 2 = twice the texels per meter); the packed base is then the one common
+   * scale that fits. `validate({ texelDensity: { parts } })` checks the same table.
    */
-  readonly density?: { readonly target: number; readonly tolerance?: number };
+  readonly density?: {
+    readonly target?: number;
+    readonly tolerance?: number;
+    readonly parts?: Readonly<Record<string, number>>;
+  };
+  /**
+   * Passes (integer 0 to 8, default 0 = off) that repair UV overlap left by the layout: triangle
+   * pairs of different faces that overlap in the packed channel (the exact `validate` predicate)
+   * have every edge of their faces cut, those faces are flattened on their own and the atlas is
+   * packed again. No seam flag is written; the info diagnostic reports `overlaps` left and
+   * `overlapPasses` used. Overlap with faces of `with` sessions is not seen.
+   */
+  readonly resolveOverlaps?: number;
   /**
    * Other sessions sharing the atlas: their islands (every face) are packed too,
    * and only this session's UVs are written. Pass the same list to each session, this
@@ -131,8 +211,11 @@ export interface AutoUvOptions {
   readonly maxDistortion?: number;
   /** Largest angle in degrees between the average normals of two merging charts (default 45). */
   readonly maxNormalDeviation?: number;
-  /** Sharp edges are hard chart boundaries and seams (default true); marked seams always are. */
-  readonly respectSharp?: boolean;
+  /**
+   * Hard edges are chart boundaries and seams (default true): `true` takes edges flagged sharp, a
+   * `NormalMode` the edges its shading hardens (`edgeKinds` hard); marked seams always are.
+   */
+  readonly respectSharp?: boolean | NormalMode;
   /** Per-chart flattening (default 'lscm'). */
   readonly method?: UnwrapMethod;
   /** `'slim'`: SLIM-refine every chart after the flattening, behind the `UnwrapOptions.refine` gate (default off). */
@@ -142,7 +225,7 @@ export interface AutoUvOptions {
   /** Texels between charts in the pack, or `{ mips: k }` (see `PackOptions.padding`). */
   readonly padding: UvPadding;
   /** The uv.pack options of the same names; absent ones keep their uv.pack defaults. */
-  readonly pack?: Pick<PackOptions, 'method' | 'rotate' | 'stack' | 'density'>;
+  readonly pack?: Pick<PackOptions, 'method' | 'rotate' | 'orient' | 'stack' | 'snap' | 'density'>;
   readonly channel?: UvChannel;
   readonly compute?: ComputePolicy;
   readonly budget?: number;
@@ -216,9 +299,11 @@ function checkWritten(
   op: string,
   diagnostics: OpDiagnostic[],
   mirrored: ReadonlySet<number> = new Set(),
-): void {
+  reflected: ReadonlySet<number> = new Set(),
+): number[] {
   let flat = 0;
   let flipped = 0;
+  const reflectedInverted: number[] = [];
   for (const f of faces) {
     const halves = mesh.faceHalves(f);
     const indices = triangulateLoop(halves.map((h) => mesh.position(mesh.hVert[h] as number)));
@@ -241,7 +326,9 @@ function checkWritten(
       if (turn < 0) inverted = true;
     }
     if (zero) flat++;
-    if (inverted !== mirrored.has(f)) flipped++;
+    if (reflected.has(f)) {
+      if (inverted) reflectedInverted.push(f);
+    } else if (inverted !== mirrored.has(f)) flipped++;
   }
   if (flat > 0 || flipped > 0) {
     diagnostics.push({
@@ -250,6 +337,7 @@ function checkWritten(
       detail: { zeroArea: flat, flipped },
     });
   }
+  return reflectedInverted;
 }
 
 function summary(report: ComputeJobResult['report']) {
@@ -429,6 +517,90 @@ export function packUv(
   context: UvContext,
   diagnostics: OpDiagnostic[],
 ): Result<RoleCounts, ModelingError> {
+  const passes = options.resolveOverlaps ?? 0;
+  if (!Number.isInteger(passes) || passes < 0 || passes > MAX_OVERLAP_PASSES) {
+    return err(
+      modelingError(
+        'model-invalid-argument',
+        `resolveOverlaps is an integer in [0, ${MAX_OVERLAP_PASSES}]`,
+        { resolveOverlaps: options.resolveOverlaps },
+      ),
+    );
+  }
+  if (passes === 0) return packOnce(mesh, faces, options, context, diagnostics);
+  const channel = options.channel ?? 'uv0';
+  let scratch: OpDiagnostic[] = [];
+  let packed = packOnce(mesh, faces, options, context, scratch);
+  let pairs = packed.ok ? uvOverlapPairs(mesh, faces, channel) : [];
+  const before = scratch.find((d) => d.severity === 'info')?.detail?.metrics as
+    | { islands?: number; texelsPerMeter?: number }
+    | undefined;
+  let used = 0;
+  while (packed.ok && pairs.length > 0 && used < passes) {
+    used++;
+    const split = new Set<number>(pairs.flat());
+    const cuts = new Set<number>();
+    for (const f of split) for (const h of mesh.faceHalves(f)) cuts.add(h >> 1);
+    const flattened = unwrapUv(
+      mesh,
+      [...split].sort((a, b) => a - b),
+      {
+        method: 'lscm',
+        seams: 'marked',
+        ...(options.channel === undefined ? {} : { channel: options.channel }),
+        ...(options.compute === undefined ? {} : { compute: options.compute }),
+        ...(options.budget === undefined ? {} : { budget: options.budget }),
+      },
+      [...cuts].sort((a, b) => a - b),
+      context,
+      [],
+    );
+    if (!flattened.ok) return flattened;
+    scratch = [];
+    packed = packOnce(mesh, faces, options, context, scratch);
+    pairs = packed.ok ? uvOverlapPairs(mesh, faces, channel) : [];
+  }
+  if (!packed.ok) return packed;
+  for (const d of scratch) {
+    diagnostics.push(
+      d.severity === 'info'
+        ? {
+            ...d,
+            detail: {
+              ...d.detail,
+              overlaps: pairs.length,
+              overlapPasses: used,
+              islandsBefore: before?.islands,
+              texelsPerMeterBefore: before?.texelsPerMeter,
+            },
+          }
+        : d,
+    );
+  }
+  if (pairs.length > 0) {
+    diagnostics.push({
+      severity: 'warn',
+      message: `uv.pack: ${pairs.length} triangle pair(s) still overlap in UV after ${used} repair pass(es); raise resolveOverlaps or add seams that cut these faces`,
+      detail: {
+        overlaps: pairs.length,
+        overlapPasses: used,
+        faces: pairs.slice(0, ISLAND_DETAIL_LIMIT),
+      },
+    });
+  }
+  return packed;
+}
+
+/** Most repair passes `resolveOverlaps` accepts. */
+const MAX_OVERLAP_PASSES = 8;
+
+function packOnce(
+  mesh: EditMesh,
+  faces: readonly number[],
+  options: PackOptions,
+  context: UvContext,
+  diagnostics: OpDiagnostic[],
+): Result<RoleCounts, ModelingError> {
   const channel = options.channel ?? 'uv0';
   for (const name of ['resolution', 'padding'] as const) {
     const value = name === 'padding' ? paddingTexels(options.padding) : options.resolution;
@@ -503,6 +675,7 @@ export function packUv(
   }
   const rotate = options.rotate ?? true;
   const density = options.density;
+  const parts = partList(density?.parts);
   const result = runJob(
     'uv.pack',
     inputs,
@@ -512,11 +685,37 @@ export function packUv(
       rotate: rotate !== false,
       normalize: options.normalize ?? true,
       ...(options.method === undefined ? {} : { method: options.method }),
+      ...(options.orient === undefined ? {} : { orient: options.orient }),
       ...(typeof rotate === 'object' ? { rotateStep: rotate.step } : {}),
       ...(options.stack === undefined ? {} : { stack: options.stack }),
+      ...(options.stack === 'mirrored' ? { mirrorTolerance: context.tolerance } : {}),
+      ...(options.snap === undefined ? {} : { snap: options.snap }),
+      ...(options.groups === undefined ? {} : { groups: options.groups }),
+      ...(options.fill === undefined ? {} : { fill: options.fill }),
+      ...(options.tiles === undefined
+        ? {}
+        : {
+            tiles: {
+              across: options.tiles.across,
+              ...(options.tiles.down === undefined ? {} : { down: options.tiles.down }),
+              by: options.tiles.by,
+              ...(options.tiles.zones === undefined
+                ? {}
+                : { zones: Object.entries(options.tiles.zones).sort(byTag) }),
+            },
+          }),
+      ...(options.priority === undefined || Object.keys(options.priority).length === 0
+        ? {}
+        : { priority: Object.entries(options.priority).sort(byTag) }),
       ...(density === undefined
         ? {}
-        : { density: { target: density.target, tolerance: density.tolerance ?? 0 } }),
+        : {
+            density: {
+              ...(density.target === undefined ? {} : { target: density.target }),
+              tolerance: density.tolerance ?? 0,
+              ...(parts === undefined ? {} : { parts }),
+            },
+          }),
     },
     context,
     options,
@@ -524,13 +723,251 @@ export function packUv(
   if (!result.ok) return result;
   const values = decodeCornerUvs(job, result.value.outputs[own] as Uint8Array);
   for (const [h, target] of corner) mesh.setCorner(channel, h, values.get(target) as number[]);
-  checkWritten(mesh, faces, channel, 'uv.pack', diagnostics);
+  const followers = new Set<number>();
+  if (options.stack === 'mirrored') {
+    const { faceIsland, placements } = result.value.provenance;
+    for (const f of faces) {
+      const first = corner.get(mesh.faceHalves(f)[0] as number) as number;
+      const island = faceIsland[job.hFace[first] as number] as number;
+      if (placements[island]?.mirrored === true) followers.add(f);
+    }
+  }
+  const pairs = mirrorPairs(mesh, faces, context.tolerance);
+  const reflected = new Set<number>();
+  for (const f of pairs.partner.keys()) if (!followers.has(f)) reflected.add(f);
+  const unstacked = checkWritten(
+    mesh,
+    faces,
+    channel,
+    'uv.pack',
+    diagnostics,
+    followers,
+    reflected,
+  );
+  if (unstacked.length > 0) {
+    const stacking = options.stack === 'mirrored';
+    diagnostics.push({
+      severity: 'warn',
+      message: `uv.pack: ${unstacked.length} mirrored face(s) carry the reflected UVs of their partner (from uv.plan mirror 'mirrored') but ${
+        stacking
+          ? `were not stacked on it: ${
+              pairs.unpaired.length > 0
+                ? `${pairs.unpaired.length} copy face(s) reflect no original face, so the pairing is partial`
+                : "its island does not cover the same faces as its partner's island"
+            }`
+          : "were not stacked, because the pack stacks mirrored islands only with stack 'mirrored'"
+      }; the island keeps its own texels and its triangles stay inverted. ${
+        stacking
+          ? "Repair the copy and re-plan, or plan with mirror 'unique'"
+          : "Pack with stack 'mirrored', or plan with mirror 'unique'"
+      }`,
+      detail: {
+        reflectedUnstacked: unstacked.length,
+        unpairedCopies: pairs.unpaired.length,
+        faces: unstacked.slice(0, ISLAND_DETAIL_LIMIT),
+      },
+    });
+  }
+  if (followers.size > 0) {
+    const odd = pairs.asymmetric.filter((f) => followers.has(f));
+    if (odd.length > 0) {
+      diagnostics.push({
+        severity: 'warn',
+        message: `uv.pack: ${odd.length} mirrored face(s) share texels with a partner that has another material or tag set; give the copy its own island (plan with mirror 'unique') or make the halves equal`,
+        detail: {
+          faces: odd.slice(0, ISLAND_DETAIL_LIMIT).map((f) => ({
+            face: f,
+            partner: pairs.partner.get(f)?.face,
+          })),
+        },
+      });
+    }
+  }
+  const table =
+    parts === undefined
+      ? undefined
+      : partTable(job, values, parts, options.resolution, result.value.report.metrics);
   diagnostics.push({
     severity: 'info',
     message: `uv.pack placed ${result.value.provenance.placements.length} island(s) in a ${options.resolution} texel atlas on the ${result.value.report.backend} backend (${result.value.report.quality})`,
-    detail: summary(result.value.report),
+    detail: {
+      ...summary(result.value.report),
+      ...(options.stack === undefined || options.stack === false
+        ? {}
+        : {
+            pairs: result.value.report.metrics.stacked,
+            mirroredPairs: result.value.report.metrics.mirrored,
+            unpaired: result.value.report.metrics.mirrorUnpaired,
+            texelsSaved: Math.round(result.value.report.metrics.texelsSaved ?? 0),
+          }),
+      ...(table === undefined ? {} : { parts: table.rows }),
+    },
   });
+  if (table !== undefined) {
+    const empty = table.rows.filter((r) => r.part !== null && r.islands === 0).map((r) => r.part);
+    if (empty.length > 0) {
+      diagnostics.push({
+        severity: 'warn',
+        message: `uv.pack density parts ${empty.join(', ')} match no island: no face carries the tag`,
+        detail: { parts: empty },
+      });
+    }
+    if (table.mixed > 0) {
+      diagnostics.push({
+        severity: 'warn',
+        message: `uv.pack: ${table.mixed} island(s) carry faces of several density parts and take the majority part; cut the part borders as seams (uv.plan tagBorders)`,
+        detail: { islands: table.mixed },
+      });
+    }
+  }
   return ok({ packed: faces.length });
+}
+
+/** Per-part density rows of a finished pack: the job mesh with the packed corner values measured. */
+function partTable(
+  job: EditMesh,
+  values: ReadonlyMap<number, readonly number[]>,
+  parts: PartList,
+  resolution: number,
+  metrics: Readonly<Record<string, number>>,
+) {
+  const packed = job.clone();
+  for (const f of packed.faces()) {
+    for (const h of packed.faceHalves(f)) packed.setCorner('uv0', h, values.get(h) as number[]);
+  }
+  const measured = measureUv(packed, 'uv0');
+  if (!measured.ok) return undefined;
+  const found = partDensities(packed, measured.value, parts, resolution);
+  const base = metrics.texelsPerUnit ?? 0;
+  return {
+    mixed: found.mixed,
+    rows: found.rows.map((r) => ({
+      ...r,
+      ratio: base > 0 ? r.texelsPerMeter / base : 0,
+    })),
+  };
+}
+
+export interface StraightenOptions {
+  /** Only boundary chains with an edge in the selection (default: every island's boundary). */
+  readonly edges?: EdgeSelector;
+  /**
+   * Degrees (default 20, in (0, 90)): a boundary turn above it is a corner that ends a chain,
+   * and a chain whose edges stay within it of the chord between its corners is straightened.
+   */
+  readonly maxAngle?: number;
+  /** An island keeps the result only if its largest stretch grows by at most this factor (default 1.15, >= 1). */
+  readonly maxStretch?: number;
+  readonly channel?: UvChannel;
+  readonly compute?: ComputePolicy;
+  readonly budget?: number;
+}
+
+/**
+ * Straighten the boundary chains of the UV islands of `faces`: each run between corners moves onto
+ * the chord between its corners (at its 3D arc-length parameter) and the island interior relaxes
+ * by SLIM with the chains held. An island keeps the result only when it stays flip-free, within
+ * `maxStretch` of its stretch and no more overlapped; otherwise it keeps its UVs and the verdict is
+ * reported. Chains on the selection border (a neighbor outside `faces`) stay put. Islands are not
+ * moved or rescaled as a whole: pack afterwards.
+ */
+export function straightenUv(
+  mesh: EditMesh,
+  faces: readonly number[],
+  options: StraightenOptions,
+  edgeIds: readonly number[] | undefined,
+  context: UvContext,
+  diagnostics: OpDiagnostic[],
+): Result<RoleCounts, ModelingError> {
+  const channel = options.channel ?? 'uv0';
+  for (const f of faces) {
+    const h = mesh.faceHalves(f).find((half) => mesh.corner(channel, half) === undefined);
+    if (h !== undefined) {
+      return err(
+        modelingError(
+          'model-precondition',
+          `every straightened face has ${channel}`,
+          { face: f, channel },
+          'unwrap (m.uv.unwrap) or project (m.uv.project) these faces before straightening',
+        ),
+      );
+    }
+  }
+  const inside = new Set(faces);
+  const chosen = edgeIds === undefined ? undefined : new Set(edgeIds);
+  const prepared = jobMesh(mesh, faces, (copy) => {
+    const values = new Map<number, Float32Array>();
+    for (const f of copy.faces()) {
+      for (const h of copy.faceHalves(f)) values.set(h, copy.corner(channel, h) as Float32Array);
+    }
+    copy.channels.clear();
+    for (const [h, v] of values) copy.setCorner('uv0', h, v);
+    for (const e of copy.edges()) {
+      const outside = [e * 2, e * 2 + 1].some((h) => {
+        const g = mesh.hFace[h] as number;
+        return g !== NONE && !inside.has(g);
+      });
+      copy.eFlags[e] = (chosen?.has(e) === true ? EDGE_SEAM : 0) | (outside ? EDGE_SHARP : 0);
+    }
+  });
+  if (!prepared.ok) return prepared;
+  const { bytes, job, corner } = prepared.value;
+  const result = runJob(
+    'uv.straighten',
+    bytes,
+    {
+      maxAngle: options.maxAngle ?? 20,
+      maxStretch: options.maxStretch ?? 1.15,
+      ...(chosen === undefined ? {} : { selected: true }),
+    },
+    context,
+    options,
+  );
+  if (!result.ok) return result;
+  const values = decodeCornerUvs(job, result.value.outputs[0] as Uint8Array);
+  for (const [h, target] of corner) mesh.setCorner(channel, h, values.get(target) as number[]);
+  checkWritten(mesh, faces, channel, 'uv.straighten', diagnostics);
+  const islands = result.value.provenance.islands;
+  const metrics = result.value.report.metrics;
+  const kept = islands.filter((i) =>
+    ['flipped', 'blocked', 'stretch', 'overlap', 'unavailable'].includes(i.status),
+  );
+  if (kept.length > 0) {
+    diagnostics.push({
+      severity: 'warn',
+      message: `uv.straighten: ${kept.length} island(s) keep their UVs (a straightened layout would fold, stretch beyond maxStretch or overlap more); cut them into smaller islands or raise maxStretch`,
+      detail: {
+        islands: kept.slice(0, ISLAND_DETAIL_LIMIT).map((island) => ({
+          island: islands.indexOf(island),
+          faces: island.faces,
+          verdict: island.status,
+          angleBefore: island.angleBefore,
+        })),
+      },
+    });
+  }
+  diagnostics.push({
+    severity: 'info',
+    message: `uv.straighten straightened ${metrics.straightened as number} of ${metrics.chains as number} boundary chain(s) in ${islands.length} island(s) on the ${result.value.report.backend} backend (${result.value.report.quality}); worst remaining chord deviation ${(metrics.maxAngleError as number).toPrecision(3)} degrees`,
+    detail: {
+      ...summary(result.value.report),
+      chains: metrics.chains,
+      straightened: metrics.straightened,
+      maxAngleError: metrics.maxAngleError,
+      verdicts: {
+        accepted: metrics.accepted,
+        partial: metrics.partial,
+        none: metrics.none,
+        flipped: metrics.flipped,
+        blocked: metrics.blocked,
+        stretch: metrics.stretchRejected,
+        overlap: metrics.overlapRejected,
+        unavailable: metrics.unavailable,
+      },
+      islands: islands.slice(0, ISLAND_DETAIL_LIMIT),
+    },
+  });
+  return ok({ straightened: metrics.straightened as number });
 }
 
 /** Edges an edge selector resolved to, for the unwrap seam source. */
@@ -603,12 +1040,15 @@ export function autoUv(
   context: UvContext,
   diagnostics: OpDiagnostic[],
 ): Result<RoleCounts, ModelingError> {
-  const respectSharp = options.respectSharp ?? true;
-  if (typeof respectSharp !== 'boolean') {
+  const respectSharp = options.respectSharp === undefined ? true : options.respectSharp;
+  if (!isRespectSharp(respectSharp)) {
     return err(
-      modelingError('model-invalid-argument', 'respectSharp is a boolean', { respectSharp }),
+      modelingError('model-invalid-argument', 'respectSharp is a boolean or a NormalMode', {
+        respectSharp,
+      }),
     );
   }
+  const hardMode = typeof respectSharp === 'object' ? respectSharp : undefined;
   for (const name of ['resolution', 'padding'] as const) {
     const value = name === 'padding' ? paddingTexels(options.padding) : options.resolution;
     if (!Number.isFinite(value)) {
@@ -623,7 +1063,7 @@ export function autoUv(
       );
     }
   }
-  const hardFlags = EDGE_SEAM | (respectSharp ? EDGE_SHARP : 0);
+  const hardFlags = EDGE_SEAM | (respectSharp === true ? EDGE_SHARP : 0);
   const prepared = jobMesh(mesh, faces, (copy) => {
     copy.channels.clear();
     for (const e of copy.edges()) {
@@ -647,6 +1087,17 @@ export function autoUv(
   const cutBytes = charted.value.outputs[0] as Uint8Array;
   const cuts = new Set<number>();
   for (const [h, target] of corner) if (cutBytes[target >> 1] === 1) cuts.add(h >> 1);
+  if (hardMode !== undefined) {
+    // The one write of a NormalMode's hard edges: they are not mesh flags, so the chart job's cuts
+    // do not carry them; unwrap takes them as extra seams.
+    const inside = new Set(faces);
+    for (const f of faces) {
+      for (const h of mesh.faceHalves(f)) {
+        const e = h >> 1;
+        if (inside.has(mesh.hFace[h ^ 1] as number) && shadingHard(mesh, e, hardMode)) cuts.add(e);
+      }
+    }
+  }
   const start = diagnostics.length;
   const unwrapped = unwrapUv(
     mesh,
@@ -654,7 +1105,7 @@ export function autoUv(
     {
       method: options.method ?? 'lscm',
       ...(options.refine === undefined ? {} : { refine: options.refine }),
-      seams: respectSharp ? 'sharp' : 'marked',
+      seams: respectSharp === true ? 'sharp' : 'marked',
       ...(options.channel === undefined ? {} : { channel: options.channel }),
       ...(options.compute === undefined ? {} : { compute: options.compute }),
       ...(options.budget === undefined ? {} : { budget: options.budget }),
@@ -1330,8 +1781,8 @@ export function trimUv(
         regionDensity: (head.density[0] + head.density[1]) / 2,
         densityMin: minOf(densities),
         densityMax: maxOf(densities),
-        densityDeviation: Math.max(0, ...reports.map((r) => r.deviation)),
-        projectionError: Math.max(0, ...reports.map((r) => r.projectionError)),
+        densityDeviation: Math.max(0, maxOf(reports.map((r) => r.deviation))),
+        projectionError: Math.max(0, maxOf(reports.map((r) => r.projectionError))),
         mirrored: reports.filter((r) => r.mirrored).length,
         turned: reports.filter((r) => r.turn !== 0).length,
       },

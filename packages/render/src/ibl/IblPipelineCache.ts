@@ -1,4 +1,4 @@
-import { SKY_SH_WGSL } from '@forgeax/engine-shader';
+import { manifestShaderSource, SKY_SH_WGSL } from '@forgeax/engine-shader';
 import { prepareSkyShProjection } from './sky-sh';
 // IblPipelineCache.ts -- DeviceScope-generation cache for IBL precompute.
 //
@@ -13,8 +13,7 @@ import { prepareSkyShProjection } from './sky-sh';
 //   - getOrCreateIblCache(scope): get or initialize the generation cache
 //   - iblCacheSize(): introspection hook
 //   - hasIblCache(scope): introspection hook
-//   - setIblWgslSource(source): set the ibl.wgsl WGSL source string
-//   - createIblShaderModules(device, factory): create shader modules from ibl.wgsl
+//   - publishIblProgramDeclarations(scope, programs): admit the generation's manifest rows
 //   - createIblPipelines(scope, device, factory, modules): create 4 render pipelines
 //   - runIblPrecompute(opts): execute 4 GPU precompute passes (M3 t20)
 //
@@ -55,6 +54,7 @@ import {
   type TextureFormat,
   type TextureView,
 } from '@forgeax/engine-rhi';
+import type { ManifestEntry } from '@forgeax/engine-types';
 import type { DeviceScope } from '../device/device-scope';
 import { createIblKernelCache, type IblKernelCache } from './kernel-cache';
 
@@ -111,6 +111,7 @@ interface IblPipelineError {
 export interface IblPipelineCache {
   /** Reusable generation-scoped kernel state; per-probe outputs stay elsewhere. */
   readonly probeKernel: IblKernelCache;
+  programs?: IblProgramDeclarations;
   /** Color format shared by all precompute outputs for this device. */
   outputFormat?: TextureFormat;
   /** Equirectangular-to-cubemap pipeline. */
@@ -170,37 +171,32 @@ export function hasIblCache(scope: DeviceScope): boolean {
   return scopeCaches.has(scope);
 }
 
-// ─── M3.5 composed ibl-* shader source registry ─────────────────────────────
-//
-// 4 composed WGSL strings -- one per render pipeline. Each string is the
-// output of @forgeax/engine-naga composeShader after merging ibl_shared +
-// the per-pass module. Built by ShaderCatalog / vite-plugin-shader at
-// build-time so the runtime cache never reaches into engine-naga
-// (AGENTS.md grep gate forbids).
-
-interface IblComposedShaders {
-  /** ibl-equirect-to-cube composed (cubemap_vs + equirectToCube_fs). */
-  readonly equirectToCube: string;
-  /** ibl-prefilter composed (cubemap_vs + prefilterEnv_fs). */
-  readonly prefilter: string;
-  /** ibl-brdf-lut composed (fullscreen_vs + brdfLutBake_fs). */
-  readonly brdfLut: string;
-  readonly probeBackground?: string;
+interface IblProgramDeclarations {
+  readonly equirectToCube: ManifestEntry;
+  readonly prefilter: ManifestEntry;
+  readonly brdfLut: ManifestEntry;
+  readonly probeBackground?: ManifestEntry;
 }
 
-let iblComposedShadersCache: IblComposedShaders | undefined;
-
-export function getIblProbeBackgroundSource(): string | undefined {
-  return iblComposedShadersCache?.probeBackground;
+function readIblProgramDeclarations(scope: DeviceScope): IblProgramDeclarations | undefined {
+  for (let owner: DeviceScope | undefined = scope; owner?.isAlive(); owner = owner.parent) {
+    const programs = scopeCaches.get(owner)?.programs;
+    if (programs !== undefined) return programs;
+  }
+  return undefined;
 }
 
-/**
- * Inject the composed ibl-* shader sources used by createIblPipelines.
- * Called once by the engine bootstrap (createRenderer step "shader-load")
- * with the composed entries from ShaderCatalog.
- */
-export function setIblComposedShaders(sources: IblComposedShaders): void {
-  iblComposedShadersCache = sources;
+export function getIblProbeBackgroundSource(scope: DeviceScope) {
+  const entry = readIblProgramDeclarations(scope)?.probeBackground;
+  return entry === undefined ? undefined : manifestShaderSource(entry);
+}
+
+/** Publish the generation's program rows; the first bake resolves the source. */
+export function publishIblProgramDeclarations(
+  scope: DeviceScope,
+  programs: IblProgramDeclarations,
+): void {
+  getOrCreateIblCache(scope).programs = programs;
 }
 
 // ─── Standard cube vertices for cubemap face rendering ───────────────────────
@@ -328,21 +324,18 @@ async function prepareIblShaderModules(
     RhiError | IblPipelineError
   >
 > {
-  const composed = iblComposedShadersCache;
-  // Mock-device path: factory returns synthetic modules. Both production
-  // (composed) and unit-test (placeholder code) paths converge here.
+  const programs = readIblProgramDeclarations(scope);
+  // Structural fixtures supply a synthetic factory without a manifest.
   const fallbackCode = '@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }';
-  const src = composed ?? {
-    equirectToCube: fallbackCode,
-    prefilter: fallbackCode,
-    brdfLut: fallbackCode,
-  };
-
+  const descriptor = (entry: ManifestEntry | undefined, label: string) =>
+    entry === undefined
+      ? { code: fallbackCode, label }
+      : manifestShaderSource(entry).descriptor(label);
   const modules = await Promise.all([
-    factory(device, { code: src.equirectToCube, label: 'ibl-equirect-to-cube' }),
+    factory(device, descriptor(programs?.equirectToCube, 'ibl-equirect-to-cube')),
     factory(device, { code: SKY_SH_WGSL, label: 'sky-sh' }),
-    factory(device, { code: src.prefilter, label: 'ibl-prefilter' }),
-    factory(device, { code: src.brdfLut, label: 'ibl-brdf-lut' }),
+    factory(device, descriptor(programs?.prefilter, 'ibl-prefilter')),
+    factory(device, descriptor(programs?.brdfLut, 'ibl-brdf-lut')),
   ]);
   if (!scope.isAlive()) return err(retiredIblPreparation());
   for (const m of modules) {

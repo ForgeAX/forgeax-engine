@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { maxOf } from './arrays';
 import { type ModelingError, modelingError } from './errors';
 import { orient2d } from './predicates';
 
@@ -350,7 +351,7 @@ function delaunayFlips(points: readonly P2[], triangles: number[][], metric: P2)
     for (let k = 0; k < 3; k++) owner.set(key(t[k] as number, t[(k + 1) % 3] as number), i);
   };
   for (let i = 0; i < tris.length; i++) index(i);
-  const scale = Math.max(1e-300, ...q.map((p) => Math.abs(p[0]) + Math.abs(p[1])));
+  const scale = Math.max(1e-300, maxOf(q.map((p) => Math.abs(p[0]) + Math.abs(p[1]))));
   const eps = 1e-12 * scale * scale * scale * scale;
   let changed = true;
   for (let pass = 0; changed && pass < 4 * tris.length + 8; pass++) {

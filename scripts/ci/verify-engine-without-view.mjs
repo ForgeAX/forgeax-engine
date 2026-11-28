@@ -71,11 +71,18 @@ try {
   }
   await rm(archive);
   // Contributor builds carry these checked substrate inputs independently of View.
+  // Source-built WASM packages restored from core-build may carry payloads in dist/ before pkg/ is mirrored.
   for (const { root: owner, files } of SDK_SOURCE_WASM)
     for (const file of files) {
       const destination = resolve(scratch, owner, file);
       await mkdir(dirname(destination), { recursive: true });
-      await cp(resolve(root, owner, file), destination);
+      const primary = resolve(root, owner, file);
+      try {
+        await cp(primary, destination);
+      } catch (error) {
+        if (error?.code !== 'ENOENT' || !owner.endsWith('/pkg')) throw error;
+        await cp(resolve(root, owner.slice(0, -4), 'dist', file), destination);
+      }
     }
   await prepareEngineWithoutViewContent({
     repositoryRoot: root,

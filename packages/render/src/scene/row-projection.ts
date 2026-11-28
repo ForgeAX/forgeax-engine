@@ -2,6 +2,7 @@ import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { FrameList } from './frame-list';
 import { MaterialFrame } from './material-dispatch';
+import { slotContent } from './mesh-draw';
 import { MeshFrame } from './mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './mesh-materials';
 import type { PersistentGpuDrivenState } from './render-scene';
@@ -417,7 +418,7 @@ export class RowProjection<T> {
   #link(record: RenderSceneSlot, rows: ProjectedRows): void {
     const slot = record.slot;
     this.#versions[slot] = record.version;
-    const source = record.snapshot;
+    const source = slotContent(record);
     if (source.assetHandle !== undefined) {
       const key = meshKey(source.assetHandle);
       let readers = this.#meshReaders.get(key);

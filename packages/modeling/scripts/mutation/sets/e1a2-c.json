@@ -1,0 +1,247 @@
+{
+ "tests": [
+  "src/brep/__tests__/e1a2-intersect.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "e1a2-c-touch-gate",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.min(Math.abs(ext), Math.abs(inner)) <= tol) return UNSUPPORTED;",
+   "new": "if (false) return UNSUPPORTED;"
+  },
+  {
+   "id": "e1a2-c-touch-max",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.min(Math.abs(ext), Math.abs(inner)) <= tol) return UNSUPPORTED;",
+   "new": "if (Math.max(Math.abs(ext), Math.abs(inner)) <= tol) return UNSUPPORTED;"
+  },
+  {
+   "id": "e1a2-c-touch-ext-only",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.min(Math.abs(ext), Math.abs(inner)) <= tol) return UNSUPPORTED;",
+   "new": "if (Math.abs(ext) <= tol) return UNSUPPORTED;"
+  },
+  {
+   "id": "e1a2-c-touch-inner-only",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.min(Math.abs(ext), Math.abs(inner)) <= tol) return UNSUPPORTED;",
+   "new": "if (Math.abs(inner) <= tol) return UNSUPPORTED;"
+  },
+  {
+   "id": "e1a2-c-touch-narrow",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.min(Math.abs(ext), Math.abs(inner)) <= tol) return UNSUPPORTED;",
+   "new": "if (Math.min(Math.abs(ext), Math.abs(inner)) <= tol / 100) return UNSUPPORTED;"
+  },
+  {
+   "id": "e1a2-c-nothing-hi",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (hi <= -1 || lo >= 1) return NOTHING;",
+   "new": "if (lo >= 1) return NOTHING;",
+   "survives": "Equivalent: hi is never <= -1 on any reachable input (perpendicular hi = (px + r2) / r1 with px >= 0 and r2 > 0; sphere hi = Infinity), so the disjunct is dead."
+  },
+  {
+   "id": "e1a2-c-nothing-lo",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (hi <= -1 || lo >= 1) return NOTHING;",
+   "new": "if (hi <= -1) return NOTHING;"
+  },
+  {
+   "id": "e1a2-c-full-or",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (lo < -1 && hi > 1) return",
+   "new": "if (lo < -1 || hi > 1) return"
+  },
+  {
+   "id": "e1a2-c-full-sheet-sign",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "m.z0 + s * Math.sqrt(Math.max(0, m.g(th)))",
+   "new": "m.z0 + Math.sqrt(Math.max(0, m.g(th)))"
+  },
+  {
+   "id": "e1a2-c-full-period",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const th = TWO_PI * tau;",
+   "new": "const th = Math.PI * tau;"
+  },
+  {
+   "id": "e1a2-c-arc-lo",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "lo >= -1 && hi > 1\n      ? [[-acosC(lo), acosC(lo)]]",
+   "new": "lo >= -1 && hi > 1\n      ? [[0, acosC(lo)]]"
+  },
+  {
+   "id": "e1a2-c-arc-hi",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "? [[acosC(hi), TWO_PI - acosC(hi)]]",
+   "new": "? [[acosC(hi), Math.PI]]",
+   "survives": "Equivalent: the lo < -1 arc arm is reachable only with r2 > r1 + px, which forces hi > 1 and therefore the full-sheet branch above; the arm is dead."
+  },
+  {
+   "id": "e1a2-c-arc-mid-a",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "[acosC(hi), acosC(lo)],",
+   "new": "[acosC(lo), acosC(hi)],"
+  },
+  {
+   "id": "e1a2-c-arc-mid-b",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "[-acosC(lo), -acosC(hi)],",
+   "new": "[acosC(hi), acosC(lo)],"
+  },
+  {
+   "id": "e1a2-c-short-arc",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (m.r * (t1 - t0) <= tol) return UNSUPPORTED;",
+   "new": "if (false) return UNSUPPORTED;",
+   "survives": "Redundant on reachable inputs: the short-arc length guard never fires for a configuration that passes the touch guard (0 of ~1.8M sampled sphere-cylinder and 0 of ~1M perpendicular configurations). Kept as a defensive bound; the thin-arc guard and the kills of short-radius cover the same region. Sampled evidence, not a proof."
+  },
+  {
+   "id": "e1a2-c-short-radius",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (m.r * (t1 - t0) <= tol) return UNSUPPORTED;",
+   "new": "if ((t1 - t0) <= tol) return UNSUPPORTED;"
+  },
+  {
+   "id": "e1a2-c-thin-arc",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.sqrt(top) <= tol) return UNSUPPORTED;",
+   "new": "if (false) return UNSUPPORTED;"
+  },
+  {
+   "id": "e1a2-c-thin-samples",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const ARC_SAMPLES = 64;",
+   "new": "const ARC_SAMPLES = 1;"
+  },
+  {
+   "id": "e1a2-c-thin-max",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "top = Math.max(top, m.g(",
+   "new": "top = Math.min(top, m.g("
+  },
+  {
+   "id": "e1a2-c-eps",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const eps = tol / 8;",
+   "new": "const eps = tol * 8;"
+  },
+  {
+   "id": "e1a2-c-loop-sign",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "sgn(cos(phi))",
+   "new": "1"
+  },
+  {
+   "id": "e1a2-c-loop-theta",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const th = mid + half * sin(phi);",
+   "new": "const th = mid + half * cos(phi);"
+  },
+  {
+   "id": "e1a2-c-loop-phase",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const phi = -Math.PI / 2 + TWO_PI * tau;",
+   "new": "const phi = TWO_PI * tau;",
+   "survives": "Equivalent up to reparametrization: -pi/2 equals -(2pi)/4, so the mutant phase is the original phase advanced by a quarter period. Both sweep the same closed loop with a different start vertex; receipts and loop counts are invariant under the cyclic shift."
+  },
+  {
+   "id": "e1a2-c-base-point",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const c = madd3(m.o, m.x, m.r * cos(theta));",
+   "new": "const c = madd3(m.o, m.x, cos(theta));"
+  },
+  {
+   "id": "e1a2-c-sc-g",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "g: (th) => R * R - r * r - e * e + 2 * e * r * cos(th),",
+   "new": "g: (th) => R * R - r * r - e * e - 2 * e * r * cos(th),"
+  },
+  {
+   "id": "e1a2-c-sc-lo",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "lo: (r * r + e * e - R * R) / (2 * e * r),",
+   "new": "lo: (R * R + e * e - r * r) / (2 * e * r),"
+  },
+  {
+   "id": "e1a2-c-sc-z0",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "z0: h,",
+   "new": "z0: 0,"
+  },
+  {
+   "id": "e1a2-c-sc-tangency",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "d: R,\n    ra: e,\n    rb: r,",
+   "new": "d: e,\n    ra: R,\n    rb: r,",
+   "survives": "Equivalent: the touch guard min over {|d-(ra+rb)|, |d-|ra-rb||} equals min over {|d-ra-rb|, |d-ra+rb|, |d+ra-rb|}, which is symmetric under d <-> ra, so exchanging d and ra leaves the guard value identical."
+  },
+  {
+   "id": "e1a2-c-sc-perp",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const perp = madd3(rel, c.frame.z, -h);",
+   "new": "const perp = rel;"
+  },
+  {
+   "id": "e1a2-c-pc-flip",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (px < 0) {",
+   "new": "if (px > 0) {"
+  },
+  {
+   "id": "e1a2-c-pc-u",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "const u = r1 * cos(th) - px;",
+   "new": "const u = r1 * cos(th) + px;"
+  },
+  {
+   "id": "e1a2-c-pc-lo",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "lo: (px - r2) / r1,",
+   "new": "lo: (px + r2) / r1,"
+  },
+  {
+   "id": "e1a2-c-pc-hi",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "hi: (px + r2) / r1,",
+   "new": "hi: (px - r2) / r1,"
+  },
+  {
+   "id": "e1a2-c-pc-z0",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "z0: dot3(rel, p.frame.z),",
+   "new": "z0: 0,"
+  },
+  {
+   "id": "e1a2-c-pc-tangency",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "d: px,\n    ra: r1,\n    rb: r2,",
+   "new": "d: r1,\n    ra: px,\n    rb: r2,",
+   "survives": "Equivalent: same symmetry as e1a2-c-sc-tangency; the perpendicular touch guard uses the same three-term absolute-value set, so exchanging d and ra leaves the guard value identical."
+  },
+  {
+   "id": "e1a2-c-pc-yaxis",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "    y,\n    z: p.frame.z,",
+   "new": "    y: p.frame.z,\n    z: p.frame.z,"
+  },
+  {
+   "id": "e1a2-c-dispatch-perp",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.abs(dot3(p.frame.z, q.frame.z)) <= PAR) return ok(perpendicularCylinders(p, q, tol));",
+   "new": "if (Math.abs(dot3(p.frame.z, q.frame.z)) <= PAR) return ok(UNSUPPORTED);"
+  },
+  {
+   "id": "e1a2-c-dispatch-skew",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (Math.abs(dot3(p.frame.z, q.frame.z)) <= PAR) return",
+   "new": "if (Math.abs(dot3(p.frame.z, q.frame.z)) <= 1e-3) return"
+  },
+  {
+   "id": "e1a2-c-dispatch-sphere",
+   "file": "src/brep/intersect-quadric.ts",
+   "old": "if (p.kind === 'sphere' && q.kind === 'cylinder') return ok(sphereCylinder(p, q, tol));",
+   "new": "if (p.kind === 'sphere' && q.kind === 'cylinder') return ok(UNSUPPORTED);"
+  }
+ ]
+}

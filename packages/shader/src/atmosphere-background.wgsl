@@ -1,7 +1,7 @@
 #define_import_path forgeax_environment::background
-#import forgeax_view::common::{FullscreenOutput, View, fullscreen_triangle, clampLinearHdr}
+#import forgeax_view::common::{FullscreenOutput, View, fullscreen_triangle, clampLinearHdr, view_atmosphere_ue5}
 #import forgeax_atmosphere::optics::{atmosphere_sun_luminance, atmosphere_solar_transmittance, atmosphere_integrate}
-#import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_view_ray, atmosphere_sky_uv}
+#import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_view_ray, atmosphere_sky_uv, atmosphere_ue5_sky_uv}
 
 @group(0) @binding(0) var sky: texture_2d<f32>;
 @group(0) @binding(1) var filtering: sampler;
@@ -26,14 +26,20 @@ fn atmosphere_background_fs(input: FullscreenOutput) -> @location(0) vec4<f32> {
   let ray=atmosphere_view_ray(view,input.uv);
   let origin=atmosphere_observer(view.atmosphere,ray.origin);
   let sun=normalize(-view.lightDir);
-  let uv=atmosphere_sky_uv(view.atmosphere,origin,sun,ray.direction);
+  let ue5 = view_atmosphere_ue5(view);
+  var uv = atmosphere_sky_uv(view.atmosphere, origin, sun, ray.direction);
+  if ue5 {
+    uv = atmosphere_ue5_sky_uv(view.atmosphere, origin, sun, ray.direction, vec2f(textureDimensions(sky)));
+  }
   // Display air radiance only, as in Unreal's Ground=false sky integration.
   // Ground albedo feeds multiple scattering; visible terrain is scene geometry.
   let skyLight=atmosphere_sun_luminance(view.lightColor);
-  var radiance=textureSampleLevel(sky,filtering,uv,0.0).rgb*skyLight;
+  var radiance = textureSampleLevel(sky, filtering, uv, 0.0).rgb * select(skyLight, vec3f(1.0), ue5);
   // Orthographic rays have distinct origins; orbit views avoid a ground-view LUT.
   if view.temporalProjection.z>0.5 || length(origin)>=view.atmosphere.originRadius.w+view.atmosphere.geometry.x || view.atmosphereControl.x>0.0 {
-    radiance=atmosphere_integrate(view.atmosphere,origin,ray.direction,1e7,sun,skyLight,transmittance,multiple,filtering,u32(max(64.0,view.atmosphereControl.x)),1.0).luminance;
+    var medium = view.atmosphere;
+    if ue5 { medium.geometry.y = 1.0; }
+    radiance=atmosphere_integrate(medium,origin,ray.direction,1e7,sun,select(skyLight, view.lightColor, ue5),transmittance,multiple,filtering,u32(max(64.0,view.atmosphereControl.x)),1.0).luminance;
   }
   let radius=view.atmosphereControl.y;
   if radius>0.0 {

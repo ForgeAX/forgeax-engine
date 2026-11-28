@@ -50,6 +50,35 @@ export async function staticPackProgramsSource(
   if (runtime !== undefined)
     programs.push(...(await authoredStaticPackPrograms(runtime.packs, runtime.generatedRoot)));
   const localOnly = runtime?.localOnly === true;
+  const { taskUrls, entries } = staticProgramEntries(programs, localOnly);
+  return `import { createStaticPackProgramHost } from '@forgeax/engine/pack/runtime';
+import imports from 'virtual:forgeax/pack-program-imports';
+${taskUrls}
+export { imports };
+${authoredRuntimePackDeclarations(runtime?.packs ?? [])}
+export const programHost = createStaticPackProgramHost(${entries}, imports);`;
+}
+
+export async function shippedBrowserPackProgramsSource(
+  packs: readonly AuthoredRuntimePack[],
+  generatedRoot: string,
+): Promise<string> {
+  const programs = await authoredStaticPackPrograms(packs, generatedRoot);
+  const { taskUrls, entries } = staticProgramEntries(
+    programs,
+    false,
+    (_program, index) => `authored[${index}].program.modules`,
+  );
+  return `${taskUrls}
+const shippedPrograms = ${entries};`;
+}
+
+function staticProgramEntries(
+  programs: readonly StaticProgramEntry[],
+  localOnly: boolean,
+  moduleExpression = (program: StaticProgramEntry, _index: number) =>
+    JSON.stringify(program.modules),
+) {
   const taskUrls = localOnly
     ? ''
     : programs
@@ -58,19 +87,18 @@ export async function staticPackProgramsSource(
             `import taskUrl${index} from ${JSON.stringify(staticPackTaskUrlSpecifier(path))};`,
         )
         .join('\n');
-  const entries = programs.map(({ path, entry, modules }, index) => {
+  const entries = programs.map((program, index) => {
+    const { path, entry } = program;
     const locator = localOnly
       ? JSON.stringify(normalizePath(path))
       : `/* @vite-ignore */ taskUrl${index}`;
     const taskUrl = localOnly ? '' : `, taskUrl: () => taskUrl${index}`;
-    return `{ modules: ${JSON.stringify(modules)}, load: async entry => { if (entry !== ${JSON.stringify(entry)}) throw new Error('Unknown static program entry'); return import(${locator}); }${taskUrl} }`;
+    return `{ entry: ${JSON.stringify(entry)}, modules: ${moduleExpression(program, index)}, load: async entry => { if (entry !== ${JSON.stringify(entry)}) throw new Error('Unknown static program entry'); return import(${locator}); }${taskUrl} }`;
   });
-  return `import { createStaticPackProgramHost } from '@forgeax/engine/pack/runtime';
-import imports from 'virtual:forgeax/pack-program-imports';
-${taskUrls}
-export { imports };
-${authoredRuntimePackDeclarations(runtime?.packs ?? [])}
-export const programHost = createStaticPackProgramHost([
+  return {
+    taskUrls,
+    entries: `[
 ${entries.join(',\n')}
-], imports);`;
+]`,
+  };
 }

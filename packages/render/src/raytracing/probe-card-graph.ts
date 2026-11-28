@@ -166,6 +166,7 @@ export function addCardAtlasPasses(
   captureMode: CardAtlasCapture,
   current: (frame: RenderPipelineFrame) => ProbeCardCapture,
   record: (frame: RenderPipelineFrame, pass: RhiRenderPassEncoder, phase: CardCapturePhase) => void,
+  captureIdentity = true,
 ): Result<
   {
     readonly atlas: Record<(typeof CARD_TEXTURES)[number], GraphTextureView>;
@@ -317,27 +318,29 @@ export function addCardAtlasPasses(
       encodeDirect: (pass, frame, _graphresources) => record(frame, pass, 'material'),
     });
     if (!captured.ok) return err(captured.error);
-    // The retained depth atlas is never globally cleared by the second phase.
-    // A viewport/scissor clear quad rebuilds depth only for this coherent tile slice.
-    const identity = graph.addRasterPass(`${label}.capture-identity`, {
-      accesses: [
-        ...reads,
-        ...materialViews.map((resource) => ({ resource, usage: 'sampled-read' as const })),
-        { resource: primitiveIndex, usage: 'color-attachment' },
-        { resource: atlas.depth, usage: 'depth-stencil-write' },
-      ],
-      colorAttachments: [
-        {
-          view: primitiveIndex,
-          loadOp: captureMode,
-          storeOp: 'store',
-          clearValue: { r: 0xffffffff, g: 0, b: 0, a: 0 },
-        },
-      ],
-      depthStencilAttachment: { view: atlas.depth, depthLoadOp: 'load', depthStoreOp: 'store' },
-      encodeDirect: (pass, frame) => record(frame, pass, 'identity'),
-    });
-    if (!identity.ok) return err(identity.error);
+    if (captureIdentity) {
+      // The retained depth atlas is never globally cleared by the second phase.
+      // A viewport/scissor clear quad rebuilds depth only for this coherent tile slice.
+      const identity = graph.addRasterPass(`${label}.capture-identity`, {
+        accesses: [
+          ...reads,
+          ...materialViews.map((resource) => ({ resource, usage: 'sampled-read' as const })),
+          { resource: primitiveIndex, usage: 'color-attachment' },
+          { resource: atlas.depth, usage: 'depth-stencil-write' },
+        ],
+        colorAttachments: [
+          {
+            view: primitiveIndex,
+            loadOp: captureMode,
+            storeOp: 'store',
+            clearValue: { r: 0xffffffff, g: 0, b: 0, a: 0 },
+          },
+        ],
+        depthStencilAttachment: { view: atlas.depth, depthLoadOp: 'load', depthStoreOp: 'store' },
+        encodeDirect: (pass, frame) => record(frame, pass, 'identity'),
+      });
+      if (!identity.ok) return err(identity.error);
+    }
   }
   const projections = graph
     .importBuffer(

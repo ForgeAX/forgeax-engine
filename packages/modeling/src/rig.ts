@@ -17,14 +17,11 @@ import {
   type Affine,
   type Angles,
   applyPoint,
-  axisAngle,
-  fromAngles,
   IDENTITY,
   invertRigid,
   multiply,
   toColumnMajor,
   toQuaternion,
-  translation,
 } from './affine';
 import { maxOf, minOf, pushAll } from './arrays';
 import { extractFaces } from './boolean';
@@ -49,13 +46,12 @@ import { type DraftFace, draftFace, draftInputs } from './draft';
 import { type ModelingError, modelingError } from './errors';
 import { type ClipReport, type ExportReport, exportMesh, type NormalMode } from './finish';
 import { encodeSnapshot } from './fxem';
-import { type Axis, axisVector, faceCentroid, faceNormal, type Tuple3 } from './geom';
+import { type Axis, faceCentroid, faceNormal, type Tuple3 } from './geom';
 import {
   type ConnectivityOptions,
   type ConnectivityReport,
   contactTolerance,
   type DesignedContact,
-  FIT_TOLERANCE,
   type FloatingPart,
   type InterferenceOptions,
   type InterferenceReport,
@@ -98,6 +94,20 @@ import {
   planHardware,
 } from './rig-hardware';
 import {
+  AXES,
+  clampValue,
+  compileJoints,
+  finite,
+  isRange,
+  KEY,
+  lerp,
+  motion,
+  rejectSpec,
+  steffen,
+  unit,
+  within,
+} from './rig-kernel';
+import {
   acrossOf,
   analyze,
   CLOSURE_ROWS,
@@ -110,11 +120,13 @@ import {
   orientation,
   solveLinear,
 } from './rig-loops';
+import { buildRigManifest, type RigManifest } from './rig-manifest';
 import { type FaceSelector, sel } from './selectors';
 import { SurfaceQuery } from './shrinkwrap';
 import { rigStopReport } from './stops';
 
 export type { Affine, Angles } from './affine';
+export { finite } from './rig-kernel';
 
 /** `fixed` has no value; `revolute` turns about `axis` (degrees); `prismatic` slides along `axis` (meters); `spherical` turns by `Angles`. */
 export type JointKind = 'fixed' | 'revolute' | 'prismatic' | 'spherical';
@@ -221,6 +233,22 @@ export const LOOP_TOLERANCE = 1e-9;
 
 /** Largest driver step of one solve when walking from a known pose (radians; meters / 10). */
 const CONTINUATION_STEP = 0.1;
+
+/** Largest gap between a solved coordinate's change and its mean end rate, over the larger of the two (scan motion bound). */
+const RATE_AGREEMENT = 0.1;
+
+/** Margin on the larger end rate of a solved coordinate for its travel within the agreement. */
+const RATE_SAFETY = 1.25;
+
+/** Rates of the solved loop coordinates along the drivers at one scan sample. */
+interface LoopRates {
+  /** Coordinate slots of the drivers. */
+  readonly drivers: readonly number[];
+  /** Driver units per continuation step: 1 for angles, 0.1 for slides. */
+  readonly scale: readonly number[];
+  /** Per solved coordinate slot: d(slot)/d(driver) per driver. */
+  readonly rows: ReadonlyMap<number, readonly number[]>;
+}
 
 /** A pose with its loops closed: the full pose, the driven and solved joints and the fit. */
 export interface LoopSolution {
@@ -727,335 +755,6 @@ export interface ResolvedPart {
   readonly closed: boolean;
 }
 
-const KEY = /^[a-z0-9][a-z0-9_.-]*$/;
-const AXES: readonly Axis[] = ['x', 'y', 'z'];
-
-/** @internal */
-export function finite(...values: readonly unknown[]): boolean {
-  return values.every((v) => typeof v === 'number' && Number.isFinite(v));
-}
-
-function isRange(value: unknown): value is Range {
-  return Array.isArray(value) && value.length === 2 && finite(...value) && value[0] <= value[1];
-}
-
-function unit(axis: Axis | Tuple3): Tuple3 | undefined {
-  if (typeof axis === 'string') return AXES.includes(axis) ? axisVector(axis) : undefined;
-  if (!Array.isArray(axis) || axis.length !== 3 || !finite(...axis)) return undefined;
-  const l = Math.sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
-  return l > 1e-12 ? [axis[0] / l, axis[1] / l, axis[2] / l] : undefined;
-}
-
-function rejectSpec(expected: string, detail: Record<string, unknown>, hint?: string) {
-  return err(modelingError('model-invalid-argument', expected, detail, hint));
-}
-
-function compileJoints(spec: RigSpec): Result<JointRecord[], ModelingError> {
-  if (!Array.isArray(spec?.joints) || spec.joints.length === 0) {
-    return rejectSpec('a rig has at least one joint', {});
-  }
-  const index = new Map<string, number>();
-  const out: JointRecord[] = [];
-  for (const [i, j] of spec.joints.entries()) {
-    if (typeof j.name !== 'string' || !KEY.test(j.name)) {
-      return rejectSpec('joint names are lowercase key segments', { joint: i, name: j.name });
-    }
-    if (index.has(j.name)) return rejectSpec('joint names are unique', { joint: j.name });
-    let parent = -1;
-    if (j.parent === null) {
-      if (out.some((o) => o.parent < 0)) {
-        return rejectSpec(
-          'a rig has a single root joint',
-          { joint: j.name },
-          'parent every other joint to the root',
-        );
-      }
-    } else {
-      const p = index.get(j.parent);
-      if (p === undefined) {
-        return rejectSpec('a parent joint precedes its children', {
-          joint: j.name,
-          parent: j.parent,
-        });
-      }
-      parent = p;
-    }
-    if (!Array.isArray(j.position) || j.position.length !== 3 || !finite(...j.position)) {
-      return rejectSpec('a finite rest position [x, y, z]', { joint: j.name });
-    }
-    if (
-      j.rotation !== undefined &&
-      !AXES.every((a) => j.rotation?.[a] === undefined || finite(j.rotation[a]))
-    ) {
-      return rejectSpec('finite rest rotation angles', { joint: j.name });
-    }
-    const kind = j.kind ?? 'fixed';
-    let axis: Tuple3 = [0, 0, 0];
-    if (kind === 'revolute' || kind === 'prismatic') {
-      const u = j.axis === undefined ? undefined : unit(j.axis);
-      if (u === undefined) {
-        return rejectSpec(`a ${kind} joint has a non-zero axis`, { joint: j.name });
-      }
-      axis = u;
-      if (j.limits !== undefined && !isRange(j.limits)) {
-        return rejectSpec(`${kind} limits are [min, max] with min <= max`, { joint: j.name });
-      }
-      const ends = j.stops === undefined ? [] : [j.stops.min, j.stops.max];
-      if (
-        ends.length > 0 &&
-        (j.limits === undefined ||
-          ends.every((e) => e === undefined) ||
-          !ends.every(
-            (e) =>
-              e === undefined ||
-              (typeof e.stop === 'string' &&
-                KEY.test(e.stop) &&
-                (e.against === undefined ||
-                  (typeof e.against === 'string' && KEY.test(e.against)))),
-          ))
-      ) {
-        return rejectSpec(
-          'stops on a limited joint: { min?, max? } with stop (and against) part names',
-          { joint: j.name },
-        );
-      }
-    } else if (kind === 'spherical') {
-      const limits = j.limits;
-      if (
-        limits !== undefined &&
-        (Array.isArray(limits) ||
-          !AXES.every(
-            (a) =>
-              (limits as Record<string, unknown>)[a] === undefined ||
-              isRange((limits as Record<string, unknown>)[a]),
-          ))
-      ) {
-        return rejectSpec('spherical limits are { x?, y?, z? } ranges in degrees', {
-          joint: j.name,
-        });
-      }
-    } else if (kind === 'fixed') {
-      if (j.limits !== undefined || j.axis !== undefined || j.stops !== undefined) {
-        return rejectSpec('a fixed joint has no axis or limits', { joint: j.name });
-      }
-    } else {
-      return rejectSpec("a joint kind 'fixed' | 'revolute' | 'prismatic' | 'spherical'", {
-        joint: j.name,
-        kind,
-      });
-    }
-    let mimic: MimicLink | undefined;
-    if (j.mimic !== undefined) {
-      const linked = linkMimic(j, kind, index, out);
-      if (!linked.ok) return linked;
-      mimic = linked.value;
-    }
-    const restWorld = multiply(translation(j.position), fromAngles(j.rotation));
-    const restLocal =
-      parent < 0
-        ? restWorld
-        : multiply(invertRigid((out[parent] as JointRecord).restWorld), restWorld);
-    index.set(j.name, out.length);
-    if (kind === 'spherical' && j.stops !== undefined) {
-      return rejectSpec('stops on revolute and prismatic joints', { joint: j.name });
-    }
-    out.push({
-      name: j.name,
-      parent,
-      kind,
-      axis,
-      limits: j.limits,
-      stops: j.stops,
-      ...(mimic === undefined ? {} : { mimic }),
-      restWorld,
-      restLocal,
-    });
-  }
-  return reachOf(out);
-}
-
-function linkMimic(
-  j: JointSpec,
-  kind: JointKind,
-  index: ReadonlyMap<string, number>,
-  out: readonly JointRecord[],
-): Result<MimicLink, ModelingError> {
-  const m = j.mimic as NonNullable<JointSpec['mimic']>;
-  const leader = typeof m?.joint === 'string' ? index.get(m.joint) : undefined;
-  if (kind !== 'revolute' && kind !== 'prismatic') {
-    return rejectSpec('a mimic follower is a revolute or prismatic joint', { joint: j.name, kind });
-  }
-  if (leader === undefined) {
-    return rejectSpec(
-      'a mimic joint precedes its follower',
-      { joint: j.name, mimic: m?.joint },
-      'declare the leader before the follower; a cycle needs a forward reference, so it cannot be written',
-    );
-  }
-  const head = out[leader] as JointRecord;
-  if (head.kind !== 'revolute' && head.kind !== 'prismatic') {
-    return rejectSpec('a mimic leader is a revolute or prismatic joint', {
-      joint: j.name,
-      mimic: m.joint,
-      kind: head.kind,
-    });
-  }
-  const offset = m.offset ?? 0;
-  if (!finite(m.ratio, offset) || m.ratio === 0) {
-    return rejectSpec(
-      'a finite non-zero mimic ratio and a finite offset',
-      { joint: j.name, ratio: m.ratio, offset: m.offset },
-      m.ratio === 0 ? "a zero ratio is a fixed joint: use kind: 'fixed'" : undefined,
-    );
-  }
-  const above = head.mimic;
-  return ok({
-    leader,
-    ratio: m.ratio,
-    offset,
-    root: above === undefined ? leader : above.root,
-    rootRatio: above === undefined ? m.ratio : m.ratio * above.rootRatio,
-    rootOffset: above === undefined ? offset : m.ratio * above.rootOffset + offset,
-  });
-}
-
-const near = (a: number, b: number) =>
-  Math.abs(a - b) <= 1e-12 * Math.max(1, Math.abs(a), Math.abs(b));
-
-/** Combine every follower's limits onto its root leader, in declaration order. */
-function reachOf(out: JointRecord[]): Result<JointRecord[], ModelingError> {
-  const reach = new Map<number, Range>();
-  const mapped = (f: JointRecord): Range | undefined => {
-    const link = f.mimic as MimicLink;
-    if (!Array.isArray(f.limits)) return undefined;
-    const [lo, hi] = f.limits as Range;
-    const a = (lo - link.rootOffset) / link.rootRatio;
-    const b = (hi - link.rootOffset) / link.rootRatio;
-    return a <= b ? [a, b] : [b, a];
-  };
-  for (const f of out) {
-    const link = f.mimic;
-    if (link === undefined) continue;
-    const root = out[link.root] as JointRecord;
-    const own =
-      reach.get(link.root) ?? (Array.isArray(root.limits) ? (root.limits as Range) : undefined);
-    const to = mapped(f);
-    const next: Range | undefined =
-      to === undefined
-        ? own
-        : own === undefined
-          ? to
-          : [Math.max(own[0], to[0]), Math.min(own[1], to[1])];
-    if (next === undefined) continue;
-    const detail = {
-      joint: f.name,
-      leader: root.name,
-      ratio: link.rootRatio,
-      leaderRange: own,
-      followerRange: to,
-    };
-    if (next[0] > next[1]) {
-      return rejectSpec(
-        'follower limits that overlap the leader range',
-        detail,
-        `no value of '${root.name}' keeps '${f.name}' (= ${link.rootRatio} * '${root.name}' + ${link.rootOffset}) in its limits`,
-      );
-    }
-    if (next[0] > 0 || next[1] < 0) {
-      return rejectSpec(
-        'an effective leader range that includes the rest value 0',
-        { ...detail, effective: next },
-        `widen the limits of '${f.name}' or '${root.name}' (or set the mimic offset) so the rest pose is reachable`,
-      );
-    }
-    reach.set(link.root, next);
-  }
-  const held = (j: JointRecord, end: 'min' | 'max', lo: number, hi: number, r: Range) => {
-    const link = j.mimic;
-    const sign = link === undefined ? 1 : Math.sign(link.rootRatio);
-    const own = (end === 'min') === sign > 0 ? 'min' : 'max';
-    return (
-      j.stops?.[own] !== undefined && near(end === 'min' ? lo : hi, end === 'min' ? r[0] : r[1])
-    );
-  };
-  for (const [root, r] of reach) {
-    const holds = { min: false, max: false };
-    for (const j of out) {
-      if (j.mimic === undefined ? out.indexOf(j) !== root : j.mimic.root !== root) continue;
-      const to = j.mimic === undefined ? (j.limits as Range | undefined) : mapped(j);
-      if (to === undefined) continue;
-      holds.min ||= held(j, 'min', to[0], to[1], r);
-      holds.max ||= held(j, 'max', to[0], to[1], r);
-    }
-    out[root] = { ...(out[root] as JointRecord), reach: r, holds };
-  }
-  return ok(out);
-}
-
-function clampValue(value: number, range: Range | undefined): number {
-  if (range === undefined) return value;
-  return Math.min(range[1], Math.max(range[0], value));
-}
-
-/** Local motion of a joint at its value, in the joint's rest frame. */
-function motion(joint: JointRecord, value: JointValue | null): Affine {
-  switch (joint.kind) {
-    case 'fixed':
-      return IDENTITY;
-    case 'revolute':
-      return axisAngle(joint.axis, value as number);
-    case 'prismatic':
-      return translation(joint.axis.map((c) => c * (value as number)));
-    case 'spherical':
-      return fromAngles(value as Angles);
-  }
-}
-
-/** A distance inside a fit band, with 1 nm slack for flush faces. */
-function within(d: number, gap: readonly [number, number]): boolean {
-  return d >= gap[0] - FIT_TOLERANCE && d <= gap[1] + FIT_TOLERANCE;
-}
-
-/**
- * Steffen's monotone cubic between keys s and s + 1 (of 0..last) at fraction t: tangents limited so the
- * curve never overshoots between keys; zero at the first and last key (the value holds there).
- */
-function steffen(
-  u: (k: number) => number,
-  v: (k: number) => number,
-  last: number,
-  s: number,
-  t: number,
-): number {
-  const h = (k: number) => u(k + 1) - u(k);
-  const d = (k: number) => (v(k + 1) - v(k)) / h(k);
-  const tangent = (k: number) => {
-    if (k <= 0 || k >= last) return 0;
-    const d0 = d(k - 1);
-    const d1 = d(k);
-    if (d0 * d1 <= 0) return 0;
-    const p = (d0 * h(k) + d1 * h(k - 1)) / (h(k - 1) + h(k));
-    return (
-      (Math.sign(d0) + Math.sign(d1)) * Math.min(Math.abs(d0), Math.abs(d1), 0.5 * Math.abs(p))
-    );
-  };
-  const a = v(s);
-  const b = v(s + 1);
-  const span = h(s);
-  const t2 = t * t;
-  const t3 = t2 * t;
-  return (
-    (2 * t3 - 3 * t2 + 1) * a +
-    (t3 - 2 * t2 + t) * span * tangent(s) +
-    (-2 * t3 + 3 * t2) * b +
-    (t3 - t2) * span * tangent(s + 1)
-  );
-}
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
-}
-
 /**
  * A rig over one modeling session: the joint table plus rigid part bindings.
  * Bindings are selector expressions, re-evaluated against the session whenever the
@@ -1074,7 +773,12 @@ export class Rig {
     Result<Map<number, TrackKey[]>, ModelingError>
   >();
   private exported:
-    | { readonly key: string; readonly path?: PosePath; readonly clips: readonly ClipReport[] }
+    | {
+        readonly key: string;
+        readonly form: RigExportForm;
+        readonly path?: PosePath;
+        readonly clips: readonly ClipReport[];
+      }
     | undefined;
   private readonly weightCache = new Map<string, SkinWeights>();
   private readonly closures: readonly ClosureRecord[];
@@ -1108,12 +812,38 @@ export class Rig {
     return this.exported === undefined ? undefined : `scene/${this.exported.key}`;
   }
 
+  /**
+   * The joint manifest: joint kinds, axes, limits, stops, mimic relations and part bindings as a
+   * schema-validated document a game can pose without this class. Refuses rigs with closed loops.
+   */
+  manifest(): Result<RigManifest, ModelingError> {
+    if (this.failure !== undefined) return err(this.failure);
+    const parts = this.resolveAll();
+    if (!parts.ok) return parts;
+    return buildRigManifest({
+      joints: this._table,
+      parts: parts.value.parts
+        .map((p) => ({
+          part: p.name,
+          joints: [p.joint],
+          skinned: false,
+        }))
+        .concat(
+          parts.value.skins.map((s) => ({ part: s.name, joints: [...s.joints], skinned: true })),
+        ),
+      loops: this.closures.length > 0,
+      ...(this.exported === undefined
+        ? {}
+        : { finished: { key: this.exported.key, form: this.exported.form } }),
+    });
+  }
+
   /** The clips the last finish() exported with `clips`: name, source key, loop, duration, frames. */
   get exportedClips(): readonly ClipReport[] {
     return this.exported?.clips ?? [];
   }
 
-  /** The transformation path the last finish() exported; tools scan and pose along it. */
+  /** Default inspection path: the legacy path or the first named clip the exported player starts on. */
   get path(): PosePath | undefined {
     return this.exported?.path;
   }
@@ -2618,16 +2348,20 @@ export class Rig {
     const count = Math.ceil(1 / step - 1e-9);
     for (let i = 0; i <= count; i++) us.add(Math.min(1, i * step));
     for (const key of path.keys) us.add(key.u);
-    const motion = this.motionBounds(parts);
+    const rates = new WeakMap<Float64Array, LoopRates>();
+    const motion = this.motionBounds(parts, rates);
     const at = (u: number) => {
       const sampled = this.sample(path, u);
       if (!sampled.ok) return sampled;
       const posed = this.pose(sampled.value, options);
       if (!posed.ok) return posed;
+      const q = this.coordinates(posed.value);
+      const rate = this.loopRates(sampled.value, posed.value);
+      if (rate !== undefined) rates.set(q, rate);
       return ok({
         ...this.placement(parts, posed.value),
         clamped: posed.value.clamped,
-        q: this.coordinates(posed.value),
+        q,
         worlds: posed.value.joints.map((j) => j.world),
       });
     };
@@ -2870,9 +2604,32 @@ export class Rig {
     }
     const roots = this.rootJoints(options.roots);
     if (!roots.ok) return roots;
-    const parts = resolved.value;
     const mesh = this.source.editMesh;
+    const parts: ResolvedPart[] = [];
+    for (const part of resolved.value) {
+      const allowed = new Set(part.faces);
+      const remaining = new Set(allowed);
+      while (remaining.size > 0) {
+        const seed = remaining.values().next().value as number;
+        const faces: number[] = [];
+        let closed = true;
+        const stack = [seed];
+        remaining.delete(seed);
+        while (stack.length > 0) {
+          const face = stack.pop() as number;
+          faces.push(face);
+          for (const half of mesh.faceHalves(face)) {
+            const next = mesh.hFace[half ^ 1] as number;
+            if (!allowed.has(next)) closed = false;
+            else if (remaining.delete(next)) stack.push(next);
+          }
+        }
+        parts.push({ ...part, faces, closed });
+      }
+    }
     const geometry = parts.map((p) => partGeometry(mesh, p.name, p.faces, p.closed));
+    const shellCounts = new Map<string, number>();
+    for (const part of parts) shellCounts.set(part.name, (shellCounts.get(part.name) ?? 0) + 1);
     const out: ConnectivityReport['poses'][number][] = [];
     const floating = new Set<string>();
     for (const [index, pose] of poses.entries()) {
@@ -2896,6 +2653,7 @@ export class Rig {
         const n = at.nearest.get(i);
         loose.push({
           part: p.name,
+          ...((shellCounts.get(p.name) ?? 0) > 1 ? { faces: p.faces } : {}),
           joint: (this._table[p.joint] as JointRecord).name,
           ...(n === undefined
             ? {}
@@ -2905,14 +2663,14 @@ export class Rig {
       out.push({
         index,
         floating: loose,
-        detached: [...groups.values()],
+        detached: [...groups.values()].map((names) => [...new Set(names)]),
         unlinked: at.unlinked.map((j) => (this._table[j] as JointRecord).name),
       });
     }
     return ok({
       attached: floating.size === 0,
       gap,
-      roots: parts.filter((p) => roots.value.has(p.joint)).map((p) => p.name),
+      roots: [...new Set(parts.filter((p) => roots.value.has(p.joint)).map((p) => p.name))],
       poses: out,
       floating: [...floating].sort(),
     });
@@ -2948,7 +2706,7 @@ export class Rig {
     geometry: readonly PartGeometry[],
     placement: Placement,
     gap: number,
-    hardware: ((part: string) => boolean) | undefined,
+    hardware: ((part: string, faces: readonly number[]) => boolean) | undefined,
     roots: ReadonlySet<number>,
   ): {
     readonly attached: Uint8Array;
@@ -2964,7 +2722,7 @@ export class Rig {
       while (k >= 0 && !carries.has(k)) k = (this._table[k] as JointRecord).parent;
       return k;
     });
-    const hw = parts.map((p) => isHardware(p.name));
+    const hw = parts.map((p) => isHardware(p.name, p.faces));
     const crossing = (a: number, b: number) => {
       const ja = (parts[a] as ResolvedPart).joint;
       const jb = (parts[b] as ResolvedPart).joint;
@@ -3225,9 +2983,12 @@ export class Rig {
       entities,
       ...(options.form === 'skinned' ? { skinGuids: [guid(`skin/${key}`)] } : {}),
     };
+    const inspectionPath = options.path ?? options.clips?.[0]?.path;
+    this.source._recordExportNormals(normals);
     this.exported = {
       key,
-      ...(options.path === undefined ? {} : { path: options.path }),
+      form: options.form ?? 'rigid',
+      ...(inspectionPath === undefined ? {} : { path: inspectionPath }),
       clips: reports,
     };
     return ok(outputs);
@@ -3678,6 +3439,45 @@ export class Rig {
     });
   }
 
+  /** Index of each joint's first slot in `coordinates`. */
+  private coordinateOffsets(): number[] {
+    const offset: number[] = [];
+    let n = 0;
+    for (const joint of this._table) {
+      offset.push(n);
+      n += joint.kind === 'fixed' ? 0 : joint.kind === 'spherical' ? 3 : 1;
+    }
+    return offset;
+  }
+
+  /** Rates of the solved loop coordinates at a posed scan sample (none without solved joints). */
+  private loopRates(named: Pose, posed: PoseResult): LoopRates | undefined {
+    if (this.closures.length === 0) return undefined;
+    const values = posed.joints.map((j) => j.value);
+    const loop = this.loopJoints();
+    const given = (j: number) => Object.hasOwn(named, (this._table[j] as JointRecord).name);
+    const coords = this.coordinatesOf(loop.filter((j) => !given(j)));
+    if (coords.length === 0) return undefined;
+    const driverCoords = this.coordinatesOf(loop.filter(given));
+    const tangent = this.loopTangent(
+      values,
+      coords,
+      driverCoords,
+      driverCoords.map((c) => this.coordinate(values, c)),
+      coords.map((c) => this.coordinate(values, c)),
+    );
+    const offset = this.coordinateOffsets();
+    const slot = (c: { joint: number; axis?: Axis }) =>
+      (offset[c.joint] as number) + (c.axis === undefined ? 0 : AXES.indexOf(c.axis));
+    return {
+      drivers: driverCoords.map(slot),
+      scale: driverCoords.map((c) =>
+        (this._table[c.joint] as JointRecord).kind === 'prismatic' ? 0.1 : 1,
+      ),
+      rows: new Map(coords.map((c, k) => [slot(c), tangent[k] as number[]])),
+    };
+  }
+
   /** Joint coordinates of a pose: radians for revolute and spherical axes, meters for prismatic. */
   private coordinates(pose: PoseResult): Float64Array {
     const q: number[] = [];
@@ -3693,20 +3493,23 @@ export class Rig {
   }
 
   /**
-   * Motion of two parts relative to each other between two samples. Every joint is
-   * monotone between samples (keys are samples); joints shared by both chains move them
-   * rigidly and drop out. Each other moving joint is reported in the part's rest frame
-   * at the first sample, with its turn and axis, or as prismatic travel.
+   * Motion of two parts relative to each other between two samples. Path joints are
+   * monotone between samples (keys are samples, and every interpolation is monotone), so
+   * their change bounds their travel; a spherical joint's summed Euler changes bound its
+   * turn. A solved loop coordinate can reverse inside the interval: its travel is bounded
+   * by its rate along the drivers (the loop tangent) at both ends, times the driver step,
+   * when the two rates and the change agree with a rate that varies linearly over the
+   * interval; otherwise (rates that disagree, a driver step longer than a continuation
+   * step) the bound is unknown and the interval is split. Mimic followers scale their
+   * root's bound. Joints shared by both chains move them rigidly and drop out. Each other
+   * moving joint is reported in the part's rest frame at the first sample, with its turn
+   * and axis, or as prismatic travel.
    */
   private motionBounds(
     parts: readonly ResolvedPart[],
+    rates: WeakMap<Float64Array, LoopRates>,
   ): (s0: ScanPose, s1: ScanPose, a: number, b: number) => readonly [MotionBound, MotionBound] {
-    const offset: number[] = [];
-    let n = 0;
-    for (const joint of this._table) {
-      offset.push(n);
-      n += joint.kind === 'fixed' ? 0 : joint.kind === 'spherical' ? 3 : 1;
-    }
+    const offset = this.coordinateOffsets();
     const chains = parts.map((p) => {
       const chain: number[] = [];
       for (let j = p.joint; j >= 0; j = (this._table[j] as JointRecord).parent) chain.unshift(j);
@@ -3717,6 +3520,37 @@ export class Rig {
       const cb = chains[b] as number[];
       let common = 0;
       while (common < ca.length && common < cb.length && ca[common] === cb[common]) common++;
+      const r0 = rates.get(s0.q);
+      const r1 = rates.get(s1.q);
+      const step = (i: number) => (s1.q[i] as number) - (s0.q[i] as number);
+      // Travel of coordinate slot i over the interval.
+      const travel = (i: number): number => {
+        const row0 = r0?.rows.get(i);
+        const row1 = r1?.rows.get(i);
+        if (row0 === undefined && row1 === undefined) return Math.abs(step(i));
+        if (r0 === undefined || r1 === undefined || row0 === undefined || row1 === undefined) {
+          return Infinity;
+        }
+        const drivers = r0.drivers;
+        if (drivers.length !== r1.drivers.length || drivers.some((k, n) => k !== r1.drivers[n])) {
+          return Infinity;
+        }
+        const dd = drivers.map(step);
+        if (dd.some((v, n) => Math.abs(v) / (r0.scale[n] as number) > CONTINUATION_STEP)) {
+          return Infinity;
+        }
+        const rate0 = row0.reduce((sum, g, n) => sum + g * (dd[n] as number), 0);
+        const rate1 = row1.reduce((sum, g, n) => sum + g * (dd[n] as number), 0);
+        const change = step(i);
+        const peak = Math.max(Math.abs(rate0), Math.abs(rate1));
+        if (
+          Math.abs(change - (rate0 + rate1) / 2) >
+          RATE_AGREEMENT * Math.max(peak, Math.abs(change)) + 1e-12
+        ) {
+          return Infinity;
+        }
+        return Math.max(Math.abs(change), RATE_SAFETY * peak);
+      };
       const bound = (chain: readonly number[], part: number): MotionBound => {
         let linear = 0;
         const turns: JointTurn[] = [];
@@ -3727,8 +3561,11 @@ export class Rig {
           const o = offset[j] as number;
           const dims = joint.kind === 'spherical' ? 3 : joint.kind === 'fixed' ? 0 : 1;
           let change = 0;
-          for (let d = 0; d < dims; d++) {
-            change += Math.abs((s1.q[o + d] as number) - (s0.q[o + d] as number));
+          const link = joint.mimic;
+          if (link !== undefined && (r0?.rows.has(offset[link.root] as number) ?? false)) {
+            change = Math.abs(link.rootRatio) * travel(offset[link.root] as number);
+          } else {
+            for (let d = 0; d < dims; d++) change += travel(o + d);
           }
           if (change === 0) continue;
           if (joint.kind === 'prismatic') {
@@ -3887,8 +3724,8 @@ export class Rig {
         if (c >= 0) blended.set(c, { weights: weights.value, row: r });
       }
     }
-    for (let t = 0; t < exported.value.triangleFace.length; t++) {
-      const joint = jointOfFace[exported.value.triangleFace[t] as number] as number;
+    for (let t = 0; t < exported.value.sidecar.triangleFace.length; t++) {
+      const joint = jointOfFace[exported.value.sidecar.triangleFace[t] as number] as number;
       for (let k = 0; k < 3; k++) {
         const v = indices[t * 3 + k] as number;
         if (joint >= 0) {
@@ -3896,7 +3733,7 @@ export class Rig {
           skinWeight[v * 4] = 1;
           continue;
         }
-        const corner = exported.value.vertexCorner[v] as number;
+        const corner = exported.value.sidecar.vertexCorner[v] as number;
         const owner = blended.get(compacted.hVert[corner] as number);
         if (owner === undefined) continue;
         const base = owner.row * SKIN_INFLUENCES;

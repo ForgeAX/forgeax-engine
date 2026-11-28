@@ -16,6 +16,112 @@ async function device(): Promise<RhiDevice> {
   return (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
 }
 
+it('releases only the unused numeric tail without relocating a survivor or private reservation', () => {
+  const arena = new GpuInputArena(4 * 1024 * 1024);
+  const survivor = arena.allocateDescriptor(8);
+  const bulk = arena.allocateDescriptor(65536);
+  const reservation = arena.reserveDescriptor(32, (address, data) =>
+    data.setUint32(0, address, true),
+  );
+  const peak = arena.byteLength;
+  arena.writeDescriptorWord(survivor, 8, 7, 456);
+  expect(() => arena.allocateDescriptor(arena.byteLimit / 4 + 1)).toThrow();
+  arena.releaseDescriptor(bulk, 65536);
+  arena.reclaimTail();
+  expect(arena.byteLength).toBe(peak);
+  expect(reservation.readWord(0)).toBe(reservation.address);
+  reservation.release();
+  arena.reclaimTail();
+  expect(arena.byteLength).toBe(1024);
+  expect(arena.readWord(survivor + 7)).toBe(456);
+  for (let i = 0; i < 4; i++) {
+    const temporary = arena.allocateDescriptor(65536);
+    expect(temporary).toBe(bulk);
+    arena.releaseDescriptor(temporary, 65536);
+    arena.reclaimTail();
+    expect(arena.byteLength).toBe(1024);
+    expect(arena.readWord(survivor + 7)).toBe(456);
+  }
+  arena.releaseDescriptor(survivor, 8);
+  arena.dispose();
+});
+
+it.each([
+  { count: 12, words: 8, bytes: 1024 },
+  { count: 8, words: 4096, bytes: 262144 },
+])('hands off a $bytes-byte Inputs buffer while an old reader is held', async ({
+  count,
+  words,
+  bytes,
+}) => {
+  const target = await device();
+  const inputs = new GpuSceneInputs(target);
+  const arena = inputs.arena;
+  const survivors = Array.from({ length: count }, () => arena.allocateDescriptor(words));
+  const tail = arena.allocateDescriptor(524288);
+  const oldRead = inputs.capture();
+  const old = oldRead.buffer().unwrap();
+  oldRead.seal().unwrap();
+  const destroyed = vi.spyOn(target, 'destroyBuffer');
+  try {
+    arena.releaseDescriptor(tail, 524288);
+    for (let frame = 0; frame < 8; frame++) {
+      const read = inputs.capture();
+      try {
+        for (const address of survivors)
+          arena.writeDescriptorWord(address, words, frame, frame + 1);
+        read.buffer().unwrap();
+        read.seal().unwrap();
+        inputs.reclaimSubmittedCapacity();
+      } finally {
+        read.release();
+      }
+    }
+    const current = inputs.uploadedBuffer();
+    expect(current?.buffer).not.toBe(old.buffer);
+    expect(current?.byteLength).toBe(bytes);
+    expect(arena.byteLength).toBe(bytes);
+    for (const address of survivors) expect(arena.readWord(address)).toBe(1);
+    expect(destroyed).not.toHaveBeenCalled();
+    oldRead.release();
+    await target.queue.onSubmittedWorkDone();
+    await Promise.resolve();
+    expect(destroyed).toHaveBeenCalledWith(old.buffer);
+  } finally {
+    oldRead.release();
+    inputs.dispose();
+    destroyed.mockRestore();
+  }
+});
+
+it('lets source preparation supersede contraction and never revokes its active input buffer', async () => {
+  const target = await device();
+  const inputs = new GpuSceneInputs(target);
+  const arena = inputs.arena;
+  const tail = arena.allocateDescriptor(65536);
+  const read = inputs.capture();
+  const original = read.buffer().unwrap();
+  read.seal().unwrap();
+  try {
+    arena.releaseDescriptor(tail, 65536);
+    inputs.reclaimSubmittedCapacity();
+    const source = inputs.prepareBuffer().unwrap();
+    try {
+      expect(inputs.isCurrentBuffer(original.buffer)).toBe(true);
+      expect(source.step(1024).unwrap().phase).toBe('current');
+      inputs.reclaimSubmittedCapacity();
+      expect(source.isCurrent()).toBe(true);
+      source.commitPrepared().unwrap();
+      expect(inputs.isCurrentBuffer(source.buffer)).toBe(true);
+    } finally {
+      source.release();
+    }
+  } finally {
+    read.release();
+    inputs.dispose();
+  }
+});
+
 it('owns private descriptor words without changing active bytes, dirty work or ordinary capacity', async () => {
   const target = await device();
   const arena = new GpuInputArena(65536);
@@ -117,9 +223,8 @@ it('serves complete CPU Skin demand without a device, upload or GPU Scene', () =
   const frame = skin.capture();
   try {
     expect(frame.available(0)).toBe(true);
-    const out = mat4.create(),
-      inverse = mat4.create();
-    expect(frame.matrix(0, 0, out, inverse)).toBe(true);
+    const out = mat4.create();
+    expect(frame.matrix(0, 0, out)).toBe(true);
     expect(out[12]).toBe(9);
   } finally {
     frame.release();
@@ -462,9 +567,8 @@ it('rejects a smaller device upload without invalidating shared CPU pose facts o
     expect(rejected.buffer().ok).toBe(false);
     rejected.release();
     candidate.dispose();
-    const out = mat4.create(),
-      inverse = mat4.create();
-    expect(fixed.matrix(0, 0, out, inverse)).toBe(true);
+    const out = mat4.create();
+    expect(fixed.matrix(0, 0, out)).toBe(true);
     expect(Array.from(out)).toEqual(Array.from(identity));
     const accepted = active.capture();
     try {

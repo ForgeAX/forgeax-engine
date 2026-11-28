@@ -1,8 +1,7 @@
 import { mat4 } from '@forgeax/engine-math';
 import { cameraLensProjection, jitterCameraProjection } from '../camera-projection';
 import type { CameraSnapshot } from '../render-contract';
-
-export const TEMPORAL_JITTER_SAMPLE_COUNT = 8;
+import { temporalJitterSample, temporalJitterSampleCount } from './view';
 
 /** TAAU shares the temporal view owner; its internal dimensions are optional. */
 export const TEMPORAL_TAAU_DEPENDENCY_STATUS = 'available' as const;
@@ -53,34 +52,17 @@ export function temporalViewId(entityKey: number): string {
   return `${index}:${generation}`;
 }
 
-function halton(index: number, base: number): number {
-  let result = 0;
-  let fraction = 1 / base;
-  let value = index;
-  while (value > 0) {
-    result += fraction * (value % base);
-    value = Math.floor(value / base);
-    fraction /= base;
-  }
-  return result;
-}
-
-export function temporalJitterSample(temporalFrameIndex: number): readonly [number, number] {
-  const sampleIndex =
-    ((Math.trunc(temporalFrameIndex) % TEMPORAL_JITTER_SAMPLE_COUNT) +
-      TEMPORAL_JITTER_SAMPLE_COUNT) %
-    TEMPORAL_JITTER_SAMPLE_COUNT;
-  const haltonIndex = sampleIndex + 1;
-  return [halton(haltonIndex, 2) - 0.5, halton(haltonIndex, 3) - 0.5];
-}
-
 function temporalJitterUv(
+  camera: CameraSnapshot,
   temporalFrameIndex: number,
-  surfaceWidth: number,
-  surfaceHeight: number,
+  internalWidth: number,
+  internalHeight: number,
+  outputWidth: number,
 ): readonly [number, number] {
-  const sample = temporalJitterSample(temporalFrameIndex);
-  return [sample[0] / Math.max(1, surfaceWidth), sample[1] / Math.max(1, surfaceHeight)];
+  const mode = camera.antialias === 'tsr' ? 'tsr' : 'taa';
+  const count = temporalJitterSampleCount(mode, internalWidth / Math.max(1, outputWidth));
+  const sample = temporalJitterSample(Math.max(0, Math.trunc(temporalFrameIndex)) % count);
+  return [sample[0] / Math.max(1, internalWidth), sample[1] / Math.max(1, internalHeight)];
 }
 
 function resetReason(
@@ -117,9 +99,11 @@ export function projectTemporalView(input: TemporalViewInput): TemporalView {
     const { camera } = input;
     const viewId = temporalViewId(camera.entityKey ?? 0);
     const currentJitterUv = temporalJitterUv(
+      camera,
       input.temporalFrameIndex,
       input.internalWidth ?? input.surfaceWidth,
       input.internalHeight ?? input.surfaceHeight,
+      input.surfaceWidth,
     );
     const view = mat4.invert(scratch.view, camera.world);
     const projection = cameraLensProjection(camera, scratch.projection);

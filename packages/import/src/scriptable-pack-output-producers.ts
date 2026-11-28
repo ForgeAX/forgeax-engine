@@ -45,7 +45,6 @@ import {
   ok,
   validateTextureGenerator,
 } from '@forgeax/engine-types';
-import { cookWaterAsset, validateWaterRuntimeAsset } from '@forgeax/engine-water';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { encodeMeshDistanceFieldProduct } from './mesh-distance-field-product';
@@ -646,75 +645,7 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
     case 'water-zone':
     case 'water-wave-set':
     case 'water-brush-recipe':
-    case 'water-simulation-recipe': {
-      const waterProduct = () => {
-        const runtime = validateWaterRuntimeAsset(asset);
-        const cooked = runtime.ok ? runtime : cookWaterAsset(asset);
-        const valid = cooked;
-        if (!valid.ok) throw new TypeError(valid.error.expected);
-        const admitted = valid.value;
-        const refs: AssetRef[] = [];
-        const add = (guid: string | undefined, field: string, index?: number) => {
-          if (guid === undefined) return;
-          const parsed = AssetGuid.parse(guid);
-          if (!parsed.ok) throw parsed.error;
-          refs.push(ref(parsed.value, field, index));
-        };
-        if (admitted.kind === 'water-body') {
-          add(admitted.surfaceMaterialGuid, 'surfaceMaterialGuid');
-          add(admitted.zoneGuid, 'zoneGuid');
-          add(admitted.waveSetGuid, 'waveSetGuid');
-          add(admitted.customMeshOverrideGuid, 'customMeshOverrideGuid');
-          add(admitted.collision.meshGuid, 'collision.meshGuid');
-          add(admitted.visibleMeshGuid, 'visibleMeshGuid');
-          add(admitted.waterInfoMeshGuid, 'waterInfoMeshGuid');
-          add(admitted.dilatedWaterInfoMeshGuid, 'dilatedWaterInfoMeshGuid');
-          add(admitted.brushShapeMeshGuid, 'brushShapeMeshGuid');
-          add(admitted.collisionMeshGuid, 'collisionMeshGuid');
-          admitted.riverSegmentMeshGuids?.forEach((guid, index) => {
-            add(guid, 'riverSegmentMeshGuids', index);
-          });
-          add(admitted.riverToLakeTransitionMaterialGuid, 'riverToLakeTransitionMaterialGuid');
-          add(admitted.riverToOceanTransitionMaterialGuid, 'riverToOceanTransitionMaterialGuid');
-          add(admitted.waterInfoMaterialGuid, 'waterInfoMaterialGuid');
-          add(admitted.lodMaterialGuid, 'lodMaterialGuid');
-          add(admitted.underwaterPostProcessMaterialGuid, 'underwaterPostProcessMaterialGuid');
-        } else if (admitted.kind === 'water-zone') {
-          add(admitted.farMaterialGuid, 'farMaterialGuid');
-        } else if (admitted.kind === 'water-brush-recipe') {
-          add(admitted.baseTerrainGuid, 'baseTerrainGuid');
-          admitted.sourceBodyGuids.forEach((guid, index) => {
-            add(guid, 'sourceBodyGuids', index);
-          });
-          admitted.curves.forEach((guid, index) => {
-            add(guid, 'curves', index);
-          });
-          admitted.textures.forEach((guid, index) => {
-            add(guid, 'textures', index);
-          });
-        } else if (admitted.kind === 'water-simulation-recipe') {
-          admitted.materialGuids.forEach((guid, index) => {
-            add(guid, 'materialGuids', index);
-          });
-          admitted.textureGuids.forEach((guid, index) => {
-            add(guid, 'textureGuids', index);
-          });
-          if (admitted.system === 'fluid-simulation')
-            add(admitted.impulseNoiseGuid, 'impulseNoiseGuid');
-          if (admitted.system === 'water-advanced') {
-            admitted.shallowStageConfig?.materialGuids.forEach((guid, index) => {
-              add(guid, 'shallowStageConfig.materialGuids', index);
-            });
-            if (admitted.riverBakeConfig)
-              add(admitted.riverBakeConfig.sourceBodyGuid, 'riverBakeConfig.sourceBodyGuid');
-            if (admitted.oceanPatchConfig?.algorithm === 'ocean-spectrum-fft/2')
-              add(admitted.oceanPatchConfig.noiseTextureGuid, 'oceanPatchConfig.noiseTextureGuid');
-          }
-        }
-        return { payload: valid.value, refs, artifacts: { body: jsonArtifact(valid.value) } };
-      };
-      return waterProduct();
-    }
+    case 'water-simulation-recipe':
     case 'gpu-texture':
     case 'texture-generator':
     case 'material':
@@ -722,6 +653,86 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
     case 'scene':
       throw new TypeError(`ordinary producer received already-owned ${asset.kind} asset`);
   }
+}
+
+async function waterProduct(asset: AssetOutputInput['asset']): Promise<AssetOutputProduct> {
+  const { cookWaterAsset, validateWaterRuntimeAsset } = await import('@forgeax/engine-water');
+  const runtime = validateWaterRuntimeAsset(asset);
+  const valid = runtime.ok ? runtime : cookWaterAsset(asset);
+  if (!valid.ok) throw new TypeError(valid.error.expected);
+  const admitted = valid.value;
+  const refs: AssetRef[] = [];
+  const add = (guid: string | undefined, field: string, index?: number) => {
+    if (guid === undefined) return;
+    const parsed = AssetGuid.parse(guid);
+    if (!parsed.ok) throw parsed.error;
+    refs.push(ref(parsed.value, field, index));
+  };
+  if (admitted.kind === 'water-body') {
+    add(admitted.surfaceMaterialGuid, 'surfaceMaterialGuid');
+    add(admitted.zoneGuid, 'zoneGuid');
+    add(admitted.waveSetGuid, 'waveSetGuid');
+    add(admitted.customMeshOverrideGuid, 'customMeshOverrideGuid');
+    add(admitted.collision.meshGuid, 'collision.meshGuid');
+    add(admitted.visibleMeshGuid, 'visibleMeshGuid');
+    add(admitted.waterInfoMeshGuid, 'waterInfoMeshGuid');
+    add(admitted.dilatedWaterInfoMeshGuid, 'dilatedWaterInfoMeshGuid');
+    add(admitted.brushShapeMeshGuid, 'brushShapeMeshGuid');
+    add(admitted.collisionMeshGuid, 'collisionMeshGuid');
+    admitted.riverSegmentMeshGuids?.forEach((guid, index) => {
+      add(guid, 'riverSegmentMeshGuids', index);
+    });
+    add(admitted.riverToLakeTransitionMaterialGuid, 'riverToLakeTransitionMaterialGuid');
+    add(admitted.riverToOceanTransitionMaterialGuid, 'riverToOceanTransitionMaterialGuid');
+    add(admitted.waterInfoMaterialGuid, 'waterInfoMaterialGuid');
+    add(admitted.lodMaterialGuid, 'lodMaterialGuid');
+    add(admitted.underwaterPostProcessMaterialGuid, 'underwaterPostProcessMaterialGuid');
+  } else if (admitted.kind === 'water-zone') {
+    add(admitted.farMaterialGuid, 'farMaterialGuid');
+  } else if (admitted.kind === 'water-brush-recipe') {
+    add(admitted.baseTerrainGuid, 'baseTerrainGuid');
+    admitted.sourceBodyGuids.forEach((guid, index) => {
+      add(guid, 'sourceBodyGuids', index);
+    });
+    admitted.curves.forEach((guid, index) => {
+      add(guid, 'curves', index);
+    });
+    admitted.textures.forEach((guid, index) => {
+      add(guid, 'textures', index);
+    });
+  } else if (admitted.kind === 'water-simulation-recipe') {
+    admitted.materialGuids.forEach((guid, index) => {
+      add(guid, 'materialGuids', index);
+    });
+    admitted.textureGuids.forEach((guid, index) => {
+      add(guid, 'textureGuids', index);
+    });
+    if (admitted.system === 'fluid-simulation') add(admitted.impulseNoiseGuid, 'impulseNoiseGuid');
+    if (admitted.system === 'water-advanced') {
+      admitted.shallowStageConfig?.materialGuids.forEach((guid, index) => {
+        add(guid, 'shallowStageConfig.materialGuids', index);
+      });
+      if (admitted.riverBakeConfig)
+        add(admitted.riverBakeConfig.sourceBodyGuid, 'riverBakeConfig.sourceBodyGuid');
+      if (admitted.oceanPatchConfig?.algorithm === 'ocean-spectrum-fft/2')
+        add(admitted.oceanPatchConfig.noiseTextureGuid, 'oceanPatchConfig.noiseTextureGuid');
+    }
+  }
+  return { payload: valid.value, refs, artifacts: { body: jsonArtifact(valid.value) } };
+}
+
+function waterAssetProducer(kind: AssetOutputProducer['kind']): AssetOutputProducer {
+  return {
+    kind,
+    version: 'water-runtime/2',
+    async produce(input) {
+      try {
+        return ok(await waterProduct(input.asset));
+      } catch (error) {
+        return err(producerError(input, error));
+      }
+    },
+  };
 }
 
 export const materialAssetOutputProducer = createSafeProducer(
@@ -851,7 +862,7 @@ export function createAssetOutputProducerRegistry(
     'water-brush-recipe',
     'water-simulation-recipe',
   ] as const) {
-    registry.register(createSafeProducer(kind, 'water-runtime/2', ordinaryPodProduct));
+    registry.register(waterAssetProducer(kind));
   }
   return registry;
 }

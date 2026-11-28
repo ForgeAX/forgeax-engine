@@ -14,6 +14,25 @@ const OWNER_PLACEMENT = 'owner';
 const containerOwners = new WeakMap<HTMLElement, PreviewOwner>();
 
 const NATIVE_PREVIEW_PROTOCOL = 'forgeax.view.preview/1';
+const PREVIEW_CLICK = 'forgeax.view.preview.click/1';
+
+function dismissOutsideFrame(frame: HTMLIFrameElement, realm: Window & typeof globalThis) {
+  frame.dispatchEvent(new realm.PointerEvent('pointerdown', { bubbles: true, composed: true }));
+}
+
+/** Treat entry into the visible iframe as an outside press in the Shell. */
+export function observePreviewFrameFocus(document: Document, getFrame: () => HTMLIFrameElement | undefined) {
+  const realm = document.defaultView;
+  if (!realm) return () => {};
+  const onWindowBlur = () => {
+    const frame = getFrame();
+    if (frame?.isConnected && document.activeElement === frame && frame.style.visibility === 'visible'
+      && frame.style.pointerEvents !== 'none') dismissOutsideFrame(frame, realm);
+  };
+  realm.addEventListener('blur', onWindowBlur);
+  return () => realm.removeEventListener('blur', onWindowBlur);
+}
+
 function previewScope(state: WorkspaceState | null | undefined) {
   const target = state?.projectTarget;
   return state?.project && target && state.projectPhase === 'running' ? {
@@ -328,11 +347,25 @@ export function createNativePreviewPresentation({ frameOwner, client, document, 
   };
   const resize = new realm.ResizeObserver(place);
   const mutation = new realm.MutationObserver(place);
+  const interactiveFrame = () => {
+    const admitted = frameOwner.getSnapshot();
+    const surface = admitted?.frame;
+    if (admitted?.phase === 'ready' && surface?.isConnected && surface.style.visibility === 'visible'
+      && surface.style.pointerEvents !== 'none') return surface;
+  };
+  const receivePreviewClick = (event: MessageEvent<unknown>) => {
+    if (event.data !== PREVIEW_CLICK) return;
+    const surface = interactiveFrame();
+    if (surface && event.source === surface.contentWindow && event.origin === new URL(surface.src).origin)
+      dismissOutsideFrame(surface, realm);
+  };
+  const unobserveFrameFocus = observePreviewFrameFocus(document, interactiveFrame);
   const root = document.getElementById('root');
   if (root) mutation.observe(root, { attributes: true, childList: true, subtree: true, attributeFilter: ['style', 'class', 'hidden'] });
   mutation.observe(document.documentElement, { attributes: true, attributeFilter: ['data-forgeax-view-active-page'] });
   realm.addEventListener('resize', place);
   realm.addEventListener('scroll', place, true);
+  realm.addEventListener('message', receivePreviewClick);
   const accept = (next: WorkspaceState) => {
     const before = previewScope(state);
     const changed = !state || !samePreviewScope(before, previewScope(next)) || state.targetBinding !== next.targetBinding
@@ -393,6 +426,8 @@ export function createNativePreviewPresentation({ frameOwner, client, document, 
     pending?.abort();
     unsubscribe(); unsubscribeFrame(); resize.disconnect(); mutation.disconnect();
     realm.removeEventListener('resize', place); realm.removeEventListener('scroll', place, true);
+    realm.removeEventListener('message', receivePreviewClick);
+    unobserveFrameFocus();
     await sequence.catch(() => {});
     const scope = previewScope(state);
     try { if (active && scope) await request(scope, { leaseId: active.leaseId, hidden: true }, new AbortController().signal); }
@@ -509,9 +544,14 @@ export function installNativePreviewHost({ presentation, client, document, windo
   };
   const unsubscribe = client.subscribe(accept);
   void client.getState().then(next => { if (!lifetime.signal.aborted && !state) accept(next); }).catch(() => {});
+  const notifyParentOfClick = (event: MouseEvent) => {
+    if (event.isTrusted && window.parent !== window) window.parent.postMessage(PREVIEW_CLICK, '*');
+  };
   window.addEventListener('message', receive);
+  window.addEventListener('click', notifyParentOfClick, { capture: true, passive: true });
   return async () => {
     lifetime.abort(); unsubscribe(); window.removeEventListener('message', receive);
+    window.removeEventListener('click', notifyParentOfClick, true);
     await queue;
     await retire();
   };

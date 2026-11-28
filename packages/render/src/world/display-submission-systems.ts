@@ -63,7 +63,6 @@ export function commitDisplaySubmission(
   submission: DisplaySubmission,
 ): void {
   const {
-    attempt,
     resolution,
     extent,
     rasterRows,
@@ -73,11 +72,6 @@ export function commitDisplaySubmission(
     barrelMapping,
   } = submission;
   frameState.frameOutputs.sceneSubmitted = true;
-  for (const capture of attempt.captureFrames)
-    internals.markRenderTargetSubmitted?.(capture.work.target, capture.work.physical);
-  const planar = attempt.planarCaptureFrame;
-  if (planar !== undefined)
-    internals.markRenderTargetSubmitted?.(planar.work.target, planar.work.physical);
   for (const work of recordContext(internals).captureView?.state.work ?? [])
     internals.markRenderTargetSubmitted?.(work.target, work.physical);
   resolution.commit(extent, () =>

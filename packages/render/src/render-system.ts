@@ -1,9 +1,12 @@
 import type { World } from '@forgeax/engine-ecs';
 import type { BindGroupLayout, RenderPipeline, RhiDevice } from '@forgeax/engine-rhi';
 import { err, probeR32FloatRenderCapability, type Result, RhiError } from '@forgeax/engine-rhi';
+import { isDeferredPostProcessEntry } from './assembly/deferred-post-process-entry';
 import { createFeatureSceneInputs } from './assembly/feature-scene-inputs';
 import { createGpuDrivenOwner } from './assembly/gpu-driven-owner';
 import { createPostProcessParamsOwner } from './assembly/post-process-params';
+import { isStandardPostProcessSource } from './assembly/render-feature-post-processes';
+import { createCloudMode0BlueNoise } from './cloud/tracing/blue-noise';
 import { createClusterBinScratch } from './cluster-binner';
 import { EnvironmentLifecycle } from './environment/lifecycle';
 import { SkinDemandMissingError } from './errors/render';
@@ -15,6 +18,7 @@ import {
   type RenderFeatureGpuWorkOwner,
 } from './features/prepared-gpu-work';
 import { renderFeatureViewIdentity } from './features/view';
+import { resetViewFeatures } from './features/view-feature-work';
 import {
   type PostProcessShaderEntry,
   postProcessShaderEntrySignature,
@@ -29,6 +33,7 @@ import {
   disposeStandardOutput,
   resetStandardOutputForDeviceLoss,
 } from './pipeline/standard-output/resources';
+import { renderStateHash } from './pipeline-spec';
 import { worldRenderResources } from './publication/resource-scope';
 import { MaterialBgAssemblyCache } from './record/material-bg-assembly-cache';
 import { RecordingSkinTasks } from './record/recording-skin-tasks';
@@ -75,10 +80,7 @@ import {
 import type { PipelineState, RenderSystemInternals } from './record/render-context';
 import { ShadowRasterLedger } from './record/shadow-raster-ledger';
 import type { CubeCaptureGraphState } from './record/typed-frame-graph';
-import {
-  discardCompiledFrameGraphs,
-  resetRenderFeatureGraphState,
-} from './record/typed-frame-graph';
+import { discardCompiledFrameGraphs } from './record/typed-frame-graph';
 import { emptyVolumetricFogParams } from './record/volume-params';
 import { RENDER_PHASE_CATALOG } from './render-contract';
 import type { RenderableSnapshot } from './render-system-extract';
@@ -370,10 +372,17 @@ function createRenderOwner(
     getDevice: () => internals.device,
     onError: (error) => internals.errorRegistry.fire(error),
   });
+  const resolveCloudBlueNoise = createFeatureNoiseResolver({
+    scope: recordContext(internals).deviceScope,
+    getDevice: () => internals.device,
+    create: createCloudMode0BlueNoise,
+    onError: (error) => internals.errorRegistry.fire(error),
+  });
   const ownsSceneInputs = recordContext(internals).featureSceneInputs === undefined;
   recordContext(internals).featureSceneInputs ??= createFeatureSceneInputs(
     internals,
     resolveFeatureNoise,
+    resolveCloudBlueNoise,
   );
   const drawReceipt = (): ViewDrawReceipt | undefined =>
     viewDrawReceipt(renderWorldFor(internals), internals.viewEntity);
@@ -551,6 +560,7 @@ function createRenderOwner(
   });
   const persistentRenderScene = new PersistentRenderScene(
     {
+      getDevice: () => internals.device,
       getTemporalConsumerDemand: () =>
         ownsSceneComposition
           ? visibleSurfaceDemand(internals)
@@ -669,7 +679,6 @@ function createRenderOwner(
     directionalShadowCacheRecorded: false,
     shadowRaster: new ShadowRasterLedger(),
     compiledFrameGraph: null,
-    compiledFrameGraphGeneration: 0,
     depthOfFieldAccepted: undefined,
     depthOfFieldLastSubmitFailed: false,
     volumetricFogParams: emptyVolumetricFogParams(),
@@ -709,7 +718,6 @@ function createRenderOwner(
     hdrpClusterBinScratch: createClusterBinScratch(),
     standardClusterMembership: new StandardClusterMembershipOwner(),
     hdrpClusterMembership: null,
-    standardLightingGraphSignature: '',
     submittedInspection: undefined,
     transientInstanceBuffers: [],
     warnedZeroLightStandard: false,
@@ -765,7 +773,12 @@ function createRenderOwner(
     // resolved asset config on every swap so the active graph reads its current config.
     installedPipelineConfig: undefined,
     // Install-time configuration stays separate from the private selected-view override.
-    standardInstall: { configured: undefined, built: 0, cameraSignature: '', cameraFailure: '' },
+    standardInstall: {
+      configured: undefined,
+      built: 0,
+      cameraConfigured: false,
+      cameraFailure: '',
+    },
     standardOncePerFrameFired: new Set(),
     // feat-20260612-point-light-shadows-urp-hdrp M3 / T-M3-2 (plan-strategy §D-1):
     // cube_array shadow atlas + per-frame snapshot list. Atlas is null until the
@@ -818,12 +831,13 @@ function createRenderOwner(
     colorFormats: readonly GPUTextureFormat[],
     entryOverride?: PostProcessShaderEntry,
     fragmentEntryPoint?: string,
+    colorState?: import('@forgeax/engine-types').MaterialRenderState,
   ): RenderPipeline | null => {
     const entry = entryOverride ?? lookupPostProcess(id);
     if (entry === undefined) return null;
     const signature = postProcessShaderEntrySignature(entry);
     const fragment = fragmentEntryPoint ?? entry.fragmentEntryPoint;
-    const key = `${id}|${colorFormats.join(',')}|${fragment ?? ''}|${signature}`;
+    const key = `${id}|${colorFormats.join(',')}|${fragment ?? ''}|${renderStateHash(colorState)}|${signature}`;
     const cached = postProcessPipelineCache.get(key);
     if (cached !== undefined) return cached;
     const factory = internals.buildPostProcessPipeline;
@@ -837,6 +851,8 @@ function createRenderOwner(
       bgl,
       colorFormats,
       postProcessShaderPipelineLabel(id, entry),
+      colorState,
+      isDeferredPostProcessEntry(entry) || isStandardPostProcessSource(entry.source),
     );
     if (built === null) return null;
     postProcessPipelineCache.set(key, built);
@@ -962,9 +978,9 @@ function createRenderOwner(
         disposeStandardOutput(frameState);
         releaseTemporalGpuStates(frameState);
         disposeGtaoHistory(frameState);
-        for (const buffer of frameState.volumetricFogParams.buffers) {
-          if (buffer === null) continue;
-          const destroyed = internals.device.destroyBuffer(buffer);
+        for (const slot of frameState.volumetricFogParams.slots) {
+          if (slot === null) continue;
+          const destroyed = internals.device.destroyBuffer(slot.buffer);
           if (!destroyed.ok) internals.errorRegistry.fire(destroyed.error);
         }
         frameState.volumetricFogParams = emptyVolumetricFogParams();
@@ -975,7 +991,6 @@ function createRenderOwner(
         frameState.volumetricFogHistorySignature = null;
         frameState.hdrpClusterMembership = null;
         discardCompiledFrameGraphs(frameState);
-        frameState.standardLightingGraphSignature = '';
         frameState.submittedInspection = undefined;
         clearSubmittedTerrain();
         frameState.depthOfFieldAccepted = undefined;
@@ -1146,7 +1161,6 @@ function createRenderOwner(
       // handles without calling destroy() on the lost device; the next frame
       // must allocate fresh buffers on the replacement device.
       frameState.volumetricFogParams = emptyVolumetricFogParams();
-      frameState.standardLightingGraphSignature = '';
       frameState.submittedInspection = undefined;
       clearSubmittedTerrain();
       frameState.depthOfFieldAccepted = undefined;
@@ -1194,7 +1208,7 @@ function createRenderOwner(
       postProcessPipelineCache.clear();
       // Logical declarations and the active params bundle stay live until the
       // candidate post-process bundle crosses the publication boundary.
-      resetRenderFeatureGraphState(internals);
+      resetViewFeatures(frameState);
     },
     prepareRecoveryPostProcessResources(device: RhiDevice) {
       return postProcessOwner.prepareRecovery(device);

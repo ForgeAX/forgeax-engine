@@ -10,7 +10,7 @@ Paths are a bare point list (polyline) or a `path.*` spec, all plain journal dat
 `path.polyline(points, { radius, segments }?)` rounds every corner into an exact circular
 bend, `path.catmullRom(points, segments)` is centripetal, `path.arc({ radius, angle,
 segments, axis?, center?, startAngle? })` uses the revolve convention, and
-`path.helix({ radius, pitch, turns, segments, axis?, center?, handedness? })` serves
+`path.helix({ radius, pitch, turns, segments or tolerance, axis?, center?, handedness? })` serves
 springs and threads.
 
 - **Frames**: `frame: 'rmf'` (default) transports the initial frame (`up`, default +Y)

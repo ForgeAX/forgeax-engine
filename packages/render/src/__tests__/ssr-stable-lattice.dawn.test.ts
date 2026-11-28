@@ -16,7 +16,7 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import { temporalJitterSample } from '../temporal/temporal-view';
+import { temporalJitterSample } from '../temporal/view';
 import { gbufferSource, writePackedNormals } from './standard-gbuffer.fixture';
 
 it.for([
@@ -332,8 +332,8 @@ it.for([
       minContrast = Infinity;
     let maxVerticalError = 0;
     for (let frame = 0; frame < 256; frame++) {
-      const jitter = temporalJitterSample(frame),
-        previous = temporalJitterSample(Math.max(0, frame - 1));
+      const jitter = temporalJitterSample(frame % 8),
+        previous = temporalJitterSample(Math.max(0, frame - 1) % 8);
       upload(
         trace,
         width,

@@ -37,12 +37,14 @@ import {
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
+  type PreparedTemplateProgram,
   publishShaderProgramTemplates,
   readShaderProgramTemplates,
   SHADER_PROJECT_MANIFEST_VERSION,
   type ShaderProgramTemplate,
   ShaderRegistry,
   type ShaderTemplateManifest,
+  selectShaderProgramDefines,
   supportedVariantDefines,
 } from '@forgeax/engine-shader';
 import {
@@ -161,7 +163,7 @@ export interface BuildEngineShaderManifestOptions {
   readonly pointShadows?: boolean;
 }
 
-/** Publish the built-in source closure without compiling or enumerating feature combinations. */
+/** Publish source recipes and the one compiler-reflected layout required before any draw. */
 export async function buildEngineShaderTemplateManifest(
   options: Pick<BuildEngineShaderManifestOptions, 'pointShadows'> & {
     readonly hdrpSsao?: boolean;
@@ -194,7 +196,10 @@ export async function buildEngineShaderTemplateManifest(
   const templates = new Map<string, ShaderProgramTemplate>();
   const entries: ShaderTemplateManifest['entries'][number][] = [];
   const materialShaders: ShaderTemplateManifest['materialShaders'][number][] = [];
-  for (const file of engineManifestFiles(engine, particle)) {
+  for (const file of [
+    ...engineManifestFiles(engine, particle),
+    engine.standardClusterLayoutProbe,
+  ]) {
     if (options.hdrpSsao === false && file === engine.hdrpSsao) continue;
     const identifier = file.reservedIdentifier ?? extractDefineImportPath(file.source) ?? file.id;
     const axes = scanVariantAxes(file.source);
@@ -248,13 +253,135 @@ export async function buildEngineShaderTemplateManifest(
         selection,
       });
   }
+  const probeIndex = entries.findIndex(
+    ({ identifier }) => identifier === 'forgeax_standard::cluster_layout_probe',
+  );
+  const probe = entries[probeIndex];
+  const recipe = probe === undefined ? undefined : templates.get(probe.program);
+  if (probe === undefined || recipe === undefined)
+    throw new Error('Missing shared Cluster layout probe');
+  const compiler = new ShaderRegistry({
+    manifestUrl: undefined,
+    programCompiler: (await prepareShaderProgramCompiler()).unwrap(),
+  });
+  entries[probeIndex] = publishTemplateReflection(probe, recipe, compiler);
+  const preparedPrograms = publishDefaultRenderPrograms(entries, templates, compiler);
   const library = publishShaderProgramTemplates(templates).unwrap();
   return admitShaderTemplateManifest({
     schemaVersion: '7.0.0',
     library,
+    preparedPrograms,
     entries,
     materialShaders,
   }).unwrap().wire;
+}
+
+function publishTemplateReflection(
+  row: ShaderTemplateManifest['entries'][number],
+  recipe: ShaderProgramTemplate,
+  registry: ShaderRegistry,
+): ShaderTemplateManifest['entries'][number] {
+  const admitted = admitShaderProgramTemplate(recipe).unwrap();
+  const selected = selectShaderProgramDefines(admitted, row.selection).unwrap();
+  registry.installProgramTemplate(row.program, admitted.template).unwrap();
+  const program = registry.resolveProgramTemplate(row.program, row.selection).unwrap();
+  const reflection = program.manifestEntry.reflection;
+  if (reflection === undefined) throw new Error('Cluster layout probe compiled without reflection');
+  return {
+    ...row,
+    preparedReflection: {
+      programIdentity: admitted.identity,
+      selectionKey: selected.key,
+      sourceDigest: program.program.sourceReference.identity,
+      reflection,
+    },
+  };
+}
+
+const DEFAULT_RENDER_UTILITY_ROLES = new Set<ShaderBuiltinRole>([
+  'tonemap',
+  'fxaa',
+  'ssao',
+  'bloomHorizontal',
+  'bloomVertical',
+  'bloomComposite',
+]);
+const DEFAULT_RENDER_UTILITY_IDS = new Set([
+  'forgeax::standard-output-v2',
+  'forgeax_depth_pyramid::seed',
+  'forgeax_depth_pyramid::reduce',
+]);
+
+/** Ship the fixed output and depth programs and ordinary rigid Unlit selections
+ * for the default Forward renderer. Other selectable programs keep their recipes. */
+function publishDefaultRenderPrograms(
+  rows: ShaderTemplateManifest['entries'],
+  templates: ReadonlyMap<string, ShaderProgramTemplate>,
+  compiler: ShaderRegistry,
+): PreparedTemplateProgram[] {
+  const prepared: PreparedTemplateProgram[] = [];
+  for (const row of rows) {
+    const recipe = templates.get(row.program);
+    if (recipe === undefined) throw Error('Missing default Render program recipe');
+    const selections = defaultRenderSelections(row, recipe);
+    if (selections.length === 0) continue;
+    const admitted = admitShaderProgramTemplate(recipe).unwrap();
+    compiler.installProgramTemplate(row.program, admitted.template).unwrap();
+    for (const selection of selections) {
+      const { manifestEntry, receipt, uvSetCount, forwardFog, program } = compiler
+        .resolveProgramTemplate(row.program, selection)
+        .unwrap();
+      prepared.push({
+        program: row.program,
+        programIdentity: admitted.identity,
+        selection,
+        selectionKey: selectShaderProgramDefines(admitted, selection).unwrap().key,
+        sourceDigest: program.sourceReference.identity,
+        artifact: {
+          manifestEntry,
+          uvSetCount,
+          ...(receipt === undefined ? {} : { receipt }),
+          ...(forwardFog === undefined ? {} : { forwardFog }),
+        },
+      });
+    }
+  }
+  return prepared;
+}
+
+function defaultRenderSelections(
+  row: ShaderTemplateManifest['entries'][number],
+  recipe: ShaderProgramTemplate,
+): readonly Readonly<Record<string, boolean>>[] {
+  if (recipe.axes.length === 0) {
+    return (row.role !== undefined && DEFAULT_RENDER_UTILITY_ROLES.has(row.role)) ||
+      DEFAULT_RENDER_UTILITY_IDS.has(row.identifier)
+      ? [row.selection]
+      : [];
+  }
+  if (row.role !== 'unlit') return [];
+  const base = Object.fromEntries(
+    recipe.axes.map((axis) => [
+      axis,
+      axis === 'STORAGE_BUFFER_AVAILABLE' || axis === 'SKINNING_DISABLED',
+    ]),
+  );
+  const directSelections = [false, true].flatMap((atmosphere) =>
+    [false, true].map((direct) => ({
+      ...base,
+      ATMOSPHERE_AVAILABLE: atmosphere,
+      GPU_SCENE_DIRECT: direct,
+    })),
+  );
+  if (row.identifier !== 'forgeax::default-unlit') return directSelections;
+  // Scene admission, clustered batch selection and packed clustered drawing
+  // request these exact rigid selectors on the default storage-buffer path.
+  return [
+    ...directSelections,
+    { ...base, GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true },
+    { ...base, GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true, CLUSTER_FORWARD_AVAILABLE: true },
+    { ...base, CLUSTER_FORWARD_AVAILABLE: true },
+  ];
 }
 
 const engineShaderManifestCache = new Map<
@@ -2430,6 +2557,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     const templates = admitShaderTemplateManifest({
       schemaVersion: '7.0.0',
       library: publishShaderProgramTemplates(programs).unwrap(),
+      ...(base?.preparedPrograms === undefined ? {} : { preparedPrograms: base.preparedPrograms }),
       entries,
       materialShaders: base?.materialShaders ?? [],
     }).unwrap().wire;

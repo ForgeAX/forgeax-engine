@@ -1,63 +1,21 @@
-import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { TS_BACKEND_IDENTITY, tsBackend } from '../compute/boolean-ts';
 import { computeCacheKey, runComputeJob } from '../compute/job';
 import { TS_KERNEL_DIGEST, TS_KERNEL_FILES } from '../compute/kernel-digest';
 import { model } from '../model';
+import {
+  closureDigest,
+  closureManifest,
+  DIGEST_FILE,
+  kernelClosure,
+  rel,
+  SRC,
+} from './digest-guard';
 
-const SRC = fileURLToPath(new URL('..', import.meta.url));
-/** Every TS backend module: their closure is the kernel the shared identity names. */
-const ENTRIES = [
-  'compute/boolean-ts.ts',
-  'compute/bake-ts.ts',
-  'compute/process-backend.ts',
-  'compute/skin-ts.ts',
-  'compute/subdivide-ts.ts',
-  'compute/uv-backend.ts',
-].map((file) => join(SRC, file));
-const DIGEST_FILE = join(SRC, 'compute/kernel-digest.ts');
-
-/** Source files of the kernel: the relative-import closure of the entries, digest file excluded. */
-function closure(entries: readonly string[]): Map<string, string> {
-  const files = new Map<string, string>();
-  const pending = [...entries];
-  while (pending.length > 0) {
-    const file = pending.pop() as string;
-    if (files.has(file) || file === DIGEST_FILE) continue;
-    // CRLF checkouts hash like LF ones.
-    const text = readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
-    files.set(file, text);
-    for (const [, spec] of text.matchAll(/from '(\.\.?\/[^']+)'/g)) {
-      pending.push(join(dirname(file), `${spec as string}.ts`));
-    }
-  }
-  return files;
-}
-
-function digest(files: ReadonlyMap<string, string>): string {
-  const hash = createHash('sha256');
-  for (const file of [...files.keys()].sort()) {
-    hash.update(`${relative(SRC, file).replace(/\\/g, '/')}\0${files.get(file) as string}\0`);
-  }
-  return hash.digest('hex').slice(0, 16);
-}
-
-const rel = (file: string) => relative(SRC, file).replace(/\\/g, '/');
-
-/** Per-file sha256 (first 8 hex digits) of the closure, keyed by its `src`-relative path. */
-function manifest(files: ReadonlyMap<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const file of [...files.keys()].sort((a, b) => (rel(a) < rel(b) ? -1 : 1))) {
-    out[rel(file)] = createHash('sha256')
-      .update(files.get(file) as string)
-      .digest('hex')
-      .slice(0, 8);
-  }
-  return out;
-}
+const digest = closureDigest;
+const manifest = closureManifest;
 
 /** The whole generated kernel-digest.ts for a digest and its manifest. */
 function digestSource(value: string, files: Readonly<Record<string, string>>): string {
@@ -100,10 +58,10 @@ function staleReport(
 
 describe('TS backend identity tracks the kernel source (design R3)', () => {
   it('is the digest of every TS backend kernel source closure', () => {
-    const files = closure(ENTRIES);
+    const files = kernelClosure();
     // Bake, voxel / remesh, charts and skin weights reuse the identity: a change to any of
     // their kernels must change the DDC key (the bake cooker's cache is on disk).
-    expect([...files.keys()].map((f) => relative(SRC, f))).toEqual(
+    expect([...files.keys()].map(rel)).toEqual(
       expect.arrayContaining([
         'compute/boolean-ts.ts',
         'compute/bsp.ts',
@@ -131,7 +89,7 @@ describe('TS backend identity tracks the kernel source (design R3)', () => {
   });
 
   it('a kernel source change changes the identity and so the DDC cache key', () => {
-    const files = closure(ENTRIES);
+    const files = kernelClosure();
     const edited = new Map(files);
     const bsp = join(SRC, 'compute/bsp.ts');
     edited.set(bsp, `${files.get(bsp) as string}\n`);
@@ -157,7 +115,7 @@ describe('TS backend identity tracks the kernel source (design R3)', () => {
   });
 
   it('a stale digest names the changed, added and removed closure files (falsifier)', () => {
-    const files = closure(ENTRIES);
+    const files = kernelClosure();
     const recorded = manifest(files);
     const edited = new Map(files);
     const bsp = join(SRC, 'compute/bsp.ts');

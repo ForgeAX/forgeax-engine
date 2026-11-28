@@ -147,8 +147,7 @@ try {
   console.error('native CLI start/status/stop passed');
   }
   browserServer = await chromium.launchServer({
-    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
-    ...(process.env.FORGEAX_CHROME_CHANNEL ? { channel: process.env.FORGEAX_CHROME_CHANNEL } : {}),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: false,
     args: [
       '--enable-unsafe-webgpu', '--ignore-gpu-blocklist',

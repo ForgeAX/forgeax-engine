@@ -9,6 +9,8 @@ import {
   dot,
   length,
   normalize,
+  resolveSegments,
+  type SegmentsOrTolerance,
   scale,
   sub,
   type Tuple3,
@@ -21,6 +23,23 @@ export interface PathBend {
   /** Arc segments per corner (>= 1). */
   readonly segments: number;
 }
+
+/** Helix rising along `axis` from `center`: springs and threads. */
+export type HelixPath = {
+  readonly radius: number;
+  /** Rise per turn along the axis (meters, > 0). */
+  readonly pitch: number;
+  /** Number of turns (> 0, fractional allowed). */
+  readonly turns: number;
+  readonly axis?: Axis;
+  readonly center?: Tuple3;
+  readonly startAngle?: number;
+  /** 'right' (default) turns right-handed about the rising axis. */
+  readonly handedness?: 'right' | 'left';
+} & SegmentsOrTolerance<{
+  /** Samples per turn (>= 3). */
+  readonly segments: number;
+}>;
 
 /**
  * A 3D path, sampled into a polyline before use. Smooth kinds carry their own
@@ -51,22 +70,7 @@ export type PathSpec =
       /** Degrees; 0 lies on the axis after `axis` in x, y, z order (z for 'y'). */
       readonly startAngle?: number;
     }
-  | {
-      /** Helix rising along `axis` from `center`: springs and threads. */
-      readonly kind: 'helix';
-      readonly radius: number;
-      /** Rise per turn along the axis (meters, > 0). */
-      readonly pitch: number;
-      /** Number of turns (> 0, fractional allowed). */
-      readonly turns: number;
-      /** Samples per turn (>= 3). */
-      readonly segments: number;
-      readonly axis?: Axis;
-      readonly center?: Tuple3;
-      readonly startAngle?: number;
-      /** 'right' (default) turns right-handed about the rising axis. */
-      readonly handedness?: 'right' | 'left';
-    };
+  | ({ readonly kind: 'helix' } & HelixPath);
 
 /** A path: a spec, or a bare point list meaning a polyline. */
 export type PathInput = PathSpec | readonly Tuple3[];
@@ -84,7 +88,7 @@ export const path = {
     kind: 'arc',
     ...options,
   }),
-  helix: (options: Omit<Extract<PathSpec, { kind: 'helix' }>, 'kind'>): PathSpec => ({
+  helix: (options: HelixPath): PathSpec => ({
     kind: 'helix',
     ...options,
   }),
@@ -293,13 +297,15 @@ function sampleSpec(spec: PathSpec, closed: boolean): Result<Tuple3[], ModelingE
         const checked = requirePositive(`path.${name}`, spec[name]);
         if (!checked.ok) return checked;
       }
-      const segments = requireSegments('path.segments', spec.segments, 3);
+      const perTurn = resolveSegments('segments', spec.segments, spec.tolerance, spec.radius, 3);
+      if (!perTurn.ok) return perTurn;
+      const segments = requireSegments('path.segments', perTurn.value, 3);
       if (!segments.ok) return segments;
       const center = spec.center ?? [0, 0, 0];
       const centered = requirePoint('path.center', center);
       if (!centered.ok) return centered;
       const [u, w, a] = planeAxes(spec.axis ?? 'y');
-      const steps = Math.max(1, Math.ceil(spec.turns * spec.segments - 1e-9));
+      const steps = Math.max(1, Math.ceil(spec.turns * perTurn.value - 1e-9));
       const sign = spec.handedness === 'left' ? -1 : 1;
       const out: Tuple3[] = [];
       for (let k = 0; k <= steps; k++) {

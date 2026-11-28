@@ -30,6 +30,15 @@ export {
   captureBrowserExecutionSurface,
   createBrowserCapture,
 } from './browser-capture.js';
+export {
+  type DesktopRenderKernelAddonHandle,
+  desktopRenderKernelAddon,
+} from './build/desktop-addon.js';
+export {
+  createForgeaxDesktopNativeRenderer,
+  ForgeaxDesktopNativeRenderer,
+  type ForgeaxDesktopNativeRendererOptions,
+} from './build/desktop-native-kernel.js';
 export { createNodePackProgramHost } from './build/pack-program-host.js';
 export { createNodePackProgramImports } from './build/pack-program-imports.js';
 export {

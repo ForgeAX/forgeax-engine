@@ -2,9 +2,11 @@ import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { definePack, definePackageId } from '@forgeax/engine/pack/source';
 import { ok } from '@forgeax/engine/types';
 import { analyticUniformCloudRef, referenceCloudRef, bandCloudRef, bandWideInstanceRef } from '@forgeax-assets/volumetric-clouds/references';
-import { standardUeCloudRef } from '@forgeax-assets/ue-volumetric-clouds/references';
+import { alpineTextureSetRef, ueTextureSetRef } from './cloud-texture-sets.pack.ts';
 import { GROUND_SCENE_COMPONENTS, GROUND_SCENE_KEY, groundReferenceScene } from './ground-scene.ts';
 import { terrainRefs } from './terrain.pack.ts';
+import { nubisInstanceGuid } from './nubis/clouds.pack.ts';
+import { NUBIS_MODES } from './nubis/presets.ts';
 
 const packageId = definePackageId('019a50a5-0000-7000-8000-000000000001');
 
@@ -29,8 +31,10 @@ export default definePack({
       config: {
         scene: { $asset: AssetGuid.format(AssetGuid.derive(packageId, GROUND_SCENE_KEY)) },
         cloudMaterial: analyticUniformCloudRef, referenceCloudMaterial: referenceCloudRef,
-        sampleUeCloudMaterial: standardUeCloudRef,
+        sampleUeTextureSet: ueTextureSetRef,
+        alpineTextureSet: alpineTextureSetRef,
         bandCloudMaterial: bandCloudRef, bandWideInstance: bandWideInstanceRef,
+        nubisInstances: Object.fromEntries(NUBIS_MODES.map(mode => [mode, nubisInstanceGuid(mode)])),
       },
     },
     'plugin/frontend': {

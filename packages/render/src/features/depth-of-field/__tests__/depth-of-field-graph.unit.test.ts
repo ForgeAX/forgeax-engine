@@ -34,10 +34,18 @@ it.each(
   const color = imported('color', 'rgba16float');
   const depth = imported('depth', 'depth32float');
   const params = { ...DEFAULT_DEPTH_OF_FIELD_PARAMS, blurSide };
-  addDepthOfFieldPasses(graph, params, { width: 129, height: 73 }, color, depth, format, {
-    compute,
-    storageTexture: compute,
-  }).unwrap();
+  addDepthOfFieldPasses(
+    graph,
+    depthOfFieldTopology(params),
+    { width: 129, height: 73 },
+    color,
+    depth,
+    format,
+    {
+      compute,
+      storageTexture: compute,
+    },
+  ).unwrap();
   const compiled = graph.compile({ device, surfaceSize: { width: 129, height: 73 } }).unwrap();
   try {
     const info = compiled.inspect();

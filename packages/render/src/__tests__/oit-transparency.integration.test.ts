@@ -401,7 +401,7 @@ describe('weighted blended OIT on the real Renderer (rhi-null)', () => {
     }
   });
 
-  it('keeps every ineligible reason in the sorted residual after the composite', async () => {
+  it('draws every ineligible reason as part of the background for OIT', async () => {
     const host = await oitRenderer();
     try {
       host.spawnDraws(['eligible', 'additive', 'depth-write', 'custom-entry']);
@@ -419,8 +419,9 @@ describe('weighted blended OIT on the real Renderer (rhi-null)', () => {
         },
       });
       const names = inspection.perFramePassNames;
-      expect(names.indexOf(OIT_ACCUMULATE_PASS)).toBeGreaterThanOrEqual(0);
-      expect(names.indexOf('transparent')).toBeGreaterThan(names.indexOf(OIT_COMPOSITE_PASS));
+      expect(names.indexOf('transparent')).toBeGreaterThanOrEqual(0);
+      expect(names.indexOf(OIT_ACCUMULATE_PASS)).toBeGreaterThan(names.indexOf('transparent'));
+      expect(names.indexOf(OIT_COMPOSITE_PASS)).toBeGreaterThan(names.indexOf(OIT_ACCUMULATE_PASS));
       expect(host.errors).toEqual([]);
     } finally {
       host.dispose();

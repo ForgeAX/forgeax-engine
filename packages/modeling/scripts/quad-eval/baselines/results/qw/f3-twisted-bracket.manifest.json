@@ -1,0 +1,47 @@
+{
+  "tool": "qw",
+  "case": "f3-twisted-bracket",
+  "available": true,
+  "toolCommit": "9d1f27ad3c6e8b2800df27e2c14f70c5baf0250e",
+  "inputSha256": "4e741ef6d86130a5d2f1a589d7b747ab696e5d37c3e0f18d3660c5bb3f252b37",
+  "inputFaces": 214,
+  "targetFaces": 1000,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["quadwild", "input.obj"],
+      "cwd": "<run dir with basic_setup.txt>",
+      "wallSeconds": 18.005958665,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "do_remesh": 1,
+        "sharp_feature_thr": 30,
+        "alpha": 0.01,
+        "scaleFact": 1
+      }
+    },
+    {
+      "argv": ["quadwild", "input.obj"],
+      "cwd": "<run dir with basic_setup.txt>",
+      "wallSeconds": 18.902130611,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "do_remesh": 1,
+        "sharp_feature_thr": 30,
+        "alpha": 0.01,
+        "scaleFact": 2.2417
+      }
+    }
+  ],
+  "wallSeconds": 36.908089276,
+  "outcome": "ok",
+  "outputSha256": "efbaded2e1ae1461c6ba4c6a2d4f04d01fc3dfb35be6a8ae6367e0b5a082de86",
+  "rawOutputSha256": "e2440fe73f7d465aa33a7c98564a3680f31e4d8d6a37bc7ce622ef4f403fab20",
+  "outputFaces": 1076,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

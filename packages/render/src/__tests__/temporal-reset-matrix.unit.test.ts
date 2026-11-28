@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TEMPORAL_TAAU_DEPENDENCY_STATUS } from '../temporal/temporal-view';
-import { createTemporalView, HALTON_23_8, resolveTemporalReset } from '../temporal/view';
+import { createTemporalView, resolveTemporalReset, temporalJitterSample } from '../temporal/view';
 
 const base = () =>
   createTemporalView({
@@ -98,7 +98,7 @@ describe('TemporalView reset matrix', () => {
       resetReason: resolveTemporalReset(off.input, lastTaa.input) ?? 'first-frame',
     });
     expect(firstAfterOff.temporalFrameIndex).toBe(0);
-    expect(firstAfterOff.jitter).toEqual(HALTON_23_8[0]);
+    expect(firstAfterOff.jitter).toEqual(temporalJitterSample(0));
     expect(firstAfterOff.previousUnjitteredViewProjection).toBeUndefined();
     expect(firstAfterOff.resetReason).toBe('first-frame');
 
@@ -110,7 +110,7 @@ describe('TemporalView reset matrix', () => {
       resetReason: undefined,
     });
     expect(next.temporalFrameIndex).toBe(1);
-    expect(next.jitter).toEqual(HALTON_23_8[1]);
+    expect(next.jitter).toEqual(temporalJitterSample(1));
   });
 
   it('records the renderer TAAU owner as available', () => {

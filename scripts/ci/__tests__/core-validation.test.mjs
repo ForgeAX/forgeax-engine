@@ -296,7 +296,7 @@ test('Project Play retains all native acceptance on View one and full-profile V8
   const play = view.steps.find((step) => step.run?.includes(file));
   assert.equal(play.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == '1')");
   assert.equal(play.env.FORGEAX_CI_CORE_VALIDATION, '0');
-  assert.equal(play.env.FORGEAX_CHROME_CHANNEL, 'chrome-beta');
+  assert.equal(play.env.FORGEAX_CHROME_CHANNEL, 'chrome');
   assert.match(play.run, /--maxWorkers=1/);
   assert.match(play.run, /--coverage.enabled=false/);
   assert.match(play.run, /--passWithNoTests=false/);

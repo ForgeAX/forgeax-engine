@@ -1,7 +1,7 @@
 /** Shared private Screen dispatch records. The published placement/history
  * module's matching WGSL shape is checked by the owning reflection test. */
 export const SCREEN_PROBE_WORLD_RECORDS_WGSL = `struct ScreenProbeFrame { extent:vec4u, probes:vec4u, control:vec4u, environment:vec4f, tuning:vec4f, query:vec4u,
- previousViewProjection:mat4x4f, previousCamera:vec4f, expectedSource:vec4u }
+ previousViewProjection:mat4x4f, previousCamera:vec4f, expectedSource:vec4u, previousJitter:vec4f }
 struct ScreenProbe {
  position:vec3f, distance:f32, normal:vec3f, pixel:u32,
  canonicalLo:vec3u, receiverRow:u32, canonicalHi:vec3u, receiverPrimitive:u32,

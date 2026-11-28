@@ -15,6 +15,7 @@ import type { Renderer, RenderResult } from '../render-contract';
 import {
   admitRenderTargetDescriptor,
   type FramebufferSnapshotData,
+  type FramebufferSnapshotRequest,
   type FramebufferSnapshotTicket,
   type RenderTarget,
   type RenderTargetAdmissionLimits,
@@ -78,22 +79,93 @@ const DEFAULT_LIMITS: RenderTargetAdmissionLimits = {
   depthFormats: ['depth24plus-stencil8', 'depth32float'],
 };
 
-/** One target layer (cube face, array layer, or 3D slice) written by a frame. */
-export interface RenderTargetLayerWrite {
+/** One encoded write to a physical cube face, array layer, or 3D slice. */
+export interface RenderTargetPhysicalWrite {
   readonly target: RenderTarget;
+  readonly physical: RenderTargetPhysical;
   readonly layer: number;
   readonly mipLevel?: number;
 }
 
 interface ReadbackRecord {
   readonly target: RenderTarget;
-  readonly request: RenderTargetReadbackRequest;
   readonly ticket: InternalReadbackTicket;
   readonly format: RenderTargetDescriptor['format'];
   allocation?: { readonly device: RhiDevice; readonly buffer: Buffer };
+  finishMapping?: (result: RenderResult<Uint8Array, RenderError>) => void;
+  invalidated?: RenderTargetStateInvalidError;
   state:
     | { readonly kind: 'pending' | 'encoded' | 'submitted' }
     | { readonly kind: 'failed'; readonly error: RenderError };
+}
+
+type TargetObservationInvalidation = 'destroyed' | 'generation-mismatch';
+
+function readbackInvalidated(
+  reason: TargetObservationInvalidation,
+  generation: number,
+): RenderTargetStateInvalidError {
+  return new RenderTargetStateInvalidError({
+    operation: 'readback',
+    reason,
+    state: reason === 'destroyed' ? 'destroyed' : 'rebuilding',
+    generation,
+  });
+}
+
+function readbackCopyFailed(generation: number, cause: unknown): RenderTargetOperationFailedError {
+  return new RenderTargetOperationFailedError({
+    operation: 'readback',
+    stage: 'copy',
+    generation,
+    cause,
+    recovery: 'retry',
+  });
+}
+
+async function copyReadbackBytes(
+  record: ReadbackRecord,
+): Promise<RenderResult<Uint8Array, RenderError>> {
+  const buffer = record.allocation?.buffer;
+  if (buffer === undefined || typeof buffer.mapAsync !== 'function') {
+    return { ok: true, value: new Uint8Array(record.ticket.byteLength) };
+  }
+  const generation = record.ticket.deviceGeneration;
+  if (record.finishMapping !== undefined) {
+    return {
+      ok: false,
+      error: readbackCopyFailed(generation, 'ticket is already being observed'),
+    };
+  }
+  const result = await new Promise<RenderResult<Uint8Array, RenderError>>((resolve) => {
+    record.finishMapping = resolve;
+    const map = async (): Promise<void> => {
+      const mapped = await buffer.mapAsync(1);
+      if (!mapped.ok) {
+        if (record.finishMapping === resolve)
+          resolve({ ok: false, error: readbackCopyFailed(generation, mapped.error) });
+        return;
+      }
+      try {
+        // A notification from a retired device can arrive after logical cancellation.
+        if (record.finishMapping !== resolve) return;
+        const range = mapped.value.getMappedRange();
+        resolve(
+          range.ok
+            ? { ok: true, value: new Uint8Array(range.value.slice(0)) }
+            : { ok: false, error: readbackCopyFailed(generation, range.error) },
+        );
+      } finally {
+        if (mapped.value.mapState === 'mapped') mapped.value.unmap();
+      }
+    };
+    void map().catch((cause: unknown) => {
+      if (record.finishMapping === resolve)
+        resolve({ ok: false, error: readbackCopyFailed(generation, cause) });
+    });
+  });
+  if (!result.ok) delete record.finishMapping;
+  return record.invalidated === undefined ? result : { ok: false, error: record.invalidated };
 }
 
 /** A ticket keeps the format and footprint it requested, including across resize. */
@@ -145,27 +217,25 @@ export interface RenderTargetHost
     receipt: RenderTargetReadbackReceipt,
     tickets: readonly FramebufferSnapshotTicket[],
   ): Promise<RenderResult<readonly FramebufferSnapshotData[], RenderError>>;
+  /** Settle observations of the active device without revoking logical targets. */
+  onDeviceLost(): void;
   /** @internal Copy pending snapshot regions from a final linear-HDR scene color. */
   encodeFramebufferSnapshots(encoder: RhiCommandEncoder, source: FramebufferSnapshotSource): void;
   /** @internal Physical target used by the active Standard frame. */
   getPhysicalTarget(target: RenderTarget): RenderTargetPhysical | undefined;
   /** @internal A target write was accepted by the frame's sole queue submission. */
   markTargetSubmitted(target: RenderTarget, physical: RenderTargetPhysical): void;
-  /** @internal Add pending target copies to the frame's sole encoder. */
-  /**
-   * Encode pending readbacks. `written` lists the target layers this command
-   * buffer writes; a readback of a written layer copies the candidate.
-   */
-  encodePendingReadbacks(
-    encoder: RhiCommandEncoder,
-    written?: readonly RenderTargetLayerWrite[],
-  ): void;
-  /** Called immediately before the existing Standard frame is interpreted. */
+  /** Stage the exact physical subresource written by an encoded view. */
+  stageRenderTargetWrite(write: RenderTargetPhysicalWrite): void;
+  /** Encode pending copies from the matching captured output or the accepted target. */
+  encodePendingReadbacks(encoder: RhiCommandEncoder): void;
+  /** Begin the next encoding attempt. */
   beginFrame(): void;
-  /** Called only after the existing Renderer frame submission is accepted. */
+  /** Settle target writes against the frame's physical submission. */
   onFrameSubmitted(
     completed?: Promise<RenderResult<void, RenderError>>,
     receipt?: RenderTargetReadbackReceipt,
+    accepted?: boolean,
   ): void;
   /** Called after a replacement DeviceScope generation becomes active. */
   recover(): void;
@@ -179,6 +249,7 @@ function opaqueTicket(): RenderTargetReadbackTicket {
 
 export function createRenderTargetHost(options: RenderTargetHostOptions = {}): RenderTargetHost {
   let disposed = false;
+  let observationDeviceLost = false;
   const limits = options.limits ?? DEFAULT_LIMITS;
   const currentGeneration = (): number =>
     options.getGeneration?.() ?? options.initialGeneration ?? 0;
@@ -195,7 +266,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
   let nextSourceId = 1;
   const readbacks = new Map<RenderTargetReadbackTicket, ReadbackRecord>();
   const frameWriters = new Set<RenderTarget>();
-  let frameWrites: readonly RenderTargetLayerWrite[] = [];
+  const frameWrites: RenderTargetPhysicalWrite[] = [];
   type CubeLayer = { frameId: number | undefined; completed: boolean };
   const cubeWrites = new WeakMap<
     RenderTarget,
@@ -216,12 +287,14 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       record.ticket.frameId = undefined;
     }
   };
-  const recordCubeWrites = (receipt: RenderTargetReadbackReceipt | undefined): CubeLayer[] => {
-    const submitted: CubeLayer[] = [];
-    for (const { target, layer, mipLevel } of frameWrites) {
-      if ((mipLevel ?? 0) !== 0) continue;
-      const physical = candidatePhysical.get(target) ?? activePhysical.get(target);
-      if (physical?.descriptor.shape !== 'cube') continue;
+  const recordFrameWrites = (
+    receipt: RenderTargetReadbackReceipt | undefined,
+  ): CubeLayer[] | undefined => {
+    let submitted: CubeLayer[] | undefined;
+    for (const { target, physical, layer, mipLevel } of frameWrites) {
+      if ((candidatePhysical.get(target) ?? activePhysical.get(target)) !== physical) continue;
+      markTargetSubmitted(target, physical);
+      if ((mipLevel ?? 0) !== 0 || physical.descriptor.shape !== 'cube') continue;
       let cube = cubeWrites.get(target);
       if (cube?.physical !== physical) {
         cube = { physical, layers: new Map(), revision: 0 };
@@ -230,6 +303,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       const write = { frameId: receipt?.frameId, completed: false };
       cube.layers.set(layer, write);
       cube.revision++;
+      submitted ??= [];
       submitted.push(write);
     }
     return submitted;
@@ -268,17 +342,23 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       );
     }
   };
-  const encodeReadback = (
-    record: ReadbackRecord,
-    encoder: RhiCommandEncoder,
-    written?: readonly RenderTargetLayerWrite[],
-  ): void => {
+  const encodeReadback = (record: ReadbackRecord, encoder: RhiCommandEncoder): void => {
     if (record.state.kind !== 'pending' || record.allocation === undefined) return;
     const layer = record.ticket.layer ?? 0;
-    const writtenHere =
-      record.ticket.layer !== undefined &&
-      (written?.some((write) => write.target === record.target && write.layer === layer) ?? false);
-    const candidate = writtenHere ? candidatePhysical.get(record.target as object) : undefined;
+    const pending = candidatePhysical.get(record.target);
+    let candidate: RenderTargetPhysical | undefined;
+    if (pending !== undefined && record.ticket.layer !== undefined)
+      for (const write of frameWrites) {
+        if (
+          write.target === record.target &&
+          write.physical === pending &&
+          write.layer === layer &&
+          (write.mipLevel ?? 0) === record.ticket.mipLevel
+        ) {
+          candidate = pending;
+          break;
+        }
+      }
     // A resize candidate cannot satisfy a ticket for the still-accepted extent.
     const physical =
       candidate !== undefined && readbackMatchesPhysical(record, candidate)
@@ -328,7 +408,25 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     );
     record.state = { kind: 'encoded' };
   };
-  const releaseTarget = (target: RenderTarget): RenderError[] => {
+  const invalidateReadback = (
+    ticket: RenderTargetReadbackTicket,
+    record: ReadbackRecord,
+    reason: TargetObservationInvalidation,
+    failures: RenderError[],
+  ): void => {
+    readbacks.delete(ticket);
+    if (record.finishMapping !== undefined) {
+      const error = readbackInvalidated(reason, record.ticket.deviceGeneration);
+      record.invalidated = error;
+      record.finishMapping({ ok: false, error });
+      delete record.finishMapping;
+    }
+    releaseReadback(record, failures);
+  };
+  const releaseTarget = (
+    target: RenderTarget,
+    reason: TargetObservationInvalidation,
+  ): RenderError[] => {
     const failures: RenderError[] = [];
     const physicals = new Set([activePhysical.get(target), candidatePhysical.get(target)]);
     activePhysical.delete(target);
@@ -336,11 +434,9 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     staged.delete(target);
     cubeWrites.delete(target);
     for (const physical of physicals) releasePhysical(physical, failures);
-    for (const [ticket, record] of readbacks) {
-      if (record.target !== target) continue;
-      readbacks.delete(ticket);
-      releaseReadback(record, failures);
-    }
+    for (const [ticket, record] of readbacks)
+      if (record.target === target) invalidateReadback(ticket, record, reason, failures);
+    snapshots.release(target, reason);
     return failures;
   };
   const retirementResult = (failures: readonly RenderError[]): RenderResult<void, RenderError> =>
@@ -534,6 +630,12 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     ): RenderResult<RenderTargetReadbackTicket, RenderError> {
       const inspected = owner.inspect(target);
       if (!inspected.ok) return inspected;
+      if (observationDeviceLost) {
+        return {
+          ok: false,
+          error: readbackInvalidated('generation-mismatch', inspected.value.generation),
+        };
+      }
       if (!inspected.value.descriptor.readback) {
         return {
           ok: false,
@@ -619,7 +721,6 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       if (!internalTicket.ok) return internalTicket;
       const record = {
         target,
-        request,
         ticket: internalTicket.value,
         ...(buffer === undefined || device === undefined
           ? {}
@@ -680,41 +781,16 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
             }),
           };
         }
-        let bytes = new Uint8Array(record.ticket.byteLength);
-        if (
-          record.allocation !== undefined &&
-          typeof record.allocation.buffer.mapAsync === 'function'
-        ) {
-          const mapped = await record.allocation.buffer.mapAsync(1);
-          if (!mapped.ok) {
-            return {
-              ok: false,
-              error: new RenderTargetOperationFailedError({
-                operation: 'readback',
-                stage: 'copy',
-                generation: receipt.deviceGeneration,
-                cause: mapped.error,
-                recovery: 'retry',
-              }),
-            };
-          }
-          const range = mapped.value.getMappedRange();
-          if (!range.ok) {
-            return {
-              ok: false,
-              error: new RenderTargetOperationFailedError({
-                operation: 'readback',
-                stage: 'copy',
-                generation: receipt.deviceGeneration,
-                cause: range.error,
-                recovery: 'retry',
-              }),
-            };
-          }
-          bytes = new Uint8Array(range.value.slice(0));
-          mapped.value.unmap();
+        const bytes = await copyReadbackBytes(record);
+        if (!bytes.ok) return bytes;
+        if (readbacks.get(publicTicket) !== record) {
+          return {
+            ok: false,
+            error: record.invalidated ?? readbackInvalidated('destroyed', receipt.deviceGeneration),
+          };
         }
-        const completed = completeRenderTargetReadback(record.ticket, receipt, bytes);
+        const completed = completeRenderTargetReadback(record.ticket, receipt, bytes.value);
+        delete record.finishMapping;
         if (!completed.ok) return completed;
         readbacks.delete(publicTicket);
         const failures: RenderError[] = [];
@@ -737,19 +813,43 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     destroyRenderTarget(target: RenderTarget): RenderResult<void, RenderError> {
       const destroyed = owner.destroy(target);
       if (!destroyed.ok) return destroyed;
-      const failures = releaseTarget(target);
-      snapshots.release(target);
+      const failures = releaseTarget(target, 'destroyed');
       targets.delete(target);
       return retirementResult(failures);
     },
-    requestFramebufferSnapshot: snapshots.request,
+    requestFramebufferSnapshot(
+      target: RenderTarget,
+      request: FramebufferSnapshotRequest,
+    ): RenderResult<FramebufferSnapshotTicket, RenderError> {
+      if (observationDeviceLost) {
+        return {
+          ok: false,
+          error: new RenderTargetStateInvalidError({
+            operation: 'snapshot',
+            reason: 'generation-mismatch',
+            state: 'rebuilding',
+            generation: currentGeneration(),
+          }),
+        };
+      }
+      return snapshots.request(target, request);
+    },
     observeFramebufferSnapshots: snapshots.observe,
+    onDeviceLost(): void {
+      observationDeviceLost = true;
+      frameWrites.length = 0;
+      const failures: RenderError[] = [];
+      for (const [ticket, record] of readbacks)
+        invalidateReadback(ticket, record, 'generation-mismatch', failures);
+      snapshots.onDeviceLost();
+      for (const failure of failures) report(failure);
+    },
     encodeFramebufferSnapshots(encoder: RhiCommandEncoder, source: FramebufferSnapshotSource) {
       if (!disposed) snapshots.encode(encoder, source);
     },
     beginFrame(): void {
       if (disposed) return;
-      frameWrites = [];
+      frameWrites.length = 0;
       frameWriters.clear();
       snapshots.beginFrame();
       for (const record of readbacks.values())
@@ -769,6 +869,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     onFrameSubmitted(
       completed = Promise.resolve({ ok: true, value: undefined } as const),
       receipt?: RenderTargetReadbackReceipt,
+      accepted = true,
     ): void {
       if (disposed) return;
       const submittedReadbacks: ReadbackRecord[] = [];
@@ -785,7 +886,8 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
           submittedReadbacks.push(record);
         }
       }
-      const writtenCubeLayers = recordCubeWrites(receipt);
+      const writtenCubeLayers = accepted ? recordFrameWrites(receipt) : undefined;
+      frameWrites.length = 0;
       const generation = currentGeneration();
       const submittedTargets = [...staged].flatMap((target) => {
         const physical = candidatePhysical.get(target);
@@ -794,7 +896,8 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
         return [{ target, physical }];
       });
       const completeSubmission = (result: RenderResult<void, RenderError>) => {
-        if (!disposed && result.ok) for (const write of writtenCubeLayers) write.completed = true;
+        if (!disposed && result.ok && writtenCubeLayers !== undefined)
+          for (const write of writtenCubeLayers) write.completed = true;
         if (disposed || (submittedTargets.length === 0 && submittedReadbacks.length === 0)) return;
         const failures: RenderError[] = result.ok ? [] : [result.error];
         if (!result.ok) resetFailedReadbacks(submittedReadbacks, receipt);
@@ -860,16 +963,15 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       );
     },
     markTargetSubmitted,
+    stageRenderTargetWrite(write: RenderTargetPhysicalWrite) {
+      frameWrites.push(write);
+    },
     getPhysicalTarget(target: RenderTarget): RenderTargetPhysical | undefined {
       frameWriters.add(target);
       return candidatePhysical.get(target as object) ?? activePhysical.get(target as object);
     },
-    encodePendingReadbacks(
-      encoder: RhiCommandEncoder,
-      written?: readonly RenderTargetLayerWrite[],
-    ): void {
-      if (written !== undefined) frameWrites = [...frameWrites, ...written];
-      for (const record of readbacks.values()) encodeReadback(record, encoder, written);
+    encodePendingReadbacks(encoder: RhiCommandEncoder): void {
+      for (const record of readbacks.values()) encodeReadback(record, encoder);
     },
     recover(): void {
       if (disposed) return;
@@ -883,10 +985,11 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
           failures.push(begun.error);
           continue;
         }
-        failures.push(...releaseTarget(target));
+        failures.push(...releaseTarget(target, 'generation-mismatch'));
         const finished = owner.finishRecovery(target);
         if (!finished.ok) failures.push(finished.error);
       }
+      observationDeviceLost = false;
       for (const failure of failures) report(failure);
     },
     dispose(): void {
@@ -894,15 +997,15 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       retireRenderTargetMaterialSources(sourceOwner);
       const failures: RenderError[] = [];
       for (const target of targets) {
-        failures.push(...releaseTarget(target));
+        failures.push(...releaseTarget(target, 'destroyed'));
         const destroyed = owner.destroy(target);
         if (!destroyed.ok) failures.push(destroyed.error);
       }
       targets.clear();
       staged.clear();
       readbacks.clear();
-      snapshots.clear();
       frameWriters.clear();
+      frameWrites.length = 0;
       for (const failure of failures) report(failure);
     },
   });

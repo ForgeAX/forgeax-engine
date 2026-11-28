@@ -430,7 +430,11 @@ existing foreground `start.mjs` service. `--view-host` is that service HTTP orig
 `--host` option only selects the development server's bind address. The
 development server proxies bootstrap, health and the same-origin launcher to
 that service; workspace data uses the authenticated Host WebSocket. Start the
-service in a separate persistent terminal before the dev server.
+service in a separate persistent terminal before the dev server. In an Engine
+source checkout, the dev server automatically selects the same integration
+panels, frontend plugins and revision inputs as `pnpm build:tools`, so the Host
+and source Viewer stay paired. View workspace imports resolve to that checkout's
+source while React remains under Vite's dependency handling.
 Material editing and runtime property writes are not implemented.
 
 Every scene entity uses the same grouped read-only Inspector. Its bounded top

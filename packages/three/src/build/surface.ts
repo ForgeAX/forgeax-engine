@@ -80,7 +80,7 @@ export function lowerThreeSurface(graph: NormalizedSurface, module: string): str
         args.length === 0
           ? `surfaceUv(input, material.${name}CoordinatesTransform, material.${name}CoordinatesMetadata, material.${name}CoordinatesRotation)`
           : arg(0, false);
-      value = `sampleSurfaceTexture(${name}, ${name}_sampler, (${uv}) * material.${name}CoordinatesMetadata.zw, surfaceTextureFootprint(input, material.${name}CoordinatesTransform, material.${name}CoordinatesMetadata))`;
+      value = `sampleSurfaceTexture(${name}, ${name}_sampler, (${uv}) * material.${name}CoordinatesMetadata.zw, surfaceTextureFootprint(input, material.${name}CoordinatesTransform, material.${name}CoordinatesMetadata), input.materialTextureMipBias)`;
     } else if (op === 'split') value = `${arg(0, false)}.${data}`;
     else if (op === 'construct') value = lowerConstruct(expression, graph, arg);
     else if (op === 'select')

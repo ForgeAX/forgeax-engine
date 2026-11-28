@@ -8,6 +8,7 @@ import {
   assetsJobOutputs,
   assetsJobSources,
   createMeshJobCooker,
+  type JsonValue,
   type MeshJob,
   meshJobSources,
   type RigJob,
@@ -101,6 +102,38 @@ describe('mesh jobs through PackCookSource + NativeCooker', () => {
     expect(createMeshJobCooker([CRATE]).cacheIdentity?.()).not.toBe(
       createMeshJobCooker([CRATE, BROKEN]).cacheIdentity?.(),
     );
+  });
+
+  it('a job fingerprint separates builds that differ only in closed-over values', () => {
+    const crate = (size: number, fingerprint?: { readonly size: number }): MeshJob<never> => ({
+      name: 'crate',
+      ...(fingerprint === undefined ? {} : { fingerprint }),
+      build: (() => {
+        const m = model();
+        m.box({ size: [size, size, size] });
+        return m;
+      }) as never,
+    });
+    const identity = (job: MeshJob<never>) => createMeshJobCooker([job]).cacheIdentity?.();
+    // Same text, different captured value: only the declared fingerprint can tell them apart.
+    expect(identity(crate(1))).toBe(identity(crate(2)));
+    expect(identity(crate(1, { size: 1 }))).not.toBe(identity(crate(2, { size: 2 })));
+    expect(identity(crate(1, { size: 1 }))).toBe(identity(crate(1, { size: 1 })));
+    expect(identity(crate(1, { size: 1 }))).not.toBe(identity(crate(1)));
+  });
+
+  it('an absent fingerprint is the null fingerprint, and nothing else (falsifier)', () => {
+    const job = (fingerprint?: JsonValue): MeshJob<never> => ({
+      name: 'crate',
+      ...(fingerprint === undefined ? {} : { fingerprint }),
+      build: (() => model()) as never,
+    });
+    const identity = (fingerprint?: JsonValue) =>
+      createMeshJobCooker([job(fingerprint)]).cacheIdentity?.();
+    expect(identity()).toBe(identity(null));
+    for (const other of [0, false, '', [], {}, 'null']) {
+      expect(identity(other as JsonValue), JSON.stringify(other)).not.toBe(identity());
+    }
   });
 
   it('editing a job body or its export options changes the cooker identity and the input fingerprint', async () => {

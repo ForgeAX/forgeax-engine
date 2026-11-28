@@ -1,5 +1,13 @@
 import { FrameListBase } from '../scene/frame-list';
-import { changes, type Node, nodes, put, remove, treeKind } from '../scene/frame-tree';
+import {
+  changes,
+  type Node,
+  nodes,
+  put,
+  remove,
+  treeKind,
+  visitOrderedValues,
+} from '../scene/frame-tree';
 import { captureMaterialOverrides } from '../scene/mesh-materials';
 import { captureBatchGeometry, captureBatchLod } from './batch-execution';
 import type {
@@ -211,6 +219,22 @@ function sameFacts(left: MemberPage, a: number, right: MemberPage, b: number): b
 /** Pages a changed root path holds, ascending by first slot. */
 function changedPages(pages: MemberPage[]): MemberPage[] {
   return pages.sort((left, right) => (left[0] as number) - (right[0] as number));
+}
+
+type MemberFactsVisitor = (
+  slot: number,
+  generation: number,
+  entityKey: number,
+  instanceCount: number,
+) => void;
+
+function visitMemberFacts(page: MemberPage, base: number, visit: MemberFactsVisitor): void {
+  visit(
+    page[base] as number,
+    page[base + GENERATION] as number,
+    page[base + ENTITY] as number,
+    page[base + COUNT] as number,
+  );
 }
 
 /**
@@ -473,6 +497,30 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
   heldSlots(slots: readonly number[], out: number[]): void {
     heldSlotsIn(this.#root, slots, 0, slots.length, out);
   }
+  /** Traverse the numeric facts once, including members with zero draw lanes. */
+  forEachMemberFacts(visit: MemberFactsVisitor): void {
+    visitOrderedValues(this.#root, (page) => {
+      for (let base = 0; base < page.length; base += STRIDE) visitMemberFacts(page, base, visit);
+    });
+  }
+
+  /** A draw reader receives the current facts or the address that left the batch. */
+  visitMemberEdits(
+    before: MemberCandidates,
+    changed: MemberFactsVisitor,
+    removed: (slot: number) => void,
+  ): void {
+    this.#scanMemberEdits(before, (slot, _left, _leftBase, right, rightBase) => {
+      if (right === undefined) removed(slot);
+      else visitMemberFacts(right, rightBase, changed);
+    });
+  }
+
+  /** For consumers that only need to refresh their selection at changed addresses. */
+  changedSlotsSince(before: MemberCandidates, visit: (slot: number) => void): void {
+    this.#scanMemberEdits(before, visit);
+  }
+
   /** Visit each slot whose member differs from `before`, with both members. */
   changesSince(
     before: MemberCandidates,
@@ -480,6 +528,26 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
       slot: number,
       before: GpuDrivenBatchMember | undefined,
       after: GpuDrivenBatchMember | undefined,
+    ) => void,
+  ): void {
+    this.#scanMemberEdits(before, (slot, left, leftBase, right, rightBase) =>
+      visit(
+        slot,
+        left === undefined ? undefined : memberOf(left, leftBase),
+        right === undefined ? undefined : memberOf(right, rightBase),
+      ),
+    );
+  }
+
+  /** Compare across page shape changes without materializing individual members. */
+  #scanMemberEdits(
+    before: MemberCandidates,
+    visit: (
+      slot: number,
+      left: MemberPage | undefined,
+      leftBase: number,
+      right: MemberPage | undefined,
+      rightBase: number,
     ) => void,
   ): void {
     if (before.#root === this.#root) return;
@@ -503,15 +571,10 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
       const leftSlot = left === undefined ? Number.POSITIVE_INFINITY : (left[leftBase] as number);
       const rightSlot =
         right === undefined ? Number.POSITIVE_INFINITY : (right[rightBase] as number);
-      if (leftSlot < rightSlot) visit(leftSlot, memberOf(left as MemberPage, leftBase), undefined);
-      else if (rightSlot < leftSlot)
-        visit(rightSlot, undefined, memberOf(right as MemberPage, rightBase));
+      if (leftSlot < rightSlot) visit(leftSlot, left, leftBase, undefined, 0);
+      else if (rightSlot < leftSlot) visit(rightSlot, undefined, 0, right, rightBase);
       else if (!sameFacts(left as MemberPage, leftBase, right as MemberPage, rightBase))
-        visit(
-          leftSlot,
-          memberOf(left as MemberPage, leftBase),
-          memberOf(right as MemberPage, rightBase),
-        );
+        visit(leftSlot, left, leftBase, right, rightBase);
       if (leftSlot <= rightSlot && left !== undefined) {
         leftBase += STRIDE;
         if (leftBase === left.length) {

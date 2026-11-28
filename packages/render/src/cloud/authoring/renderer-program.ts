@@ -62,8 +62,8 @@ export function cloudRendererProgram(
 #import forgeax_cloud::aerial::{cloud_height_transport, cloud_aerial_transport}
 #import forgeax_cloud::geometry::{cloud_shell_interval, CLOUD_UNTRACED_DEPTH_METERS}
 #import forgeax_cloud::lighting::{cloud_double_henyey_greenstein, cloud_optical_octaves, cloud_solar_light, cloud_sky_light}
-#import forgeax_cloud::shadow::{cloud_bsm_trace_interval, cloud_shadow_segment, cloud_shadow_ray_octave_tau, cloud_shadow_map_octave_tau, cloud_shadow_map_load, cloud_shadow_optical_depth, cloud_shadow_accumulate, cloud_shadow_finish}
-#import forgeax_cloud::depth_minmax::{cloud_scene_depth_range_meters}
+#import forgeax_cloud::shadow::{cloud_bsm_trace_interval, cloud_shadow_segment, cloud_shadow_ray_octave_tau, cloud_shadow_map_octave_tau, cloud_shadow_map_load, cloud_shadow_optical_depth, cloud_shadow_accumulate, cloud_shadow_finish, cloud_shadow_pack_column, cloud_shadow_is_invalid, CLOUD_SHADOW_INVALID_COLUMN}
+#import forgeax_cloud::depth_minmax::{cloud_scene_depth_range_meters, cloud_mode0_depth_range_meters, cloud_mode0_pack_depth_km, cloud_mode0_unjittered_uv, cloud_mode0_noise}
 #import forgeax_cloud::trace::{cloud_one_minus_beer}
 struct CloudMediumContext { positionMeters: vec3f, heightFraction: f32, sampleDxMeters: vec3f, sampleDyMeters: vec3f, cameraRelativeMeters: vec3f, windOffsetMeters: vec3f, }
 struct CloudMediumSample { extinctionPerMeter: f32, albedo: vec3f, emissivePerMeter: vec3f, materialAO: f32, }
@@ -98,6 +98,8 @@ struct CloudRendererUniforms {
 @group(1) @binding(5) var cloudShadowMap: texture_2d<f32>;
 @group(1) @binding(6) var solarTransmittance: texture_2d<f32>;
 @group(1) @binding(7) var distantSky: texture_2d<f32>;
+@group(1) @binding(8) var sceneDepthRange: texture_2d<f32>;
+@group(1) @binding(9) var cloudBlueNoise: texture_2d<f32>;
 fn renderer_medium(position: vec3f, camera: vec3f, dx: vec3f, dy: vec3f) -> CloudMediumSample {
   let radius = 6360000.0;
   let radial = length(position + vec3f(0.0, radius, 0.0));
@@ -118,7 +120,7 @@ fn renderer_light_tau(position: vec3f, camera: vec3f, light: vec3f, dx: vec3f, d
     let relative = position - cloud.shadowOrigin.xyz;
     let uv = vec2f(dot(relative, cloud.shadowAxisU.xyz) / dot(cloud.shadowAxisU.xyz, cloud.shadowAxisU.xyz), dot(relative, cloud.shadowAxisV.xyz) / dot(cloud.shadowAxisV.xyz, cloud.shadowAxisV.xyz)) * 0.5 + 0.5;
     let encoded = cloud_shadow_map_load(cloudShadowMap, clamp(uv, vec2f(0.0), vec2f(1.0)));
-    if any(encoded < vec3f(0.0)) { return vec2f(-1.0); }
+    if cloud_shadow_is_invalid(encoded) { return vec2f(-1.0); }
     let depth = clamp(dot(relative, normalize(cloud.shadowDirection.xyz)), 0.0, cloud.shadowDirection.w);
     return vec2f(cloud_shadow_optical_depth(encoded, depth), 1.0);
   }
@@ -137,11 +139,13 @@ fn renderer_light_tau(position: vec3f, camera: vec3f, light: vec3f, dx: vec3f, d
 struct CloudRendererOutputs { @location(0) composited: vec4f, @location(1) lt: vec4f, @location(2) depth: vec4f, }
 @vertex fn vs_main(@builtin(vertex_index) id: u32) -> FullscreenOutput { return fullscreen_triangle(id); }
 struct CloudRendererTrace { result: CloudRendererOutputs, farPosition: vec3f, nearPosition: vec3f }
-fn renderer_trace(input: FullscreenOutput, mode0: bool) -> CloudRendererTrace {
+fn renderer_trace(input: FullscreenOutput, mode0: bool, depthRangeZ: vec2f, stepPhase: f32) -> CloudRendererTrace {
   let dimensions = textureDimensions(sceneDepth);
   let fullPixel = select(vec2i(input.position.xy), min(vec2i(input.position.xy) * 4 + vec2i(cloud.reserved.xy) * 2, vec2i(dimensions) - 1), mode0);
   var sampleInput = input;
-  sampleInput.uv = (vec2f(fullPixel) + 0.5) / vec2f(dimensions);
+  let ueDepthKm = mode0 && cloud.groundSolar.w != 0.0;
+  sampleInput.uv = select((vec2f(fullPixel) + 0.5) / vec2f(dimensions),
+    cloud_mode0_unjittered_uv(view, (vec2f(fullPixel / 2) + 0.5) / vec2f((dimensions + 1u) / 2u)), ueDepthKm);
   let scene = textureLoad(sceneColor, fullPixel, 0);
   let z = textureLoad(sceneDepth, fullPixel, 0);
   let ray = atmosphere_view_ray(view, sampleInput.uv);
@@ -156,7 +160,13 @@ fn renderer_trace(input: FullscreenOutput, mode0: bool) -> CloudRendererTrace {
   }
   var interval = renderer_interval(ray.origin, ray.direction, cloud.layer.w);
   var depthRange = vec2f(sceneMeters);
-  if mode0 { depthRange = cloud_scene_depth_range_meters(sceneDepth, vec2i(input.position.xy) * 4, vec2u(4), view.inverseViewProj, ray.origin); }
+  if mode0 {
+    if depthRangeZ.r < 0.0 {
+      depthRange = cloud_scene_depth_range_meters(sceneDepth, vec2i(input.position.xy) * 4, vec2u(4), view.inverseViewProj, ray.origin);
+    } else {
+      depthRange = cloud_mode0_depth_range_meters(depthRangeZ, sampleInput.uv, view.inverseViewProj, ray.origin);
+    }
+  }
   interval.y = min(interval.y, depthRange.y);
   var radiance = vec3f(0.0);
   var nearRadiance = vec3f(0.0);
@@ -174,7 +184,7 @@ fn renderer_trace(input: FullscreenOutput, mode0: bool) -> CloudRendererTrace {
     var nearWeight = 0.0;
     var nearWeightedDepth = 0.0;
     for (var i = 0u; i < count; i++) {
-      let distance = interval.x + (f32(i) + 0.5) * ds;
+      let distance = interval.x + (f32(i) + stepPhase) * ds;
       let position = ray.origin + ray.direction * distance;
       let dx = originDx + rayDx * distance;
       let dy = originDy + rayDy * distance;
@@ -217,21 +227,58 @@ fn renderer_trace(input: FullscreenOutput, mode0: bool) -> CloudRendererTrace {
       transmittance *= exp(-sigma * ds);
       if cloud.sampling.z > 0.0 && transmittance < cloud.sampling.z { break; }
     }
-    representative = select(interval.y, weightedDepth / max(weight, 1e-20), weight > 0.0);
+    representative = select(interval.y, weightedDepth / max(weight, 1e-20),
+      weight > 0.0 && (!ueDepthKm || transmittance <= 0.99));
     nearRepresentative = select(min(interval.y, depthRange.x), nearWeightedDepth / max(nearWeight, 1e-20), nearWeight > 0.0);
   } else { interval = vec2f(CLOUD_UNTRACED_DEPTH_METERS); }
-  if mode0 { return CloudRendererTrace(CloudRendererOutputs(vec4f(radiance, transmittance), vec4f(nearRadiance, nearTransmittance), vec4f(representative, sceneMeters, depthRange)),
+  if mode0 { return CloudRendererTrace(CloudRendererOutputs(vec4f(radiance, transmittance), vec4f(nearRadiance, nearTransmittance), select(vec4f(representative, sceneMeters, depthRange),
+      cloud_mode0_pack_depth_km(representative, depthRange), ueDepthKm)),
     ray.origin + ray.direction * representative, ray.origin + ray.direction * nearRepresentative); }
   return CloudRendererTrace(CloudRendererOutputs(vec4f(scene.rgb * transmittance + radiance, scene.a), vec4f(radiance, transmittance), vec4f(interval, sceneMeters, representative)), ray.origin, ray.origin);
 }
-@fragment fn fs_main(input: FullscreenOutput) -> CloudRendererOutputs { return renderer_trace(input, false).result; }
+@fragment fn fs_main(input: FullscreenOutput) -> CloudRendererOutputs { return renderer_trace(input, false, vec2f(-1.0), 0.5).result; }
+
+@fragment fn fs_trace_mode_zero_ue(input: FullscreenOutput) -> CloudRendererOutputs {
+  let traced = renderer_trace(input, true, vec2f(-1.0), cloud_mode0_noise(cloudBlueNoise, input.position.xy, cloud.groundSolar.w, cloud.sampling.x));
+  return CloudRendererOutputs(cloud_height_transport(view, traced.farPosition, traced.result.composited),
+    cloud_height_transport(view, traced.nearPosition, traced.result.lt), traced.result.depth);
+}
+
+@fragment fn fs_trace_mode_zero_depth_range_ue(input: FullscreenOutput) -> CloudRendererOutputs {
+  let traced = renderer_trace(input, true, textureLoad(sceneDepthRange, vec2i(input.position.xy), 0).rg, cloud_mode0_noise(cloudBlueNoise, input.position.xy, cloud.groundSolar.w, cloud.sampling.x));
+  return CloudRendererOutputs(cloud_height_transport(view, traced.farPosition, traced.result.composited),
+    cloud_height_transport(view, traced.nearPosition, traced.result.lt), traced.result.depth);
+}
+
+@fragment fn fs_trace_mode_zero_air_ue(input: FullscreenOutput) -> CloudRendererOutputs {
+  let traced = renderer_trace(input, true, vec2f(-1.0), cloud_mode0_noise(cloudBlueNoise, input.position.xy, cloud.groundSolar.w, cloud.sampling.x));
+  return CloudRendererOutputs(cloud_aerial_transport(view, traced.farPosition, traced.result.composited),
+    cloud_aerial_transport(view, traced.nearPosition, traced.result.lt), traced.result.depth);
+}
+
+@fragment fn fs_trace_mode_zero_air_depth_range_ue(input: FullscreenOutput) -> CloudRendererOutputs {
+  let traced = renderer_trace(input, true, textureLoad(sceneDepthRange, vec2i(input.position.xy), 0).rg, cloud_mode0_noise(cloudBlueNoise, input.position.xy, cloud.groundSolar.w, cloud.sampling.x));
+  return CloudRendererOutputs(cloud_aerial_transport(view, traced.farPosition, traced.result.composited),
+    cloud_aerial_transport(view, traced.nearPosition, traced.result.lt), traced.result.depth);
+}
+
 @fragment fn fs_trace_mode_zero(input: FullscreenOutput) -> CloudRendererOutputs {
-  let traced = renderer_trace(input, true);
+  let traced = renderer_trace(input, true, vec2f(-1.0), 0.5);
+  return CloudRendererOutputs(cloud_height_transport(view, traced.farPosition, traced.result.composited),
+    cloud_height_transport(view, traced.nearPosition, traced.result.lt), traced.result.depth);
+}
+@fragment fn fs_trace_mode_zero_depth_range(input: FullscreenOutput) -> CloudRendererOutputs {
+  let traced = renderer_trace(input, true, textureLoad(sceneDepthRange, vec2i(input.position.xy), 0).rg, 0.5);
   return CloudRendererOutputs(cloud_height_transport(view, traced.farPosition, traced.result.composited),
     cloud_height_transport(view, traced.nearPosition, traced.result.lt), traced.result.depth);
 }
 @fragment fn fs_trace_mode_zero_air(input: FullscreenOutput) -> CloudRendererOutputs {
-  let traced = renderer_trace(input, true);
+  let traced = renderer_trace(input, true, vec2f(-1.0), 0.5);
+  return CloudRendererOutputs(cloud_aerial_transport(view, traced.farPosition, traced.result.composited),
+    cloud_aerial_transport(view, traced.nearPosition, traced.result.lt), traced.result.depth);
+}
+@fragment fn fs_trace_mode_zero_air_depth_range(input: FullscreenOutput) -> CloudRendererOutputs {
+  let traced = renderer_trace(input, true, textureLoad(sceneDepthRange, vec2i(input.position.xy), 0).rg, 0.5);
   return CloudRendererOutputs(cloud_aerial_transport(view, traced.farPosition, traced.result.composited),
     cloud_aerial_transport(view, traced.nearPosition, traced.result.lt), traced.result.depth);
 }
@@ -242,17 +289,17 @@ fn renderer_trace(input: FullscreenOutput, mode0: bool) -> CloudRendererTrace {
   let dy = dpdy(origin);
   let interval = cloud_bsm_trace_interval(origin + vec3f(0.0, 6360000.0, 0.0), direction,
     6360000.0, cloud.layer.x, cloud.layer.y);
-  if interval.x < 0.0 { return vec4f(cloud.shadowDirection.w, 0.0, 0.0, 1.0); }
+  if interval.x < 0.0 { return vec4f(cloud_shadow_pack_column(cloud.shadowDirection.w, 0.0, 0.0), 1.0); }
   if interval.y <= interval.x { return vec4f(0.0, 0.0, 0.0, 1.0); }
   var acc = vec4f(interval.y, 0.0, 0.0, 0.0);
   var step = 0.0;
   if interval.x >= 0.0 {
-    let count = u32(clamp(cloud.shadowEncoding.x, 1.0, 768.0));
-    step = (interval.y - interval.x) / f32(count);
-    for (var i = 0u; i < count; i++) {
-      let distance = interval.x + (f32(i) + 0.5) * step;
+    let count = clamp(cloud.shadowEncoding.x, 1.0, 256.0);
+    step = (interval.y - interval.x) / count;
+    for (var midpoint = 0.5; midpoint < count; midpoint += 1.0) {
+      let distance = interval.x + midpoint * step;
       let medium = renderer_medium(origin + direction * distance, view.cameraPos, dx, dy);
-      if !renderer_valid_medium(medium) { return vec4f(-1.0); }
+      if !renderer_valid_medium(medium) { return vec4f(CLOUD_SHADOW_INVALID_COLUMN, 1.0); }
       acc = cloud_shadow_accumulate(acc, distance, vec3f(max(0.0, medium.extinctionPerMeter)));
     }
   }

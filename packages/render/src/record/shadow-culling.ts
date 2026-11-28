@@ -2,6 +2,7 @@ import { box3, frustum } from '@forgeax/engine-math';
 import { type ShadowViewIdentity, shadowViewIdentityKey } from '../gpu-driven/shadow-views';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
+import type { RecordingScenePose } from '../scene/captured-transform';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import type { ShadowViewProjection } from '../world/render-lights';
@@ -98,11 +99,12 @@ const worldBoundsScratch = box3.create();
 export function shadowViewContains(
   source: RenderableSnapshot,
   planes: Float32Array | undefined,
-  boundsOf: PersistentShadowCasterProjection['worldBoundsOf'] | undefined,
+  boundsOf: PersistentShadowCasterProjection['recordingWorldBoundsOf'],
   slot?: RenderSceneSlot,
+  pose?: RecordingScenePose,
 ): boolean {
   if (planes === undefined || planes.length === 0) return true;
-  const bounds = shadowCasterBounds(source, worldBoundsScratch, boundsOf, slot);
+  const bounds = shadowCasterBounds(source, worldBoundsScratch, boundsOf, slot, pose);
   return (
     bounds === 'unbounded' ||
     (bounds !== 'empty' && frustum.intersectsBox(planes as frustum.Frustum, bounds))
@@ -113,12 +115,14 @@ export function shadowViewContains(
 export function shadowCasterBounds(
   source: RenderableSnapshot,
   into: box3.Box3,
-  boundsOf: PersistentShadowCasterProjection['worldBoundsOf'] | undefined,
+  boundsOf: PersistentShadowCasterProjection['recordingWorldBoundsOf'],
   slot?: RenderSceneSlot,
+  pose?: RecordingScenePose,
 ): box3.Box3 | 'unbounded' | 'empty' {
   if (source.spriteInstances !== undefined) return 'unbounded';
   if (source.instances?.instanceCount === 0) return 'empty';
-  if (source.frustumCulled === false || boundsOf?.(source, into, slot) !== true) return 'unbounded';
+  if (source.frustumCulled === false || boundsOf?.(source, into, slot, pose) !== true)
+    return 'unbounded';
   return into;
 }
 

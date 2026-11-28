@@ -23,6 +23,9 @@
     },
     {
       "path": "../pack"
+    },
+    {
+      "path": "../modeling-kernel"
     }
   ],
   "exclude": [

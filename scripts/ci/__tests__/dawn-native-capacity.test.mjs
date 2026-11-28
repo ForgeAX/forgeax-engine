@@ -5,6 +5,7 @@ import {
   dawnGroupEnvironment,
   dawnNativeConcurrency,
   dawnNativeExecutionOrder,
+  dawnOrdinaryInvocations,
   dawnVitestArgs,
   executeDawnGroups,
 } from '../run-dawn-gate.mjs';
@@ -34,6 +35,47 @@ test('lane four runs Default GBuffer GI in its dedicated locked graphics process
   assert.ok(args.includes('--no-file-parallelism'));
   assert.ok(args.includes('--isolate'));
   assert.ok(!args.some((argument) => argument.startsWith('--shard=')));
+});
+
+test('Screen Probe Support and Default GBuffer GI require locked graphics in CI', () => {
+  const required = DAWN_GATE_GROUPS.filter((group) => group.lockedGraphics);
+  assert.deepEqual(required.map(({ id }) => id).sort(), [
+    'default-gbuffer-gi',
+    'screen-probe-support',
+  ]);
+  for (const group of required) {
+    assert.equal(group.nativeProcessSlots, 2);
+    assert.throws(
+      () => dawnGroupEnvironment(group, { GITHUB_ACTIONS: 'true' }, 2, 2),
+      /requires the locked Lavapipe bundle in GitHub CI/,
+    );
+  }
+});
+
+test('daily Dawn lane four drains the exclusive cohort before using two bounded workers', () => {
+  const owner = DAWN_GATE_GROUPS.find(({ id }) => id === 'ordinary-4');
+  const core = { FORGEAX_CI_CORE_VALIDATION: '1', FORGEAX_DAWN_LIGHTWEIGHT: '1' };
+  const env = dawnGroupEnvironment(owner, core, 2, 2);
+  const phases = dawnOrdinaryInvocations(owner, env, 2);
+  assert.deepEqual(
+    phases.map((entry) => entry.env.FORGEAX_DAWN_ORDINARY_MEMORY_PHASE),
+    ['exclusive', 'bounded'],
+  );
+  for (const [index, phase] of phases.entries()) {
+    const args = dawnVitestArgs(phase.group, { ordinaryWorkers: 2 });
+    assert.ok(args.includes('--shard=4/4'));
+    assert.ok(args.includes(`--maxWorkers=${index + 1}`));
+    assert.equal(phase.env.LP_NUM_THREADS, '2');
+    assert.equal(phase.env.MALLOC_ARENA_MAX, '2');
+    assert.equal(phase.env.FORGEAX_SHADER_COMPILE_WORKERS, '1');
+  }
+  assert.equal(phases[0].env.FORGEAX_DAWN_SERIAL_ORDINARY, '2');
+  assert.equal(phases[1].env.FORGEAX_DAWN_SERIAL_ORDINARY, undefined);
+  assert.equal(
+    dawnOrdinaryInvocations(owner, { ...env, FORGEAX_DAWN_LIGHTWEIGHT: '0' }, 2).length,
+    1,
+  );
+  assert.equal(dawnOrdinaryInvocations(owner, env, 1).length, 1);
 });
 
 test('runs World Card bounds in a serial native fork with bounded software compilation', () => {

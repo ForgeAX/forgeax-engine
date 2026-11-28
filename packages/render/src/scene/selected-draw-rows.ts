@@ -6,7 +6,11 @@ import {
   type SparseRowKind,
 } from './frame-list';
 import type { FrameSet } from './frame-set';
-import type { SurfaceColumnReader, sceneDrawContentOf } from './render-scene-view';
+import type {
+  DrawContentAdmission,
+  SurfaceColumnReader,
+  sceneDrawContentOf,
+} from './render-scene-view';
 import type { RowContent } from './row-contents';
 import type { SceneSlotFrame } from './scene-slots';
 
@@ -52,6 +56,11 @@ export class SelectedSceneDrawRows extends FrameListBase<RenderableSnapshot> {
   lookupMember(entity: number) {
     const slot = this.source.identitySlot(entity);
     return slot !== undefined && this.members.has(slot) ? this.source.slotAt(slot) : undefined;
+  }
+
+  row(entity: number): RenderableSnapshot | undefined {
+    const record = this.lookupMember(entity);
+    return record === undefined ? undefined : this.columns.project(record);
   }
 
   /** OIT skin membership in a verified view interval, without observing rigid poses. */
@@ -137,8 +146,9 @@ export class SelectedSceneDrawRows extends FrameListBase<RenderableSnapshot> {
   findDrawContent<T>(
     requireMaterials: boolean,
     read: (entity: number, content: RowContent) => T | undefined,
+    admit?: DrawContentAdmission,
   ): T | undefined {
-    return this.columns.findDrawContent(requireMaterials, read, this.members);
+    return this.columns.findDrawContent(requireMaterials, read, admit, this.members);
   }
 }
 

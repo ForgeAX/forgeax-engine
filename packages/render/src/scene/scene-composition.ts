@@ -77,6 +77,7 @@ import type { FrameList } from './frame-list';
 import { FrameSet } from './frame-set';
 import { LocalMeshSource, LocalMeshSourceStage } from './local-mesh-source';
 import { MaterialDispatch, type MaterialFrame } from './material-dispatch';
+import { slotContent } from './mesh-draw';
 import type { MeshMaterialGeometry } from './mesh-materials';
 import type {
   MeshSourceContent,
@@ -245,7 +246,7 @@ function sceneJournal(projection: RenderScene): Pick<RenderSceneApplyResult, 'jo
 
 function sourceMembershipChanged(world: World, slot: RenderSceneSlot): boolean {
   const entity = slot.entityKey as EntityHandle;
-  const snapshot = slot.snapshot;
+  const snapshot = slotContent(slot);
   const layout = renderSourceLayout(world)(entity);
   return (
     !layout?.global ||
@@ -299,18 +300,16 @@ function topologyDeltaForAvailable(
     replacements ??= [];
     replacements.push({ ...slot, snapshot: { ...slot.snapshot, gpuDrivenDraws: [] } });
   }
-  const updatedSlots = availableSlotLane(delta.updatedSlots, unavailableSlots, replacements);
   const contentUpdatedSlots = availableSlotLane(
     delta.contentUpdatedSlots,
     unavailableSlots,
     replacements,
   );
   const instanceUpdatedSlots = availableSlotLane(delta.instanceUpdatedSlots, unavailableSlots);
-  return updatedSlots === delta.updatedSlots &&
-    contentUpdatedSlots === delta.contentUpdatedSlots &&
+  return contentUpdatedSlots === delta.contentUpdatedSlots &&
     instanceUpdatedSlots === delta.instanceUpdatedSlots
     ? delta
-    : { ...delta, updatedSlots, contentUpdatedSlots, instanceUpdatedSlots };
+    : { ...delta, contentUpdatedSlots, instanceUpdatedSlots };
 }
 
 /** One frame's observed World change evidence, before any producer runs. */
@@ -440,9 +439,13 @@ function replaceSlotAssetClosures(entry: CompositionEntry, delta: RenderSceneApp
   const closure = entry.assetClosure;
   if (closure === undefined) return;
   for (const removed of delta.removedSlots) closure.replace(removed.entityKey, []);
-  for (const lane of [delta.createdSlots, delta.contentUpdatedSlots, delta.recreatedSlots]) {
-    for (const slot of lane) closure.replace(slot.entityKey, renderableAssetRoots(slot.snapshot));
-  }
+  for (const slot of delta.createdSlots)
+    closure.replace(slot.entityKey, renderableAssetRoots(slotContent(slot)));
+  for (const slot of delta.contentUpdatedSlots)
+    if (delta.previous.has(slot))
+      closure.replace(slot.entityKey, renderableAssetRoots(slotContent(slot)));
+  for (const slot of delta.recreatedSlots)
+    closure.replace(slot.entityKey, renderableAssetRoots(slotContent(slot)));
 }
 
 /** Accept every validated source batch and adopt its captured membership rows. */
@@ -1848,7 +1851,7 @@ export class SceneComposition {
       }
       const collections = new Set<import('../instances').InstanceCollectionId>();
       for (const slot of projection.slotsSnapshot()) {
-        const id = slot.snapshot.instances?.collectionId;
+        const id = slotContent(slot).instances?.collectionId;
         if (id !== undefined) collections.add(id);
       }
       work.push({ kind: 'retain', ids: collections });
@@ -2117,11 +2120,12 @@ export class SceneComposition {
     if (entry === undefined || entry.source.identity !== identity) return undefined;
     const slot = entry.projection.slot(entity);
     if (slot === undefined) return undefined;
-    const group = slot.snapshot.residencyGroup;
+    const content = slotContent(slot);
+    const group = content.residencyGroup;
     if (group !== undefined && !entry.topology.captureResidencySelection().includes(group))
       return undefined;
     const bounds =
-      slot.snapshot.skinBinding === undefined
+      content.skinBinding === undefined
         ? entry.projection.cullingWorldBoundsAt(slot)
         : this.skinQueryBounds(entry, slot);
     if (bounds === undefined) return undefined;
@@ -2177,6 +2181,7 @@ export class SceneComposition {
       lastResyncReason: this.lastResyncReason,
       projectionRecords: entry?.projection.recordCount ?? 0,
       cullingBoundsBackingBytes: entry?.projection.cullingBoundsBackingBytes ?? 0,
+      changeJournalBackingBytes: entry?.projection.changeJournalBackingBytes ?? 0,
       ...(entry === undefined
         ? {}
         : { instanceBoundsCache: entry.projection.instanceBoundsStatistics() }),
@@ -2261,6 +2266,7 @@ export class SceneComposition {
   commitFrame(temporal: boolean): Result<void, RhiError> {
     const committed = this.gpuScene?.commitFrame();
     if (committed !== undefined && !committed.ok) return committed;
+    if (committed === undefined) this.numericArena?.reclaimTail();
     const projection = this.composition?.projection;
     if (temporal && projection !== undefined)
       projection.commitSubmission(projection.captureSubmission([], projection.slotsSnapshot()));

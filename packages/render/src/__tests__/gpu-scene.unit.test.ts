@@ -31,6 +31,7 @@ import {
 } from '../gpu-scene';
 import { PrimitiveAllocations, SlotWrite } from '../gpu-scene-allocations';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
+import { SAME_INSTANCE_ORDINALS } from '../instance-generations';
 import { MaterialResource } from '../material-resource';
 import { packMaterialProgramRow, packStandardPbrMaterialRow } from '../material-row';
 import { Materials } from '../materials';
@@ -46,6 +47,7 @@ import { SceneDrawSlot } from '../scene/mesh-draw';
 import { MeshFrame } from '../scene/mesh-frame';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
+import { SceneSlotPage } from '../scene/scene-slots';
 import * as skinGeometry from '../scene/skin-geometry';
 import { classifySceneDataCoverage } from '../temporal/coverage';
 
@@ -1165,6 +1167,34 @@ describe('GpuScene', () => {
     expect(created.scene.inspect()).toMatchObject({ noChangeFrames: 1 });
   });
 
+  it('uploads published numeric poses and their shadow bounds without opening a row view', () => {
+    const queue = new RecordingQueue();
+    const candidate = GpuScene.create(createDevice(queue), 4).unwrap();
+    assert(candidate.status === 'available');
+    const { scene } = candidate;
+    const projection = new RenderScene();
+    const initial = projection.apply([updateSnapshot(snapshot(0))]);
+    scene.sync(initial, projection.gpuMotionReader(), projection).unwrap();
+    const before = scene.contentCursor;
+    const delta = projection.applyPresentationSpans([
+      { entities: Uint32Array.of(0), worlds: snapshot(0, 7).transform.world },
+    ]);
+    const read = vi.spyOn(SceneSlotPage.prototype, 'read');
+    try {
+      scene.sync(delta, projection.gpuMotionReader(), projection).unwrap();
+      expect(read).not.toHaveBeenCalled();
+      expect(residentTransforms(queue, scene).current(1)).toBe(7);
+      expect(residentTransforms(queue, scene).previous(1)).toBe(0);
+      const moved = scene.changedBoundsSince(before);
+      assert(moved instanceof Float32Array);
+      expect([...moved]).toEqual([-1, -1, -1, 1, 1, 1, 6, -1, -1, 8, 1, 1]);
+    } finally {
+      read.mockRestore();
+      scene.dispose();
+      projection.dispose();
+    }
+  });
+
   it('pulses temporal primitive flags until the next committed temporal frame', () => {
     const queue = new RecordingQueue();
     const created = GpuScene.create(createDevice(queue), 4).unwrap();
@@ -1590,7 +1620,10 @@ describe('GpuScene', () => {
     expect(after?.previousInstances).toBeUndefined();
   });
 
-  it('maps GPU previous instance transforms by stable generation after reorder', () => {
+  it.each([
+    'current',
+    'different',
+  ] as const)('maps GPU previous instance transforms after reorder with a %s order witness', (witness) => {
     const queue = new RecordingQueue();
     const created = GpuScene.create(createDevice(queue), 4).unwrap();
     if (created.status !== 'available') return;
@@ -1607,8 +1640,29 @@ describe('GpuScene', () => {
     if (slot === undefined) return;
     expect(projection.temporalSnapshotBySlot(slot.slot)?.motionValid).toBe(true);
 
+    const read = projection.gpuMotionReader();
+    const motion = read(slot);
+    assert(motion !== undefined);
+    expect(motion.instanceOrder).toBeDefined();
+    expect(motion.instanceOrder).not.toBe(SAME_INSTANCE_ORDINALS);
+    expect(motion.instanceOrderGenerations).toBe(slot.snapshot.instances?.generations);
     queue.writes.length = 0;
-    created.scene.sync(delta, projection.gpuMotionReader()).unwrap();
+    created.scene
+      .sync(
+        delta,
+        witness === 'current'
+          ? read
+          : (row) => {
+              const actual = read(row);
+              if (actual === undefined) return undefined;
+              return {
+                ...actual,
+                instanceOrder: SAME_INSTANCE_ORDINALS,
+                instanceOrderGenerations: actual.previousInstances?.generations,
+              };
+            },
+      )
+      .unwrap();
     const mapped = residentTransforms(queue, created.scene);
     const first = created.scene.instanceIndexForSlot(slot.slot, 0);
     expect(first).toBeDefined();
@@ -2154,6 +2208,84 @@ describe('GpuScene', () => {
     // still uploads only the changed row.
     expect(move(5, 41, 300, true)).toEqual({ rows: 64, bytes: stride });
     expect(move(6, 42, 400, false)).toEqual({ rows: 64, bytes: stride });
+  });
+
+  it('reuses one physical upload workspace for changing instance collections', () => {
+    const queue = new FailingQueue();
+    const created = GpuScene.create(createDevice(queue), 512).unwrap();
+    if (created.status !== 'available') throw new Error('RHI null must expose storage tables');
+    const gpu = created.scene;
+    const projection = new RenderScene();
+    const positions = Array.from({ length: 64 }, (_, index) => index);
+    const generations = positions.map((index) => index + 1);
+    const first = multiInstanceSnapshot(8, positions, generations);
+    const second = multiInstanceSnapshot(9, positions, generations);
+    const firstInstances = first.instances;
+    const secondInstances = second.instances;
+    if (firstInstances === undefined || secondInstances === undefined)
+      throw new Error('expected instance fixtures');
+    gpu.sync(projection.apply([updateSnapshot(first), updateSnapshot(second)])).unwrap();
+    const firstSlot = projection.slot(8)?.slot as number;
+    const secondSlot = projection.slot(9)?.slot as number;
+    const stride = GPU_SCENE_LAYOUTS.transform.stride;
+    expect(gpu.takeInstanceUpload(firstSlot)).toEqual({
+      ranges: [{ start: 0, end: positions.length }],
+      bytes: positions.length * stride,
+    });
+    const update = (frame: number, ordinal: number) => {
+      const values = new Float32Array(firstInstances.transforms);
+      const other = new Float32Array(secondInstances.transforms);
+      for (const lane of [ordinal, ordinal + 2, ordinal + 4]) values[lane * 16 + 12] = frame;
+      other[16 + 12] = frame;
+      const delta = projection.apply([
+        updateInstances({ ...first, instances: { ...firstInstances, transforms: values } }),
+        updateInstances({ ...second, instances: { ...secondInstances, transforms: other } }),
+      ]);
+      firstInstances.transforms.set(values);
+      secondInstances.transforms.set(other);
+      return gpu.sync(delta);
+    };
+    update(300, 8).unwrap();
+    const bytes = gpu.inspect().instanceUploadBackingBytes;
+    expect(bytes).toBeGreaterThan(0);
+    const retained = gpu.takeInstanceUpload(firstSlot);
+    expect(retained).toEqual({
+      ranges: [
+        { start: 8, end: 9 },
+        { start: 10, end: 11 },
+        { start: 12, end: 13 },
+      ],
+      bytes: 3 * stride,
+    });
+    for (let frame = 301; frame < 333; frame++) {
+      update(frame, 8).unwrap();
+      expect(gpu.takeInstanceUpload(secondSlot)).toEqual({
+        ranges: [{ start: 1, end: 2 }],
+        bytes: stride,
+      });
+      expect(gpu.takeInstanceUpload(secondSlot).bytes).toBe(0);
+      expect(gpu.takeInstanceUpload(firstSlot)).toEqual(retained);
+      expect(gpu.inspect().instanceUploadBackingBytes).toBe(bytes);
+    }
+    queue.failWrites = true;
+    expect(update(340, 8).ok).toBe(false);
+    expect(gpu.takeInstanceUpload(firstSlot).bytes).toBe(0);
+    queue.failWrites = false;
+    gpu.sync(projection.apply([])).unwrap();
+    expect(gpu.takeInstanceUpload(firstSlot)).toEqual(retained);
+    expect(gpu.takeInstanceUpload(secondSlot).bytes).toBe(stride);
+    gpu.sync(projection.apply([{ kind: 'remove', entityKey: 8 }])).unwrap();
+    expect(gpu.takeInstanceUpload(firstSlot).bytes).toBe(0);
+    const replacement = multiInstanceSnapshot(10, positions, generations);
+    gpu.sync(projection.apply([updateSnapshot(replacement)])).unwrap();
+    expect(projection.slot(10)?.slot).toBe(firstSlot);
+    expect(gpu.takeInstanceUpload(firstSlot)).toEqual({
+      ranges: [{ start: 0, end: positions.length }],
+      bytes: positions.length * stride,
+    });
+    expect(retained.ranges[0]).toEqual({ start: 8, end: 9 });
+    gpu.dispose();
+    expect(gpu.inspect().instanceUploadBackingBytes).toBe(0);
   });
 
   it('resizes a dynamic Instances count in place without rewriting retained rows', () => {

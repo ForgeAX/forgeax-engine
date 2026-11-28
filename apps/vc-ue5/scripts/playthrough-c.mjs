@@ -123,7 +123,7 @@ export default async function playthroughC(play) {
     screencast.on('Page.screencastFrame', onFrame);
     try {
     await screencast.send('Page.startScreencast', { format: 'jpeg', quality: 90, maxWidth: 1280, maxHeight: 720, everyNthFrame: 1 });
-    await play.page.locator('[data-ui-part="cloud-shape"]').click();
+    await play.page.locator('[data-ui-part="cloud-textured"]').click();
     await play.waitFor((state) => state.mode === 'shape', { read: cloudRead });
     const reference = await play.state(cloudRead);
     assert.equal(reference.windX, 0);

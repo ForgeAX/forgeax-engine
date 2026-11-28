@@ -6,7 +6,9 @@ import {
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
+import { slotContent } from '../scene/mesh-draw';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
+import type { SkinInputFrame } from '../scene/skin-inputs';
 import type { SkinSceneFrame } from '../scene/skin-scene-inputs';
 
 function invalid(expected: string): RhiError {
@@ -140,15 +142,20 @@ export interface SkinTaskBinding {
 const POSE_UNAVAILABLE = Object.freeze({ status: 'pose-unavailable' as const });
 const NO_CAPSULES = Object.freeze({ status: 'no-shadow-capsules' as const });
 
-/** One concrete device and one pending recording. Deduplication belongs only to
- * actual CPU draw demand; no Binding freshness, vertex copies or retained pose
- * results survive a recording. Numeric source/history ownership stays in Scene.
- */
 interface PaletteHistory {
-  /** The captured input root the palette was composed from. */
   root: object;
+  revision: number;
   count: number;
   readonly palette: Float32Array;
+}
+
+/** One slot of actual CPU work. Binding rows are recording-local. A palette can
+ * seed the next recording only when its exact Scene inputs became history. */
+interface SlotWork {
+  touched: boolean;
+  demand: number;
+  capsules: CapsuleShadowSnapshot | undefined;
+  palette: PaletteHistory | undefined;
 }
 
 export class SkinTasks {
@@ -158,10 +165,9 @@ export class SkinTasks {
   private disposed = false;
   private readonly data: TaskBuffer;
   private readonly auxiliary: TaskBuffer;
-  private readonly demanded = new Map<number, number>();
+  private readonly slots = new Map<number, SlotWork>();
   private readonly rows: SkinTaskBinding[] = [];
   private count = 0;
-  private readonly capsuleDemanded = new Map<number, CapsuleShadowSnapshot>();
   private readonly capsuleRows: {
     storage: Float32Array;
     state: { status: 'ready'; capsules: Float32Array };
@@ -170,7 +176,6 @@ export class SkinTasks {
   private current = new Float32Array(0);
   private header = new Uint32Array(0);
   private readonly matrix = mat4.create();
-  private readonly inverse = mat4.create();
   private readonly translation = new Float32Array(4);
   private readonly words = new Uint32Array(8);
   /** Last physical submission on this one device; an aborted recording keeps its fence. */
@@ -224,16 +229,20 @@ export class SkinTasks {
     this.paletteUploadBytes = 0;
     this.count = 0;
     this.capsuleRowsUsed = 0;
-    this.capsuleDemanded.clear();
-    this.demanded.clear();
-    // Keep the last recording's palettes; drop slots not demanded since.
-    const stale = this.stalePalettes;
-    stale.clear();
-    this.stalePalettes = this.palettes;
-    this.palettes = stale;
     this.data.begin();
     this.auxiliary.begin();
   }
+
+  private workFor(slot: number): SlotWork {
+    let work = this.slots.get(slot);
+    if (work === undefined) {
+      work = { touched: false, demand: 0, capsules: undefined, palette: undefined };
+      this.slots.set(slot, work);
+    }
+    work.touched = true;
+    return work;
+  }
+
   private writeAffineTranslation(
     frame: SkinSceneFrame,
     record: RenderSceneSlot,
@@ -242,16 +251,13 @@ export class SkinTasks {
     auxiliary: Buffer,
     auxiliaryOffset: number,
   ): void {
-    if (!record.snapshot.skinBinding?.affinePoint) return;
-    const previous = frame.previousSlots?.slotAt(slot);
-    const world =
-      poseFlags === 3 && previous?.entityKey === record.entityKey
-        ? previous.snapshot.transform.world
-        : record.snapshot.transform.world;
+    if (!slotContent(record).skinBinding?.affinePoint) return;
     const floats = this.translation;
-    floats[0] = world[12] as number;
-    floats[1] = world[13] as number;
-    floats[2] = world[14] as number;
+    if (
+      (poseFlags !== 3 || frame.previousTranslation?.(slot, record.entityKey, floats) !== true) &&
+      frame.slots.writeTranslation(slot, floats, 0, record.entityKey) === undefined
+    )
+      throw invalid('the Scene pose of the admitted affine Skin task');
     this.device.queue
       .writeBuffer(auxiliary, auxiliaryOffset + 255 * 64, floats.buffer, 0, 16)
       .unwrap();
@@ -261,15 +267,14 @@ export class SkinTasks {
     const slot = record.slot;
     const frame = this.frame;
     if (this.disposed || frame === undefined) throw invalid('a live Skin task recording');
-    const selected = frame.slots.slotAt(slot);
-    if (selected !== record || selected.snapshot.skinBinding === undefined)
-      throw invalid('the true Scene slot of an admitted Skin Binding');
-    const previousDemand = this.demanded.get(slot);
-    if (previousDemand !== undefined)
-      return previousDemand < 0 ? undefined : this.rows[previousDemand];
+    const binding =
+      frame.slots.slotAt(slot) === record ? slotContent(record).skinBinding : undefined;
+    if (binding === undefined) throw invalid('the true Scene slot of an admitted Skin Binding');
+    const work = this.workFor(slot);
+    if (work.demand !== 0) return work.demand < 0 ? undefined : this.rows[work.demand - 1];
     const count = frame.current.jointCount(slot);
     if (count === undefined) {
-      this.demanded.set(slot, -1);
+      work.demand = -1;
       return undefined;
     }
     if (count > this.maxJoints)
@@ -290,29 +295,18 @@ export class SkinTasks {
       this.header = header;
       this.current = current;
     }
-    // A palette composed for frames with the same inputs is the previous pose.
-    const history = this.stalePalettes.get(slot) ?? this.palettes.get(slot);
-    const previousRoot = frame.previous?.inputRoot();
     const poseFlags = frame.current.palettes(
       slot,
       frame.previous,
       this.current,
       undefined,
-      this.matrix,
-      this.inverse,
-      history !== undefined &&
-        previousRoot !== undefined &&
-        history.count === count &&
-        history.root === previousRoot
-        ? history.palette
-        : undefined,
+      this.previousPalette(work, frame.previous, count),
     );
     if (poseFlags === 0) {
-      this.demanded.set(slot, -1);
+      work.demand = -1;
       return undefined;
     }
-    this.rememberPalette(slot, frame.current.inputRoot(), count, history);
-    const flags = poseFlags | (selected.snapshot.skinBinding.affinePoint ? 4 : 0);
+    const flags = poseFlags | (binding.affinePoint ? 4 : 0);
     const dataOffset = this.data.reserve(
       this.storage ? 32 + count * 128 : 16336,
       this.dataAlignment,
@@ -359,6 +353,18 @@ export class SkinTasks {
       this.paletteUploadBytes += count * 64;
       this.writeAffineTranslation(frame, record, slot, poseFlags, auxiliary, auxiliaryOffset);
     }
+    const row = this.recordBinding(data, auxiliary, dataOffset, auxiliaryOffset);
+    this.rememberPalette(work, frame.current.inputRoot(), frame.current.inputRevision, count);
+    work.demand = ++this.count;
+    return row;
+  }
+
+  private recordBinding(
+    data: Buffer,
+    auxiliary: Buffer,
+    dataOffset: number,
+    auxiliaryOffset: number,
+  ): SkinTaskBinding {
     let row = this.rows[this.count];
     if (row === undefined) {
       row = {
@@ -377,30 +383,39 @@ export class SkinTasks {
     row.auxiliaryOffset = auxiliaryOffset;
     row.dataSize = this.storage ? this.data.capacity : 16336;
     row.auxiliarySize = this.storage ? 16 : 16336;
-    this.demanded.set(slot, this.count++);
     return row;
   }
-  /**
-   * The last composed current palette per demanded slot, for the next frame's
-   * previous pose. Bounded to the slots of the last two recordings.
-   */
-  private palettes = new Map<number, PaletteHistory>();
-  private stalePalettes = new Map<number, PaletteHistory>();
-  private rememberPalette(
-    slot: number,
-    root: object | undefined,
+
+  private previousPalette(
+    work: SlotWork,
+    previous: SkinInputFrame | undefined,
     count: number,
-    history: PaletteHistory | undefined,
+  ): Float32Array | undefined {
+    const history = work.palette;
+    return history !== undefined &&
+      history.count === count &&
+      history.revision === previous?.inputRevision &&
+      history.root === previous.inputRoot()
+      ? history.palette
+      : undefined;
+  }
+
+  private rememberPalette(
+    work: SlotWork,
+    root: object | undefined,
+    revision: number,
+    count: number,
   ): void {
+    let entry = work.palette;
+    const lanes = count * 16;
     if (root === undefined) return;
-    let entry = history;
-    if (entry === undefined || entry.palette.length < count * 16)
-      entry = { root, count, palette: new Float32Array(count * 16) };
+    if (entry === undefined || entry.palette.length < lanes)
+      entry = { root, revision, count, palette: new Float32Array(lanes) };
     entry.root = root;
+    entry.revision = revision;
     entry.count = count;
-    entry.palette.set(this.current.subarray(0, count * 16));
-    this.palettes.set(slot, entry);
-    this.stalePalettes.delete(slot);
+    for (let lane = 0; lane < lanes; lane++) entry.palette[lane] = this.current[lane] as number;
+    work.palette = entry;
   }
   /** Actual capsule task scratch, scoped to the same fixed Scene/root pair. */
   capsules(record: RenderSceneSlot): CapsuleShadowSnapshot {
@@ -408,9 +423,10 @@ export class SkinTasks {
       slot = record.slot;
     if (this.disposed || frame === undefined || frame.slots.slotAt(slot) !== record)
       throw invalid('the actual capsule task belongs to this fixed Skin frame');
-    const known = this.capsuleDemanded.get(slot);
+    const work = this.workFor(slot);
+    const known = work.capsules;
     if (known !== undefined) return known;
-    const count = record.snapshot.skinBinding?.affinePoint
+    const count = slotContent(record).skinBinding?.affinePoint
       ? undefined
       : frame.current.capsuleCount(slot);
     let state: CapsuleShadowSnapshot;
@@ -431,14 +447,13 @@ export class SkinTasks {
       )
         row.state.capsules =
           row.storage.length === count * 8 ? row.storage : row.storage.subarray(0, count * 8);
-      if (!frame.current.capsules(slot, row.state.capsules, this.matrix, this.inverse))
-        state = POSE_UNAVAILABLE;
+      if (!frame.current.capsules(slot, row.state.capsules, this.matrix)) state = POSE_UNAVAILABLE;
       else {
         this.capsuleRowsUsed++;
         state = row.state;
       }
     }
-    this.capsuleDemanded.set(slot, state);
+    work.capsules = state;
     return state;
   }
   /** Called at physical submission, before callbacks can retire this owner. */
@@ -475,14 +490,28 @@ export class SkinTasks {
   complete(): Promise<void> | undefined {
     if (this.frame === undefined) return;
     this.frame = undefined;
-    this.capsuleDemanded.clear();
-    this.demanded.clear();
+    if (this.disposed) this.slots.clear();
+    else for (const slot of this.slots.keys()) this.finishSlot(slot);
     return this.retireBuffers(this.disposed);
   }
+
+  private finishSlot(slot: number): void {
+    const work = this.slots.get(slot) as SlotWork;
+    if (!work.touched) {
+      this.slots.delete(slot);
+      return;
+    }
+    if (work.demand <= 0) work.palette = undefined;
+    work.touched = false;
+    work.demand = 0;
+    work.capsules = undefined;
+  }
+
   dispose(): Promise<void> | undefined {
     if (this.disposed) return;
     this.disposed = true;
     if (this.frame !== undefined) return;
+    this.slots.clear();
     return this.retireBuffers(true);
   }
 }

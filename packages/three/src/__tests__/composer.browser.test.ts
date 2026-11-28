@@ -30,15 +30,19 @@ it.each([
   const renderer = new WebGPURenderer({
     canvas,
     antialias: renderPath === 'forward',
-    forgeax: {
-      renderer: {
-        standardProfile: {
-          ...DEFAULT_STANDARD_PROFILE,
-          renderPath,
-          ambientOcclusion: { enabled: false },
-        },
-      },
-    },
+    ...(renderPath === 'deferred'
+      ? {
+          forgeax: {
+            renderer: {
+              standardProfile: {
+                ...DEFAULT_STANDARD_PROFILE,
+                renderPath,
+                ambientOcclusion: { enabled: false },
+              },
+            },
+          },
+        }
+      : {}),
   });
   const scene = new Scene();
   const camera = new PerspectiveCamera(45, 1, 0.1, 20);
@@ -89,8 +93,12 @@ it.each([
 
   try {
     await renderer.init();
-    for (let i = 0; i < 60; i++) await completedFrame();
     const lighting = () => renderer.inspect().renderer.standardLighting?.ambientOcclusion;
+    gtao.enabled = false;
+    await completedFrame();
+    expect(lighting()?.status).toBe('off');
+    gtao.enabled = true;
+    for (let i = 0; i < 60; i++) await completedFrame();
     const bloomState = () => renderer.inspect().renderer.bloom;
     expect(lighting()).toMatchObject({ status: 'active', algorithm });
     expect(lighting()?.methodFallback).toBe(

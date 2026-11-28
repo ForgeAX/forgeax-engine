@@ -2,27 +2,105 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { type AssetHandle, ok, type SamplerAsset, type TextureAsset } from '@forgeax/engine-types';
+import {
+  type Asset,
+  type AssetHandle,
+  type GpuTextureAsset,
+  ok,
+  type SamplerAsset,
+  type TextureAsset,
+} from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { samplerContribution } from '../assets/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { MaterialResource } from '../material-resource';
 import {
   projectMeshMaterialBindingObservation,
   publishMeshMaterialBindingResidency,
 } from '../mesh-material-bindings';
 import { worldRenderResources } from '../publication/resource-scope';
+import type { ValidatedRenderable } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
 import { defaultMaterialSnapshot, type MaterialSnapshot } from '../render-system-extract';
 import {
   createMaterialResidencyObserver,
   observeMaterialResidency,
+  prepareGeneratedDrawTextures,
 } from '../render-system-residency';
+import { MaterialFrame } from '../scene/material-dispatch';
+import { receiptRow } from './gpu-draw-selection-fixture';
 
 function assetWorld() {
   const assets = new AssetRegistry();
   assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   return new World({ assets });
 }
+
+it('starts only generated textures of selected submeshes in their source scope', () => {
+  const world = assetWorld();
+  const assets = runtimeAssetRegistry(world.assets);
+  const scope = worldRenderResources(world);
+  const generated: GpuTextureAsset = {
+    kind: 'gpu-texture',
+    format: 'rgba8unorm',
+    colorSpace: 'linear',
+    shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
+    mips: { kind: 'none' },
+    source: {
+      kind: 'generated',
+      generator: '01900000-0000-7000-8000-000000000010',
+      output: 'albedo',
+    },
+  };
+  const selected = 1000 as AssetHandle<'gpu-texture'>;
+  const skipped = 1001 as AssetHandle<'gpu-texture'>;
+  const resolveAsset = scope.resolveAsset;
+  vi.spyOn(scope, 'resolveAsset').mockImplementation(
+    <T extends Asset>(handle: number, revision?: number) =>
+      handle === selected || handle === skipped
+        ? ok(generated as T)
+        : resolveAsset<T>(handle, revision),
+  );
+  const ordinary = assets
+    .create({
+      kind: 'texture',
+      format: generated.format,
+      colorSpace: generated.colorSpace,
+      shape: generated.shape,
+      mips: { kind: 'none' },
+      data: new Uint8Array(16),
+    })
+    .unwrap();
+  const first = new MaterialResource({
+    ...defaultMaterialSnapshot(1),
+    baseColorTexture: selected,
+    normalTexture: ordinary,
+  });
+  const second = new MaterialResource({ ...defaultMaterialSnapshot(2), baseColorTexture: skipped });
+  const frame = new MaterialFrame(undefined);
+  vi.spyOn(frame, 'get').mockImplementation((resource) => ({
+    resource,
+    snapshot: resource.snapshot,
+    passes: [],
+    bindings: 1,
+  }));
+  const row: ValidatedRenderable = {
+    source: { ...receiptRow().source, material: first, materials: [first, second] },
+    mesh: {
+      submeshes: [{ materialSlot: 0 }, { materialSlot: 1 }],
+    } as unknown as ValidatedRenderable['mesh'],
+    submeshIndices: [0],
+    meshSlot: 0,
+    renderableIndex: 0,
+    renderState: undefined,
+    stencilReference: undefined,
+    world: scope,
+  };
+  const store = new GpuResidencyCache();
+  const prepare = vi.spyOn(store, 'ensureResident');
+  prepareGeneratedDrawTextures([row, row], frame, worldRenderResources(assetWorld()), store);
+  expect(prepare).toHaveBeenCalledExactlyOnceWith(selected, generated, scope);
+});
 
 it('keeps mutable readiness, first failures, sampler and video observations without detail rows', async () => {
   const world = assetWorld();

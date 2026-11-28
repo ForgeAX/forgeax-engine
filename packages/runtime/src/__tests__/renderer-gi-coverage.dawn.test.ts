@@ -194,6 +194,11 @@ function changedTiles(
   return changed.size;
 }
 
+/** Material + receiver identity under global-sdf; material only under ray-query. */
+function surfaceCapturePassesPerCard(traversal: string): number {
+  return traversal === 'ray-query' ? 1 : 2;
+}
+
 it('maps Global SDF hits to Card materials, recaptures in place on a material edit, and rejects unsupported materials structurally', {
   timeout: 900_000,
 }, async () => {
@@ -328,13 +333,14 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
     await h.settle(1);
     const assetEdited = inspectField();
     expect(assetEdited.generation).toBe(generation);
+    const capturePasses = surfaceCapturePassesPerCard(assetEdited.traversal);
     expect(assetEdited.edits).toMatchObject({
       rematerializedInstances: beforeAssetEdit.rematerializedInstances,
       // Only the one row reading the edited material is re-admitted.
       projectedSources: beforeAssetEdit.projectedSources + 1,
       materialRootUpdates: beforeAssetEdit.materialRootUpdates + 1,
-      // Six tiles, each recorded once for material and once for receiver identity.
-      materialDrawVisits: beforeAssetEdit.materialDrawVisits + 2 * 6,
+      // Six tiles: material + receiver identity under global-sdf, material only under ray-query.
+      materialDrawVisits: beforeAssetEdit.materialDrawVisits + capturePasses * 6,
       materialUniformUploads: beforeAssetEdit.materialUniformUploads + 1,
       pendingTiles: 0,
     });
@@ -436,8 +442,9 @@ it('maps Global SDF hits to Card materials, recaptures in place on a material ed
         rematerializedInstances: edits.rematerializedInstances,
         assetRootUpdates: edits.assetRootUpdates + 1,
         materialBindingRefreshes: edits.materialBindingRefreshes + 1,
-        // A rejected texture submission still records both passes before retry.
-        materialDrawVisits: edits.materialDrawVisits + 2 * 6 * (kind === 'texture' ? 2 : 1),
+        // A rejected texture submission still records its capture pass(es) before retry.
+        materialDrawVisits:
+          edits.materialDrawVisits + capturePasses * 6 * (kind === 'texture' ? 2 : 1),
         materialUniformUploads: edits.materialUniformUploads,
         pendingTiles: 0,
       });

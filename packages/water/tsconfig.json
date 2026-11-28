@@ -8,14 +8,32 @@
     "outDir": "./dist",
     "tsBuildInfoFile": "./dist/.tsbuildinfo"
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/**/__tests__/**"],
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/__tests__/**",
+    "src/caustics.ts",
+    "src/caustics/**"
+  ],
   "references": [
-    { "path": "../ecs" },
-    { "path": "../geometry" },
-    { "path": "../math" },
-    { "path": "../pack" },
-    { "path": "../physics" },
-    { "path": "../types" }
+    {
+      "path": "../ecs"
+    },
+    {
+      "path": "../geometry"
+    },
+    {
+      "path": "../math"
+    },
+    {
+      "path": "../pack"
+    },
+    {
+      "path": "../physics"
+    },
+    {
+      "path": "../types"
+    }
   ]
 }

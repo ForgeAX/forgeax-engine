@@ -1,4 +1,4 @@
-import type { Mat4 } from '@forgeax/engine-math';
+import { type Mat4, mat4 } from '@forgeax/engine-math';
 import type { GraphTextureView, RenderGraphError } from '@forgeax/engine-render-graph';
 import type { RhiDevice, Texture, TextureView } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
@@ -10,7 +10,13 @@ import {
 } from '../gpu-texture-usage';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
+import type { CameraSnapshot } from '../render-contract';
 import type { RenderPipelineTarget } from '../render-pipeline';
+import {
+  type AmbientOcclusionSettings,
+  GTAO_HISTORY_PARAMETER_COUNT,
+  writeGtaoHistoryParameters,
+} from '../ssao-config';
 import { recordContext } from '../world/view-record-context';
 import type { StandardPipelineBuildContext } from './standard-build-context';
 
@@ -22,21 +28,91 @@ interface HistoryTexture {
   readonly release: () => void;
 }
 
-interface GtaoHistorySample {
-  readonly matrix: Mat4;
-  readonly jitter: readonly [number, number];
+class GtaoHistorySample {
+  readonly matrix: Mat4 = mat4.create();
+  readonly jitter: [number, number] = [0, 0];
+  private readonly parameters = new Float64Array(GTAO_HISTORY_PARAMETER_COUNT);
+  private entityKey: CameraSnapshot['entityKey'];
+  private historyVersion: CameraSnapshot['historyVersion'];
+  private projection: CameraSnapshot['projection'] | undefined;
+  private near = 0;
+  private far = 0;
+
+  write(camera: CameraSnapshot, settings: AmbientOcclusionSettings | undefined): void {
+    this.entityKey = camera.entityKey;
+    this.historyVersion = camera.historyVersion;
+    this.projection = camera.projection;
+    this.near = camera.near;
+    this.far = camera.far;
+    this.jitter[0] = camera.temporal?.currentJitterUv?.[0] ?? 0;
+    this.jitter[1] = camera.temporal?.currentJitterUv?.[1] ?? 0;
+    writeGtaoHistoryParameters(this.parameters, settings);
+  }
+
+  matches(other: GtaoHistorySample): boolean {
+    if (
+      this.entityKey !== other.entityKey ||
+      this.historyVersion !== other.historyVersion ||
+      this.projection !== other.projection ||
+      this.near !== other.near ||
+      this.far !== other.far
+    )
+      return false;
+    for (let i = 0; i < this.parameters.length; i++) {
+      if (this.parameters[i] !== other.parameters[i]) return false;
+    }
+    return true;
+  }
 }
 
-export interface GtaoHistory {
-  readonly device: RhiDevice;
-  readonly scope: DeviceScope;
-  readonly signature: string;
-  readonly slots: readonly [HistoryTexture, HistoryTexture];
-  previous: 0 | 1;
-  accepted: GtaoHistorySample | undefined;
-  pending: GtaoHistorySample | undefined;
-  frameIndex: number;
-  used: boolean;
+export class GtaoHistory {
+  frameIndex = 0;
+  used = false;
+  recordedFrameCount = 0;
+  private previous = 0 as 0 | 1;
+  private readonly samples = [new GtaoHistorySample(), new GtaoHistorySample()] as const;
+
+  constructor(
+    readonly device: RhiDevice,
+    readonly scope: DeviceScope,
+    private readonly size: DepthPyramidExtent,
+    readonly slots: readonly [HistoryTexture, HistoryTexture],
+  ) {}
+
+  matches(scope: DeviceScope, size: DepthPyramidExtent): boolean {
+    return (
+      this.scope === scope && this.size.width === size.width && this.size.height === size.height
+    );
+  }
+
+  slot(write: boolean): HistoryTexture {
+    return this.slots[write ? this.next : this.previous];
+  }
+
+  get pending(): GtaoHistorySample {
+    return this.samples[this.next];
+  }
+
+  prepare(
+    camera: CameraSnapshot,
+    settings: AmbientOcclusionSettings | undefined,
+  ): GtaoHistorySample | undefined {
+    const pending = this.pending;
+    pending.write(camera, settings);
+    const previous = this.samples[this.previous];
+    const valid = this.frameIndex !== 0 && previous.matches(pending);
+    this.recordedFrameCount = valid ? this.frameIndex + 1 : 1;
+    return valid ? previous : undefined;
+  }
+
+  accept(): void {
+    this.previous = this.next;
+    this.frameIndex = this.recordedFrameCount;
+  }
+
+  private get next(): 0 | 1 {
+    return this.previous === 0 ? 1 : 0;
+  }
 }
 
 function retireGtaoHistory(history: GtaoHistory | undefined): void {
@@ -55,30 +131,32 @@ export function disposeGtaoHistory(state: RenderFrameState): void {
 }
 
 export function beginGtaoHistory(state: RenderFrameState): void {
-  for (const history of [state.gtaoHistory, state.gtaoCandidateHistory]) {
-    if (history === undefined) continue;
-    history.pending = undefined;
-    history.used = false;
-  }
+  if (state.gtaoHistory !== undefined) state.gtaoHistory.used = false;
+  if (state.gtaoCandidateHistory !== undefined) state.gtaoCandidateHistory.used = false;
+}
+
+function recordedHistory(state: RenderFrameState): GtaoHistory | undefined {
+  if (state.gtaoCandidateHistory?.used) return state.gtaoCandidateHistory;
+  return state.gtaoHistory?.used ? state.gtaoHistory : undefined;
+}
+
+export function recordedGtaoHistoryLength(state: RenderFrameState): number | undefined {
+  return recordedHistory(state)?.recordedFrameCount;
 }
 
 export function acceptGtaoHistory(state: RenderFrameState): void {
   const candidate = state.gtaoCandidateHistory;
-  const history = candidate?.used ? candidate : state.gtaoHistory;
-  if (!history?.used) {
+  const history = recordedHistory(state);
+  if (history === undefined) {
     disposeGtaoHistory(state);
     return;
   }
-  if (history.pending === undefined) return;
-  if (history === candidate) {
-    retireGtaoHistory(state.gtaoHistory);
+  if (candidate !== undefined) {
+    retireGtaoHistory(history === candidate ? state.gtaoHistory : candidate);
     state.gtaoHistory = history;
     state.gtaoCandidateHistory = undefined;
   }
-  history.accepted = history.pending;
-  history.pending = undefined;
-  history.previous = history.previous === 0 ? 1 : 0;
-  history.frameIndex += 1;
+  history.accept();
 }
 
 function createHistoryTexture(
@@ -125,25 +203,14 @@ export interface GtaoHistoryGraphInput {
 export function importGtaoHistory(
   { graph }: StandardPipelineBuildContext,
   size: DepthPyramidExtent,
-  configurationKey: string,
 ): Result<GtaoHistoryGraphInput, RenderGraphError> {
   function resolve(frame: _InternalRenderPipelineContext): GtaoHistory {
-    const { camera, frameState } = frame;
+    const { frameState } = frame;
     const scope = recordContext(frame.runtime).deviceScope;
-    const signature = JSON.stringify([
-      camera.entityKey,
-      camera.historyVersion,
-      camera.projection,
-      camera.near,
-      camera.far,
-      size.width,
-      size.height,
-      configurationKey,
-    ]);
     const accepted = frameState.gtaoHistory;
-    if (accepted?.scope === scope && accepted.signature === signature) return accepted;
+    if (accepted?.matches(scope, size)) return accepted;
     let history = frameState.gtaoCandidateHistory;
-    if (history?.scope !== scope || history.signature !== signature) {
+    if (!history?.matches(scope, size)) {
       retireGtaoHistory(history);
       frameState.gtaoCandidateHistory = undefined;
       const device = frame.runtime.device;
@@ -155,17 +222,7 @@ export function importGtaoHistory(
         first.release();
         throw error;
       }
-      history = {
-        device,
-        scope,
-        signature,
-        slots: [first, second],
-        previous: 0,
-        accepted: undefined,
-        pending: undefined,
-        frameIndex: 0,
-        used: false,
-      };
+      history = new GtaoHistory(device, scope, size, [first, second]);
       frameState.gtaoCandidateHistory = history;
     }
     return history;
@@ -175,11 +232,8 @@ export function importGtaoHistory(
     name: string,
     write: boolean,
   ): Result<RenderPipelineTarget, RenderGraphError> {
-    const slot = (frame: import('../render-pipeline').RenderPipelineFrame) => {
-      const history = resolve(frame as _InternalRenderPipelineContext);
-      const previous = history.previous;
-      return history.slots[write ? (previous === 0 ? 1 : 0) : previous];
-    };
+    const slot = (frame: import('../render-pipeline').RenderPipelineFrame) =>
+      resolve(frame as _InternalRenderPipelineContext).slot(write);
     const texture = graph.importTexture(
       name,
       { format: 'r8unorm', size, usage: USAGE },

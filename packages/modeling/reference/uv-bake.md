@@ -81,9 +81,31 @@ out side by side along +u. Pack afterwards for an atlas.
   raster never fits less than skyline). The scale search starts at the skyline scale.
   `rotate: { step: 45 }` adds eighth turns. `stack: true` gives congruent islands (same
   triangles, same shape within 1e-4 of the extent, up to quarter turns) the leader's
-  placement and bit-identical UVs (metric `stacked`). `density: { target, tolerance? }`
+  placement and bit-identical UVs (metric `stacked`). `stack: 'mirrored'` also stacks the island of every
+  `FACE_MIRRORED` copy (what `mirror` makes) onto the island of the faces it reflects, paired by position
+  within the model tolerance: each paired vertex takes its partner's UV, so the copy's UV triangles are the
+  inverted mirror image and `checkWritten` accepts them. Metrics `mirrored`, `mirrorUnpaired`, `texelsSaved`;
+  the info detail has `pairs`, `mirroredPairs`, `unpaired`, `texelsSaved`. A copy that was moved or edited
+  after mirroring has no partner: it is counted in `unpaired`, keeps its own texels, and is no error. Partners
+  that differ in material slot or tag set are warned about (`uv.pack` names the faces). `stack: true` never
+  stacks a reflection. A partial pairing (an edited copy face, or `plan` mirrored then `stack: true`) leaves the
+  paired copy faces with their partner's reflected UVs but on their own texels: `uv.pack` warns once, naming those
+  faces and the reason (`reflectedUnstacked`, `unpairedCopies`), instead of blaming slivers. Known limit:
+  `measureUv(...).flipped`, stretch and density are not stack-aware; stacked followers are inverted triangles by
+  construction, so `flipped` counts them. Likewise `measureUv(...).stretchL2/stretchLinf` of a mirror-image
+  island (every UV triangle reversed) reads 0, because the measurement takes the unreflected UVs; the
+  `uv.straighten` / `uv.plan` reports measure such an island in its reflected frame and equal its unmirrored
+  partner, so read the report, not `measureUv`, for mirrored copies (kept as a limit: changing `measureUv`
+  would change the compute digest and the meaning of `flipped` for stacked followers). `density: { target, tolerance? }`
   packs at `target` texels per meter (normalized islands) and may drop to
-  target x (1 - tolerance), or fails `model-precondition`. `with: [models]` shares one
+  target x (1 - tolerance), or fails `model-precondition` (its detail and hint name the
+  `achievable` density that does fit). `target` may be omitted (the largest base that
+  fits). `density.parts: { <face tag>: multiplier }` (normalize only) packs an island whose
+  faces mostly carry the tag at multiplier x the base density (hero 2, default 1, hidden
+  0.5 are caller presets; multipliers and the base 1 span at most 64x, else
+  `model-invalid-argument`; `{}` is no table); the info detail gains a per-part table (`ratio` = measured
+  density / base) and warnings name a tag no face carries or an island spanning two parts
+  (cut part borders as seams: `uv.plan` `tagBorders`). `with: [models]` shares one
   atlas across sessions: the job takes one FXEM per session, and each call writes
   only its own session, so pass the same list to every session.
   Gates (`uv-pack.unit.test.ts`): ring islands with chips are 0.62 raster vs 0.50 skyline;
@@ -98,12 +120,44 @@ out side by side along +u. Pack afterwards for an atlas.
   (falsifier: a domed patch). `uv.auto({ method: 'rectify' })` does the same per chart.
   Gate (`wheel-pack.unit.test.ts`): the `wheel-uv` wheel rectified packs at 0.62 coverage
   (0.67 raster) against 0.25 from its LSCM arcs, max area distortion 1.23.
+- **Straighten**: `uv.straighten({ edges?, faces?, maxAngle?, maxStretch? })` works on any
+  island, not only quad grids. Boundary runs between corners (a vertex turning more than
+  `maxAngle`, default 20 degrees) whose chord deviation stays within `maxAngle` are put on
+  their chords at the 3D arc-length parameter, in flip-free stages with SLIM relaxing the
+  interior and the chains held. An island keeps the result only when it is flip-free, its
+  max stretch stays within `maxStretch` (default 1.15) of the value before, and no overlap is
+  added, all judged on the f32 values that are stored; otherwise its UVs stay byte for byte
+  and the warn diagnostic names the verdict: `flipped` (a folded,
+  mixed-orientation or zero-area triangle in the input island, or a zero-area triangle once the result is rounded to f32), `blocked` (no chain move stays flip-free, for
+  example a frozen neighbor sits between the chain and its chord), `stretch`, `overlap`,
+  `unavailable` (no 3D rest shape). A fully mirror-image island (every triangle negative in
+  UV, such as a BK54 mirrored copy) is straightened in its mirrored frame and keeps its
+  handedness. Boundary loops with fewer than two corners (a smooth disc, a single-corner
+  teardrop) have no chord and are not counted in `chains`. The info diagnostic reports `chains`,
+  `straightened`, `maxAngleError` (degrees, gate <= 1) and per-island stretch before and
+  after (a mirror-image island reports them in its reflected frame, equal to its unmirrored partner). With `edges` only chains containing a selected edge move; with `faces` the selection
+  border is frozen. Run it before `uv.pack`; a repack keeps the straight edges.
+- **Pack orientation**: `uv.pack({ orient })` is `'straight'` (default: dominant boundary
+  direction on an axis when 40 percent of the boundary agrees), `'minimal'` (minimal
+  rectangle) or `'worldUp'`. `'worldUp'` rotates each island so world +Y, mapped through the
+  UV Jacobian, points to +v and the pack does translation only (no quarter turns), for
+  directional textures; an island with no defined up (weak mean direction) falls back to
+  `'straight'`.
+- **Repack-only**: `uv.pack` on a channel that already holds charts re-packs them without
+  unwrapping: island count, per-island stretch and area distortion are unchanged for any
+  resolution, padding, method or `density.parts` (gate `uv-density.unit.test.ts`). `rotate:
+  false` keeps rotations; `normalize: false` keeps each island's current relative scale
+  (earlier part multipliers survive), and there `density.target` is the layout's mean
+  texels per meter. Padding 0 can make neighbours share corner values and merge on a repack.
 - **Texel density**: `validate({ texelDensity: { resolution, target, tolerance?,
-  channel? } })` measures each island's density the way `measureUv`, `uv.pack` and
+  channel?, parts? } })` measures each island's density the way `measureUv`, `uv.pack` and
   `uv.trim` do (resolution x sqrt(UV area / 3D area)). Islands farther than `tolerance`
   (default 0.2) from `target` are one `texel-density` warning with `min`, `max`,
   `outside` and the worst islands; a face without the channel is a `missing-channel`
-  warning. Gate: a 205–536 px/m mesh is reported, and one density gives no finding.
+  warning. With `parts` (the pack table) an island is checked against target x its
+  part's multiplier and the warning adds `byPart` rows (`part`, `target`, `islands`,
+  `outside`, `min`, `max`). Gate: a 205–536 px/m mesh is reported, and one density gives
+  no finding; a uniform pack fails a 2x part, the multiplied pack passes.
 - `measureUv(mesh, channel?)` measures any complete channel the same way (per island and
   totals plus `faceIsland`); `validate({ uniqueUv: true })` reports overlaps.
 - Both are compute jobs (`uv.unwrap`, `uv.pack`: one FXEM in, f32 corner UVs in FXEM
@@ -114,6 +168,69 @@ out side by side along +u. Pack afterwards for an atlas.
   cache key and metrics, honor `budget` and the signal, and are byte-deterministic. The
   native backends (Eigen, xatlas) are deferred: `compute: 'native'` fails
   `model-capability-unavailable`.
+
+### Seam planning: `uv.plan`
+
+`m.uv.plan({ faces?, ...options })` writes seams as `markSeam` intent and leaves the islands
+unpacked (run `uv.pack` after it). Order of work: marked seams, material and tag borders and
+edges sharper than `hardAngle` first; then every island is unwrapped and measured, and each one
+over `maxStretch`, flipped, collapsed or self-overlapping is cut open by a geodesic cone cut or a
+tree-cotree cut graph (bisected when that fails) and unwrapped again. The measurement loop is a
+safety net; the semantic seams do the work.
+
+| Option | Default | Meaning |
+|:--|--:|:--|
+| `hardAngle` | 75 | edges sharper than this many degrees are seams; strips made by bevel or round are judged by the flat face they grew from |
+| `smallGroup` | 8 | a soft-edge face group this small gives up its angle-only seams toward a larger neighbor (0 keeps every hard edge) |
+| `maxStretch` | 1.6 | largest per-island L-infinity stretch accepted before an island is cut |
+| `maxRounds`, `slitRounds` | 30, 2 | measure-and-cut rounds, and cone or tree-cotree cuts tried before bisecting |
+| `materialBorders`, `tagBorders` | true | borders between materials or tag sets are seams |
+| `respectSharp` | false | sharp-flagged edges are seams too (leave off when normals are baked) |
+| `refine` | off | `'slim'` refines every unwrapped island |
+| `minWidth` | 1.5 % of the diagonal | islands narrower (2 x area / perimeter) or smaller than its square merge into the neighbor sharing the longest border, when the merged island still unwraps within `maxStretch` without flips or overlap; also elongated islands (perimeter squared over area above 40) and thin arms of a compact island, found by opening the UV image |
+| `manual` | false | only marked seams define islands; hard edges, materials and tags are ignored and measured cuts remain |
+| `mergeMarked` | false | thin or small islands may also give up marked seams (the stretch and overlap bounds stay) |
+| `force` | none | edge selector: these edges become seams first (source `patch`) |
+| `forbid` | none | edge selector: the planner never cuts these edges (semantic, measured, bisect and arm cuts all skip them); forced or already marked and forbidden is `model-invalid-argument` (`detail.code` `conflict`); a closed island whose every cut is forbidden is `model-precondition` (`forbid-closed`), and an island that still exceeds `maxStretch` or `maxLength` when no allowed cut applies to it is `model-precondition` (`forbid-unresolved`); both failures restore the mesh (uv0, seam flags) to its state before the call: forbid never yields an `ok` plan with an unresolved island |
+| `avoid`, `avoidCost` | none, 8 | edge selector: cone, tree-cotree and path cuts pay `avoidCost` times the length on these edges, so they route around them when they can |
+| `minArea` | `minWidth` squared | islands smaller than this area merge like thin ones |
+| `maxLength` | unbounded | an island whose longest geodesic is longer is bisected, and a merge never builds one |
+
+The info diagnostic carries `semantic` (seams from semantics), `merged`, `pruned` (arms cut off),
+`cuts`, `islands`, `unresolved`, `thin` and `sources`. `sources` counts the final seams by origin in the closed order
+`part` (material and tag borders), `patch` (seams marked before the call, `force`), `feature` (`hardAngle`,
+`respectSharp`) and `curvature` (measured stretch, length and arm cuts); between equally long borders a merge prefers to give up the weakest source
+(curvature, then feature, patch, part). The planner is deterministic. The plan on a
+form survives `lowpoly` (the simplifier keeps seam edges); re-plan the final low with
+`manual: true` so only measured cuts are added.
+
+`uv.pack` options for regular layouts: `snap: true` rounds every island rectangle to whole
+texels (an island that would stretch more than 6 % on an axis is only translated); `groups`
+(raster only) takes face tags naming the parts, so islands mostly carrying one tag share one
+rectangular atlas region, regions split the atlas by guillotine cuts proportional to island area,
+largest part first. With `method: 'raster'`, islands that are mostly straight take the
+orientation that makes their edges axis-aligned unless that grows the rectangle more than 10 %.
+`uv.auto`'s `pack` option passes `method`, `rotate`, `stack`, `snap` and `density` through.
+
+`uv.pack` tiles, priority and fill (BK57, raster only): `tiles: { across, down?, by, zones? }` packs several
+atlases in one call; tile `t` is the unit cell `(t mod across, floor(t / across))` of the channel, so `floor(uv)`
+names the tile and a tile is an S1 material zone when the cells match the surface `zones` table (at most 64 tiles).
+`by: 'group'` gives each `groups` entry its own tile (its index in `groups`); `by: 'zone'` places each `groups`
+tag in the cell `tiles.zones[tag]` (a part without a cell is `model-precondition`, detail `tile-zone-unknown`; then
+`validate({ surface: { zones } })` passes); `by: 'fit'` fills tile 0 first in priority then size order and spills the
+rest on (`tile-grid-small` when the grid is too small; nothing is dropped). A part too large for its tile fails
+`model-precondition` with `detail.tile` and `detail.achievable`. Stacked islands must share their leader's tile
+(`tile-stack-conflict`). `priority: { tag: number }` places the higher priority first; with `density.target` and
+`tolerance` the top level keeps the target while lower levels may fall to the floor. Equal or absent priority is
+byte-identical to a pack without it. `fill: 'tight'` (needs `groups`) adds a tight-region search per cut: about 7x
+the work, it draws at most 60 % of the budget left when it starts, keeps the better layout and otherwise the
+proportional one, so its result can depend on `budget`; on the turret it lifts utilization from 0.7288 to 0.7938 and
+raises mean stretch from 1.5937 to 1.5953 (a texel-snap effect). Default `'proportional'` is unchanged.
+`uv.plan({ mirror: 'mirrored' })` plans a mirrored model's original half alone and copies its seams to the
+`FACE_MIRRORED` copies through the position pairing (the mirror-plane edges become seams, so each half is its
+own island); the copies also take their partner's corners, moved aside. Run `uv.pack({ stack: 'mirrored' })`
+next. Info `uv.plan mirror` reports `pairs`, `unpaired` and `asymmetric`; an unpaired copy is planned like any
+other face and warned about. `force`, `forbid` and `avoid` name edges of the original half.
 
 ## Automatic UVs and baking (compute jobs)
 
@@ -242,11 +359,11 @@ separate groups (`report.metrics.hardEdges`). The vertex target takes `'averaged
 **Parallel bakes**: `bakeMapsParallel(options, executor)` returns the same
 `BakeResult` as `bakeMaps` (byte for byte; only `report.metrics.work` differs) with the
 texture target's 32-texel tile rows sampled by a `BakeExecutor` function. `bakeWorkers({
-workers })` from `@forgeax/engine-modeling/tools` (Node only, the bake twin of the
+workers, timeoutMs?, maxHeapMb? })` from `@forgeax/engine-modeling/tools` (Node only, the bake twin of the
 capture Worker) starts that many Worker threads; each prepares the request once and takes
 rows from a shared queue (the internal `bakePhases`). Rows are independent and merged by
 position, so any worker count, split or completion order gives the same bytes; the work
-budget spans all Workers and cancellation stops them between rows. Worker failures cross
+budget spans all Workers and cancellation stops them between rows. A Worker that exits, errors or sends an unreadable message, or a bake past `timeoutMs` (default 10 min), settles the bake with a structured failure and terminates every Worker. Worker failures cross
 the thread boundary as plain `BakeFailure` data and become `ModelingError`s on the
 calling thread. The vertex target runs serially. Bake rays traverse a binned SAH BVH (16 bins
 per axis): closest hits break ties by (distance, triangle index) and nearest points by
@@ -296,7 +413,10 @@ the serial count.
 **Bake checks** (BK-V): `result.pass` is false when `result.issues` holds an
 `error` or `warn` issue (every bake check is `warn`; the maps are still delivered).
 `issues` are `Issue<Code>` over the bake-time part of the one `BakeCheck` catalogue, whose
-mesh-time part (`BAKE_CHECKS`) runs in `validate({ bake })`. Measurements stay in
+mesh-time part (`BAKE_CHECKS`) runs in `validate({ bake })`. The cage-clip check needs a bake
+outcome: pass `validate({ bake: { outcome: result } })`, and without it the report lists `cage-clip`
+as not checked. The outcome carries no mesh identity, so pass the result of the mesh being validated.
+Measurements stay in
 `provenance`; `diagnostics` keeps one info line (maps, sampled texels, backend, metrics).
 
 | Code | BK-V | Reported when | `detail` | Fix |
@@ -371,7 +491,9 @@ Pitfalls (each is measured by a gate in `bake-cage.unit.test.ts`):
   trips the automatic cage limit; give such bakes an explicit cage.
 
 In a Pack, `bakeSources({ base, detail, maps, resolution, key })` returns
-`texture/<key>-<map>` `modeling-bake` cook sources instead; the project's build plugin
+`texture/<key>-<map>` `modeling-bake` cook sources instead (the key is a lower-case
+Pack segment and multiword map suffixes use kebab-case: `base-color`, `edge-wear`,
+`normal-object`, `material-id`); the project's build plugin
 registers `createBakeCooker()` (`nativeCookers`), which runs the job once per distinct
 bake outside the build timeout and publishes each map as an ordinary texture. The TS
 backend identity digests every TS kernel source (bake, cage, BVH, voxel / remesh, charts,
@@ -390,6 +512,30 @@ served. `bakeMaps({ cache })` forwards it; `createBakeCooker` and `createMeshJob
 forward the cook host's `context.cache` (DevKit backs it with the project build DDC), and
 an assets job receives it as `build(params, { packageId, cache })` for the jobs it runs, so
 a geometry edit re-runs only the jobs whose inputs changed.
+
+**Part map and group ID map (`m.bakeGroups`, `idMap`)**: instead of tagging `bake:<id>` per face, list the parts once:
+`m.bakeGroups({ parts: ['barbette', { tag: 'house', group: 'trim', where: sel.inBox(...) }, 'house'] }, faces?)` tags each
+selected face `<prefix><group>` (`prefix` default `'bake:'`) by the first matching part: a narrower entry goes before the
+entry it carves out of, `group` renames or merges a part, `where` restricts it to a selection. Faces of `roles` (default
+`form` and `detail`; `tool` never bakes) are grouped; a face that already has a group tag keeps it. Run it on the low and on
+the high with the same map. Unmatched faces and parts with no new face arrive as one `warn` diagnostic (`kept`, `untagged`,
+`empty`). `idMap(m.editMesh, { prefix?, channel?, size? })` paints the UV layout with one flat color per group (transparent
+outside the islands) and returns `{ texture, groups: [{ id, color, faces }] }`: look at it before baking to see which island
+reads which group. A mesh without the channel on every corner is a `model-precondition` Result with
+`detail.code: 'no-uv'` (`faceOwners` also guards `uvHeatmapTexture`), never a throw.
+
+**Analytic bake: `analytic` (BK63)**: `bake({ ..., analytic: true })` (or `{ verify?, patches?, domain? }`; `true` is `{ verify: 'all' }`) answers `position`, `normal`, `normalObject` and `height` from the exact `m.surface` patches instead of rays against their tessellation. Default off: the bake is byte-identical to the ray bake (a test pins a golden digest). Texture target only. Every other map (`ao`, `thickness`, `curvature`, `cavity`, `edgeWear`, `opacity`, `ormh`, `baseColor`, `emissive`, `materialId`, `resample`) stays on rays; when a ray-only map shares the sample, the ray evaluation still runs and only the four analytic maps are overwritten, so the ray maps are byte-identical.
+
+- How a sample is solved: the base carries the normalized patch domain `(s, t)` in a corner channel (`analytic.domain`, default the base Model's carrier: uv1, or uv2 after `uv.lightmap copyTo-uv2`). The domain interpolated at the sample seeds a damped Newton solve of `S(s, t) = P + lambda c` (3x3 Cramer, at most 8 iterations, (s, t) clamped to the domain, residual at most `1e-7` of the diagonal). The hit is accepted under the ray bake's own rules: the height `dot(S - P, c)` lies in the cage span `[offset - maxRay, offset]`, the patch normal (turned to the base triangle's side, so reflected and transposed patches are exact) faces the ray by more than the 84 degree rule, and under an averaged cage direction it stays within the own-side cone. A solve that does not converge, leaves the span or fails a rule is not an answer: that sample is ray-baked.
+- Coverage is fail-closed. A bake group is analytic only when every detail face of it carries a patch tag and none floats; a base triangle is analytic when the domain is set on its three corners and a patch of its group tags its face. The report counts `analyticSamples` and `raySamples` per group and overall, and a group that is not analytic names its `reason`: `no-patches` (no base triangle carries the domain), `detail-not-patches` (an untagged or floating detail face), `tiled-detail` (a `wrap` period: the patches describe one tile), `detail-moved` (the stale-descriptor guard: the detail's vertices left the patch), `mismatch` (the verifier failed it). A bytes detail has no patch records (pass `analytic.patches`); the vertex target and a map set without an analytic map skip the analytic bake with an `info` diagnostic that says why.
+- Tolerance: the analytic and ray answers must agree within `max(step, chord)` for height and position and `turn + normalStep` for normals, where `step` is one encoded step (height `(outer - inner) / (2^bits - 1)`, position extent / 255), `normalStep` is `atan(2 / 255)` = 0.45 degrees, `chord` is the patch's tessellation setting and `turn` is the measured tessellation turn of the detail: the largest angle between the exact normals of two consecutive corners of one detail face (the ray bake interpolates normals across a face, so it differs from the exact normal by less than that turn; measured with the facet reference on the honest assets the largest analytic-to-ray normal deviation is 2.9 to 6.9 degrees against limits of 8.9 to 12.5 degrees (quality-body without blends 4.1 against 7.6). A detail without the domain channel has no measured turn: the recorded `angle` bounds the normal instead (12 degrees by default), which hides normal errors below it. A coarse detail legitimately differs by its own turn (28 degrees for a 90 degree sphere zone in 8 faces), and the tolerance follows it: the normal check is only as sharp as the tessellation it is compared with, so verify against a fine detail. Descriptors come from the detail Model's recorded surfaces; `m.surface({ chord, angle })` are recorded with them (defaults 0.001 m and 12 degrees).
+- Verifier (`verify`): `'all'` (default) compares the exact patch with `Baker.probe` (the ray bake's own correspondence) at every analytic sub-sample before sampling. `'sample'` compares at most 256 area-stratified, deterministic points per group and `'off'` trusts the patches; both are explicit opt-outs with a limit. A 256-point sample missed a 10 mm move of four faces in 2 of 10 positions (more than 35 texels more than 4 mm off) that `'all'` caught in all 10, and `'off'` writes whatever the descriptors say except what the guard below refuses. The analytic bake buys accuracy, not speed: at 256 x 256 the ray bake takes about 0.5 s, the analytic bake 1.1 s with `'off'` or `'sample'` and 1.9 s with `'all'`. A disagreement beyond the tolerance ray-bakes the whole group (fail-closed), raises the `warn` check `analytic-mismatch` and lists `{ group, patch, map, worst, tolerance, count }` in `provenance.analytic.mismatches`. The guard compares every face of one patch up to 2048 faces and a deterministic every-Nth-face stride above that (a 2484-face patch is compared at stride 2; one moved face is still caught through its shared vertices, a contiguous 2 to 25 % hole is caught by `sample` and `all`, and a single deleted face is missed by `sample` and caught by `all`); under `off` it sees no deleted face at all, so a large patch under `off` is only as safe as its descriptor. The normal limit is `turn + 0.45 degrees` where `turn` is the measured corner turn of the detail. Without the domain channel the limit is the declared tessellation `angle` plus 0.45 degrees: that is the declared tolerance, not a verified bound on the honest facet deviation, and without uv1 the normal check is chord-limited to about `chord * sin(angle)`. This is a precise documented loss: at the default angle 12 a flat patch tilted up to about 11 degrees inside a crease is accepted there (the limit is 12.45 degrees), and the normal check does not require uv1. A known over-refusal (behaviour unchanged, recorded): on `quality-body` with blends the honest hood's normal worst is 1.5589 against a limit of 1.5514 (0.0075 degrees over), inside a group that already falls back to rays on the fender (28.28 against 7.44), so the hood's miss has no output effect today. The verifier compares the exact patch normal with the detail triangle's own facet normal (not the interpolated shading normal), so an autoSmooth crease leans the shading but not the facet: the honest 30 degree crease stays analytic with a 0 degree normal deviation. Measured tilt acceptance of a flat patch inside that crease (default autoSmooth 35, detail chord 0.01 m, tessellation angle 12): with the domain channel (guard on) 2, 5, 8 and 11 degrees are refused as `mismatch` on the normal, and 30 degrees as `detail-moved`; without the domain channel (guard off, patch angle 12) 2, 5, 8 and 11 degrees are accepted (normal limit 12.45 degrees, the documented loss), 30 degrees is refused; with the patch angle 4 (guard off), 5, 8, 11 and 30 degrees are refused and 2 degrees (inside 4.45) is accepted. A mesh `tag` equal to a patch name tags every face, so the guard matches a patch's faces by its name tag minus every other patch's name tag. A wrong or shifted patch therefore never reaches the output with the default verifier, which the mutation set in the gate proves.
+- Stale descriptor guard (independent of `verify`): a Model detail records its patches when `m.surface` runs, and a later `translate`, `scale`, `rotate` or edit of the detail moves the vertices and not the descriptors. Before sampling, up to 2048 faces per patch (a deterministic stride) are checked: every corner of a face tagged with the patch carries the patch domain in the detail's own channel, and the patch evaluated there must lie within the patch `chord` of the corner's vertex. A patch that fails sends its group to rays with reason `detail-moved`, and the move is listed as a `position` mismatch (`worst` is the largest distance, `count` the corners beyond the chord) with the `analytic-mismatch` warn. The guard needs the domain channel on the detail: a bytes detail or a Model detail that lost it reports `guarded: 0` for the group, and its descriptors are trusted exactly as far as the verifier checks them. Small edits inside the chord pass the guard by design (they are within the tolerance of the verifier too).
+- Report: `provenance.analytic` has `verify`, `analyticSamples`, `raySamples`, per-map `{ verified, max, p99, tolerance }` (meters, or degrees for normals), per-group `{ id, patches, analytic, reason?, verified, guarded, analyticSamples, raySamples }` and `mismatches`; an `info` diagnostic summarizes the exact share. With an analytic bake `report.metrics.samples`, `rayHits` and `rayHitRatio` count the ray samples only (an analytic-only bake can report 0 samples); `report.metrics.analyticSamples` carries the exact ones, and `analyticSamples + samples` equals the `samples` of the ray-only bake. Unknown option names are rejected (`model-invalid-argument`).
+- Parallel bake: `bakeMapsParallel` produces the same bytes (the plan is re-prepared deterministically in each worker).
+- Exact lane: `AnalyticPatch` (`{ kind: 'nurbs', name, surface, chord, angle }`) is the one contract; a primitive Shape producer (X6a) supplies descriptors through `analytic.patches`, and a new `kind` adds one case to `evaluate` and one to `normalAt` in `compute/bake-analytic.ts` (no brep import).
+
+Gate: `bake-analytic.unit.test.ts` and `bake-analytic-audit.unit.test.ts` (default verifier, stale-descriptor guard, measured normal tolerance with an 8 degree falsifier, solve and sample-plan units, floater and localized-error gates), and the mutation set `scripts/mutation/sets/uv2-bk63-analytic.json`: the first file has (sphere, cylinder and bicubic agreement with `verify: 'all'`, reversed parametrization, exact versus the ray bake on a coarse sphere, offset-patch mutant, orientation and cage-span falsifiers, mixed base, fail-closed fallbacks, mixed analytic and ray maps, default-off golden digest, determinism and parallel splits). Design note: `phase2/design-C-BK63-analytic-bake.md`.
 
 ## Trim sheets: `trimSheet`, `uv.trim`, `uv.swatch`, `stamp`, `trimReport`
 
@@ -510,17 +656,28 @@ const maps = bakeTrimSheet(sheet.value, { maps: ['normal', 'ao', 'height', 'mate
   spread, unused regions and dedupe counts. Warnings: clones, costly families, unused regions.
 - **Stamps**: `stamp.boltHex({ across, height, chamfer?, rotation?, washer?, margin?,
   material? })` (the `recipes.hexBolt` head: 45 degree rim chamfer 0.05 x across),
-  `stamp.rivet`, `stamp.hole` (dark slot 'hole', optional countersink), `stamp.slot`, and
+  `stamp.rivet`, `stamp.hole` (dark slot 'hole', optional countersink; a texture trim, not geometry: `m.hole` cuts the real hole), `stamp.slot`, and
   the tileable strips `stamp.groove` (v or u profile), `stamp.perforation` (square or
   staggered), `stamp.treadPlate` (crossed lugs), `stamp.knurl` (crossed V grooves,
   pyramids; period pitch / sin(angle)) and `stamp.weldBead` (crown with chevron
   ripples), plus `stamp.text({ text, height, depth })` (`textRegion` outlines rastered by
-  `coverage` at 64 samples per cap height; negative depth engraves). Each returns
+  `coverage` at 64 samples per cap height; negative depth engraves) and
+  `stamp.outline({ region, depth, margin?, edge?, samplesPerMeter?, material? })` for any
+  filled `Region2` (outer loops with holes; height = depth x coverage, sloped over `edge`).
+  Outline holes follow even-odd coverage, so their winding is free, but a hole outside its
+  outer loop is rejected with `model-invalid-argument`. Real typefaces enter through
+  `parseTrueTypeFont` and `fontRegion` (static TrueType, quadratic glyf): the reader
+  bounds-checks every table and refuses CFF, collections, variable fonts, point-matching
+  composites and missing `vmtx` with `model-capability-unavailable`. `fontRegion` resolves
+  glyph contours by nonzero winding (TrueType fill rule; overlapping same-direction
+  contours union, so the crossbar of `A` adds no counter) and returns `{ region, missing }`;
+  a `segment-budget` overrun reports `model-work-budget`. Its output is a disjoint
+  `Region2` for `stamp.outline`. Each returns
   `{ size, tiling?, period?, source, signature }` to spread into a module:
   `{ id: 'bolt', ...stamp.boltHex({ across: 0.018, height: 0.0075 }).value }`. Shapes are
   signed distances (planes for polygons, so chamfer faces are exact) with height profiles
   (flat top with chamfer, spherical dome, floor with walls), raised or cut in order.
-- **Reuse gates** (`trim-reuse.unit.test.ts`, `stamp.unit.test.ts`): the analytic M12 head
+- **Reuse gates** (`trim-reuse.unit.test.ts`, `stamp.unit.test.ts`, `stamp-outline.unit.test.ts`): the analytic M12 head
   matches the `recipes.hexBolt` bake at p95 0.0 degrees (byte-identical normals) and AO
   MAE 0.026 (gate 0.035), and a 20 %
   larger head gives 45 degrees (falsifier); instances from 0.6x to 1.7x stay within 17.9 %
@@ -591,6 +748,119 @@ const report = thinHoleCheck(baked.value, plan.value);          // { pass, expec
 - Gate: `thin-hole.unit.test.ts` (exact open fraction and closed valid detail; hole centers
   alpha 0 and web alpha 1; mip coverage within 0.05 of the exact area; the backing-plate
   falsifier; recess floor and web heights). Example: [thin-vent](../examples/thin-vent/).
+
+## Surface contract: `validate({ surface })` / `toMesh({ surface })`
+
+The game mesh channel contract (P2-S1). `color` lanes R = ambient occlusion, G = curvature,
+B = wear, A = variation seed, all in [0, 1]. `uv0` is `zone + local`: the integer cell
+`floor(uv0)` is the material zone declared for the face's tag, the fraction is the position
+inside the zone, so a metric uv0 stays inside one cell (period at least the largest island).
+`uv1` is the decal / emissive set, every corner in [0, 1].
+
+`SurfaceContract { zones?: tag -> [i, j]; tiling?: tags; need?: channels; uniqueUv1? }`. Each finding is a
+`surface` warning whose `detail.check` is one of `SURFACE_CHECKS`: `channel-missing`,
+`color-range`, `uv0-range` (a NaN or infinite uv0 corner), `uv1-range`, `uv1-overlap` (only with `uniqueUv1: true`: uv1 triangles of different faces overlap), `zone-straddle` (a face across two cells), `zone-unknown`
+(`detail.reason`: `mismatch`, `no-zone`, `ambiguous`). Tags listed in `tiling` skip both zone
+checks and are reported as one `info` (`reason: 'exempt'`). `toMesh({ surface })` returns the
+same findings in `report.diagnostics`; the export is unchanged and no channel is rewritten.
+Design note: `phase2/design-P2-S1-surface-contract.md`.
+
+### Game UV from the patch domain: `m.uv.fromPatch`
+
+`m.surface` stores the normalized patch domain in `uv1` (the surface parameter that
+`{ mode: 'surface' }` normals read). `m.uv.fromPatch({ mode, zone?, period?, faces? })` rewrites
+`uv0` from it and never writes `uv1`. Patch groups are the faces joined through edges whose
+`uv1` agrees on both sides (a patch border, trim or cut separates groups).
+
+| `mode` | uv0 of a group |
+|:--|:--|
+| `intrinsic` | `zone + (s, t)`: each group fills its own unit cell, density follows the parameterization |
+| `conformalScaled` | `zone + ((s - s0) * lu, (t - t0) * lv) / period`: `lu`, `lv` are the group's area-weighted RMS isoparm lengths in meters, `period` (meters per cell, default the largest group extent) is shared, so every patch has one texel density and stays in its cell |
+
+The info diagnostic carries `mode`, `groups`, `faces`, `skipped` (degenerate domains keep their
+uv0, plus a `degenerate-domain` warning), `period` and `densitySpread` (largest over smallest
+group density, 1 is uniform). Errors: `model-invalid-argument` with `detail.code` `mode`, `zone`
+`period` or `overflow` (`zone` is an integer cell within +-1024; a result that float32 cannot hold, such as a tiny `period`, fails and writes nothing); `model-precondition` with `no-patch-domain` when a face has no `uv1`. A `period`
+below a group's extent makes the result straddle its cell, which `validate({ surface })` reports
+as `zone-straddle`. Gate: `uv-from-patch.unit.test.ts`. Design note:
+`phase2/design-C-BK51-uv-from-patch.md`.
+
+### Dual channels: `m.uv.lightmap`, `m.uv.channel` (BK56)
+
+`uv0` is the tiling material set (may overlap); `uv1` is the unique unit-square set for lightmaps and decals.
+
+- `m.uv.lightmap({ resolution, padding?, from?, pack?, domain? })` packs the uv0 islands once into uv1: `stack: false` (a lightmap cannot share texels), `normalize: true` (one texel density), one atlas, padding `{ mips: k }` with k the largest keeping the 128-texel mip free of bleeding (override with `padding`). `uv0` is never written. `pack` takes `method`, `rotate`, `snap`. The info diagnostic carries the pack metrics. Check the result with `validate({ surface: { uniqueUv1: true } })` (`uv1-overlap`).
+- `m.uv.channel({ op, from?, to?, faces? })`: `copy` writes `to` from `from`, `swap` exchanges them (unset corners move as unset), `delete` clears `to` (the channel is dropped when no face is left). Channels must have one dimension. Errors: `model-invalid-argument` for a bad op or channel pair; `model-precondition` with `channel-missing` (copy from an absent channel) or `channel-protected` (delete of `uv0`, or any write to the patch-domain carrier).
+- Patch-domain carrier: `m.surface` writes the normalized patch domain to uv1 and the session records uv1 as its carrier (`{ mode: 'surface' }` normals and `uv.fromPatch` read the recorded channel). A `lightmap` on a uv1 that holds the domain fails with `patch-domain-carrier` and changes nothing; `domain: 'copyTo-uv2'` copies uv1 to uv2 (`channel-occupied` if uv2 already has data), packs the lightmap into uv1 and records uv2 as the carrier. Surface-mode normals are identical before and after. `uv.fromPatch` and `surfaceField` (through `report.normalDomain`, pass it as `domain`) read the recorded carrier; `fromPatch` fails with `no-patch-domain` (`detail.carrier`) and writes nothing on faces the carrier does not cover. A later `m.surface` writes the new patches' domain to the recorded carrier (a `domain-carrier` warning; their uv1 is a copy of the domain until `uv.lightmap` runs again). `project`, `unwrap`, `pack`, `auto`, `trim` and `swatch` warn (`domain-overwritten`) when their output `channel` holds the domain of a selected face; they still write it, as before, because the default carrier uv1 is a free channel to them (a refusal broke the shell workflows that project uv1 over rims and patches). Known limit: `surfaceField` called on a bare MeshAsset reads uv1 unless given `domain`. The carrier is session state captured and restored with the patches (a rolled-back `try()` restores it); an FXEM snapshot does not carry it.
+
+- Joining sessions keeps one patch-domain carrier. `m.append`, `m.array(operand)` and the booleans (`union`, `difference`, `intersection`, `splitBy`) with a session or snapshot operand fail with `model-precondition`, `detail.code` `carrier-mismatch` (`detail.host`, `detail.operand`) and leave the host unchanged when both sides actually hold patch-domain data on different channels, e.g. a moved session (uv2) and an unmoved one (uv1). A session holds patch-domain data when it records patches or has adopted a carrier from a patched operand (as host and as operand alike, so a scratch kit session that only appended a patched session counts, and it keeps counting after its patch faces were deleted). A snapshot records no carrier, so it is derived from its channels (uv2 present: uv2, else uv1; `detail.derived: true`) and is only a heuristic: a user-made uv2 is treated as a moved patch domain. A free host adopts the carrier of the patched session it joins, and of a snapshot only when that carrier is uv2; a uv1-only snapshot never marks a free host (uv1 is the default channel of every lightmapped or projected bare mesh), though it is still compared against a host that holds patch data on uv2. Sessions without patches never conflict: an empty host or a bare/lightmapped box joins any operand in either order. Patches adopted from a session also protect the carrier from `uv.lightmap` (without `domain`) and `uv.channel`; a carrier adopted from a snapshot protects nothing, as the snapshot names no patches. Before the check the join succeeded and `toMesh` then failed with "every face has uv2 values". Run `uv.lightmap` with `domain: 'copyTo-uv2'` on the unmoved session first, or move neither. Known limits: a snapshot of a lightmapped, patch-free mesh that has uv1 reads as uv1 and conflicts with a moved host (the snapshot cannot say whether uv1 is a domain); joining uv1-patch snapshots and then a moved patch snapshot into a free host is not detected (join the sessions, not their snapshots).
+
+Gate: `uv-channel.unit.test.ts`. Design note: `phase2/design-C-BK56-dual-channel-ops.md`.
+
+### Role visibility audit: `m.auditVisibility`
+
+Part roles (`form`, `detail`, `tool`) decide what `lowpoly` keeps and what the bake reads as detail,
+and roles can be wrong. `m.auditVisibility({ views?, occluders?, samples?, minVisible?, faces? })`
+returns `Result<VisibilityAudit>` and never changes the session. A part is a vertex-connected
+component of faces that share one role (a `detail` boss welded to a `form` body is its own part, so
+its role is audited). From `views` viewpoints on a Fibonacci sphere (2 x the bounding diagonal around the box
+centre, default 96) each face is tested at its centroid (`samples: 4` adds three inner points): a
+viewpoint counts when it is above the face plane (cosine 0.15, as `sel.hidden`) and the ray meets no
+triangle of an occluding role other than the face's own triangles (default `form` and `detail`; a tool
+is never part of the asset). The ray starts on the surface, so a skin of any thickness hides what is
+behind it.
+`visible` is the area-weighted share of facing viewpoints that see the part (0 hidden, 1 fully
+exposed); `views` counts viewpoints that see any of its faces.
+
+| Finding | Meaning | Action |
+|:--|:--|:--|
+| `form-hidden` | a `form` part with `visible` under `minVisible` (default 0.02): interior structure the low keeps and unwraps | mark it `detail` or delete it |
+| `detail-seen` | a `detail` part with `visible` at or above `minVisible`: the low drops it, so the silhouette or shading changes unless the bake covers it; expected for bolts and studs, check large `area` | confirm the bake covers it, or promote to `form` |
+| `tool-seen` | a `tool` part at or above `minVisible`: a cutter left in the session | delete it or mark it `detail` |
+
+`byRole` sums parts, area and exposed area per role. Errors: `model-invalid-argument` with
+`detail.code` `views`, `samples`, `minVisible` or `occluders`. The audit measures exposure to the
+outside, not a particular camera. Gate: `visibility-audit.unit.test.ts` (mutants without occlusion, facing
+threshold, area weighting, default occluders, samples, the self-exclusion, the per-role split and the
+thin-skin case fail it; the any-hit flag is an equivalent mutant: it only stops the ray early). Turret at 32 viewpoints (C-600, measured before the per-role split and the lift removal; re-run before quoting): the high has 9 form and 133 detail parts, 132 detail-seen
+(bolts and studs) and 3 `form-hidden` cradle parts; the low has 9 form parts with the same 3
+`form-hidden` (`pins:0`, `pins:1`: 66 faces, 13.9 m2 each; `bores:0`/`bores:1`: 568 faces, 222.6 m2,
+exposure 0.003), the interior cradle bores and pins that the low keeps and unwraps. Design note:
+`phase2/design-C-BK64-role-visibility-audit.md`.
+
+### Seam hidden score: `m.seamVisibility`
+
+`m.seamVisibility({ channel?, views?, occluders?, minHidden?, resolution? })` returns
+`Result<SeamVisibilityReport>` and never changes the session. A seam is an interior edge whose two
+sides disagree on a corner value of the channel (default `uv0`). For each seam edge the viewpoints
+are the `auditVisibility` Fibonacci sphere (default 96, 2 x the bounding diagonal); a viewpoint counts
+when it faces either adjacent face (cosine 0.15) and sees the edge when the ray to its midpoint meets
+no triangle of an occluding role (default `form` and `detail`) other than the two adjacent faces.
+An edge's `hidden` is `1 - seen / counted` (1 when no viewpoint counts).
+
+Stated semantics and limits (pinned by tests). (1) A seam no viewpoint faces (`counted` 0: zero-area or
+degenerate faces) counts as hidden 1, so degenerate geometry never reads as an exposed seam. (2) The two
+faces on either side of a seam never occlude it. On a closed solid other faces block, but on open sheets
+or thin shells a concave crease is scored visible from viewpoints that sit behind the neighbouring face:
+a V-groove of two open sheets scores `hiddenScore` 0 where a true visibility test gives about 0.67. Read
+the score as a proxy for convex or closed forms; close the shell (or add the neighbouring part as `form`)
+before trusting a crease. (3) Seams of `tool` faces are counted although `tool` faces do not occlude by
+default. (4) A non-finite vertex position is a `model-precondition` result with `detail.code`
+`non-finite-position` and the `vertex` index, not a thrown `RangeError`.
+
+`hiddenScore` is the length-weighted mean of `hidden` over all seams (1 without seams), and
+`visibleLength` the seam length left visible. `chains` are connected seam edges between one island pair,
+sorted by visible length (at most 32) with a `worst` point; `exposed` counts chains under `minHidden`
+(default 0.5). `byIsland` gives each island's seam `border` length, `hidden` share and `thin`
+(under 6 texels across, or 6 or more times longer than wide, at `resolution` 1024, as the turret
+baseline counts). It is a proxy for placement, not an aesthetic judgment. Errors: `model-invalid-argument`
+with `detail.code` `views`, `minHidden`, `resolution` or `occluders`; `model-precondition` without the channel or with a non-finite position.
+
+Turret low after `unwrapLow` (C-BK58, honest baseline; the BK50 threshold is unchanged): 1688 seams,
+904.6 m, 271.8 m visible, `hiddenScore` 0.6995, 59 exposed chains, median island hidden 0.79. The two
+thin islands are the mantlet (island 39, 2 faces, hidden 0.867) and the apron (island 46, 34 faces,
+hidden 0.957); the hatch recess is not thin. Gate: `seam-visibility.unit.test.ts`. Design note:
+`phase2/design-C-BK58-seam-hidden-score.md`.
 
 ## Bake verification metrics (tools)
 

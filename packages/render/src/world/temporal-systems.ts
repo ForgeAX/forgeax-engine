@@ -6,7 +6,7 @@ import {
   type World,
 } from '@forgeax/engine-ecs';
 import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
-import { mat4 } from '@forgeax/engine-math';
+import { type Mat4, mat4 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import {
   commitStandardOutputSubmission,
@@ -37,7 +37,6 @@ import {
   commitStagedTemporalGpuState,
   retireActiveTemporalGpuState,
 } from '../temporal/gpu';
-import { ViewGraphSeal, type ViewGraphSealState } from './graph-seal-systems';
 import { viewLightsOf } from './render-lights';
 import { ViewRecorder, ViewSubmission } from './render-views';
 import {
@@ -48,9 +47,9 @@ import {
   renderWorldFor,
 } from './render-world';
 import { viewStandardLightingOf } from './standard-lighting-systems';
-
 import { readViewField, readViewState, requireViewField } from './view-field';
 import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
+import { ViewRecordAttempt, type ViewRecordAttemptState } from './view-record-attempt';
 
 import type { ViewSettlementOwner as TemporalOwner } from './view-settlement';
 import { ownerOf, registerViewCommit } from './view-settlement';
@@ -244,7 +243,7 @@ export type TemporalStageOutcome =
   | {
       readonly kind: 'staged';
       readonly frameId: number;
-      readonly currentViewProjection: Float32Array;
+      readonly currentViewProjection: Mat4;
     }
   | { readonly kind: 'skipped' }
   | { readonly kind: 'failed'; readonly cause: unknown };
@@ -444,17 +443,17 @@ export function registerTemporalStageSystems(world: World): void {
     commands: 'none',
     name: RENDER_TEMPORAL_RESOLVE_SYSTEM,
     after: [RenderViewGraphPrepareOrder],
-    queries: [{ write: [ViewGraphSeal] }],
+    queries: [{ write: [ViewRecordAttempt] }],
     fn: (world, [rows]) => {
       const frame = renderSubmission(world).frame;
 
       rows.forEach((row) => {
         const entity = row.entity;
 
-        markDerivedComponentChanged(world, entity, ViewGraphSeal).unwrap();
+        markDerivedComponentChanged(world, entity, ViewRecordAttempt).unwrap();
         const state = world
-          .resolveUniqueRef<ViewGraphSealState>(
-            requireViewField(world, entity, ViewGraphSeal, 'state'),
+          .resolveUniqueRef<ViewRecordAttemptState>(
+            requireViewField(world, entity, ViewRecordAttempt, 'state'),
           )
           .unwrap();
         if (state.frame !== frame || state.prepared === undefined || state.temporal !== undefined)

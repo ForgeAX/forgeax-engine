@@ -1,5 +1,5 @@
 import { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
-import { isStandardRootModule } from '@forgeax/engine-types';
+import { isStandardRootModule, type MaterialPass } from '@forgeax/engine-types';
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import { SceneDataUnavailableError } from '../errors/render';
@@ -97,14 +97,18 @@ function sceneDataOwnerKey(owner: SceneDataBindingOwner, schema: SceneDataSchema
 
 /**
  * Whether any pass of the plan can derive a SceneData `sampled-read`. Pass
- * access only yields a non-string resource from a `prepared-gpu-resource`
- * declaration's `logicalTarget` (raster `sampledTargets` keep strings only),
- * so a plan without such a SceneData declaration contributes no binding.
+ * access yields semantic reads from raster `sampledTargets` or a prepared
+ * resource's `logicalTarget`; other plans contribute no surface binding.
  */
 function declaresSceneDataTarget(plan: RenderFeatureWorkPlan): boolean {
-  return plan.resources.some(
-    (resource) =>
-      resource.kind === 'prepared-gpu-resource' && isSceneDataTarget(resource.logicalTarget),
+  return (
+    plan.passes.some(
+      (pass) => pass.kind === 'raster' && pass.sampledTargets?.some(isSceneDataTarget),
+    ) ||
+    plan.resources.some(
+      (resource) =>
+        resource.kind === 'prepared-gpu-resource' && isSceneDataTarget(resource.logicalTarget),
+    )
   );
 }
 
@@ -923,6 +927,16 @@ function surfaceContributorRejection(
       authoredShaderId === 'forgeax_material::unlit');
   if (facts?.materialSnapshotMissing === true) return MATERIAL_SNAPSHOT_MISSING;
   if (facts?.selectedPassFound === false) return SELECTED_PASS_MISSING;
+  // The selected writer receipt certifies the actual Deferred GBuffer ABI,
+  // including canonical Terrain geometry. It does not certify a Forward
+  // surface prepass or an absent/mismatched fragment entry.
+  if (
+    expectedEntry === 'fs_gbuffer' &&
+    contributor.gbufferWriter === true &&
+    contributor.entryPoint === expectedEntry &&
+    facts?.expectedFragmentEntry === expectedEntry
+  )
+    return undefined;
   if (
     !isCanonicalStandardPbrMaterialShader(authoredShaderId) &&
     (authoredShaderId === undefined || !isStandardRootModule(authoredShaderId)) &&
@@ -1046,21 +1060,29 @@ function materialForDispatch(
   return row.material.snapshot.materialHandle === materialHandle ? row.material : undefined;
 }
 
+function passLightMode(pass: MaterialPass): string | undefined {
+  return (pass.renderState?.tags as Record<string, string> | undefined)?.LightMode;
+}
+
 function passForDispatch(
   material: MaterialResource,
   materialShaderId: string | undefined,
   tags: Record<string, string>,
 ) {
-  return material.snapshot.passes.find((pass) => {
-    const passTags = (pass.renderState?.tags as Record<string, string> | undefined) ?? {};
-    if (passTags.LightMode !== tags.LightMode) return false;
+  const passes = material.snapshot.passes;
+  // Select the first matching declaration and observe live program keys in order
+  // on borrowed snapshots.
+  for (let index = 0, count = passes.length; index < count; index++) {
+    const pass = passes[index] as (typeof passes)[number];
+    if (passLightMode(pass) !== tags.LightMode) continue;
     const programs = material.snapshot.materialProgramKeys;
     const shaderId =
       programs === undefined
         ? runtimeMaterialShaderId(pass.program.module, pass.name)
         : programs[pass.name];
-    return shaderId === materialShaderId;
-  });
+    if (shaderId === materialShaderId) return pass;
+  }
+  return undefined;
 }
 
 function isRequiredSurfaceDispatch(
@@ -1071,15 +1093,11 @@ function isRequiredSurfaceDispatch(
   if (!matchesRecordMode(material.snapshot, 'opaque')) return false;
   if (lane === 'forward') return matchPass(tags, FORWARD_PASS_SELECTOR);
   if (matchPass(tags, DEFERRED_PASS_SELECTOR)) return true;
-  return (
-    matchPass(tags, FORWARD_PASS_SELECTOR) &&
-    !material.snapshot.passes.some((pass) =>
-      matchPass(
-        (pass.renderState?.tags as Record<string, string> | undefined) ?? {},
-        DEFERRED_PASS_SELECTOR,
-      ),
-    )
-  );
+  return matchPass(tags, FORWARD_PASS_SELECTOR) && !material.snapshot.passes.some(isDeferredPass);
+}
+
+function isDeferredPass(pass: MaterialPass): boolean {
+  return passLightMode(pass) === DEFERRED_PASS_SELECTOR.LightMode[0];
 }
 
 function deformationForContributor(
@@ -1261,10 +1279,9 @@ function selectedPassMissingContributor(
   tags: Record<string, string>,
   expectedFragmentEntry: string,
 ): StandardSceneDataContributor {
-  const candidate = material.snapshot.passes.find((entry) => {
-    const candidateTags = (entry.renderState?.tags as Record<string, string> | undefined) ?? {};
-    return candidateTags.LightMode === tags.LightMode;
-  });
+  const candidate = material.snapshot.passes.find(
+    (entry) => passLightMode(entry) === tags.LightMode,
+  );
   const candidateFact =
     candidate === undefined ? undefined : materialProgramFact(material, candidate);
   const geometry = material.snapshot.materialContext?.geometry ?? 'unknown';

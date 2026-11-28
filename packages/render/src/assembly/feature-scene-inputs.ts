@@ -32,6 +32,7 @@ interface DepthInput {
 export function createFeatureSceneInputs(
   internals: RenderSystemInternals,
   noise: (frame: number) => TextureView | undefined,
+  cloudBlueNoise?: (frame: number) => TextureView | undefined,
 ) {
   const sdf = createFeatureSceneSdf(internals);
   const depths = new Map<string, DepthInput>();
@@ -51,6 +52,7 @@ export function createFeatureSceneInputs(
     retireRenderTargetPhysical(input.physical, (error) => internals.errorRegistry.fire(error));
   };
   return {
+    cloudBlueNoise: () => cloudBlueNoise?.(frame),
     begin(frameNumber: number) {
       sdf.begin();
       frame = frameNumber;

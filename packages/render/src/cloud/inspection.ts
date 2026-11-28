@@ -1,5 +1,6 @@
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { CloudParameterValue } from './contracts';
+import type { CloudShadowFormat } from './lighting/shadow-format';
 /** Evidence level for bytes owned by the prepared GPU path. */
 export type CloudGpuResourceEvidence = 'unavailable' | 'declared' | 'measured';
 
@@ -91,6 +92,16 @@ export interface CloudLayerInspection {
     readonly acceptedFrame: number | undefined;
     readonly acceptedPhase: number | undefined;
     readonly resetReasons: readonly string[];
+    /** Shadow attachments and midpoint budget declared for this view. */
+    readonly shadowMap?: {
+      readonly format: CloudShadowFormat;
+      readonly rawResolution: number;
+      readonly filteredResolution: number;
+      readonly spatialPasses: number;
+      readonly traceSamples: number;
+      readonly originMeters: readonly [number, number, number];
+      readonly fullWidthMeters: number;
+    };
     readonly diagnostic?: {
       readonly mode: number;
       readonly status: 'inactive' | 'display' | 'probe' | 'unsupported';

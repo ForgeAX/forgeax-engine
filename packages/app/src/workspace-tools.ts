@@ -1,6 +1,11 @@
 import type { PackProgramSource } from '@forgeax/engine-pack/runtime';
 import type { PackDraftRequest } from '@forgeax/engine-pack/source';
 import {
+  defaultViewportOutputInspection,
+  isViewportOutputMode,
+  VIEWPORT_OUTPUT_MODES,
+} from '@forgeax/engine-render';
+import {
   defineTool,
   type ToolContribution,
   type ToolExecutionContext,
@@ -223,6 +228,40 @@ export function createEngineWorkspaceTools(
             'engine-workspace-target-stale',
             'The same target owner after the presentation request',
           );
+        return result;
+      },
+    },
+    'viewport.output.get': {
+      summary: 'Read the active viewport output visualization mode and caveats on the target.',
+      async run(args) {
+        const owner = preview(args);
+        const vp = owner.tools?.viewportOutput;
+        if (!vp) return defaultViewportOutputInspection();
+        const result = await vp.get();
+        if (owner !== preview(args))
+          throw new EngineWorkspaceError('engine-workspace-target-stale', 'The same target');
+        return result;
+      },
+    },
+    'viewport.output.set': {
+      summary: 'Switch the viewport output visualization mode (lit or GBuffer diagnostic view).',
+      required: ['targetId', 'targetGeneration', 'mode'],
+      properties: {
+        mode: { type: 'string', enum: [...VIEWPORT_OUTPUT_MODES] },
+      },
+      async run(args) {
+        const owner = preview(args);
+        const vp = owner.tools?.viewportOutput;
+        if (!vp)
+          throw new EngineWorkspaceError(
+            'engine-workspace-capability-unavailable',
+            'Viewport output visualization tools',
+          );
+        if (!isViewportOutputMode(args.mode))
+          throw new TypeError(`Unsupported viewport output mode: ${String(args.mode)}`);
+        const result = await vp.set({ mode: args.mode });
+        if (owner !== preview(args))
+          throw new EngineWorkspaceError('engine-workspace-target-stale', 'The same target');
         return result;
       },
     },
@@ -924,6 +963,7 @@ export function createEngineWorkspaceTools(
             operation.startsWith('preview.') ||
             operation.startsWith('entity.') ||
             operation.startsWith('target.') ||
+            operation.startsWith('viewport.') ||
             operation === 'play.ready' ||
             operation === 'play.stop' ||
             operation === 'scene.tree.get'
@@ -1032,6 +1072,7 @@ export function createEngineWorkspaceTools(
               'scene.tree.get',
               'entity.inspect',
               'target.pick',
+              'viewport.output.get',
               'camera.get',
               'preview.display.get',
               'preview.material.get',

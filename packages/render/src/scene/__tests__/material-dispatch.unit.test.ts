@@ -19,6 +19,7 @@ import {
   hasShadowPasses,
   MaterialDispatch,
   MaterialFrame,
+  orderMaterialDraws,
   projectCapturedViewDispatch,
   someCapturedMaterialPass,
   visitCapturedCasterMaterials,
@@ -870,6 +871,47 @@ it('issues view ranks against captured bindings across partial rebinding and cam
   view(first, 4, before);
 });
 
+it('keeps dense and repeated native view ranks unobserved until a draw is read', () => {
+  const resource = new MaterialResource(captureMaterialSnapshot(material(19, 2000)));
+  const owner = new MaterialDispatch();
+  const rows = Array.from({ length: 160 }, (_, id) => slot(id, resource));
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const sourceDispatch = query(owner, fixedSlots(rows));
+  const address = (rank: number) => rank;
+  const issue = vi.spyOn(drawEntries, 'dispatchEntry');
+  try {
+    const before = projectCapturedViewDispatch(sourceDispatch, address);
+    assert(before);
+    const ranks: number[] = [];
+    expect(visitCapturedPassRanks(before, 'display', (rank) => ranks.push(rank))).toBe(true);
+    expect(ranks).toEqual(rows.map((_, rank) => rank));
+    expect(issue).not.toHaveBeenCalled();
+    const sorted = orderMaterialDraws(before, [50, 51], 2, (ordinal) => 51 - ordinal);
+    expect(culledViewDemand(sorted)).toBe(culledViewDemand(before));
+    expect(issue).not.toHaveBeenCalled();
+    expect(sorted?.length).toBe(before.length);
+
+    const observed = before.at(80);
+    expect(observed).toMatchObject({ entityIndex: 80, renderableIndex: 80 });
+    expect(issue).toHaveBeenCalledTimes(1);
+
+    const after = projectCapturedViewDispatch(
+      sourceDispatch,
+      (rank) => (rank % 7 === 6 ? -1 : rank),
+      { sourceDispatch, dispatch: before, rowCount: rows.length, projection: { address } },
+    );
+    assert(after);
+    expect(after.length).toBe(138);
+    expect(issue).toHaveBeenCalledTimes(1);
+    expect(after.at(69)).toBe(observed);
+    expect(after.at(68)).toMatchObject({ entityIndex: 79, renderableIndex: 79 });
+    expect(issue).toHaveBeenCalledTimes(2);
+    expect(before.at(80)).toBe(observed);
+  } finally {
+    issue.mockRestore();
+  }
+});
+
 it('reads changing membership without issuing draws and holds only captured binding values', () => {
   const resource = new MaterialResource(captureMaterialSnapshot(material(19, 2000, true)));
   const owner = new MaterialDispatch();
@@ -1060,7 +1102,16 @@ it('projects display and caster membership across material groups and sparse slo
     [dense, rows.length],
   ] as const) {
     const words = new Uint32Array(Math.ceil(count / 32));
-    expect(writeCapturedCasterRanks(dispatch, words, count - 1)).toBe(true);
+    const visitRanks = vi.spyOn(
+      dispatch as unknown as { visitPassRanks(...args: unknown[]): void },
+      'visitPassRanks',
+    );
+    try {
+      expect(writeCapturedCasterRanks(dispatch, words, count - 1)).toBe(true);
+      expect(visitRanks).not.toHaveBeenCalled();
+    } finally {
+      visitRanks.mockRestore();
+    }
     const actual = Array.from({ length: count }, (_, i) => i).filter(
       (i) => ((words[i >>> 5] ?? 0) & (1 << (i & 31))) !== 0,
     );
@@ -1091,6 +1142,11 @@ it('projects display ranks without resolving shadow members and honors a replace
   const dispatch = query(owner, slots);
   const ranks = vi.spyOn(slots, 'indexOfSlot');
   try {
+    const words = new Uint32Array(1);
+    expect(writeCapturedCasterRanks(dispatch, words, rows.length)).toBe(true);
+    expect(words[0]).toBe(0b101);
+    expect(ranks.mock.calls.map(([slot]) => slot)).toEqual([3, 99]);
+    ranks.mockClear();
     const projected: number[] = [];
     expect(visitCapturedPassRanks(dispatch, 'display', (index) => projected.push(index))).toBe(
       true,

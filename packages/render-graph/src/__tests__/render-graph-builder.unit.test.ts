@@ -9,7 +9,7 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { RAY_QUERY_BACKEND_UNSUPPORTED } from '@forgeax/engine-rhi';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RenderGraphBuilder } from '../builder.js';
 import { ok } from '../errors.js';
 import type { ResolvedColorTargetDescriptor } from '../graph.js';
@@ -168,17 +168,149 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     expect(prior).toHaveLength(32);
   });
 
+  it('binds ordered physical descriptors without revisiting declarations', async () => {
+    const device = mockDevice();
+    const allocate = vi.spyOn(device, 'createTexture');
+    const surfaceSize = { width: 9, height: 7 };
+    const procedure = RenderGraphBuilder.procedure<Frame>({ device, surfaceSize });
+    const { passes } = procedure;
+    const scan = vi.spyOn(
+      passes as unknown as { preparePhysicalShapes(): unknown },
+      'preparePhysicalShapes',
+    );
+    const texture = passes
+      .createTexture('scene', { format: 'rgba8unorm', size: 'half-surface' })
+      .unwrap();
+    const view = passes.view(texture).unwrap();
+    passes.createBuffer('unused', { size: 4 }).unwrap();
+    passes
+      .addRasterPass('write', {
+        accesses: [{ resource: view, usage: 'color-attachment' }],
+        colorAttachments: [{ view, loadOp: 'clear', storeOp: 'auto' }],
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    passes
+      .addComputePass('sample', {
+        accesses: [{ resource: view, usage: 'sampled-read' }],
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    surfaceSize.width = 50;
+    const { physical: slots } = passes as unknown as {
+      physical: {
+        entries(): readonly unknown[];
+        resources(): Iterable<unknown>;
+        views(): Iterable<unknown>;
+      };
+    };
+    const bindingVisits = vi.spyOn(slots, 'entries');
+    const resourceSweeps = vi.spyOn(slots, 'resources');
+    const viewSweeps = vi.spyOn(slots, 'views');
+    const graph = procedure.bindResources().unwrap();
+    const constructionSweeps = [resourceSweeps.mock.calls.length, viewSweeps.mock.calls.length];
+    try {
+      expect(scan).not.toHaveBeenCalled();
+      expect(bindingVisits).toHaveBeenCalledTimes(1);
+      expect(allocate).toHaveBeenCalledTimes(1);
+      expect(allocate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          size: { width: 5, height: 4, depthOrArrayLayers: 1 },
+          usage: 0x14,
+        }),
+      );
+    } finally {
+      (await graph.retire()).unwrap();
+    }
+    expect({
+      construction: constructionSweeps,
+      retirement: [resourceSweeps.mock.calls.length, viewSweeps.mock.calls.length],
+    }).toEqual({ construction: [0, 0], retirement: [0, 0] });
+  });
+
   it.each([
-    { ordered: true, initialized: true },
-    { ordered: true, initialized: false },
-    { ordered: false, initialized: true },
-    { ordered: false, initialized: false },
-  ])('releases declaration scratch after binding (ordered=$ordered, initialized=$initialized)', async ({
-    ordered,
+    false,
+    true,
+  ])('reports the final uses of the first invalid import (ordered=%s)', (ordered) => {
+    const device = mockDevice();
+    const allocate = vi.spyOn(device, 'createBuffer');
+    const options = { device, surfaceSize: { width: 8, height: 8 } };
+    const procedure = ordered ? RenderGraphBuilder.procedure<Frame>(options) : undefined;
+    const graph = procedure?.passes ?? new RenderGraphBuilder<Frame>();
+    const earlier = graph
+      .importBuffer('first', { size: 4, usage: 0x10 }, (frame) => frame.imported)
+      .unwrap();
+    const later = graph
+      .importBuffer('second', { size: 4, usage: 0x10 }, (frame) => frame.imported)
+      .unwrap();
+    const owned = graph.createBuffer('owned', { size: 4 }).unwrap();
+    graph
+      .addCopyPass('write', {
+        accesses: [
+          { resource: later, usage: 'copy-dst' },
+          { resource: earlier, usage: 'copy-dst' },
+          { resource: owned, usage: 'copy-dst' },
+        ],
+        encode: () => {},
+      })
+      .unwrap();
+    graph
+      .addCopyPass('read', {
+        accesses: [{ resource: earlier, usage: 'copy-src' }],
+        encode: () => {},
+      })
+      .unwrap();
+    const result = procedure?.bindResources() ?? graph.compile(options);
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'import-usage-mismatch',
+        detail: { resourceLabel: 'first', expected: '12', actual: 0x10 },
+      },
+    });
+    expect(allocate).not.toHaveBeenCalled();
+  });
+
+  it('reports an invalid resource ahead of earlier view and operand failures', () => {
+    const options = {
+      device: mockDevice({ caps: caps({ compute: false }) }),
+      surfaceSize: { width: 8, height: 8 },
+    };
+    const procedure = RenderGraphBuilder.procedure<Frame>(options);
+    const { passes } = procedure;
+    const texture = passes
+      .createTexture('scene', { format: 'rgba8unorm', size: 'surface' })
+      .unwrap();
+    passes.view(texture, { dimension: '3d' }).unwrap();
+    passes.addComputePass('unavailable', { accesses: [], encodeDirect: () => {} }).unwrap();
+    passes.createBuffer('invalid-buffer', { size: 0 }).unwrap();
+    expect(procedure.bindResources()).toMatchObject({
+      ok: false,
+      error: {
+        code: 'resource-descriptor-invalid',
+        detail: { resourceLabel: 'invalid-buffer', field: 'size' },
+      },
+    });
+  });
+
+  it.each([
+    { path: 'display', initialized: true },
+    { path: 'display', initialized: false },
+    { path: 'procedure', initialized: true },
+    { path: 'procedure', initialized: false },
+    { path: 'authored', initialized: true },
+    { path: 'authored', initialized: false },
+  ])('releases declaration scratch after binding (path=$path, initialized=$initialized)', async ({
+    path,
     initialized,
   }) => {
     const options = { device: mockDevice(), surfaceSize: { width: 8, height: 8 } };
-    const procedure = ordered ? RenderGraphBuilder.procedure<Frame>(options) : undefined;
+    const procedure =
+      path === 'display'
+        ? RenderGraphBuilder.orderedView<Frame>(options)
+        : path === 'procedure'
+          ? RenderGraphBuilder.procedure<Frame>(options)
+          : undefined;
     const graph = procedure?.passes ?? new RenderGraphBuilder<Frame>();
     const texture = graph
       .createTexture('scratch', { format: 'rgba8unorm', size: 'surface' })
@@ -193,26 +325,27 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
       })
       .unwrap();
     const scratch = graph as unknown as {
-      declarations: readonly unknown[];
-      deferredPasses: readonly unknown[];
+      physical?: object;
+      deferredPasses?: readonly unknown[];
       placements?: ReadonlyMap<number, unknown>;
-      physicalUsage: readonly unknown[];
       passNames: ReadonlySet<string>;
     };
-    expect(scratch.deferredPasses).toHaveLength(ordered ? 0 : 1);
+    const slots = scratch.physical;
+    expect(slots).toBeDefined();
+    if (path === 'authored') expect(scratch.deferredPasses).toHaveLength(1);
+    else expect(scratch.deferredPasses).toBeUndefined();
     expect(scratch.placements?.size).toBe(1);
     const result = procedure === undefined ? graph.compile(options) : procedure.bindResources();
     expect(result.ok).toBe(initialized);
-    expect([
-      scratch.declarations.length,
-      scratch.deferredPasses.length,
-      scratch.placements?.size,
-      scratch.physicalUsage.length,
-      scratch.passNames.size,
-    ]).toEqual([0, 0, 0, 0, 0]);
+    expect(scratch.physical).toBeUndefined();
+    expect(scratch.deferredPasses).toBeUndefined();
+    expect(scratch.placements?.size).toBe(0);
+    expect(scratch.passNames.size).toBe(0);
     expect(graph.consumerReads('inspect')).toEqual([{ resource: view, usage: 'sampled-read' }]);
     expect(graph.createTextureLike('later', texture).ok).toBe(false);
+    if (procedure !== undefined) expect(procedure.bindResources().ok).toBe(false);
     if (result.ok) {
+      expect((result.value as unknown as { physical: object }).physical === slots).toBe(true);
       expect(result.value.execute({ imported: {} as Buffer, encoder: mockEncoder() }).ok).toBe(
         true,
       );

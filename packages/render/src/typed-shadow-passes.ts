@@ -1677,8 +1677,9 @@ export function importSharedShadowTargets(
 export function addPlanarReflectionPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   shadows: TypedShadowTargets,
-  planarView: GraphTextureView,
+  planarView: GraphTextureView | undefined,
 ): Result<void, RenderGraphError> {
+  if (planarView === undefined) return ok(undefined);
   const targets = (['directional', 'spot', 'point'] as const).flatMap((kind) => {
     const target = shadows[kind];
     return target === undefined ? [] : [[kind, target] as const];

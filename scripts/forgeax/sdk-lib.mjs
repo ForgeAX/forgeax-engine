@@ -21,6 +21,15 @@ import { sdkGpuStage } from './sdk-stage.mjs';
 
 export const SDK_MANIFEST_VERSION = '1.12.0';
 export const SDK_NPM_PACKAGE_NAMES = Object.freeze(['@forgeax/engine', '@forgeax/engine-sdk']);
+
+/** Internal runtime workspace packages bundled inside `@forgeax/engine` (never published standalone). */
+export function isBundledEngineMemberName(name) {
+  return (
+    (name.startsWith('@forgeax/engine-') && name !== '@forgeax/engine-sdk') ||
+    name === '@forgeax/modeling-kernel' ||
+    name === '@forgeax/modeling-kernel-wasm'
+  );
+}
 export const SDK_SOURCE_ROOT = 'source/engine';
 export const SDK_SOURCE_FORMAT = 'git-archive-public-snapshot';
 /** Full-ZIP surfaces the npm carrier omits; games install the same Engine bytes from npm. */
@@ -368,6 +377,12 @@ export const SDK_SOURCE_WASM = Object.freeze([
       'encode/basis_encoder.mjs',
       'encode/basis_encoder.wasm',
     ]),
+  }),
+  Object.freeze({
+    package: '@forgeax/modeling-kernel-wasm',
+    root: 'packages/modeling-kernel-wasm/dist',
+    postinstallScripts: Object.freeze([]),
+    files: Object.freeze(['modeling_kernel.wasm', 'provenance.json']),
   }),
 ]);
 
@@ -719,7 +734,8 @@ function stablePackageManifest(manifest, releaseVersion) {
       for (const name of Object.keys(value)) {
         if (
           name === '@forgeax/engine' ||
-          name.startsWith('@forgeax/engine-') ||
+          isBundledEngineMemberName(name) ||
+          name === '@forgeax/engine-sdk' ||
           name === '@forgeax/view'
         ) {
           value[name] = releaseVersion;

@@ -7,7 +7,6 @@
   ],
   "assetLibraries": [
     "@forgeax/engine/content",
-    "@forgeax-assets/volumetric-clouds",
     "@forgeax-assets/ue-volumetric-clouds"
   ],
   "roots": {

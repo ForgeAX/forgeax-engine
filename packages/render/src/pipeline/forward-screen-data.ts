@@ -109,7 +109,8 @@ function addScreenRaster(graph: RenderGraphBuilder<RenderPipelineFrame>, work: S
       const device = frame.runtime.device;
       if (prepared === undefined) {
         const source = internal.runtime.standardSceneShaders?.[work.program];
-        const factory = frame.runtime.shaderModuleFactory;
+        const factory =
+          frame.runtime.immediateShaderModuleFactory ?? frame.runtime.shaderModuleFactory;
         if (source === undefined || factory === undefined)
           throw new RhiError({
             code: 'feature-not-enabled',

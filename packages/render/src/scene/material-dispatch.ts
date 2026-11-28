@@ -41,6 +41,7 @@ import {
   put,
   range,
   remove,
+  visitOrderedValues,
   visitUnorderedValues,
 } from './frame-tree';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
@@ -55,6 +56,7 @@ import {
   prepareMeshMaterialBindings,
   retainMeshMaterialBindings,
 } from './mesh-materials';
+import type { RowContent } from './row-contents';
 import { SceneSlotFrame } from './scene-slots';
 import {
   type Roster,
@@ -186,7 +188,7 @@ class BindingColumns {
 }
 /** The binding group key; equal keys select the same held materials and members. */
 function materialBindingKey(
-  snapshot: RenderableSnapshot,
+  snapshot: RowContent,
   overrides = snapshot.materialOverrides === undefined
     ? undefined
     : captureMaterialOverrides(snapshot.materialOverrides),
@@ -212,7 +214,7 @@ function assertResidencySelection(
 }
 
 /** An unreadable source takes the ordinary replacement path, which retires the old binding. */
-function tryMaterialBindingKey(snapshot: RenderableSnapshot): string | undefined {
+function tryMaterialBindingKey(snapshot: RowContent): string | undefined {
   try {
     return materialBindingKey(snapshot);
   } catch {
@@ -895,14 +897,21 @@ function workSlots(work: Work, rank = 0): RosterCursor | MergedBindings {
 /** Walk the physical page values without retaining a flattened copy of the pass. */
 function visitWorkBindings(work: Work, visit: (slot: number) => void): void {
   if (work.groups.size === 1) {
-    for (const { value: page } of nodes(work.groups.value)) {
+    visitOrderedValues(work.groups.value, (page) => {
       const values = page.values;
       for (let i = 0; i < values.length; i++) visit(values[i] as number);
-    }
+    });
     return;
   }
   const merged = new MergedBindings(work);
   while (merged.next()) visit(merged.value);
+}
+
+function setCasterRank(words: Uint32Array, count: number, rank: number): void {
+  if (rank >= 0 && rank < count) {
+    const word = rank >>> 5;
+    words[word] = (words[word] ?? 0) | (1 << (rank & 31));
+  }
 }
 
 /** Seek a deep slice by the group page counts, without merging and discarding its entire prefix. */
@@ -1088,13 +1097,17 @@ class DispatchEntries {
     }
   }
 
-  /** An observed row already carries its rank for this particular issuing frame. */
-  rank(frame: FrameDispatch, pass: Pass, slot: number): number | undefined {
+  /** Read an already observed entry without extending its lifetime or issuing a new one. */
+  observed(frame: FrameDispatch, pass: Pass, slot: number): DispatchEntry | undefined {
     const page = this.pagesOf(pass)?.get(Math.floor(slot / 32));
     const lane = slot & 31;
     return page?.address === frame.address && (page.proven & (1 << lane)) !== 0
-      ? page.read(lane)?.renderableIndex
-      : frame.slots.indexOfSlot(slot);
+      ? page.read(lane)
+      : undefined;
+  }
+
+  rank(frame: FrameDispatch, pass: Pass, slot: number): number | undefined {
+    return this.observed(frame, pass, slot)?.renderableIndex ?? frame.slots.indexOfSlot(slot);
   }
 
   get(frame: FrameDispatch, pass: Pass, slot: number): DispatchEntry {
@@ -1224,11 +1237,27 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
     let fixed = true;
     let pass: Pass;
     let shadow = false;
+    let owned = false;
     const prior = previous?.dispatch;
-    const priorRanges = prior && isCulledDispatch(prior) ? prior.ranges : undefined;
-    const sameSource = priorRanges !== undefined && previous?.sourceDispatch === this;
+    const captured = prior !== undefined && isCulledDispatch(prior) ? prior : undefined;
+    const priorRanges = captured?.ranges;
+    const sameSource = captured !== undefined && previous?.sourceDispatch === this;
     let priorRange = 0;
     let priorOutput = 0;
+    // Matching ranks can borrow an existing observation. The previous view's
+    // membership may never have been expanded into objects.
+    const previousEntry = (index: number): DispatchEntry | undefined => {
+      if (captured === undefined || priorRanges === undefined) return undefined;
+      if (!sameSource) {
+        while (
+          priorRange < priorRanges.length &&
+          index >= (priorRanges[priorRange] as CulledPassRange).end
+        )
+          priorRange++;
+        if (priorRanges[priorRange]?.pass !== pass) return undefined;
+      }
+      return captured.observedAt(index);
+    };
     const visit = (slot: number) => {
       const sourceRank = slot < directLimit ? slot : this.memberRank(pass, slot);
       const rank = projectRank(sourceRank, shadow);
@@ -1239,62 +1268,60 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
       const oldIndex = sameSource && oldRank >= 0 ? priorOutput++ : output.length;
       if (rank < 0) return;
       if (rank === sourceRank) {
-        output.push(this.entry(pass, slot));
-        return;
-      }
-      // An unchanged input sequence identifies the prior draw exactly. Across
-      // publications also prove the Pass, source address, entity and layer.
-      let candidate: DispatchEntry | undefined;
-      if (rank === oldRank && prior !== undefined) {
-        if (sameSource) {
-          output.push(prior.at(oldIndex) as DispatchEntry);
+        const entry = owned
+          ? this.dispatchEntries.observed(this, pass, slot)
+          : this.entry(pass, slot);
+        if (entry !== undefined) {
+          output.push(entry);
           return;
         }
-        if (priorRanges !== undefined) {
-          while (
-            priorRange < priorRanges.length &&
-            oldIndex >= (priorRanges[priorRange] as CulledPassRange).end
-          )
-            priorRange++;
-          if (priorRanges[priorRange]?.pass === pass) candidate = prior.at(oldIndex);
-        }
+      }
+      const candidate = rank === oldRank ? previousEntry(oldIndex) : undefined;
+      if (sameSource && candidate !== undefined) {
+        output.push(candidate);
+        return;
       }
       const page = this.bindingPage(slot);
-      const at = bindingOffset(slot);
-      const entity = page[at] as number;
-      const layer = page[at + 1] as number;
-      if (
-        candidate?.renderableIndex === rank &&
-        candidate.entityIndex === entity &&
-        candidate.layer === layer
-      ) {
-        output.push(candidate);
-      } else if (pass[ownedShadowCoverage] === undefined) {
-        output.push(dispatchEntry(pass, entity, rank, layer));
-      } else {
-        if (binding?.page !== page || binding.pass !== pass) {
-          binding = { start: output.length, page, pass };
-          bindings.push(binding);
+      if (!owned || candidate !== undefined) {
+        const at = bindingOffset(slot);
+        const entity = page[at] as number;
+        const layer = page[at + 1] as number;
+        if (
+          candidate?.renderableIndex === rank &&
+          candidate.entityIndex === entity &&
+          candidate.layer === layer
+        ) {
+          output.push(candidate);
+          return;
         }
-        output.push(rank * BINDING_PAGE_SIZE + (slot % BINDING_PAGE_SIZE));
+        if (!owned) {
+          output.push(dispatchEntry(pass, entity, rank, layer));
+          return;
+        }
       }
+      if (binding?.page !== page || binding.pass !== pass) {
+        binding = { start: output.length, page, pass };
+        bindings.push(binding);
+      }
+      output.push(rank * BINDING_PAGE_SIZE + (slot % BINDING_PAGE_SIZE));
     };
-    for (const { value: work } of nodes(this.root)) {
+    visitOrderedValues(this.root, (work) => {
       pass = work.pass;
       shadow = pass.tags.LightMode === 'ShadowCaster';
+      const coverage = pass[ownedShadowCoverage];
+      owned = coverage !== undefined;
       const start = output.length;
       visitWorkBindings(work, visit);
-      if (output.length === start) continue;
+      if (output.length === start) return;
       ranges.push({ pass, resource: work.resource, end: output.length });
-      if (!fixed) continue;
-      const coverage = pass[ownedShadowCoverage];
+      if (!fixed) return;
       if (coverage === undefined) {
         fixed = false;
-        continue;
+        return;
       }
       programs.add(pass.materialShaderId);
       if (coverage !== 'empty' && shadowCoverage !== 'incompatible') shadowCoverage = coverage;
-    }
+    });
     return new CulledDispatch(
       output,
       bindings,
@@ -1306,30 +1333,61 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
 
   /** Membership consumers need each physical rank, independent of draw order. */
   visitPassRanks(lane: 'display' | 'shadow', visit: (index: number) => void): void {
-    const shadow = lane === 'shadow';
     const limit = SceneSlotFrame.directRankLimit(this.slots);
-    let pass: Pass;
-    const visitPage = (page: RosterPage): void => {
+    if (limit === undefined) {
+      this.visitOrderedPassRanks(lane, visit);
+      return;
+    }
+    this.visitPassPages(lane, (pass, page) => {
       const slots = page.values;
       for (let i = 0; i < slots.length; i++) {
         const slot = slots[i] as number;
-        visit(limit !== undefined && slot < limit ? slot : this.memberRank(pass, slot));
+        visit(slot < limit ? slot : this.memberRank(pass, slot));
       }
-    };
-    const visitRoster = (roster: Roster): void => visitUnorderedValues(roster, visitPage);
-    let lastGroups: Node<Roster> | undefined;
-    for (const { value: work } of nodes(this.root)) {
-      if ((work.pass.tags.LightMode === 'ShadowCaster') !== shadow) continue;
-      if (limit === undefined) {
-        // An authored indexed reader observes the original Pass and entity order.
+    });
+  }
+
+  private visitOrderedPassRanks(lane: 'display' | 'shadow', visit: (index: number) => void): void {
+    const shadow = lane === 'shadow';
+    // An authored indexed reader observes the original Pass and entity order.
+    visitOrderedValues(this.root, (work) => {
+      if ((work.pass.tags.LightMode === 'ShadowCaster') === shadow)
         visitWorkBindings(work, (slot) => visit(this.memberRank(work.pass, slot)));
-        continue;
-      }
-      if (work.groups === lastGroups) continue;
+    });
+  }
+
+  private visitPassPages(
+    lane: 'display' | 'shadow',
+    visit: (pass: Pass, page: RosterPage) => void,
+  ): void {
+    const shadow = lane === 'shadow';
+    let pass: Pass;
+    let lastGroups: Node<Roster> | undefined;
+    const visitPage = (page: RosterPage) => visit(pass, page);
+    const visitRoster = (roster: Roster) => visitUnorderedValues(roster, visitPage);
+    visitOrderedValues(this.root, (work) => {
+      if ((work.pass.tags.LightMode === 'ShadowCaster') !== shadow || work.groups === lastGroups)
+        return;
       lastGroups = work.groups;
       pass = work.pass;
       visitUnorderedValues(work.groups, visitRoster);
+    });
+  }
+
+  /** The caller owns its bitmap. Walk pages directly and set the bits in that same loop. */
+  writeCasterRanks(words: Uint32Array, count: number): void {
+    const limit = SceneSlotFrame.directRankLimit(this.slots);
+    if (limit === undefined) {
+      this.visitOrderedPassRanks('shadow', (rank) => setCasterRank(words, count, rank));
+      return;
     }
+    this.visitPassPages('shadow', (pass, page) => {
+      const slots = page.values;
+      for (let i = 0; i < slots.length; i++) {
+        const slot = slots[i] as number;
+        setCasterRank(words, count, slot < limit ? slot : this.memberRank(pass, slot));
+      }
+    });
   }
 
   private memberRank(pass: Pass, slot: number): number {
@@ -1339,15 +1397,17 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
   }
 
   somePass(matches: (pass: MaterialDispatchPass, material: MaterialResource) => boolean): boolean {
-    for (const { value } of nodes(this.root))
-      if (value.groups.count > 0 && matches(value.pass, value.resource)) return true;
-    return false;
+    return visitOrderedValues(
+      this.root,
+      ({ groups, pass, resource }) => groups.count > 0 && matches(pass, resource),
+    );
   }
 
   visitCasterMaterials(visit: (material: MaterialResource) => void): void {
-    for (const { value: work } of nodes(this.root))
+    visitOrderedValues(this.root, (work) => {
       if (work.pass.tags.LightMode === 'ShadowCaster' && work.groups.count > 0)
         visit(work.resource);
+    });
   }
 
   /** Pass-level work without visiting members; a pass fact classifies all of its entries. */
@@ -1504,7 +1564,10 @@ export function someCapturedMaterialPass(
     return list.somePass(matches);
   if (!isCulledDispatch(list)) return undefined;
   const { ranges } = list;
-  for (const { pass, resource } of ranges) if (matches(pass, resource)) return true;
+  for (let index = 0; index < ranges.length; index++) {
+    const { pass, resource } = ranges[index] as CulledPassRange;
+    if (matches(pass, resource)) return true;
+  }
   return false;
 }
 
@@ -1561,6 +1624,11 @@ class CulledDispatch extends FrameListBase<DispatchEntry> {
 
   get length(): number {
     return this.rows.length;
+  }
+
+  observedAt(index: number): DispatchEntry | undefined {
+    const row = this.rows[index];
+    return typeof row === 'number' ? undefined : row;
   }
 
   rankAt(index: number): number {
@@ -1637,7 +1705,7 @@ const culledIterator = CulledDispatch.prototype[Symbol.iterator];
 
 /** Only detached pass declarations can publish demand with their projected membership. */
 export function culledViewDemand(list: Iterable<DispatchEntry>): CulledViewDemand | undefined {
-  return isCulledDispatch(list) ? list.demand : undefined;
+  return nativeCulledSource(list)?.demand;
 }
 
 /** A caller-defined iterator owns its reads. */
@@ -1745,18 +1813,24 @@ export function orderMaterialDraws(
   return moves === undefined ? dispatch : Object.freeze(new OrderedCulledDraws(dispatch, moves));
 }
 
-/** Aggregate only the bindings that culling issued in this renderable address domain. */
-export function culledPassMembership(
-  list: DispatchList,
-  domain: symbol,
-): Pick<CulledDispatch, 'ranges' | 'rankAt'> | undefined {
+/** Selection and demand can use the original membership of a native permutation. */
+function nativeCulledSource(list: Iterable<DispatchEntry>): CulledDispatch | undefined {
   const source =
     list instanceof OrderedCulledDraws &&
     Object.getPrototypeOf(list) === OrderedCulledDraws.prototype &&
     list[Symbol.iterator] === orderedIterator
       ? list.source
       : list;
-  return isCulledDispatch(source) && source.domain === domain ? source : undefined;
+  return isCulledDispatch(source) ? source : undefined;
+}
+
+/** Aggregate only the bindings that culling issued in this renderable address domain. */
+export function culledPassMembership(
+  list: DispatchList,
+  domain: symbol,
+): Pick<CulledDispatch, 'ranges' | 'rankAt'> | undefined {
+  const source = nativeCulledSource(list);
+  return source?.domain === domain ? source : undefined;
 }
 
 export function visitCulledPassRanks(
@@ -1767,7 +1841,8 @@ export function visitCulledPassRanks(
   if (!isCulledDispatch(list)) return false;
   const { ranges } = list;
   let start = 0;
-  for (const { pass, resource, end } of ranges) {
+  for (let range = 0; range < ranges.length; range++) {
+    const { pass, resource, end } = ranges[range] as CulledPassRange;
     if (select(pass, resource)) for (let i = start; i < end; i++) visit(list.rankAt(i));
     start = end;
   }
@@ -1798,12 +1873,7 @@ export function writeCapturedCasterRanks(
   count: number,
 ): boolean {
   if (!(list instanceof FrameDispatch) || nativePassRoster(list) === undefined) return false;
-  list.visitPassRanks('shadow', (rank) => {
-    if (rank >= 0 && rank < count) {
-      const word = rank >>> 5;
-      words[word] = (words[word] ?? 0) | (1 << (rank & 31));
-    }
-  });
+  list.writeCasterRanks(words, count);
   return true;
 }
 
@@ -2430,10 +2500,14 @@ export class MaterialDispatch {
   }
 
   bind(slot: number, snapshot: RenderableSnapshot): void {
+    this.bindContent(slot, snapshot.entityKey, snapshot);
+  }
+
+  /** Bind the Scene's authored material facts without projecting a pose. */
+  bindContent(slot: number, identity: number, snapshot: RowContent): void {
     this.assertSourceWritable();
     const columns = this.bindings;
     const current = columns.groups[slot];
-    const identity = snapshot.entityKey;
     const flags =
       (snapshot.authorVisible !== false ? VISIBLE : 0) |
       (snapshot.shadowCaster !== false ? CASTER : 0) |
@@ -2525,7 +2599,7 @@ export class MaterialDispatch {
    * template whose material fields are the same references; they reuse the
    * previous row's derivation instead of re-deriving the key.
    */
-  private bindingInputs(snapshot: RenderableSnapshot): BindingInputs {
+  private bindingInputs(snapshot: RowContent): BindingInputs {
     const recent = this.recentBinding;
     const geometry = meshMaterialGeometry(snapshot);
     // Element-wise: an admitted binding is captured, never borrowed.

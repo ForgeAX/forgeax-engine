@@ -4,8 +4,8 @@ import { add, dot, length, normalize, scale, sub, type Tuple3 } from './geom';
 
 /**
  * Points of a round profile from `x` to `y` with `segments` segments, ends included.
- * Each end is tangent to its face: the tangent at `x` is `y` projected onto the plane
- * through `x` with normal `nx` (the tangent-plane construction), and the
+ * Each end is tangent to its face: the tangent at `x` is `chord` (default `y - x`) projected
+ * onto the plane with normal `nx` (the tangent-plane construction), and the
  * corner `q` is where the two tangent lines pass closest. The arc is the affine image of
  * a quarter circle on the frame (x - q, y - q), so a right-angle frame with equal legs
  * gives a circular arc centred at x + y - q. Without a corner ahead of both tangents the
@@ -17,14 +17,15 @@ export function roundProfile(
   nx: Tuple3,
   ny: Tuple3,
   segments: number,
+  chord: Tuple3 = sub(y, x),
 ): { readonly points: Tuple3[]; readonly center?: Tuple3 } {
   const straight = () => ({
     points: Array.from({ length: segments + 1 }, (_, i) => add(x, scale(sub(y, x), i / segments))),
   });
   const span = length(sub(y, x));
   if (span === 0) return straight();
-  const tx = tangentToward(x, y, nx);
-  const ty = tangentToward(y, x, ny);
+  const tx = tangentIn(chord, nx);
+  const ty = tangentIn(scale(chord, -1), ny);
   const a = dot(tx, tx);
   const b = dot(tx, ty);
   const c = dot(ty, ty);
@@ -50,9 +51,8 @@ export function roundProfile(
   return { points, center: add(legX, y) };
 }
 
-function tangentToward(from: Tuple3, to: Tuple3, normal: Tuple3): Tuple3 {
+function tangentIn(d: Tuple3, normal: Tuple3): Tuple3 {
   const n = normalize(normal);
-  const d = sub(to, from);
   return sub(d, scale(n, dot(d, n)));
 }
 
@@ -204,6 +204,7 @@ export function patchPositions(
   }
   const sphere = center === undefined ? undefined : sphereFit(ringPoints, center);
   if (sphere === undefined) return points;
+  const { share } = sphere;
   const project = () => {
     for (let i = ringSize; i < total; i++) {
       const p = points[i] as Tuple3;
@@ -215,7 +216,11 @@ export function patchPositions(
         weight += w;
         radius += w * r;
       }
-      points[i] = add(sphere.center, scale(normalize(sub(p, sphere.center)), radius / weight));
+      const projected = add(
+        sphere.center,
+        scale(normalize(sub(p, sphere.center)), radius / weight),
+      );
+      points[i] = share === 1 ? projected : add(p, scale(sub(projected, p), share));
     }
   };
   project();
@@ -228,20 +233,27 @@ export function patchPositions(
   return points;
 }
 
-/** Ring radii about `center`, when the ring plausibly lies on one sphere around it. */
+/**
+ * Ring radii about `center`, when the ring plausibly lies on one sphere around it, and the
+ * share of the projection to apply: 1 while the radii stay within 3x and every ring point is
+ * within acos(0.2) of the mean direction, fading linearly to 0 at 6x and acos(0.1), so the
+ * patch moves continuously as unequal widths change.
+ */
 function sphereFit(
   ring: readonly Tuple3[],
   center: Tuple3,
-): { readonly center: Tuple3; readonly radii: number[] } | undefined {
+): { readonly center: Tuple3; readonly radii: number[]; readonly share: number } | undefined {
   const radii = ring.map((p) => length(sub(p, center)));
   const lo = minOf(radii);
   const hi = maxOf(radii);
-  if (!(lo > 0) || hi > lo * 3) return undefined;
+  if (!(lo > 0) || hi >= lo * 6) return undefined;
+  const share = hi <= lo * 3 ? 1 : (6 - hi / lo) / 3;
   const mean = normalize(
     ring.reduce<Tuple3>((sum, p) => add(sum, normalize(sub(p, center))), [0, 0, 0]),
   );
-  if (ring.some((p) => dot(normalize(sub(p, center)), mean) < 0.2)) return undefined;
-  return { center, radii };
+  const spread = minOf(ring.map((p) => dot(normalize(sub(p, center)), mean)));
+  if (!(spread > 0.1)) return undefined;
+  return { center, radii, share: Math.min(share, spread >= 0.2 ? 1 : (spread - 0.1) / 0.1) };
 }
 
 /** Gauss-Seidel umbrella smoothing of the points after `fixed`, over the face edges. */

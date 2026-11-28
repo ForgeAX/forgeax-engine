@@ -4,34 +4,38 @@ import { massProperties } from '../mass';
 import { model } from '../model';
 import { rig } from '../rig';
 import { sel } from '../selectors';
+import { oracle } from './oracles/oracles';
 
 const close = (a: number, b: number, rel = 1e-3) => Math.abs(a - b) <= rel * Math.abs(b);
 
 describe('massProperties', () => {
   it('weighs an off-centre box exactly', () => {
+    const row = oracle('box');
     const m = model();
-    m.box({ size: [0.2, 0.1, 0.4], center: [1, 2, 3] });
+    row.build(m);
     const p = massProperties(m, { density: 1000 });
     if (!p.ok) throw p.error;
-    const mass = 0.2 * 0.1 * 0.4 * 1000;
-    expect(p.value.mass).toBeCloseTo(mass, 9);
-    expect(p.value.centroid.map((v) => +v.toFixed(9))).toEqual([1, 2, 3]);
-    const [ixx, iyy, izz] = [0, 1, 2].map((k) => p.value.inertia[k]?.[k] as number);
-    expect(ixx).toBeCloseTo((mass * (0.1 ** 2 + 0.4 ** 2)) / 12, 9);
-    expect(iyy).toBeCloseTo((mass * (0.2 ** 2 + 0.4 ** 2)) / 12, 9);
-    expect(izz).toBeCloseTo((mass * (0.2 ** 2 + 0.1 ** 2)) / 12, 9);
+    expect(p.value.mass).toBeCloseTo(row.volume * 1000, 9);
+    expect(p.value.centroid.map((v) => +v.toFixed(9))).toEqual([...row.centroid]);
+    for (const k of [0, 1, 2]) {
+      expect(p.value.inertia[k]?.[k] as number).toBeCloseTo(
+        (row.inertia?.[k]?.[k] as number) * 1000,
+        9,
+      );
+    }
     expect(Math.abs(p.value.inertia[0]?.[1] as number)).toBeLessThan(1e-12);
   });
 
-  it('weighs a 256-sided cylinder within 0.1 % of the round one', () => {
+  it('weighs a 256-sided cylinder as its prism, within 0.1 % of the round one', () => {
+    const row = oracle('cylinder');
     const m = model();
-    const r = 0.05;
-    const h = 0.3;
-    m.cylinder({ radiusTop: r, radiusBottom: r, height: h, radialSegments: 256 });
+    row.build(m);
     const p = massProperties(m, { density: 7850 });
     if (!p.ok) throw p.error;
+    const [r, h] = [0.05, 0.3];
     const mass = Math.PI * r * r * h * 7850;
     expect(close(p.value.mass, mass)).toBe(true);
+    expect(close(p.value.mass, row.volume * 7850, 1e-9)).toBe(true);
     // Axis along +y.
     expect(close(p.value.inertia[1]?.[1] as number, (mass * r * r) / 2)).toBe(true);
     expect(close(p.value.inertia[0]?.[0] as number, (mass * (3 * r * r + h * h)) / 12)).toBe(true);
@@ -45,6 +49,46 @@ describe('massProperties', () => {
     m.delete(sel.facing('+y'));
     const open = massProperties(m, { density: 1000, faces: sel.facing('+x') });
     expect(open.ok).toBe(false);
+  });
+});
+
+describe('massProperties area', () => {
+  const area = (m: ReturnType<typeof model>, faces?: ReturnType<typeof sel.all>) => {
+    const p = massProperties(m, { density: 1, ...(faces === undefined ? {} : { faces }) });
+    if (!p.ok) throw p.error;
+    return p.value.area;
+  };
+
+  it('is 2(ab + bc + ca) for a box', () => {
+    const m = model();
+    m.box({ size: [0.2, 0.1, 0.4] });
+    expect(area(m)).toBeCloseTo(2 * (0.2 * 0.1 + 0.1 * 0.4 + 0.4 * 0.2), 12);
+  });
+
+  it('is the polygonal area of a cylinder', () => {
+    const row = oracle('cylinder');
+    const m = model();
+    row.build(m);
+    expect(Math.abs(area(m) - row.area) / row.area).toBeLessThan(1e-12);
+  });
+
+  it('follows the faces that are selected', () => {
+    const m = model();
+    m.box({ size: [1, 2, 3], label: 'a' });
+    m.box({ size: [2, 2, 2], center: [5, 0, 0], label: 'b' });
+    expect(area(m)).toBeCloseTo(22 + 24, 12);
+    expect(area(m, sel.createdBy('b'))).toBeCloseTo(24, 12);
+    expect(area(m, sel.createdBy('a'))).toBeCloseTo(22, 12);
+  });
+
+  it('does not change under a rigid transform', () => {
+    const m = model();
+    m.box({ size: [1, 2, 3] });
+    const before = area(m);
+    m.rotate(sel.all(), 'x', 37, [1, 2, 3]);
+    m.rotate(sel.all(), 'y', 112, [-1, 0, 4]);
+    m.translate(sel.all(), [5, -7, 11]);
+    expect(Math.abs(area(m) - before)).toBeLessThan(1e-9);
   });
 });
 

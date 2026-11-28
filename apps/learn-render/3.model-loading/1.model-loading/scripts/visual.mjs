@@ -2,7 +2,7 @@
 // apps/learn-render/3.model-loading/1.model-loading/scripts/visual.mjs
 //
 // Playwright visual sentinel for the Sponza dev-path render (AC-06).
-// Launches chrome-beta with WebGPU flags, spawns vite dev server,
+// Launches chrome with WebGPU flags, spawns vite dev server,
 // navigates to the learn-render 3.1 model-loading page, waits for the
 // scene-ready hook, and screenshots to the forgeax-engine-assets loop
 // screenshots directory. Non-blank-canvas assertion is a PNG-size check
@@ -59,7 +59,7 @@ async function main() {
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({
     headless: true,
-    channel: 'chrome-beta',
+    channel: 'chrome',
     args: [
       '--enable-unsafe-webgpu',
       '--enable-features=Vulkan',

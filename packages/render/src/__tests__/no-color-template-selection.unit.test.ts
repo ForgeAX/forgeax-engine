@@ -319,6 +319,8 @@ it.each([
   };
   const legacyRegistry = {
     materialShaderManifestEntries: () => [compiled],
+    materialShaderManifestEntry: (identifier: string) =>
+      identifier === compiled.identifier ? compiled : undefined,
   } as unknown as ShaderRegistry;
   const flat = [
     {

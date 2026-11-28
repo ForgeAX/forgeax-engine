@@ -593,7 +593,7 @@ for (const mutation of ['none', 'wasm', 'glue', 'source', 'core-missing']) {
     const contract = {
       artifactClasses: {
         'engine-dist': {
-          fileClasses: ['packages/fixture/dist', 'packages/dsh/lib/client.js'],
+          fileClasses: ['packages/fixture/dist', 'packages/preview/assets/canonical-kit'],
           transferArtifact: 'core-build',
         },
         'shared-engine-shaders': {
@@ -613,7 +613,7 @@ for (const mutation of ['none', 'wasm', 'glue', 'source', 'core-missing']) {
       assert.equal(coreProvenance.sourceContentKey, provenance.sourceContentKey);
       assert.notEqual(coreProvenance.compilerFingerprint, provenance.compilerFingerprint);
       assert.equal(Buffer.byteLength(coreGlue), Buffer.byteLength(glue));
-      put(join(root, 'packages/dsh/src/client.tsx'), 'authored source');
+      put(join(root, 'packages/preview/src/kit.ts'), 'authored source');
       put(join(compiler, 'wgpu_wasm_bg.wasm'), mutation === 'wasm' ? 'tampered' : wasm);
       put(join(compiler, 'wgpu_wasm.js'), mutation === 'glue' ? 'tampered' : glue);
       if (mutation === 'source') {
@@ -645,8 +645,11 @@ for (const mutation of ['none', 'wasm', 'glue', 'source', 'core-missing']) {
                 cpSync(destination, join(stage, 'packages/wgpu-wasm/pkg'), { recursive: true });
                 put(join(stage, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes'), coreGlue);
                 put(join(stage, 'packages/fixture/dist/index.mjs'), 'current build');
-                put(join(stage, 'packages/dsh/lib/client.js'), 'generated browser export');
-                put(join(stage, 'packages/dsh/src/client.tsx'), 'untrusted staged source');
+                put(
+                  join(stage, 'packages/preview/assets/canonical-kit/kit.json'),
+                  'generated canonical kit',
+                );
+                put(join(stage, 'packages/preview/src/kit.ts'), 'untrusted staged source');
               }
             } else if (script.endsWith('unpack-shared-app-inputs.mjs')) {
               put(
@@ -677,11 +680,11 @@ for (const mutation of ['none', 'wasm', 'glue', 'source', 'core-missing']) {
         assert.equal(recovered, mutation === 'core-missing');
         if (mutation === 'core-missing') return;
         assert.equal(
-          readFileSync(join(root, 'packages/dsh/lib/client.js'), 'utf8'),
-          'generated browser export',
+          readFileSync(join(root, 'packages/preview/assets/canonical-kit/kit.json'), 'utf8'),
+          'generated canonical kit',
         );
         assert.equal(
-          readFileSync(join(root, 'packages/dsh/src/client.tsx'), 'utf8'),
+          readFileSync(join(root, 'packages/preview/src/kit.ts'), 'utf8'),
           'authored source',
         );
       } else {

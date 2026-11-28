@@ -43,6 +43,7 @@ interface SnapshotRecord {
   sourceExtent?: { readonly width: number; readonly height: number };
   error?: RenderError;
   completed?: Promise<RenderResult<void, RenderError>>;
+  finishObservation?: (result: RenderResult<void, RenderError>) => void;
 }
 
 interface FramebufferSnapshotQueueOptions {
@@ -72,8 +73,8 @@ interface FramebufferSnapshotQueue {
     receipt: RenderTargetReadbackReceipt,
     tickets: readonly FramebufferSnapshotTicket[],
   ): Promise<RenderResult<readonly FramebufferSnapshotData[], RenderError>>;
-  release(target: RenderTarget): void;
-  clear(): void;
+  release(target: RenderTarget, reason: 'destroyed' | 'generation-mismatch'): void;
+  onDeviceLost(): void;
 }
 
 function failure(
@@ -129,6 +130,17 @@ export function createFramebufferSnapshotQueue(
       state: reason === 'generation-mismatch' ? 'active' : 'destroyed',
       generation,
     });
+  const cancel = (
+    ticket: FramebufferSnapshotTicket,
+    record: SnapshotRecord,
+    reason: 'destroyed' | 'generation-mismatch',
+  ): void => {
+    records.delete(ticket);
+    if (record.finishObservation === undefined) return;
+    const error = stateInvalid(reason, record.generation);
+    record.error = error;
+    record.finishObservation({ ok: false, error });
+  };
 
   return {
     request(target, request) {
@@ -315,6 +327,7 @@ export function createFramebufferSnapshotQueue(
         if (record === undefined)
           return { ok: false, error: stateInvalid('foreign-renderer', receipt.deviceGeneration) };
         if (
+          record.finishObservation !== undefined ||
           record.frameId !== receipt.frameId ||
           record.generation !== receipt.deviceGeneration ||
           (record.status !== 'submitted' && record.status !== 'failed')
@@ -324,15 +337,36 @@ export function createFramebufferSnapshotQueue(
             error: stateInvalid('generation-mismatch', receipt.deviceGeneration),
           };
         }
-        records.delete(ticket);
         if (record.status === 'failed') {
+          records.delete(ticket);
           return {
             ok: false,
             error: record.error ?? failure('source-unavailable', 'an encoded snapshot', undefined),
           };
         }
-        const completion = await (record.completed ??
-          Promise.resolve({ ok: true, value: undefined } as const));
+        const completion = await new Promise<RenderResult<void, RenderError>>((resolve) => {
+          record.finishObservation = resolve;
+          if (record.completed === undefined) resolve({ ok: true, value: undefined });
+          else
+            void record.completed.then(resolve, (cause: unknown) =>
+              resolve({
+                ok: false,
+                error: failure(
+                  'source-unavailable',
+                  'the submitted frame fence',
+                  cause,
+                  receipt.frameId,
+                ),
+              }),
+            );
+        });
+        if (records.get(ticket) !== record) {
+          return {
+            ok: false,
+            error: record.error ?? stateInvalid('destroyed', record.generation),
+          };
+        }
+        records.delete(ticket);
         if (!completion.ok) return completion;
         const inspected = options.owner.inspect(record.target);
         if (!inspected.ok) return inspected;
@@ -362,11 +396,12 @@ export function createFramebufferSnapshotQueue(
       }
       return { ok: true, value: Object.freeze(results) };
     },
-    release(target) {
-      for (const [ticket, record] of records) if (record.target === target) records.delete(ticket);
+    release(target, reason) {
+      for (const [ticket, record] of records)
+        if (record.target === target) cancel(ticket, record, reason);
     },
-    clear() {
-      records.clear();
+    onDeviceLost() {
+      for (const [ticket, record] of records) cancel(ticket, record, 'generation-mismatch');
     },
   };
 }

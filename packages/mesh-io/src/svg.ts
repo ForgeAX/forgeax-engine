@@ -1,13 +1,9 @@
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { type AssetError, ok, type Result } from '@forgeax/engine-types';
 import { BufferAttribute, BufferGeometry } from 'three';
 import { formatFailure } from './errors.js';
 import { geometryToMesh, type ImportedMesh } from './geometry.js';
 import { runMeshWorker } from './worker.js';
-
-const require = createRequire(import.meta.url);
 
 /** DOM ownership is isolated from the Host; every Worker exits after one bounded parse. */
 export async function svgWorker(
@@ -27,10 +23,12 @@ export async function svgWorker(
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
-      const { DOMParser } = await import(workerData.dom);
+      const [{ DOMParser }, { SVGLoader }, { ShapeGeometry, Float32BufferAttribute, Color }] = await Promise.all([
+        import(workerData.dom),
+        import(workerData.loader),
+        import(workerData.three),
+      ]);
       globalThis.DOMParser = DOMParser;
-      const { SVGLoader } = await import(workerData.loader);
-      const { ShapeGeometry, Float32BufferAttribute, Color } = await import(workerData.three);
       const warnings = [];
       console.warn = (...args) => warnings.push(args.join(' '));
       const parsed = new SVGLoader().parse(workerData.text);
@@ -67,8 +65,8 @@ export async function svgWorker(
     workerData: {
       text,
       segments: curveSegments,
-      dom: pathToFileURL(require.resolve('linkedom')).href,
-      loader: pathToFileURL(require.resolve('three/addons/loaders/SVGLoader.js')).href,
+      dom: import.meta.resolve('linkedom/worker'),
+      loader: import.meta.resolve('three/addons/loaders/SVGLoader.js'),
       three: import.meta.resolve('three'),
     },
   });

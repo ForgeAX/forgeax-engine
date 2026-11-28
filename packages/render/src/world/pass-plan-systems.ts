@@ -21,11 +21,11 @@ import {
   RenderTransparentPlanOrder,
 } from '../system-order';
 import { limitRoughRefraction, type TransmissionDemand } from '../transmission/projection';
-import { registerQueueSystems, type ViewPhaseQueue, ViewPhases } from './queue-systems';
+import { registerQueueSystems } from './queue-systems';
 import { RenderCleanup, RenderQueue, renderWorldFor } from './render-world';
 import type { SsrAdmissionInput } from './ssr-admission-systems';
 import type { SubsurfaceAdmissionInput } from './subsurface-admission-systems';
-import { readViewField, requireViewField } from './view-field';
+import { requireViewField } from './view-field';
 
 /*
  * Per-view pass plans. A recording stages what its families read before the
@@ -340,7 +340,7 @@ export function planSourcePasses(
 /**
  * Register the pass-family RenderQueue systems (transparent, transmission and
  * opaque) once, after `render-phase-sort` (which they require, so it registers
- * first) so a sorted view plans over the dispatch order it records.
+ * first). Pass demand reads the captured membership before its draw-order permutation.
  */
 export function registerPassPlanSystems(world: World): void {
   if (world.hasResource(PassPlanSystems)) return;
@@ -367,7 +367,7 @@ export function registerPassPlanSystems(world: World): void {
     sets: [RenderTransparentPlanOrder],
     commands: 'none',
     name: RENDER_TRANSPARENT_PLAN_SYSTEM,
-    queries: [{ read: [ViewPassPlans], optional: [ViewPhases] }],
+    queries: [{ read: [ViewPassPlans] }],
     after: [RenderPhaseSortOrder],
     fn: (world, [views]) => {
       views.forEach((row) => {
@@ -380,19 +380,12 @@ export function registerPassPlanSystems(world: World): void {
           .unwrap();
         const input = queue.staged;
         if (input === undefined || queue.transparent !== undefined) return;
-        const phases = input.phaseSorted
-          ? readViewField(world, entity, ViewPhases, 'state')
-          : undefined;
-        const ordered =
-          phases === undefined
-            ? undefined
-            : world.resolveUniqueRef<ViewPhaseQueue>(phases).unwrap().ordered;
         queue.transparent = resolveTransparencyView({
           requested: input.requested,
           rgba16floatRenderable: input.rgba16floatRenderable,
           renderables: input.renderables,
           materialFrame: input.materials,
-          dispatch: ordered ?? input.dispatch,
+          dispatch: input.dispatch,
         });
       });
     },

@@ -1288,7 +1288,7 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
       import { createVitest } from 'vitest/node';
       import ledger from './scripts/ci/dawn-file-seconds.json' with { type: 'json' };
       import { DawnSequencer, planDawnShards } from './config/vitest-dawn-sequencer.ts';
-      import { DAWN_GATE_SHARDS, DAWN_GATE_GROUPS, dawnNativeLaneReserve } from './scripts/ci/dawn-gate-roster.mjs';
+      import { DAWN_GATE_SHARDS, DAWN_GATE_GROUPS, DAWN_ORDINARY_EXCLUSIVE_FILES, dawnNativeLaneReserve } from './scripts/ci/dawn-gate-roster.mjs';
       import { coreValidationFiles } from './scripts/ci/core-validation.mjs';
       import { dawnFileOwnerCosts, dawnPlanningFileCosts, dawnPlanningOwnerCosts } from './config/dawn-timings.ts';
       const v = await createVitest('test', { project: ['dawn'], watch: false });
@@ -1343,8 +1343,19 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
           const serialContext = { ...context, config: { ...context.config, shard: { index: 4, count: 4 } } };
           const serialLane = await new DawnSequencer(serialContext).shard(serialFiles);
           assert.deepEqual(serialLane.map(({ moduleId }) => moduleId), lanes[3].map(({ moduleId }) => moduleId));
+          process.env.FORGEAX_DAWN_ORDINARY_MEMORY_PHASE = 'exclusive';
+          const exclusive = await new DawnSequencer(serialContext).shard(serialFiles);
+          delete process.env.FORGEAX_DAWN_SERIAL_ORDINARY;
+          process.env.FORGEAX_DAWN_ORDINARY_MEMORY_PHASE = 'bounded';
+          const bounded = await new DawnSequencer(serialContext).shard(files);
+          const pathOf = ({ moduleId }) => relative(process.cwd(), moduleId).replaceAll('\\\\', '/');
+          const selected = serialLane.map(pathOf);
+          assert.deepEqual(exclusive.map(pathOf), selected.filter(path => DAWN_ORDINARY_EXCLUSIVE_FILES.has(path)));
+          assert.deepEqual(bounded.map(pathOf), selected.filter(path => !DAWN_ORDINARY_EXCLUSIVE_FILES.has(path)));
+          assert.ok(exclusive.length > 0 && bounded.length > exclusive.length);
         } finally {
           delete process.env.FORGEAX_DAWN_SERIAL_ORDINARY;
+          delete process.env.FORGEAX_DAWN_ORDINARY_MEMORY_PHASE;
         }
         assert.equal(new Set(lanes.flat().map(({ moduleId }) => moduleId)).size, files.length);
         assert.deepEqual(lanes.flat().map(({ moduleId }) =>

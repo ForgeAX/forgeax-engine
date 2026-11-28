@@ -4,6 +4,7 @@ import {
   BAKE_CLUSTER_FACES,
   type BakeBounds,
   type BakeClipCluster,
+  type BakeMissCluster,
   type BakeStrayCluster,
 } from './job';
 
@@ -12,7 +13,7 @@ import {
  * Worker parts merge by key in any order: the counts add, the worst distance is a maximum and
  * the bounds are a min and a max, each independent of the merge order.
  */
-export const FINDING_KIND = { above: 0, below: 1, stray: 2 } as const;
+export const FINDING_KIND = { above: 0, below: 1, stray: 2, miss: 3 } as const;
 
 /** kind, group, cell x y z (stray: part, 0, 0), base face, detail face (stray: -1), count, worst, bounds min xyz, max xyz. */
 export const FINDING_WIDTH = 15;
@@ -49,6 +50,24 @@ export class FindingLog {
     this.add(
       [kind, group, cell[0] as number, cell[1] as number, cell[2] as number, baseFace, detailFace],
       excess,
+      p,
+    );
+  }
+
+  /** A base sample at P whose ray found nothing; the nearest detail point, on `detailFace`, lies `distance` m away. */
+  miss(group: number, p: Tuple3, baseFace: number, detailFace: number, distance: number): void {
+    const cell = [0, 1, 2].map((c) => Math.floor((p[c] as number) / this.cell));
+    this.add(
+      [
+        FINDING_KIND.miss,
+        group,
+        cell[0] as number,
+        cell[1] as number,
+        cell[2] as number,
+        baseFace,
+        detailFace,
+      ],
+      distance,
       p,
     );
   }
@@ -186,6 +205,41 @@ export function clipClusters(
       a.bounds.min[2] - b.bounds.min[2] ||
       (a.side < b.side ? -1 : a.side > b.side ? 1 : 0),
   );
+}
+
+/**
+ * The ray-miss clusters of one group (M-B2), most samples first: neighbouring base samples
+ * whose ray found no detail and took the nearest point instead belong to one feature.
+ */
+export function missClusters(
+  merged: readonly (readonly number[])[],
+  group: number,
+): BakeMissCluster[] {
+  const rows = merged.filter((r) => r[0] === FINDING_KIND.miss && r[1] === group);
+  return components(rows)
+    .map((members) => {
+      const own = members.map((i) => rows[i] as readonly number[]);
+      const min = [0, 1, 2].map((c) => minOf(own.map((r) => r[9 + c] as number)));
+      const max = [0, 1, 2].map((c) => maxOf(own.map((r) => r[12 + c] as number)));
+      const base = listed(own.map((r) => r[5] as number));
+      const detail = listed(own.map((r) => r[6] as number));
+      return {
+        samples: own.reduce((n, r) => n + (r[7] as number), 0),
+        worst: maxOf(own.map((r) => r[8] as number)),
+        bounds: { min: min as unknown as Tuple3, max: max as unknown as Tuple3 },
+        baseFaces: base.list,
+        baseFaceCount: base.count,
+        detailFaces: detail.list,
+        detailFaceCount: detail.count,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.samples - a.samples ||
+        a.bounds.min[0] - b.bounds.min[0] ||
+        a.bounds.min[1] - b.bounds.min[1] ||
+        a.bounds.min[2] - b.bounds.min[2],
+    );
 }
 
 /** The clusters of one group's hovering parts that caught samples, in part order. */

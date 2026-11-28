@@ -5,6 +5,7 @@ import { RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer as constructRenderer } from '../assembly/factory';
 import { BarrelDistortion, MeshFilter, MeshRenderer } from '../components';
 import {
@@ -137,6 +138,7 @@ describe('barrel distortion retained graph frame authority', () => {
       const initialized = await renderer.initialization;
       expect(initialized.ok).toBe(true);
       if (!initialized.ok) return;
+      renderer.setGtaoExecutionOverrideForConformance('fragment');
       const world = new World({ assets: renderer.assetRegistry });
       const cube = renderer.assetRegistry.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
       const attached = renderer.attach(world);
@@ -169,11 +171,8 @@ describe('barrel distortion retained graph frame authority', () => {
         .unwrap();
       expect(world.update().ok).toBe(true);
       const frameInput = { source: attached.value };
-      const initial = renderer.draw(frameInput);
-      expect(initial.ok).toBe(true);
-      if (!initial.ok) return;
-      if (initial.value === undefined) throw new Error('Expected a submitted frame receipt');
-      expect(initial.value.barrelDistortion).toMatchObject({
+      const initial = await drawReadyFrame(renderer, frameInput);
+      expect(initial.barrelDistortion).toMatchObject({
         width: 64,
         height: 64,
         strength: 0,
@@ -265,6 +264,7 @@ describe('barrel distortion retained graph frame authority', () => {
       const initialized = await renderer.initialization;
       expect(initialized.ok).toBe(true);
       if (!initialized.ok) return;
+      renderer.setGtaoExecutionOverrideForConformance('fragment');
       const world = new World({ assets: renderer.assetRegistry });
       const attached = renderer.attach(world);
       expect(attached.ok).toBe(true);
@@ -290,21 +290,15 @@ describe('barrel distortion retained graph frame authority', () => {
         .unwrap();
       expect(world.update().ok).toBe(true);
       const frameInput = { source: attached.value };
-      const initial = renderer.draw(frameInput);
-      expect(initial.ok).toBe(true);
-      if (!initial.ok) return;
-      if (initial.value === undefined) throw new Error('Expected a submitted frame receipt');
-      expect(initial.value.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
+      const initial = await drawReadyFrame(renderer, frameInput);
+      expect(initial.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
 
       canvas.width = 1280;
       canvas.height = 720;
       // Adopt the resized lighting topology before testing a same-topology failed disable.
-      const resized = renderer.draw(frameInput);
-      expect(resized.ok).toBe(true);
-      if (!resized.ok || resized.value === undefined)
-        throw new Error('Expected a resized frame receipt');
-      expect(resized.value.barrelDistortion).toMatchObject({ width: 1280, height: 720 });
-      expect(resized.value.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
+      const resized = await drawReadyFrame(renderer, frameInput);
+      expect(resized.barrelDistortion).toMatchObject({ width: 1280, height: 720 });
+      expect(resized.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
       world.removeComponent(cameraEntity, BarrelDistortion).unwrap();
       expect(world.update().ok).toBe(true);
       const fault = rejectMainViewBinding();
@@ -336,11 +330,8 @@ describe('barrel distortion retained graph frame authority', () => {
         fault.restore();
       }
 
-      const disabled = renderer.draw(frameInput);
-      expect(disabled.ok).toBe(true);
-      if (!disabled.ok) return;
-      if (disabled.value === undefined) throw new Error('Expected a submitted frame receipt');
-      expect(disabled.value.barrelDistortion).toMatchObject({
+      const disabled = await drawReadyFrame(renderer, frameInput);
+      expect(disabled.barrelDistortion).toMatchObject({
         width: 1280,
         height: 720,
         strength: 0,

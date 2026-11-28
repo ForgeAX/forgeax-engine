@@ -69,12 +69,10 @@ describe('Cluster diagnostics use the installed compiled graph identity', () => 
     const frameState = {
       frameNumber: 1,
       graphGeneration: 0,
-      compiledFrameGraphGeneration: 0,
       compiledFrameGraph: null,
       retiredCompiledFrameGraphs: new Set(),
       materialBgAssemblyCache: new MaterialBgAssemblyCache(),
       meshBindGroupCache: new WeakMap(),
-      standardLightingGraphSignature: '',
       activePipeline,
       installedPipelineConfig: undefined,
       standardClusterWorkConformance: { enabled: true },
@@ -91,23 +89,23 @@ describe('Cluster diagnostics use the installed compiled graph identity', () => 
     } as unknown as RenderSystemInternals;
     const camera = makeZeroCameraFallbackSnapshot();
     const shadowDepthLayers = ensureShadowDepthLayers(frameState, device);
-    const compile = (width: number) =>
-      adoptViewGraph(
+    const compile = (width: number) => {
+      const outcome = compileViewGraph({
         internals,
         frameState,
-        compileViewGraph({
-          internals,
-          frameState,
-          camera,
-          shadowDepthLayers,
-          pipelineState: {
-            format: 'rgba8unorm',
-            colorAttachmentFormat: 'rgba8unorm',
-          } as PipelineState,
-          lights: { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as never,
-          surface: { width, height: 1 },
-        }),
-      );
+        camera,
+        shadowDepthLayers,
+        pipelineState: {
+          format: 'rgba8unorm',
+          colorAttachmentFormat: 'rgba8unorm',
+        } as PipelineState,
+        lights: { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as never,
+        surface: { width, height: 1 },
+      });
+      const installed = adoptViewGraph(internals, frameState, outcome);
+      if (outcome.kind === 'compiled') expect(installed).toBe(outcome.installed);
+      return installed?.graph ?? null;
+    };
     const prepared = prepareStandardLighting({
       directional: undefined,
       local: [],
@@ -157,7 +155,6 @@ describe('Cluster diagnostics use the installed compiled graph identity', () => 
     promoteGraphCandidate(frameState);
     const accepted = frameState.compiledFrameGraph;
     const acceptedCounter = frameState.graphGeneration;
-    const acceptedCompiledCounter = frameState.compiledFrameGraphGeneration;
     expect(first.inspect().generation).not.toBe(acceptedCounter);
     const replacement = compile(2);
     if (replacement === null) throw new Error('The replacement graph must compile');
@@ -173,7 +170,6 @@ describe('Cluster diagnostics use the installed compiled graph identity', () => 
       rollbackGraphCandidate(frameState, false);
       expect(frameState.compiledFrameGraph).toBe(accepted);
       expect(frameState.graphGeneration).toBe(acceptedCounter);
-      expect(frameState.compiledFrameGraphGeneration).toBe(acceptedCompiledCounter);
       const retained = await observe();
       expect.soft(retained.trace?.graphGeneration).toBe(first.inspect().generation);
       expect.soft(retained.target?.graphGeneration).toBe(first.inspect().generation);

@@ -6,7 +6,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import { type BindGroup, RhiError, type Sampler } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
-import { writeAllPrefilterUniforms } from '../device/gpu-residency';
+import { stockUtilityShaderFactory } from '../assembly/utility-shader-prewarm';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_STORAGE,
@@ -98,18 +98,6 @@ export function addAtmosphereIbl(
     (frame) => atmosphereStorage(frame).iblParams,
   );
   if (!parameters.ok) return parameters;
-  const upload = graph.addCopyPass('atmosphere-ibl-prepare', {
-    accesses: [{ resource: parameters.value, usage: 'copy-dst' }],
-    executeIf: dirty,
-    encodeDirect: (_graphencoder, frame, resources) => {
-      writeAllPrefilterUniforms(
-        frame.runtime.device,
-        resources.buffer(parameters.value).unwrap(),
-        size,
-      ).unwrap();
-    },
-  });
-  if (!upload.ok) return upload;
   let state:
     | {
         sampler: Sampler;
@@ -120,7 +108,7 @@ export function addAtmosphereIbl(
   const ensureState = (frame: RenderPipelineFrame) => {
     if (state !== undefined) return state;
     const device = frame.runtime.device,
-      factory = frame.runtime.shaderModuleFactory;
+      factory = stockUtilityShaderFactory(frame.runtime);
     const prefilterCode = frame.atmosphereShaders?.prefilter;
     if (factory === undefined || prefilterCode === undefined)
       throw new RhiError({

@@ -1,0 +1,18 @@
+[package]
+name = "forgeax-modeling-kernel"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "Apache-2.0"
+publish = false
+description = "Engine-agnostic Rust procedural geometry, modeling, baking, and surface kernel."
+
+[features]
+default = ["geometry", "modeling", "surface", "bake"]
+geometry = []
+modeling = ["geometry"]
+surface = []
+bake = ["modeling", "surface"]
+
+[lib]
+crate-type = ["rlib"]

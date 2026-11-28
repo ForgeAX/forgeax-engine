@@ -84,6 +84,31 @@ function fixture(hooks = {}) {
   };
 }
 
+it('relays only clicks from the visible project iframe to the Shell', async () => {
+  const f = fixture();
+  try {
+    await Promise.resolve();
+    const relayed = [];
+    f.outer.window.PointerEvent = Event;
+    f.frame.dispatchEvent = event => relayed.push(event);
+    const message = { source: f.frame.contentWindow, origin: 'http://game.test' };
+    f.outer.window.postMessage = data => f.outer.window.fire('message', { ...message, data });
+    f.inner.window.fire('click', { isTrusted: false });
+    assert.equal(relayed.length, 0);
+    f.inner.window.fire('click', { isTrusted: true });
+    assert.equal(relayed.length, 1);
+    assert.equal(relayed[0].type, 'pointerdown');
+    assert.equal(relayed[0].bubbles, true);
+    const data = 'forgeax.view.preview.click/1';
+    f.outer.window.fire('message', { ...message, data, source: {} });
+    f.outer.window.fire('message', { ...message, data, origin: 'http://other.test' });
+    f.outer.document.documentElement.dataset.forgeaxViewActivePage = 'history';
+    f.outer.update();
+    f.inner.window.fire('click', { isTrusted: true });
+    assert.equal(relayed.length, 1);
+  } finally { await f.dispose(); }
+});
+
 it('keeps a replacement request live when its state read retires the previous preview', { timeout: 2000 }, async () => {
   const f = fixture();
   try {

@@ -1048,6 +1048,11 @@ describe('standalone host', () => {
     const worker = await readFile(resolve(project.root, 'execution-bootstrap.ts'), 'utf8');
     const resourceSource = await readFile(resolve(resource.root, 'main.ts'), 'utf8');
     expect(generated).toContain('activateExecutionRoot');
+    expect(generated).toMatch(
+      /^import \{[^\n]*createApp[^\n]*\} from '@forgeax\/engine\/app\/browser';/m,
+    );
+    expect(generated).not.toMatch(/^import \{[^\n]*\} from '@forgeax\/engine\/app';/m);
+    expect(generated).not.toMatch(/^import \{[^\n]*\} from '@forgeax\/engine\/render';/m);
     expect(generated).toContain('virtual:forgeax/plugin-programs/frontend');
     expect(worker).toContain('virtual:forgeax/plugin-programs/engine');
     expect(generated).not.toContain('defaultScene');
@@ -1985,7 +1990,12 @@ describe('standalone host', () => {
             : null,
         },
       });
-      const make = (app: object, worker: boolean, dev = true, cpuProfileRequested = false) => {
+      const make = async (
+        app: object,
+        worker: boolean,
+        dev = true,
+        cpuProfileRequested = false,
+      ) => {
         const appState: { current: object | undefined } = { current: app };
         const effects: Array<() => unknown> = [];
         const context: Record<string, unknown> = {
@@ -2001,6 +2011,7 @@ describe('standalone host', () => {
           resolveEngineStartup,
           projectEngineStartup,
           withEngineSettings,
+          loadUiInspection: async () => () => ({ ok: true }),
           console: { warn: vi.fn() },
           ctx: {
             effect: (callback: () => unknown) => {
@@ -2010,7 +2021,8 @@ describe('standalone host', () => {
           },
         };
         runInNewContext(sharedCode, context);
-        runInNewContext(worker ? (dev ? workerCode : releaseCode) : installCode, context);
+        const code = worker ? (dev ? workerCode : releaseCode) : installCode;
+        await runInNewContext(`(async () => { ${code} })()`, context);
         return {
           inspection: runInNewContext('globalThis.__forgeaxGameInspection', context),
           appState,
@@ -2026,7 +2038,7 @@ describe('standalone host', () => {
         script.endsWith('.list()') ? { reads: ['remote'] } : 21,
       );
       const releaseTarget = { ...appBase(), remoteEval: projectionRead };
-      const releaseOwner = make(releaseTarget, true, false);
+      const releaseOwner = await make(releaseTarget, true, false);
       expect(releaseOwner.inspection.renderer).toBeUndefined();
       expect(releaseTarget.onError).not.toHaveBeenCalled();
       expect(await releaseOwner.inspection.list()).toEqual({ reads: ['remote'] });
@@ -2035,12 +2047,12 @@ describe('standalone host', () => {
       expect(
         runInNewContext('globalThis.__forgeaxGameInspection', releaseOwner.context),
       ).toBeUndefined();
-      const profileOwner = make(releaseTarget, true, false, true);
+      const profileOwner = await make(releaseTarget, true, false, true);
       expect(profileOwner.inspection.renderer).toBeTypeOf('function');
       expect(await profileOwner.inspection.list()).toEqual({ reads: [] });
 
       const localRead = vi.fn(() => payload(false));
-      const local = make(
+      const local = await make(
         { ...appBase(), renderer: { state: () => 'alive', inspect: localRead } },
         false,
       );
@@ -2050,7 +2062,7 @@ describe('standalone host', () => {
           execution: { inspectRenderer: workerRead },
         }),
       );
-      const worker = make({ ...appBase(), remoteEval }, true);
+      const worker = await make({ ...appBase(), remoteEval }, true);
       expect.soft(local.inspection.inspectRenderer).toBeTypeOf('function');
       expect.soft(worker.inspection.inspectRenderer).toBeTypeOf('function');
       if (!local.inspection.inspectRenderer || !worker.inspection.inspectRenderer) return;
@@ -2088,7 +2100,7 @@ describe('standalone host', () => {
       const pending = new Promise((resolve) => {
         release = resolve;
       });
-      const late = make({ ...appBase(), remoteEval: () => pending }, true);
+      const late = await make({ ...appBase(), remoteEval: () => pending }, true);
       const result = late.inspection.inspectRenderer();
       for (const effect of late.effects) effect();
       release({ ok: true, value: payload(false) });
@@ -2098,7 +2110,7 @@ describe('standalone host', () => {
       });
       for (const retired of ['pageHidden', 'global'] as const) {
         const read = vi.fn(() => payload(false));
-        const owner = make(
+        const owner = await make(
           { ...appBase(), renderer: { state: () => 'alive', inspect: read } },
           false,
         );
@@ -2110,12 +2122,12 @@ describe('standalone host', () => {
         });
         expect(read).not.toHaveBeenCalled();
       }
-      const missing = make(appBase(), true);
+      const missing = await make(appBase(), true);
       expect(await missing.inspection.inspectRenderer()).toMatchObject({
         ok: false,
         error: { detail: { reason: 'not-ready' } },
       });
-      const clone = make(
+      const clone = await make(
         {
           ...appBase(),
           renderer: { state: () => 'alive', inspect: () => ({ deviceInfo: () => {} }) },
@@ -2126,7 +2138,7 @@ describe('standalone host', () => {
         ok: false,
         error: { detail: { reason: 'inspection' } },
       });
-      const rejected = make(
+      const rejected = await make(
         {
           ...appBase(),
           remoteEval: async () => {
@@ -2170,6 +2182,7 @@ describe('standalone host', () => {
       });
       const generated = await readFile(resolve(root, '.forgeax/generated/main.ts'), 'utf8');
       expect(generated).toContain("await loadOwned(canonicalEnvironmentGuid, 'equirect')");
+      expect(generated).not.toMatch(/\bimport\s+\{[^}]*inspectUi[^}]*\}\s+from\s/);
       const inspectionStart = generated.indexOf('function createGameInspection(app');
       const inspectionEnd = generated.indexOf(
         'async function prepareProject(app)',
@@ -2229,7 +2242,7 @@ describe('standalone host', () => {
         .slice(inspectionStart, inspectionEnd)
         .replaceAll('import.meta.env.DEV', 'true');
       const inspected = runInNewContext(
-        `${inspectionSource}\nexposeGameInspection(app); globalThis.__forgeaxGameInspection.renderer();`,
+        `${inspectionSource}\nexposeGameInspection(app, () => ({})); globalThis.__forgeaxGameInspection.renderer();`,
         inspectionContext,
       );
       expect(inspected.frame).toBe(rendererFrame);
@@ -2289,7 +2302,7 @@ describe('standalone host', () => {
         .find((line) => line.includes('exposeGameInspection(app as App'));
       expect(installLine).toBeDefined();
       if (installLine === undefined) throw new Error('generated inspection install line missing');
-      assertInspectionInstall(installLine);
+      await assertInspectionInstall(installLine);
 
       // Execute the generated query and actual createApp call, not a duplicate
       // parser. The App owner remains responsible for Worker capability admission.
@@ -2745,6 +2758,7 @@ export default definePack({
     ).code;
     const provided = new Map<string, unknown>();
     const disposers: Array<() => void> = [];
+    let uiInspectionLoads = 0;
     const sandbox: Record<string, unknown> = {
       workerExecution: true,
       cpuProfileRequested: false,
@@ -2764,6 +2778,10 @@ export default definePack({
       createBrowserGameSaves,
       createBrowserFileStore: () => ({}),
       trackRendererErrors: () => ({ unsubscribe() {}, read: () => null }),
+      loadUiInspection: async () => {
+        uiInspectionLoads++;
+        return () => ({ ok: true });
+      },
       app: remote
         ? {
             remoteEval: async (source: string) =>
@@ -2804,7 +2822,10 @@ export default definePack({
     const inspection = sandbox.__forgeaxGameInspection as {
       list(): Promise<{ reads: string[] }>;
       read(id: string): unknown;
+      ui?(request: object): unknown;
     };
+    expect(uiInspectionLoads).toBe(development ? 1 : 0);
+    expect(inspection.ui?.({})).toEqual(development ? { ok: true } : undefined);
     expect((await inspection.list()).reads).toEqual(['frontend.turret', 'worker.state']);
     expect(await inspection.read('frontend.turret')).toEqual({ aim: 1 });
     expect(await inspection.read('worker.state')).toEqual({ from: 'worker' });
@@ -2853,24 +2874,30 @@ async function closeBuildPlugins(plugins: readonly unknown[] | undefined): Promi
   }
 }
 
-function assertInspectionInstall(installLine: string): void {
+async function assertInspectionInstall(installLine: string): Promise<void> {
   for (const dev of [false, true]) {
     for (const cpuProfileRequested of [false, true]) {
       for (const workerExecution of [false, true]) {
         let installs = 0;
-        runInNewContext(
-          installLine.replace('import.meta.env.DEV', String(dev)).replace('app as App', 'app'),
-          {
-            app: {},
-            cpuProfileRequested,
-            workerExecution,
-            executionWorkers: {},
-            exposeGameInspection: () => {
-              installs++;
-            },
+        let loads = 0;
+        const source = installLine
+          .replace('import.meta.env.DEV', String(dev))
+          .replace('app as App', 'app');
+        await runInNewContext(`(async () => { ${source} })()`, {
+          app: {},
+          cpuProfileRequested,
+          workerExecution,
+          executionWorkers: {},
+          loadUiInspection: async () => {
+            loads++;
+            return () => ({ ok: true });
           },
-        );
+          exposeGameInspection: () => {
+            installs++;
+          },
+        });
         expect(installs).toBe(!workerExecution && (dev || cpuProfileRequested) ? 1 : 0);
+        expect(loads).toBe(installs);
       }
     }
   }

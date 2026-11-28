@@ -103,7 +103,7 @@ try {
   assert.equal((await client.getState()).project ?? null, null);
   stage = 'browser-start';
   browser = await chromium.launch({
-    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: true, args: ['--disable-gpu', '--disable-webgpu'],
     chromiumSandbox: true,
   });

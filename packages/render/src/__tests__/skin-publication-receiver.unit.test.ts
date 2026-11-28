@@ -98,10 +98,10 @@ it('validates every continuously changing pose and retries duplicate or nonfinit
       expect(accepted.skinJoints?.rows).toHaveLength(1);
       expect(accepted.scene.delta?.updatedSlots).toHaveLength(1);
       const pose = mat4.create();
-      const inverse = mat4.create();
+
       const snapshot = f.skin.capture();
       try {
-        expect(snapshot.matrix(Number(f.first), 0, pose, inverse)).toBe(true);
+        expect(snapshot.matrix(Number(f.first), 0, pose)).toBe(true);
         expect(pose[12]).toBe(frame);
       } finally {
         snapshot.release();
@@ -139,12 +139,11 @@ it('adopts one independent shared-joint row, no consumer operation or per-joint 
       }
       const next = f.skin.capture();
       try {
-        const inverse = mat4.create();
-        expect(old.matrix(Number(f.first), 0, m, inverse)).toBe(true);
+        expect(old.matrix(Number(f.first), 0, m)).toBe(true);
         expect(m[12]).toBe(0);
-        expect(next.matrix(Number(f.first), 0, m, inverse)).toBe(true);
+        expect(next.matrix(Number(f.first), 0, m)).toBe(true);
         expect(m[12]).toBe(9);
-        expect(next.matrix(Number(f.second), 0, m, inverse)).toBe(true);
+        expect(next.matrix(Number(f.second), 0, m)).toBe(true);
         expect(m[12]).toBe(9);
       } finally {
         next.release();
@@ -230,7 +229,7 @@ it('keeps a joint live when its separate renderable role is removed in the same 
     const frame = f.skin.capture(),
       out = mat4.create();
     try {
-      expect(frame.matrix(Number(f.first), 0, out, mat4.create())).toBe(true);
+      expect(frame.matrix(Number(f.first), 0, out)).toBe(true);
       expect(out[12]).toBe(5);
     } finally {
       frame.release();

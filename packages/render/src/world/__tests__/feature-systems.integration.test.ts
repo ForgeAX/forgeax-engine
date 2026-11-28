@@ -1,10 +1,12 @@
 import type { World as EcsWorld } from '@forgeax/engine-ecs';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import {
   abortFeatureFrame,
   prepareFeatureFrame,
@@ -16,6 +18,7 @@ import { createRenderer as constructRenderer } from '../../assembly/factory';
 import { MeshFilter, MeshRenderer, MotionBlur } from '../../components';
 import {
   ANTIALIAS_NONE,
+  ANTIALIAS_TAA,
   BLOOM_DISABLED,
   Camera,
   TONEMAP_ACES_FILMIC,
@@ -26,7 +29,11 @@ import * as preparedResolverModule from '../../features/prepared-resolver';
 import type { RenderFeature } from '../../features/types';
 import { worldRenderResources } from '../../publication/resource-scope';
 
-import { RENDER_FEATURE_VIEWS_SYSTEM, renderFeatureSystemName } from '../feature-systems';
+import {
+  RENDER_FEATURE_VIEWS_SYSTEM,
+  RENDER_MOTION_BLUR_PLAN_SYSTEM,
+  renderFeatureSystemName,
+} from '../feature-systems';
 import * as renderWorldModule from '../render-world';
 import { RenderCleanup, RenderCommit, RenderPrepare } from '../render-world';
 
@@ -254,7 +261,10 @@ it('records Features only from the input render-feature-views prepared', async (
   }
 });
 
-it('keeps the native scene-velocity Motion Blur route without the Feature planner', async () => {
+it.each([
+  ANTIALIAS_NONE,
+  ANTIALIAS_TAA,
+])('publishes actual Motion Blur compute dispatches with antialias %s', async (antialias) => {
   const created: EcsWorld[] = [];
   const realCreate = renderWorldModule.createRenderWorld;
   const spy = vi.spyOn(renderWorldModule, 'createRenderWorld').mockImplementation(() => {
@@ -269,11 +279,12 @@ it('keeps the native scene-velocity Motion Blur route without the Feature planne
   ).finally(() => spy.mockRestore());
   try {
     expect((await renderer.initialization).ok).toBe(true);
-    const motionBlurSystem = renderFeatureSystemName('forgeax.motion-blur');
     const renderWorld = created.find((world) =>
       world
         .scheduleData()
-        .some((schedule) => schedule.systems.some((system) => system.name === motionBlurSystem)),
+        .some((schedule) =>
+          schedule.systems.some((system) => system.name === RENDER_MOTION_BLUR_PLAN_SYSTEM),
+        ),
     );
     // Installed with the Renderer on a capable device, before any frame demands it.
     expect(renderWorld).toBeDefined();
@@ -296,7 +307,7 @@ it('keeps the native scene-velocity Motion Blur route without the Feature planne
             aspect: 1,
             near: 0.1,
             far: 100,
-            antialias: ANTIALIAS_NONE,
+            antialias,
             tonemap: TONEMAP_ACES_FILMIC,
           },
         },
@@ -304,14 +315,7 @@ it('keeps the native scene-velocity Motion Blur route without the Feature planne
       .unwrap();
     expect(world.update().ok).toBe(true);
     const frame = { source: lease };
-    const drawCompletedFrame = async () => {
-      const drawn = renderer.draw(frame);
-      if (!drawn.ok) throw drawn.error;
-      if (drawn.value === undefined) throw new Error('Missing frame receipt');
-      const completed = await drawn.value.completed;
-      expect(completed.ok).toBe(true);
-      return drawn.value.frameId;
-    };
+    const drawCompletedFrame = async () => (await drawReadyFrame(renderer, frame)).frameId;
     const firstFrameId = await drawCompletedFrame();
     expect(renderer.perFramePassNames).not.toContain('motion-blur');
     const before = schedule();
@@ -323,28 +327,54 @@ it('keeps the native scene-velocity Motion Blur route without the Feature planne
       })
       .unwrap();
     expect(world.update().ok).toBe(true);
-    const plannedFrameId = await drawCompletedFrame();
+    const fullGraphInspections = vi.fn();
+    const compile = RenderGraphBuilder.prototype.compile;
+    const compilation = vi
+      .spyOn(RenderGraphBuilder.prototype, 'compile')
+      .mockImplementation(function (this: RenderGraphBuilder, options) {
+        const result = compile.call(this, options);
+        if (result.ok) {
+          const inspect = result.value.inspect.bind(result.value);
+          result.value.inspect = () => {
+            fullGraphInspections();
+            return inspect();
+          };
+        }
+        return result;
+      });
+    const plannedFrameId = await drawCompletedFrame().finally(() => compilation.mockRestore());
     expect(plannedFrameId).toBeGreaterThan(firstFrameId);
-    expect(renderer.inspect().motionBlur?.execution?.program).toBe('motion-blur-compute');
-    const plannedExecutionFrameId = renderer.inspect().motionBlur?.execution?.frameId;
-    expect(plannedExecutionFrameId).toBeDefined();
-    // The first demanding frame neither installs a Feature nor rebuilds the schedule.
+    expect(fullGraphInspections).not.toHaveBeenCalled();
+    const execution = renderer.inspect().motionBlur?.execution;
+    expect(execution).toMatchObject({
+      program: 'motion-blur-compute',
+      outputFormat: 'rgba16float',
+      passes: [
+        { name: 'motion-blur-tile-summary', entryPoint: 'tile_summary', workgroups: [2, 2, 1] },
+        { name: 'motion-blur', entryPoint: 'reconstruct', workgroups: [4, 4, 1] },
+      ],
+    });
     expect(schedule()).toEqual(before);
 
-    // The native Standard route owns this pass even when the optional Feature
-    // planner is absent.
-    expect(
-      renderWorld.removeSystem(
-        RenderPrepare,
-        registeredSystem(renderWorld, RenderPrepare, 'render-motion-blur-plan'),
-      ).ok,
-    ).toBe(true);
-    expect(schedule().flatMap(([, systems]) => systems)).not.toContain('render-motion-blur-plan');
+    if (antialias === ANTIALIAS_NONE) {
+      // The native scene-velocity pipeline owns Motion Blur without a Feature plan.
+      expect(
+        renderWorld.removeSystem(
+          RenderPrepare,
+          registeredSystem(renderWorld, RenderPrepare, RENDER_MOTION_BLUR_PLAN_SYSTEM),
+        ).ok,
+      ).toBe(true);
+      await drawCompletedFrame();
+      expect(renderer.inspect().motionBlur?.execution?.frameId).toBeGreaterThan(
+        execution?.frameId ?? -1,
+      );
+    }
+
+    world.removeComponent(camera, MotionBlur).unwrap();
+    expect(world.update().ok).toBe(true);
     await drawCompletedFrame();
-    expect(renderer.perFramePassNames).toContain('motion-blur');
-    expect(renderer.inspect().motionBlur?.execution?.frameId).toBeGreaterThan(
-      plannedExecutionFrameId ?? -1,
-    );
+    expect(renderer.perFramePassNames).not.toContain('motion-blur');
+    expect(renderer.inspect().motionBlur?.execution).toBeUndefined();
   } finally {
     renderer.dispose();
   }

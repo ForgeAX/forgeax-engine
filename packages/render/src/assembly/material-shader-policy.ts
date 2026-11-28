@@ -581,7 +581,7 @@ export async function prepareMaterialShaders(
   // must never be mistaken for the engine shadow caster merely because it is
   // encountered first in the flat manifest.
   const shadowCasterIdentifier = 'forgeax::default-shadow-caster';
-  if (!registry.findMaterialArtifact(shadowCasterIdentifier).ok) {
+  if (registry.materialArtifactDeclaration(shadowCasterIdentifier) === undefined) {
     const manifestEntry = Array.from(registry.materialShaderManifestEntries()).find(
       (candidate) => candidate.identifier === shadowCasterIdentifier,
     );

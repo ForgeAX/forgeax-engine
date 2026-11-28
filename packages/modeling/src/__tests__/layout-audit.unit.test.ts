@@ -156,7 +156,7 @@ describe('B13 audit falsifiers', () => {
       ] as Tuple3[],
       knots: [0, 0, 1, 1],
     };
-    const build = (x1: number, dz: number) => {
+    const build = (x1: number, dz: number, sew?: number) => {
       const m = model();
       m.featureLine({ name: 'f', curve: line });
       const low = fit(
@@ -177,12 +177,22 @@ describe('B13 audit falsifiers', () => {
           { id: 'U', role: 'primary', surface: up, sides: free },
         ],
       });
-      m.surface({ layout: 'f', chord: 0.003 });
-      return checks(m);
+      m.surface({ layout: 'f', chord: 0.003, ...(sew === undefined ? {} : { sew }) });
+      return { checks: checks(m), issues: m.validate({ layout: true }).issues };
     };
-    expect(build(1.6, 0)).toEqual([]);
-    expect(build(0.32, 0)).toEqual(['layout-feature-unplaced@f']);
-    expect(build(1.6, 0.0009)).toContain('layout-feature-unplaced@f');
+    expect(build(1.6, 0).checks).toEqual([]);
+    expect(build(0.32, 0).checks).toEqual(['layout-feature-unplaced@f']);
+    // The side 0.9 mm off the line also opens a 0.56 mm seam to its neighbour: sewn as a tolerant
+    // seam the layout builds and the side is reported; unsewn, surfacing refuses the seam and the
+    // poisoned session reports only its cause.
+    expect(build(1.6, 0.0009, 0.001).checks).toContain('layout-feature-unplaced@f');
+    expect(build(1.6, 0.0009).issues).toEqual([
+      {
+        code: 'session-poisoned',
+        severity: 'error',
+        detail: { cause: 'model-precondition', opIndex: 2 },
+      },
+    ]);
   });
 
   it('A3: a G2 boundary grazing the bands 15 to 45 degrees is reported; along (< 10) or across (> 60) passes', () => {

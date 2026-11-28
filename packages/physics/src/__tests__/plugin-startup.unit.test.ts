@@ -1,5 +1,6 @@
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { describe, expect, it, vi } from 'vitest';
+import { RigidBody } from '../components';
 import { type PhysicsWorld, PhysicsWorldResource } from '../physics-world';
 import { definePhysicsPlugin, PHYSICS_STARTUP_OPTIONS } from '../plugin-factory';
 
@@ -48,5 +49,39 @@ describe('physics constructor configuration', () => {
     ).rejects.toThrow();
     expect(native.load).not.toHaveBeenCalled();
     expect(native.create).not.toHaveBeenCalled();
+  });
+
+  it('does not construct a backend whose owner was disposed during loading', async () => {
+    const world = new World();
+    const native = backend();
+    let markLoading!: () => void;
+    let finishLoading!: (value: { native: boolean }) => void;
+    const loading = new Promise<void>((resolve) => {
+      markLoading = resolve;
+    });
+    const loaded = new Promise<{ native: boolean }>((resolve) => {
+      finishLoading = resolve;
+    });
+    native.load.mockImplementation(() => {
+      markLoading();
+      return loaded;
+    });
+    const context = await createWorldContext(world, []);
+    try {
+      const fiber = context.plugin(definePhysicsPlugin(native)).ctx.fiber;
+      await loading;
+      const disposing = fiber.dispose();
+      expect(fiber.uid).toBeNull();
+      finishLoading({ native: true });
+      await disposing;
+      while (fiber.inertia) await fiber.inertia;
+
+      expect(native.create).not.toHaveBeenCalled();
+      expect(world.hasResource(PhysicsWorldResource)).toBe(false);
+      expect(world.components.resolve(RigidBody.name)).toBeUndefined();
+    } finally {
+      finishLoading({ native: true });
+      await context.fiber.dispose();
+    }
   });
 });

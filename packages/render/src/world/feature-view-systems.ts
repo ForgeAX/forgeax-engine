@@ -17,6 +17,7 @@ import {
   type RenderFeatureInputUnavailableReason,
 } from '../errors/render';
 import type { RenderFeatureFrameInput, RenderFeatureHost } from '../features/host';
+import { MOTION_BLUR_FEATURE_IDENTITY } from '../features/motion-blur/motion-blur-execution';
 import type { MotionBlurFeatureInput } from '../features/motion-blur/motion-blur-feature';
 import { planMotionBlurFrame } from '../features/motion-blur/motion-blur-runtime';
 import { createPreparedResolver } from '../features/prepared-resolver';
@@ -68,6 +69,7 @@ import {
   standardSurfaceProducerPath,
 } from '../temporal/standard-scene-data-admission';
 import { captureWaterFluidFoamMaterials } from '../water/fluid-foam';
+import { fixedGerstnerSurfaceBodyKeys } from '../water/surface-source';
 import {
   RENDER_FEATURE_VIEWS_SYSTEM,
   RENDER_MOTION_BLUR_PLAN_SYSTEM,
@@ -272,6 +274,7 @@ function prepareFeatureFrameInput(
     camera,
     cloudLayer,
     materials.hasWater || frameState.candidatePipelinePreparations?.materials.hasWater === true,
+    profile,
   );
   const gi = viewDiffuseGiOf(world, entity);
   const extent = gi?.ok === true ? gi.value.renderExtent : undefined;
@@ -445,6 +448,13 @@ function planViewMotionBlur(
   if (staged.result?.ok !== true) return undefined;
   const view = stagedViewInputs(world, staged);
   const camera = view.cameras[0];
+  if (
+    camera?.motionBlur === undefined ||
+    recordContext(internals).featureHost?.features.some(
+      (feature) => feature.identity === MOTION_BLUR_FEATURE_IDENTITY,
+    ) !== true
+  )
+    return undefined;
   const cameraScope = view.source as RenderResourceScope;
   const opts = staged.opts;
   const environment = view.frame.environment;
@@ -496,6 +506,7 @@ function featureFrameInput(
   const beginProfileWork = hasScheduleRunObservers(profileWorld)
     ? (work: string) => beginScheduleWork(profileWorld, work)
     : undefined;
+  let surfaceBodyKeys: ReadonlySet<string> | undefined;
   return {
     ...(beginProfileWork === undefined ? {} : { beginProfileWork }),
     identity,
@@ -589,7 +600,12 @@ function featureFrameInput(
       : { materialShaderBindingContract: internals.getMaterialShaderBindingContract }),
     createPreparedGraphicsResolver: (input) =>
       createPreparedResolver(
-        { ...preparedResolver, leanLighting },
+        {
+          ...preparedResolver,
+          leanLighting,
+          waterSurfaceBodyKeys: () =>
+            (surfaceBodyKeys ??= fixedGerstnerSurfaceBodyKeys(frame.renderables, identity)),
+        },
         input,
         source as RenderResourceScope,
       ),

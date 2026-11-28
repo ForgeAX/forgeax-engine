@@ -1,12 +1,9 @@
 import { releasePolicy } from './release-policy.mjs';
+import { isBundledEngineMemberName } from './sdk-lib.mjs';
 
 /** Immutable units upload together; consumers prove the public bytes before any channel moves. */
 export async function publishRelease({ items, upload, wait, verifyConsumer }) {
-  if (
-    items.some(
-      (item) => item.name.startsWith('@forgeax/engine-') && item.name !== '@forgeax/engine-sdk',
-    )
-  )
+  if (items.some((item) => isBundledEngineMemberName(item.name)))
     throw new Error('release-focused-package-forbidden');
   const uploads = await Promise.allSettled(items.map(async (item) => upload(item, 'candidate')));
   const failed = uploads.find((result) => result.status === 'rejected');

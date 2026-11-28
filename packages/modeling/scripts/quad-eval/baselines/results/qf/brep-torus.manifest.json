@@ -1,0 +1,33 @@
+{
+  "tool": "qf",
+  "case": "brep-torus",
+  "available": true,
+  "toolCommit": "810b7a0967c35b0dc85b4464e3835e26a756c967",
+  "inputSha256": "056c9a3e7e3fb5b38fddaa8039f37aa764e5836615557908ebaddc1783afc27f",
+  "inputFaces": 32768,
+  "targetFaces": 800,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-i", "<in.obj>", "-o", "<out.obj>", "-f", "800", "-sharp", "-seed", "1"],
+      "cwd": null,
+      "wallSeconds": 19.964002735,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 800,
+        "sharp": "on (threshold fixed at 60 deg in upstream source)",
+        "seed": 1
+      }
+    }
+  ],
+  "wallSeconds": 19.964002735,
+  "outcome": "ok",
+  "outputSha256": "0bcc531c71ce275df5106f24c2329ee95e31abbeb4e285b8ed0e68b9303c59f5",
+  "rawOutputSha256": "7b933a9a5c42ccbe89f109d68bfb48836fa374badd9871b7900bb557d3ead6bd",
+  "outputFaces": 845,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

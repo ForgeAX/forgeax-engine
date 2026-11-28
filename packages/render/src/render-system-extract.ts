@@ -35,6 +35,7 @@ import {
   materialSceneIndexProgramsForProjection,
   materialSurfaceModel,
   materialSurfaceProgramsForProjection,
+  type SourceMaterialProgramDemand,
   skinnedPositionProof,
 } from './material-program-selection';
 import {
@@ -2347,6 +2348,7 @@ function resolveDeclarationLayout(
   keys: Readonly<Record<string, string>> | undefined,
   world: World | undefined,
   slot: MaterialDeclarationSlot | undefined,
+  requestedPasses: readonly MaterialPass[],
 ): MaterialDeclarationLayout {
   const declaration = runtimeMaterialDeclaration(assets, material);
   const previous = slot?.current;
@@ -2359,7 +2361,7 @@ function resolveDeclarationLayout(
     previous.declaration === declaration &&
     (previous.routed === undefined || previous.routed === planarCaptureDemanded(world))
       ? previous
-      : planarRoutedPasses(material.passes ?? [], parameters, world);
+      : planarRoutedPasses(requestedPasses, parameters, world);
   const shader = runtimeMaterialShaderIdForMaterial(route.passes, keys);
   const publication =
     shader === undefined ? undefined : assets.shaderRegistry.materialParamSchemaProjection(shader);
@@ -2412,6 +2414,34 @@ function resolveDeclarationLayout(
   return layout;
 }
 
+function projectSourceProgramDemand(
+  material: MaterialAsset,
+  raster: MaterialRasterPrograms,
+  context: MaterialCookRasterContext | undefined,
+  vertexColorAvailable: boolean,
+  effective: Parameters<typeof materialSurfaceProgramsForProjection>[3] & {
+    readonly passes: readonly MaterialPass[];
+  },
+  demand: SourceMaterialProgramDemand | undefined,
+) {
+  const projectedPasses = raster.passes ?? effective.passes;
+  return {
+    projectedPasses,
+    materialSceneIndexProgramKeys: materialSceneIndexProgramsForProjection(
+      material,
+      raster.projection,
+      context,
+      vertexColorAvailable,
+      projectedPasses,
+      demand?.sceneIndex !== false,
+    ),
+    materialSurfacePrograms:
+      demand?.ray === false && raster.projection?.sourceTemplate !== undefined
+        ? undefined
+        : materialSurfaceProgramsForProjection(material, raster.projection, context, effective),
+  };
+}
+
 /** Shared preparation for first use, submesh bindings and asset-only adoption. */
 export function prepareMaterialSnapshot({
   handle: handleRaw,
@@ -2426,6 +2456,7 @@ export function prepareMaterialSnapshot({
   geometry = materialContext?.geometry ?? 'mesh',
   previousProgramSnapshot,
   declarationLayout,
+  materialProgramDemand,
 }: {
   readonly handle: number;
   readonly world: RenderResourceScope;
@@ -2439,6 +2470,7 @@ export function prepareMaterialSnapshot({
   readonly geometry?: MaterialCookRasterContext['geometry'];
   readonly previousProgramSnapshot?: MaterialSnapshot | undefined;
   readonly declarationLayout?: MaterialDeclarationSlot | undefined;
+  readonly materialProgramDemand?: SourceMaterialProgramDemand | undefined;
 }): MaterialSnapshot {
   const resolved = {
     passes: programOwner.passes ?? [],
@@ -2449,26 +2481,30 @@ export function prepareMaterialSnapshot({
   };
   const raster =
     programs ??
-    captureMaterialRasterPrograms(programOwner, assetsRef, materialContext, vertexColorAvailable);
+    captureMaterialRasterPrograms(
+      programOwner,
+      assetsRef,
+      materialContext,
+      vertexColorAvailable,
+      materialProgramDemand?.deferred === false,
+    );
   const materialProgramKeys = raster.keys;
-  const materialSceneIndexProgramKeys = materialSceneIndexProgramsForProjection(
-    programOwner,
-    raster.projection,
-    materialContext,
-    vertexColorAvailable,
-  );
-  const materialSurfacePrograms = materialSurfaceProgramsForProjection(
-    programOwner,
-    raster.projection,
-    materialContext,
-    resolved,
-  );
+  const { projectedPasses, materialSceneIndexProgramKeys, materialSurfacePrograms } =
+    projectSourceProgramDemand(
+      programOwner,
+      raster,
+      materialContext,
+      vertexColorAvailable,
+      resolved,
+      materialProgramDemand,
+    );
   const layout = resolveDeclarationLayout(
     programOwner,
     assetsRef,
     materialProgramKeys,
     world.world,
     declarationLayout,
+    projectedPasses,
   );
   const { shader: firstPassShader, authoredShader, passes: allPasses, surfaceModel } = layout;
   const materialParamSchema = layout.schema;
@@ -2607,6 +2643,7 @@ export function resolveMaterialSnapshot(
   materialTextureSourceStats?: MaterialTextureSourceStats,
   vertexColorAvailable = false,
   geometry: MaterialCookRasterContext['geometry'] = materialContext?.geometry ?? 'mesh',
+  materialProgramDemand?: SourceMaterialProgramDemand,
 ): MaterialSnapshot {
   // Source assets own author values; recorded program facts come from the receiver.
   const shaderRegistry = assetsRef.shaderRegistry;
@@ -2633,6 +2670,7 @@ export function resolveMaterialSnapshot(
     assetsRef,
     materialContext,
     vertexColorAvailable,
+    materialProgramDemand?.deferred === false,
   );
   const cache = persistentMaterialSnapshotCache ?? materialSnapshotCache;
   const declarationLayout =
@@ -2650,6 +2688,7 @@ export function resolveMaterialSnapshot(
     vertexColorAvailable,
     geometry,
     previousProgramSnapshot: persistentMaterialSnapshotCache?.get(handleRaw)?.snapshot,
+    materialProgramDemand,
   });
   const cacheEntry =
     cache === undefined
@@ -3170,6 +3209,7 @@ function computeDirectionalCsmWithScratch(
 /** Extract the camera and singleton resources from the same source World. */
 export interface PreparedExtractContext {
   readonly materialContext?: MaterialCookRasterContext | undefined;
+  readonly materialProgramDemand?: SourceMaterialProgramDemand | undefined;
   readonly assets: AssetRegistry | null | undefined;
   readonly materialSnapshotContexts: MaterialSnapshotContexts;
   /** `undefined` keeps direct extractFrame's local Fog semantics; `null` means
@@ -3476,6 +3516,7 @@ export function prepareExtractContext(
   world: World,
   options: {
     readonly materialContext?: MaterialCookRasterContext;
+    readonly materialProgramDemand?: SourceMaterialProgramDemand;
     readonly assets?: AssetRegistry | null;
     readonly materialSnapshotContexts?: MaterialSnapshotContexts;
     readonly cull?: 'self' | 'none' | 'external';
@@ -3512,6 +3553,7 @@ export function prepareExtractContext(
   const renderables = options.renderables ?? 'full';
   return {
     materialContext: options.materialContext,
+    materialProgramDemand: options.materialProgramDemand,
     assets: options.assets,
     materialSnapshotContexts: options.materialSnapshotContexts ?? new Map(),
     cull: options.cull ?? 'self',

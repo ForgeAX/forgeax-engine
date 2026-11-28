@@ -87,11 +87,17 @@ fn fs_main(input : FullscreenOutput) -> @location(0) vec4<f32> {
 }
 `;
 
+export const BARREL_DISTORTION_PROGRAM = {
+  kind: 'fullscreen' as const,
+  name: BARREL_DISTORTION_POST_PROCESS_ID,
+  source: BARREL_DISTORTION_WGSL,
+  reads: ['ldrColor'] as const,
+  params: { byteSize: 16, defaultValue: new Uint8Array(16) },
+};
+
 /**
- * Ordinary feature registration for the Standard linear-LDR stage.
- * Standard still allocates the stage targets and chooses its position in the
- * post chain; this feature owns the executable fullscreen declaration that is
- * projected into that slot by the existing graph/encoder/submit path.
+ * Explicit Feature registration for users who contribute the warp through
+ * the Feature host. Standard camera output binds the same program directly.
  */
 export interface BarrelDistortionFeatureFrame {
   /** True only when the extracted camera requires a spatial warp this frame. */
@@ -131,10 +137,10 @@ export function createBarrelDistortionRenderFeature(): RenderFeature<BarrelDisto
             resources: [
               {
                 kind: 'fullscreen-program' as const,
-                name: BARREL_DISTORTION_POST_PROCESS_ID,
-                source: BARREL_DISTORTION_WGSL,
-                reads: ['ldrColor'],
-                params: { byteSize: 16, defaultValue: new Uint8Array(16) },
+                name: BARREL_DISTORTION_PROGRAM.name,
+                source: BARREL_DISTORTION_PROGRAM.source,
+                reads: BARREL_DISTORTION_PROGRAM.reads,
+                params: BARREL_DISTORTION_PROGRAM.params,
               },
               {
                 kind: 'graphics-program' as const,

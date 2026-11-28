@@ -98,6 +98,18 @@
       "form": "test-experimental"
     },
     {
+      "name": "Shared Gerstner geometry sampling",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Refractive optical primitives",
+      "form": "test-experimental"
+    },
+    {
+      "name": "Water caustics field and receiver",
+      "form": "test-experimental"
+    },
+    {
       "name": "GPU WaterMesh",
       "form": "test-experimental"
     },
@@ -1086,14 +1098,6 @@
       "form": "built-in"
     },
     {
-      "name": "DSH federation bridge",
-      "form": "opt-in"
-    },
-    {
-      "name": "DSH Engine panel",
-      "form": "opt-in"
-    },
-    {
       "name": "Physics ECS interface",
       "form": "built-in"
     },
@@ -1228,30 +1232,6 @@
     {
       "name": "Memory fault transport",
       "form": "test-experimental"
-    },
-    {
-      "name": "Provider-neutral Activity",
-      "form": "built-in"
-    },
-    {
-      "name": "Intelligence MessagePort bridge",
-      "form": "opt-in"
-    },
-    {
-      "name": "Deterministic fake provider",
-      "form": "test-experimental"
-    },
-    {
-      "name": "DSH Activity provider",
-      "form": "host-side"
-    },
-    {
-      "name": "NpcBrain ECS binding",
-      "form": "built-in"
-    },
-    {
-      "name": "Host-injected NPC adapter",
-      "form": "opt-in"
     },
     {
       "name": "External Meta sidecar",

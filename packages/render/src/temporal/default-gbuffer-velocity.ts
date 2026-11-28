@@ -17,6 +17,7 @@ import {
   type RenderPipelineTarget,
 } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { CapturedSceneTransform } from '../scene/captured-transform';
 import { COLOR_PASS_SELECTOR } from '../systems/pass-selector';
 import { addTypedScenePass } from '../typed-render-graph-primitives';
 
@@ -42,12 +43,7 @@ function writesVelocity(source: RenderableSnapshot): boolean {
     source.spriteInstances !== undefined
   )
     return true;
-  if (
-    source.transform.world.some(
-      (value, index) =>
-        Math.abs(value - (temporal.previousTransform.world[index] ?? value)) > 0.0001,
-    )
-  )
+  if (CapturedSceneTransform.differs(source.transform, temporal.previousTransform, 0.0001))
     return true;
   const previous = temporal.previousInstances;
   const instances = source.instances;

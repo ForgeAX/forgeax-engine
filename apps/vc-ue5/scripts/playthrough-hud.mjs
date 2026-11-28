@@ -8,6 +8,24 @@ export default async function hud(play) {
   const initial = await play.waitFor(state => state.completed !== null, { read });
   assert.equal(await play.page.locator('[data-ui-action="cloud-apply"]').count(), 0);
   assert.equal(await play.page.locator('.properties > details[open]').count(), 2);
+  await play.step('Check the six cloud modules and read-only Mode 0', async () => {
+    const sections = play.page.locator('.properties > details');
+    assert.deepEqual((await play.page.locator('.properties > details > summary').allTextContents()).slice(0, 6), [
+      '云层配置与创作', '云密度与体积材质', '云光照模型', '云阴影与遮蔽', '相机光线步进与积分', '云画面重建与合成',
+    ]);
+    for (const [index, count] of [6, 8, 13, 17, 6, 0].entries()) {
+      assert.equal(await sections.nth(index).locator('input, select, textarea').count(), count);
+    }
+    const shadows = sections.nth(3);
+    assert.equal(await shadows.locator('[data-ui-part="group-shadow-ray"] input').count(), 2);
+    assert.equal(await shadows.locator('[data-ui-part="group-shadow-map"] input').count(), 9);
+    assert.equal(await sections.nth(2).locator('[data-ui-part="exposure"]').count(), 1);
+    assert.equal(await sections.nth(4).locator('[data-ui-part="cloud-skip"]').count(), 1);
+    assert.equal(await sections.nth(4).locator('[data-ui-part="cloud-blue-noise"]').count(), 1);
+    const reconstruction = sections.nth(5);
+    assert.match(await reconstruction.textContent(), /Mode 0（只读）/);
+    assert.equal(await reconstruction.locator('[data-ui-part="history"]').count(), 1);
+  });
   await play.step('Apply valid edits immediately without resetting time', async () => {
     await part(play, 'cloud-bottom').fill('6200');
     const state = await play.waitFor(state => state.bottomMeters === 6200, { read });
@@ -43,8 +61,6 @@ export default async function hud(play) {
     await part(play, 'self-shadow').setChecked(true);
     await part(play, 'shadow-mode').selectOption('0');
     await play.waitFor(state => state.selfShadow && state.shadowMode === 0, { read });
-    await play.page.locator('.properties > details').filter({ has: play.page.locator('[data-ui-part="group-tracing"]') })
-      .locator(':scope > summary').click();
     await part(play, 'shadow-samples').fill('2.5');
     assert.equal(await part(play, 'shadow-samples').getAttribute('aria-invalid'), 'true');
     await part(play, 'shadow-samples').fill('12');
@@ -57,7 +73,7 @@ export default async function hud(play) {
     await play.page.locator('[data-ui-action="shadow-comparison"]').click();
     const compared = await play.waitFor(state => state.mode === 'band', { read });
     assert.ok(Math.abs(Number(await part(play, 'cloud-coverage').inputValue()) - compared.coverageBias) < 1e-7);
-    await play.page.locator('[data-ui-action="cloud-shape"]').click();
+    await play.page.locator('[data-ui-action="cloud-textured"]').click();
     await play.waitFor(state => state.mode === 'shape', { read });
     const beforeTime = await play.state(read);
     await part(play, 'cloud-time').fill('13');
@@ -66,8 +82,6 @@ export default async function hud(play) {
     await part(play, 'cloud-wind-x').fill('5');
     const wind = await play.waitFor(state => state.windX === 5, { read });
     assert.equal(wind.initializationRevision, initialized.initializationRevision);
-    await play.page.locator('.properties > details').filter({ has: play.page.locator('[data-ui-part="group-scattering"]') })
-      .locator(':scope > summary').click();
     await part(play, 'ms-octaves').fill('0');
     await play.waitFor(state => state.multiScatteringOctaves === 0, { read });
     await part(play, 'ms-octaves').fill('2.5');

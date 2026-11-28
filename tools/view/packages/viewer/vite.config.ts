@@ -1,9 +1,10 @@
-import { panelsChunk, panelsEntry, revisionPlugin } from '../../scripts/build-inputs.mjs';
+import { createViewWorkspaceSourceResolver, panelDependencyResolver, panelsChunk, panelsEntry, revisionPlugin } from '../../scripts/build-inputs.mjs';
 import { resolve } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const viewHostOrigin = process.env.FORGEAX_VIEW_DEV_HOST_ORIGIN;
+const viewInputRoots = JSON.parse(process.env.FORGEAX_VIEW_INPUT_ROOTS ?? '[]').map((path: string) => resolve(path));
 
 // View pins its exact Engine, whose package already carries its generated
 // binaries. The build keeps their hashed URLs under assets/engine/ (served from
@@ -26,7 +27,7 @@ const engineOwnedAssets: Plugin = {
 };
 
 export default defineConfig({
-  plugins: [revisionPlugin, react(), engineOwnedAssets],
+  plugins: [panelDependencyResolver, createViewWorkspaceSourceResolver(viewInputRoots), revisionPlugin, react(), engineOwnedAssets],
   resolve: { dedupe: ['react', 'react-dom'] },
   root: resolve(import.meta.dirname),
   build: {

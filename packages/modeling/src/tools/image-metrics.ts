@@ -105,22 +105,32 @@ function gaussianBlur(
   for (let i = 0; i < k.length; i++) k[i] = (k[i] as number) / sum;
   const tmp = new Float64Array(w * h);
   const out = new Float64Array(w * h);
-  for (let y = 0; y < h; y++)
+  const inner0 = Math.min(radius, w);
+  const inner1 = Math.max(inner0, w - radius);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
     for (let x = 0; x < w; x++) {
       let a = 0;
-      for (let i = -radius; i <= radius; i++)
-        a +=
-          (k[i + radius] as number) * (src[y * w + Math.min(w - 1, Math.max(0, x + i))] as number);
-      tmp[y * w + x] = a;
+      if (x >= inner0 && x < inner1) {
+        const base = row + x - radius;
+        for (let i = 0; i < k.length; i++) a += (k[i] as number) * (src[base + i] as number);
+      } else {
+        for (let i = -radius; i <= radius; i++)
+          a +=
+            (k[i + radius] as number) * (src[row + Math.min(w - 1, Math.max(0, x + i))] as number);
+      }
+      tmp[row + x] = a;
     }
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      let a = 0;
-      for (let i = -radius; i <= radius; i++)
-        a +=
-          (k[i + radius] as number) * (tmp[Math.min(h - 1, Math.max(0, y + i)) * w + x] as number);
-      out[y * w + x] = a;
+  }
+  for (let y = 0; y < h; y++) {
+    const dst = y * w;
+    for (let i = -radius; i <= radius; i++) {
+      const from = Math.min(h - 1, Math.max(0, y + i)) * w;
+      const weight = k[i + radius] as number;
+      for (let x = 0; x < w; x++)
+        out[dst + x] = (out[dst + x] as number) + weight * (tmp[from + x] as number);
     }
+  }
   return out;
 }
 
@@ -244,8 +254,12 @@ export function imageDeltaE(
   const selected: number[] = [];
   const at = (img: ColorImage, i: number) =>
     srgbToLab(img.rgb[i * 3] as number, img.rgb[i * 3 + 1] as number, img.rgb[i * 3 + 2] as number);
+  const same = (i: number) =>
+    reference.rgb[i * 3] === test.rgb[i * 3] &&
+    reference.rgb[i * 3 + 1] === test.rgb[i * 3 + 1] &&
+    reference.rgb[i * 3 + 2] === test.rgb[i * 3 + 2];
   for (let i = 0; i < n; i++) {
-    map[i] = deltaE2000(at(reference, i), at(test, i));
+    map[i] = same(i) ? 0 : deltaE2000(at(reference, i), at(test, i));
     if (mask === undefined || mask[i] !== 0) selected.push(map[i] as number);
   }
   selected.sort((p, q) => p - q);

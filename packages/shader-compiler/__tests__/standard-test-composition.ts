@@ -55,6 +55,7 @@ const ENGINE_SOURCES = [
   'lighting-attenuation.wgsl',
   'shadow-pcf.wgsl',
   'standard-cluster.wgsl',
+  'standard-cluster-layout.wgsl',
   'surface_v1.wgsl',
   'surface-sampling.wgsl',
   'default_standard_surface.wgsl',

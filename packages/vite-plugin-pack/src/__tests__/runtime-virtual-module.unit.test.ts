@@ -37,7 +37,7 @@ describe('Pack runtime virtual module', () => {
     expect(source).toContain(`from '${VIRTUAL_RUNTIME_TRANSPORT_ID}'`);
     expect(source).not.toContain("from '@forgeax/engine-runtime'");
     expect(resolveId(VIRTUAL_RUNTIME_TRANSPORT_ID)?.replaceAll('\\', '/')).toMatch(
-      /packages\/runtime\/dist\/index\.mjs$|@forgeax\/engine-runtime\/dist\/index\.mjs$/,
+      /(?:packages\/runtime|@forgeax\/engine-runtime)\/dist\/dev-import-transport\.mjs$/,
     );
     expect(source).toContain('createRuntimeAssetImportTransport');
     expect(source).toContain('"scopeId":"virtual-test"');

@@ -14,7 +14,6 @@ import {
   RenderViewRecordSettleOrder,
 } from '../system-order';
 import { sharedFeatureGraphEncoded, sharedFeatureGraphStaged } from './feature-graph-systems';
-import { ViewGraphSeal, type ViewGraphSealState } from './graph-seal-systems';
 import {
   closeFrameEncoder,
   RenderRecordInput,
@@ -25,11 +24,11 @@ import { ViewRecorder } from './render-views';
 import { publishRenderSubmission, RenderRecord, renderSubmission } from './render-world';
 import { surfaceUi } from './surface-ui';
 import { encodeSurfaceUi, RENDER_SURFACE_UI_ENCODE_SYSTEM } from './surface-ui-systems';
-import { readViewField, requireViewField } from './view-field';
+import { readViewState, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { ViewOutputOwnerKey, viewComposition } from './view-output-systems';
+import { ViewRecordAttempt, type ViewRecordAttemptState } from './view-record-attempt';
 import { recordContext } from './view-record-context';
-import { ViewRecordAttempt, type ViewRecordAttemptState } from './view-record-systems';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 
 export const RENDER_COMPOSITE_ENCODE_SYSTEM = 'render-composite-encode';
@@ -283,10 +282,8 @@ type ViewSubmitWork =
 
 /** Admit only this view's prepared barrier or actual encoded product to the shared submit. */
 function selectViewWork(
-  world: World,
   owner: ViewSettlementOwner,
   attempt: ViewRecordAttemptState,
-  seal: ViewGraphSealState | undefined,
   state: FrameSubmitState,
 ): ViewSubmitWork {
   const preparation = attempt.preparation;
@@ -296,17 +293,17 @@ function selectViewWork(
   }
   if (preparation?.kind === 'rejected' || preparation === undefined) return { kind: 'rejected' };
   if (preparation.kind === 'held') return { kind: 'held' };
-  if (preparation.kind === 'pending' || seal?.encoding?.kind === 'pending')
+  if (preparation.kind === 'pending' || attempt.encoding?.kind === 'pending')
     return { kind: 'ready', work: pendingViewWork(owner, attempt) };
-  if (seal?.frame === renderSubmission(world).frame && seal.encoding?.kind === 'encoded') {
-    const encoded = seal.encoding.value;
+  if (attempt.encoding?.kind === 'encoded') {
+    const encoded = attempt.encoding.value;
     return {
       kind: 'ready',
       work: encoded.kind === 'capture' ? encoded.work : encoded.encoded.work,
     };
   }
-  if (seal?.encoding?.kind === 'failed') state.failures.push(seal.encoding.cause);
-  else if (seal?.outcome?.kind === 'failed') state.failures.push(seal.outcome.error);
+  if (attempt.encoding?.kind === 'failed') state.failures.push(attempt.encoding.cause);
+  else if (attempt.outcome?.kind === 'failed') state.failures.push(attempt.outcome.error);
   return { kind: 'rejected' };
 }
 
@@ -330,17 +327,15 @@ export function encodeFramePresentation(
 function hasEncodedSurfaceView(world: World, primary: EntityHandle | undefined): boolean {
   const frame = renderSubmission(world).frame;
   const encodedDisplay = (entity: EntityHandle): boolean => {
-    const slot = readViewField(world, entity, ViewGraphSeal, 'state');
-    if (slot === undefined) return false;
-    const seal = world.resolveUniqueRef<ViewGraphSealState>(slot).unwrap();
+    const attempt = readViewState<ViewRecordAttemptState>(world, entity, ViewRecordAttempt);
     return (
-      seal.frame === frame &&
-      seal.encoding?.kind === 'encoded' &&
-      seal.encoding.value.kind === 'display'
+      attempt?.frame === frame &&
+      attempt.encoding?.kind === 'encoded' &&
+      attempt.encoding.value.kind === 'display'
     );
   };
   // Primary display recording is absent from the composed recorder list.
-  // Seals use Render World frame identity, not UI/public observation identity.
+  // Attempts use Render World frame identity, not UI/public observation identity.
   if (!viewComposition(world).active && primary !== undefined && encodedDisplay(primary))
     return true;
   for (const view of viewComposition(world).recorded) {
@@ -367,7 +362,7 @@ export function registerFrameSubmitSystems(world: World): void {
     commands: 'none',
     name: RENDER_COMPOSITE_ENCODE_SYSTEM,
     after: [RenderViewGraphEncodeOrder],
-    queries: [{ read: [ViewGraphSeal] }],
+    queries: [{ read: [ViewRecordAttempt] }],
     fn: (world, [rows]) => {
       const state = frameSubmitOutcome(world);
       if (!world.hasResource(RenderRecordInput)) return;
@@ -375,12 +370,8 @@ export function registerFrameSubmitSystems(world: World): void {
       if (input.composite !== true) return;
       const frame = renderSubmission(world).frame;
       for (const row of rows) {
-        const seal = world
-          .resolveUniqueRef<ViewGraphSealState>(
-            requireViewField(world, row.entity, ViewGraphSeal, 'state'),
-          )
-          .unwrap();
-        if (seal.frame === frame && seal.encoding?.kind === 'pending') {
+        const attempt = readViewState<ViewRecordAttemptState>(world, row.entity, ViewRecordAttempt);
+        if (attempt?.frame === frame && attempt.encoding?.kind === 'pending') {
           state.composite = 'pending';
           return;
         }
@@ -428,7 +419,7 @@ export function registerFrameSubmitSystems(world: World): void {
     commands: 'none',
     name: RENDER_FRAME_SUBMIT_SYSTEM,
     after: [systemToken2],
-    queries: [{ read: [ViewRecordAttempt, ViewFrame, ViewRecorder], optional: [ViewGraphSeal] }],
+    queries: [{ read: [ViewRecordAttempt, ViewFrame, ViewRecorder] }],
     fn: (world, [rows]) => {
       if (!world.hasResource(RenderRecordInput)) return;
       const input = world.getResource(RenderRecordInput);
@@ -458,16 +449,9 @@ export function registerFrameSubmitSystems(world: World): void {
           .unwrap();
         if (staged.frame !== frame) continue;
         if (attempt.frame !== frame) return;
-        const slot = readViewField(world, entity, ViewGraphSeal, 'state');
-        const seal =
-          slot === undefined
-            ? undefined
-            : world.resolveUniqueRef<ViewGraphSealState>(slot).unwrap();
         const selected = selectViewWork(
-          world,
           ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
           attempt,
-          seal,
           state,
         );
         if (selected.kind === 'rejected') return;

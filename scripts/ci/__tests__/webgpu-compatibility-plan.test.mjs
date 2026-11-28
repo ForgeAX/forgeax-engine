@@ -28,7 +28,7 @@ test('standalone carriers build the WebGPU RHI dependency closure before running
 
 test('policy execution removes diagnostic overrides and preserves the sandbox', () => {
   const defaults = {
-    channel: 'chrome-beta',
+    channel: 'chrome',
     chromiumSandbox: true,
     args: ['--ignore-gpu-blocklist', '--disable-dawn-features=tiered_adapter_limits'],
   };

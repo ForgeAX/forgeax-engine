@@ -8,7 +8,9 @@ let browser;
 before(async () => {
   browser = await chromium.launch({
     headless: true,
-    executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE || chromium.executablePath(),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE
+      ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
+      : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     chromiumSandbox: true,
   });
 });

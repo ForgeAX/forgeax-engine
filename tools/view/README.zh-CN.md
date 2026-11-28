@@ -338,7 +338,7 @@ Catalog 和场景响应通过 Host 工作区 API 到达。
 使用 `pnpm dev -- --view-host <http-origin>` 将开发 Viewer 连接到已有前台 `start.mjs` 服务。
 `--view-host` 是该服务的 HTTP origin；Vite 的 `--host` 只选择开发服务监听地址。
 开发服务将 bootstrap、health 和同源启动器代理到该服务；工作区数据使用认证 Host WebSocket。
-先在单独的持久终端启动服务，再启动开发服务。
+在 Engine 源码检出中，开发服务自动使用与 `pnpm build:tools` 相同的 integration 面板、前端插件和 revision 输入；Host 与源码 Viewer 因此保持配对。View workspace 导入解析到本检出的源码，并继续由 Vite 处理 React 依赖。先在单独的持久终端启动服务，再启动开发服务。
 尚未实现材质编辑和运行时属性写入。
 
 所有场景实体使用相同的分组只读 Inspector。

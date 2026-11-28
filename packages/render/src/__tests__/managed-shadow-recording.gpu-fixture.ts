@@ -4,7 +4,7 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import type { BindGroupLayoutEntry } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import type { ShaderEntryPointReads } from '@forgeax/engine-types';
-import { expect } from 'vitest';
+import { expect, vi } from 'vitest';
 import { transmissionBackdropAvailable } from '../assembly/device-feature-admission';
 import { meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
 import { MeshChanges, ShadowMeshReads } from '../device/mesh-changes';
@@ -18,6 +18,7 @@ import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
 import { type DirectDrawInput, DirectDrawPhase } from '../record/direct-draw-phase';
 import { prepareDirectionalShadowCache } from '../record/directional-shadow-cache';
+import { issueDrawRows, rebindDrawPoses } from '../record/draw-row-pages';
 import { buildDispatchPlan } from '../record/fold-buckets';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
 import { recordGeometryDraws } from '../record/main-pass-geometry';
@@ -29,7 +30,6 @@ import {
   MESH_PER_ENTITY_STRIDE,
   uploadMeshSsboBatch,
 } from '../record/mesh-ssbo';
-import type { RenderSystemInternals } from '../record/render-context';
 import {
   type _InternalRenderPipelineContext,
   MATERIAL_PER_ENTITY_STRIDE,
@@ -39,8 +39,10 @@ import { recordShadowCasterDraws } from '../record/shadow-pass';
 import { SkinTasks } from '../record/skin-tasks';
 import type { DispatchEntry, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { MaterialDispatch } from '../scene/material-dispatch';
+import { SceneDrawSlot } from '../scene/mesh-draw';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
+import { SceneSlotPage } from '../scene/scene-slots';
 import { nativeDeviceFixture } from './native-device-fixture';
 import { skinTaskFixture } from './skin-task-fixture';
 
@@ -465,6 +467,86 @@ async function depth(
   f.native.pushErrorScope('validation');
   expect(validation, validation?.message).toBeNull();
   return new Float32Array(bytes);
+}
+
+export async function verifyPagedShadowPose(): Promise<void> {
+  const f = await fixture();
+  const scene = new RenderScene();
+  const entry = defined(f.context.validatedOrdered.at(0));
+  const source = entry.source;
+  scene.rebuild([source]);
+  const placed = defined(scene.slot(source.entityKey));
+  expect(placed).toBeInstanceOf(SceneDrawSlot);
+  const row = { ...entry, source: placed.snapshot, sceneSlot: placed };
+  const hidden = { ...row, source: { ...row.source, authorVisible: false } };
+  const original = issueDrawRows(
+    65,
+    undefined,
+    (write) => {
+      for (let i = 0; i < 64; i++) write(i, hidden);
+      write(64, row);
+    },
+    scene.slotsSnapshot(),
+  );
+  const shadowCasterRecordingBounds: _InternalRenderPipelineContext['shadowCasterRecordingBounds'] =
+    (renderable, into, slot, pose) => {
+      expect(slot).toBe(placed);
+      if (pose === undefined) return scene.writeCullingWorldBoundsAt(placed, into);
+      expect(renderable).toBe(row.source);
+      return scene.writeCullingPoseBounds(
+        placed.slot,
+        pose.version,
+        (placed as SceneDrawSlot).content,
+        pose.poseColumn,
+        pose.poseOffset,
+        into,
+      );
+    };
+  const placements = Array.from({ length: 65 }, () => [0]);
+  const context = { ...f.context, materialSlotIndices: placements, shadowCasterRecordingBounds };
+  const sample = (pixels: Float32Array) => [
+    pixels[8 * ROW_FLOATS + 8],
+    pixels[8 * ROW_FLOATS + 24],
+  ];
+  const entities = Uint32Array.of(source.entityKey);
+  const pose = mat4.identity(mat4.create());
+  let shadowValidatedOrdered = original;
+  try {
+    for (let frame = 0; frame < 12; frame++) {
+      const side = frame % 2 === 0 ? 1 : -1;
+      pose[12] = side > 0 ? 0.5 : -0.5;
+      scene.apply([], [{ entities, worlds: pose }]);
+      shadowValidatedOrdered = rebindDrawPoses(original, scene.slotsSnapshot());
+      const pages = vi.spyOn(SceneSlotPage.prototype, 'read');
+      const snapshots = vi.spyOn(SceneDrawSlot.prototype, 'authoredSnapshot');
+      try {
+        const current = { ...context, shadowValidatedOrdered };
+        expect(sample(await depth(f, current, side))).toEqual(side > 0 ? [0, 0.25] : [0.25, 0]);
+        expect(sample(await depth(f, current, side > 0 ? -1 : 1))).toEqual([0, 0]);
+        expect(pages).not.toHaveBeenCalled();
+        expect(snapshots).not.toHaveBeenCalled();
+      } finally {
+        pages.mockRestore();
+        snapshots.mockRestore();
+      }
+    }
+    expect(sample(await depth(f, { ...context, shadowValidatedOrdered: original }, -1))).toEqual([
+      0.25, 0,
+    ]);
+
+    pose[12] = 0.5;
+    scene.apply([], [{ entities, worlds: pose }]);
+    shadowValidatedOrdered = rebindDrawPoses(original, scene.slotsSnapshot());
+    const shadowCasterBounds = vi.fn((current: RenderableSnapshot) => {
+      expect(current.transform.world[12]).toBe(0.5);
+      return false;
+    });
+    const snapshotOnly = { ...f.context, materialSlotIndices: placements, shadowValidatedOrdered };
+    expect(sample(await depth(f, { ...snapshotOnly, shadowCasterBounds }, 1))).toEqual([0, 0.25]);
+    expect(shadowCasterBounds).toHaveBeenCalledTimes(1);
+  } finally {
+    f.close();
+  }
 }
 
 export async function verifyManagedShadowRecording(): Promise<void> {
@@ -952,7 +1034,6 @@ export async function verifyManagedShadowCache(
     installedPipelineHandle: 1,
     directionalShadowCache: null,
   } as unknown as RenderFrameState;
-  const internals = { assets: { catalogEpoch: 1 } } as unknown as RenderSystemInternals;
   const owner = {};
   const changes = new MeshChanges();
   const reads = new ShadowMeshReads(changes);
@@ -972,7 +1053,6 @@ export async function verifyManagedShadowCache(
     let pixels = new Float32Array();
     for (let frame = 0; frame < count; frame++) {
       const decision = prepareDirectionalShadowCache(
-        internals,
         state,
         worldRenderResources(world),
         lease,
@@ -1065,7 +1145,6 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
     installedPipelineHandle: 1,
     directionalShadowCache: null,
   } as unknown as RenderFrameState;
-  const internals = {} as RenderSystemInternals;
   const changes = new MeshChanges();
   const reads = new ShadowMeshReads(changes);
   reads.add(changes.create());
@@ -1114,7 +1193,6 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
     if (csm === null) throw Error('Expected a directional CSM projection');
     retained = csm.lightViewProj;
     const decision = prepareDirectionalShadowCache(
-      internals,
       state,
       worldRenderResources(world),
       lease,

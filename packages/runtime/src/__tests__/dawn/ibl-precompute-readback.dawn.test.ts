@@ -3,14 +3,17 @@ import { testAssets } from '../helpers/runtime-assets';
 // Read the actual cube, the published Sky SH coefficients, and the specular products.
 
 import { World } from '@forgeax/engine-ecs';
-import { composeShader } from '@forgeax/engine-naga';
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { _internal_getRawDevice, createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
+import { ShaderRegistry } from '@forgeax/engine-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import type { EquirectAsset, TextureFormat } from '@forgeax/engine-types';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
 import { DeviceScope } from '../../../../render/src/device/device-scope';
 import { GpuResidencyCache } from '../../../../render/src/device/gpu-residency';
-import { setIblComposedShaders } from '../../../../render/src/ibl/IblPipelineCache';
+import { publishIblProgramDeclarations } from '../../../../render/src/ibl/IblPipelineCache';
+import { shaderManifestUrl } from '../shader-manifest-url.fixture';
 
 const mockCaps = {
   backendKind: 'webgpu' as const,
@@ -42,45 +45,23 @@ const mockCaps = {
 // projection preserves the managed source identity; its device products live
 // under the same resource scope.
 
-// Load + compose the 6 ibl-* WGSL modules into the 4 composed entry shaders
-// that createIblPipelines consumes. Mirrors what vite-plugin-shader does at
-// build-time for the browser/runtime path; the dawn test stands in for
-// vite-plugin-shader so the readback receives non-placeholder pipelines.
-async function composeIblShadersForDawn(): Promise<void> {
-  const fsId = 'node:fs';
-  const pathId = 'node:path';
-  const urlId = 'node:url';
-  const fs = (await import(/* @vite-ignore */ fsId)) as {
-    readFileSync: (p: string, enc: string) => string;
+async function publishIblProgramsForDawn(scope: DeviceScope): Promise<void> {
+  const registry = new ShaderRegistry({
+    manifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()),
+    programCompiler: (await prepareShaderProgramCompiler()).unwrap(),
+  });
+  (await registry.loadManifest()).unwrap();
+  const entries = [...registry.entries()];
+  const read = (role: 'iblEquirect' | 'iblPrefilter' | 'iblBrdfLut') => {
+    const entry = entries.find((entry) => entry.role === role);
+    if (entry === undefined) throw new Error(`Missing published IBL program: ${role}`);
+    return entry;
   };
-  const pathMod = (await import(/* @vite-ignore */ pathId)) as {
-    resolve: (...parts: string[]) => string;
-    dirname: (p: string) => string;
-  };
-  const url = (await import(/* @vite-ignore */ urlId)) as {
-    fileURLToPath: (u: string) => string;
-  };
-  const here = url.fileURLToPath(import.meta.url);
-  // Resolve packages/shader/src/ relative to this test file
-  // (packages/runtime/src/__tests__/dawn/).
-  const shaderSrc = pathMod.resolve(pathMod.dirname(here), '..', '..', '..', '..', 'shader', 'src');
-  const read = (name: string) => fs.readFileSync(pathMod.resolve(shaderSrc, name), 'utf8');
-  const sharedSrc = read('ibl-shared.wgsl');
-  const equirectSrc = read('ibl-equirect-to-cube.wgsl');
-  const prefilterSrc = read('ibl-prefilter.wgsl');
-  const brdfLutSrc = read('ibl-brdf-lut.wgsl');
-  // The per-pass modules import ibl-shared, which derives F90 through brdf.
-  const imports = {
-    'forgeax_pbr::pmrem': read('ibl-pmrem.wgsl'),
-    'forgeax_pbr::ibl_shared': sharedSrc,
-    'forgeax_pbr::brdf': read('brdf.wgsl'),
-  };
-  const [equirectToCube, prefilter, brdfLut] = await Promise.all([
-    composeShader(equirectSrc, imports, {}),
-    composeShader(prefilterSrc, imports, {}),
-    composeShader(brdfLutSrc, imports, {}),
-  ]);
-  setIblComposedShaders({ equirectToCube, prefilter, brdfLut });
+  publishIblProgramDeclarations(scope, {
+    equirectToCube: read('iblEquirect'),
+    prefilter: read('iblPrefilter'),
+    brdfLut: read('iblBrdfLut'),
+  });
 }
 
 const dawnReady = typeof navigator !== 'undefined' && navigator.gpu !== undefined;
@@ -270,12 +251,6 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
   it.skipIf(!dawnReady)(
     'publishes finite Sky SH and nonzero equirect, PMREM and BRDF output',
     async () => {
-      // Compose ibl-* WGSL into 4 entry shaders before the upload. In
-      // production this happens at vite-plugin-shader build-time and the
-      // runtime calls setIblComposedShaders with the composed bundle;
-      // dawn-node tests stand in for vite-plugin-shader by composing on
-      // demand via @forgeax/engine-naga.
-      await composeIblShadersForDawn();
       const adapterResult = await rhi.requestAdapter();
       if (!adapterResult.ok) throw adapterResult.error;
       const deviceResult = await adapterResult.value.requestDevice();
@@ -288,6 +263,7 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
 
       const store = new GpuResidencyCache();
       const scope = DeviceScope.create(0, 'ibl-dawn-test');
+      await publishIblProgramsForDawn(scope);
       store.bindDeviceScope(scope);
       const world = new World();
       const equirect =

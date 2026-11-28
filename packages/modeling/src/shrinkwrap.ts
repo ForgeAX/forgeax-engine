@@ -1,6 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { pushAll } from './arrays';
-import { LEGACY_BVH, TriangleBvh } from './compute/bvh';
+import { TriangleBvh } from './compute/bvh';
 import { applyDeformation } from './deform';
 import { atan2 } from './dmath';
 import { type ModelingError, modelingError } from './errors';
@@ -68,7 +68,7 @@ export class SurfaceQuery {
     this.positions = positions;
     this.indices = indices;
     this.faces = faces;
-    this.bvh = new TriangleBvh(positions, indices, LEGACY_BVH);
+    this.bvh = new TriangleBvh(positions, indices);
   }
 
   private surfaceNormals() {
@@ -161,8 +161,14 @@ export class SurfaceQuery {
   /** True when a ray from `p` along `direction` hits a face other than `face`. */
   occluded(p: Tuple3, direction: Tuple3, face: number): boolean {
     return (
-      this.bvh.raycast(p, direction, Infinity, true, (t) => (this.faces[t] as number) !== face) !==
-      undefined
+      this.bvh.raycast(
+        p,
+        direction,
+        Infinity,
+        true,
+        (t) => (this.faces[t] as number) !== face,
+        1e-12,
+      ) !== undefined
     );
   }
 

@@ -33,6 +33,7 @@
     { "path": "../plugin" },
     { "path": "../profiler" },
     { "path": "../render-graph" },
+    { "path": "../render-kernel" },
     { "path": "../rhi" },
     { "path": "../rhi-null" },
     { "path": "../rhi-webgpu" },

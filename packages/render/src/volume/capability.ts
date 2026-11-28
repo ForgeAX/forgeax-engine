@@ -4,6 +4,8 @@ import { Transform } from '@forgeax/engine-scene';
 import { DirectionalLight } from '../components/directional-light';
 import { PointLight } from '../components/point-light';
 import { SpotLight } from '../components/spot-light';
+import type { ExtractedVolumetricFog } from '../render-system-extract';
+import type { ViewLights } from '../world/render-lights';
 
 /**
  * The single capability predicate for the authored volumetric-fog producer.
@@ -15,6 +17,27 @@ export function hasVolumetricFogCapability(
   shaders: unknown,
 ): boolean {
   return caps.compute && caps.storageTexture && shaders !== undefined;
+}
+
+/** The selected light must be admitted by the current view. */
+export function hasSelectedVolumeLight(
+  lights: ViewLights,
+  volumetricFog: ExtractedVolumetricFog,
+): boolean {
+  switch (volumetricFog.lightKind) {
+    case undefined:
+      return lights.directional !== undefined;
+    case 'spot':
+      return lights.spot.some((light) => light.entity === volumetricFog.lightEntity);
+    case 'point':
+      return lights.point.some((light) => light.entity === volumetricFog.lightEntity);
+    case 'directional':
+      return (
+        lights.directional !== undefined && lights.directional.entity === volumetricFog.lightEntity
+      );
+    default:
+      return false;
+  }
 }
 
 export type VolumetricFogLightKind = 'directional' | 'point' | 'spot';

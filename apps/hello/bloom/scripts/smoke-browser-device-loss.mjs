@@ -135,10 +135,10 @@ try {
     '--disable-gpu-process-crash-limit',
     '--disable-domain-blocking-for-3d-apis',
   ];
-  // Chrome Beta on the Linux CI carrier must select the same software Vulkan
+  // Chrome on the Linux CI carrier must select the same software Vulkan
   // adapter as the other real Browser WebGPU gates. This keeps the CDP crash
   // aimed at Chrome's GPU process while avoiding an unbound host adapter.
-  if (browserChannel === 'chrome-beta' && process.env.CI && process.platform === 'linux') {
+  if (browserChannel === 'chrome' && process.env.CI && process.platform === 'linux') {
     browserArgs.push(
       '--use-vulkan=swiftshader',
       '--use-angle=swiftshader',

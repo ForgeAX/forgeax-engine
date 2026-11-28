@@ -573,13 +573,25 @@ export function runBuildPipelineContext(
     projectOpaqueLayout = positionOnly.opaqueStandard === true;
   }
   const opaquePipelineLayout = projectMaterial();
+  const canCompileEngineMaterialImmediately = () => {
+    if (internals.pack.createShaderModuleImmediate === undefined) return false;
+    if (stockStandard) return true;
+    if (currentBuildDevice().caps.backendKind !== 'webgpu') return false;
+    switch (materialShaderId) {
+      case 'forgeax::default-unlit':
+      case 'forgeax::default-shadow-caster':
+      case 'forgeax::sprite':
+      case 'forgeax::sprite-lit':
+        return true;
+      default:
+        return false;
+    }
+  };
   const createMaterialPipelineContext = () => {
     return {
       device: currentBuildDevice(),
       shaderModuleFactory:
-        shaderModuleMode === 'immediate' ||
-        (internals.pack.createShaderModuleImmediate !== undefined &&
-          isCanonicalStandardPbrMaterialShader(materialShaderId))
+        shaderModuleMode === 'immediate' || canCompileEngineMaterialImmediately()
           ? getShaderModuleAdapter('immediate')
           : getShaderModuleAdapter(),
       pipelineLayout: opaquePipelineLayout?.layout ?? fullPipelineLayout,
@@ -1249,9 +1261,8 @@ export function runSelectUnlitPreparedFallback(
   return {
     entry: unlitLookup.value,
     label: `pbr-pipeline-prepared-${pipelineShaderId}`,
-    // Reuse the eagerly compiled engine unlit module. The adapter cache
-    // is seeded under this label during renderer readiness; a new label
-    // would keep color-only prepared passes in perpetual warm-up.
+    // Legacy readiness and a native prepared draw address the same Unlit
+    // adapter entry by its label and exact source.
     moduleLabel: 'unlit',
     layoutShaderId: 'forgeax::default-unlit',
     ownEntries: false,

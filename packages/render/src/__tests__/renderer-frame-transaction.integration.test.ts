@@ -57,6 +57,10 @@ function installedGraph(graph: unknown, topologyKey: string): InstalledFrameGrap
   const noTarget = (): undefined => undefined;
   return {
     graph: graph as InstalledFrameGraph['graph'],
+    deviceScope: undefined,
+    standardLighting: 'current',
+    hasBarrelDistortionPass: false,
+    scenePasses: [],
     topologyKey,
     targets: {
       getColorTargetDescriptor: noTarget,
@@ -1296,6 +1300,51 @@ describe('renderer successful-submit transaction', () => {
     });
     expect(result.ok).toBe(true);
     expect(published).toEqual(['env:2/fog:2/taa:2']);
+  });
+
+  it.each([
+    'binding',
+    'device scope',
+  ] as const)('rejects encoded work if beforeSubmit replaces its %s', async (changes) => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const builder = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+    const encode = vi.fn();
+    builder.addCopyPass('selected-display', { accesses: [], encode }).unwrap();
+    const graph = builder.compile({ device, surfaceSize: { width: 8, height: 8 } }).unwrap();
+    const scope = DeviceScope.create(1, 'original');
+    const selected = { ...installedGraph(graph, 'selected-display'), deviceScope: scope };
+    const replacement = { ...selected, topologyKey: 'replacement' };
+    const frameState = { compiledFrameGraph: selected } as RenderFrameState;
+    const submits = vi.spyOn(device.queue, 'submit');
+    const accepted = vi.fn();
+    const internals = {
+      device,
+      deviceScope: scope,
+      errorRegistry: new RhiErrorListenerRegistry(),
+      beforeSubmit: () => {
+        if (changes === 'binding') frameState.compiledFrameGraph = replacement;
+        else internals.deviceScope = DeviceScope.create(scope.generation, 'replacement');
+      },
+    };
+    try {
+      expect(() =>
+        executeCompiledFrameGraph(
+          internals as never,
+          frameState,
+          {
+            encoder: device.createCommandEncoder({ label: 'selected-display' }).unwrap(),
+            pipelineState: {},
+          } as unknown as RenderPipelineFrame,
+          undefined,
+          { onSubmitted: accepted },
+        ),
+      ).toThrow(expect.objectContaining({ code: 'frame-submit-rejected' }));
+      expect(encode).toHaveBeenCalledOnce();
+      expect(submits).not.toHaveBeenCalled();
+      expect(accepted).not.toHaveBeenCalled();
+    } finally {
+      await graph.retire();
+    }
   });
 
   it('rejects a missing temporal write before queue.submit and cleans the candidate', async () => {

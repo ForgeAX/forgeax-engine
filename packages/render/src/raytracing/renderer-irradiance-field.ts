@@ -208,6 +208,17 @@ async function buildFieldReflections(
     'fs_ray_reflection_field',
     'standard-gbuffer/2',
   );
+  // Under hardware ray-query traversal, probe depth/variance moments come from
+  // exact triangles and glossy rays trace the TLAS; use the Chebyshev-visibility
+  // reflection generator to avoid per-pixel software interval-BVH walks.
+  const chebyshevGenerateSource =
+    traversal === 'ray-query'
+      ? entries.find(
+          (entry) =>
+            entry.programContract?.gbuffer === 'standard-gbuffer/2' &&
+            entry.wgsl.includes('fn generateReflectionsChebyshev('),
+        )?.wgsl
+      : undefined;
   const device = runtime.device;
   const modules = await Promise.all([
     compile(device, { label: 'irradiance-field.traceReflections', code: source }).then((r) =>
@@ -222,14 +233,20 @@ async function buildFieldReflections(
       label: 'irradiance-field.reflection-composite',
       code: compositeSource,
     }).then((r) => r.unwrap()),
+    chebyshevGenerateSource === undefined
+      ? Promise.resolve(undefined)
+      : compile(device, {
+          label: 'irradiance-field.reflection-generate-chebyshev',
+          code: chebyshevGenerateSource,
+        }).then((r) => r.unwrap()),
   ]);
   if (!current()) return undefined;
-  const [traceModule, viewModule, compositeModule] = modules;
+  const [traceModule, viewModule, compositeModule, chebyshevGenerateModule] = modules;
   const trace = (
     await createIrradianceFieldKernel(device, 'traceReflections', traceModule, traversal)
   ).unwrap();
   if (!current()) return undefined;
-  const view = (await base.factory.reflectionKernels(viewModule)).unwrap();
+  const view = (await base.factory.reflectionKernels(viewModule, chebyshevGenerateModule)).unwrap();
   if (!current()) return undefined;
   const composite = (await createRayReflectionComposite(device, compositeModule, 'field')).unwrap();
   return current() ? { trace, view, composite } : undefined;
@@ -504,6 +521,49 @@ const storage = 128 | 12;
 /** Renderer-owned Irradiance Field (Lumen-Lite diffuse GI). Generation changes
  * on scene/material/profile identity and resets all probe history; lights and
  * extent are per-frame inputs that never discard the field. */
+/**
+ * Admit scene lights into the 32-light probe/Card ray reference table.
+ * Excludes unsupported rect-area lights, strips IES/cookie/projector modifiers
+ * so core light emission still contributes, and keeps the 32 highest-priority
+ * lights (directional first, then highest peak radiance) instead of failing GI.
+ */
+export function admitIrradianceFieldLights(lights: readonly LightSnapshot[]): {
+  readonly admitted: LightSnapshot[];
+  readonly excludedAreaLights: number;
+} {
+  const filtered = lights.filter((light) => light.kind !== 'rect-area');
+  const sanitized = filtered.map((light) => {
+    if (light.kind === 'directional') return light;
+    if (light.kind === 'point') {
+      if (light.iesProfileHandle === undefined) return light;
+      const { iesProfileHandle: _ies, ...rest } = light;
+      return rest;
+    }
+    if (
+      light.iesProfileHandle === undefined &&
+      light.cookieHandle === undefined &&
+      light.projectorSlice === undefined
+    )
+      return light;
+    const { iesProfileHandle: _ies, cookieHandle: _cookie, projectorSlice: _proj, ...rest } = light;
+    return rest;
+  });
+  const admitted =
+    sanitized.length <= 32
+      ? sanitized
+      : [...sanitized]
+          .sort((a, b) => {
+            const aDir = a.kind === 'directional' ? 1 : 0;
+            const bDir = b.kind === 'directional' ? 1 : 0;
+            if (aDir !== bDir) return bDir - aDir;
+            const aPeak = Math.max(a.color[0] ?? 0, a.color[1] ?? 0, a.color[2] ?? 0);
+            const bPeak = Math.max(b.color[0] ?? 0, b.color[1] ?? 0, b.color[2] ?? 0);
+            return bPeak - aPeak;
+          })
+          .slice(0, 32);
+  return { admitted, excludedAreaLights: lights.length - filtered.length };
+}
+
 export class RendererIrradianceField {
   #input: IrradianceFieldFrameInput | undefined;
   #key = '';
@@ -746,16 +806,14 @@ export class RendererIrradianceField {
     let key: string;
     try {
       key = this.#signature();
-      // The probe/Card ray reference has no area-light sampling; area lights stay
-      // direct-only instead of failing the whole field.
-      const admitted = input.lights.filter((light) => light.kind !== 'rect-area');
+      const { admitted, excludedAreaLights } = admitIrradianceFieldLights(input.lights);
       const lights = packLights(admitted).unwrap();
       this.#lights = new Uint8Array(IRRADIANCE_FIELD_LIGHTS_BYTES);
       this.#lights.set(lights.subarray(0, Math.min(lights.byteLength, this.#lights.byteLength)));
       this.#lightCount = admitted.length;
       const directional = admitted.find((light) => light.kind === 'directional');
       this.#directionalLightPeak = directional === undefined ? 0 : Math.max(...directional.color);
-      this.#excludedAreaLights = input.lights.length - admitted.length;
+      this.#excludedAreaLights = excludedAreaLights;
     } catch (cause) {
       this.#fail(input, cause);
       return;
@@ -1007,8 +1065,8 @@ export class RendererIrradianceField {
           .createBuffer({ label: `irradiance-field.${label}`, size, usage })
           .unwrap();
         owned.push(buffer);
-        // Zero history: unwritten probes report meta.x == 0 and are skipped.
-        if ((usage & 64) === 0) device.queue.writeBuffer(buffer, 0, new Uint8Array(size)).unwrap();
+        // Newly created RHI/WebGPU buffers are zero-initialized by spec; avoid
+        // staging large JS zero arrays over writeBuffer on preparation/resize.
         return { buffer, size };
       };
       const rays = plan.probeBudget * plan.raysPerProbe;
@@ -1296,6 +1354,7 @@ export class RendererIrradianceField {
             composed: boolean;
             canonicalEpoch: number | undefined;
             radiosity: CardRadiosityUpdate | undefined;
+            radiosityLinksRun: boolean;
           }
         | undefined;
       const pendingBounds: Parameters<typeof globalSdfEditBox>[1][number][] = [];
@@ -1348,6 +1407,50 @@ export class RendererIrradianceField {
             ? Math.ceil(tileCount / radiosityPeriod)
             : tileCount,
         );
+      const prepareCardRadiosityFrame = (directWork: boolean): CardRadiosityUpdate | undefined => {
+        if (cardRadiosity === undefined) return undefined;
+        // Minor changes to the same directional light can relight the direct
+        // term while the budget refreshes indirect pages. Geometry, materials,
+        // other light edits and global lighting changes still retire old SH.
+        const directSourceChanged =
+          directWork &&
+          (litLights === undefined ||
+            spatialRelightPending ||
+            globalLightChanged() ||
+            !onlyPrimaryDirectionalColorChanged(litLights, this.#lights));
+        if (
+          directSourceChanged ||
+          radiosityInvalidation !== cardRadiosity.schedule.invalidation ||
+          radiosityCaptureRevision !== cards.capture.revision
+        ) {
+          // Do not wrap into an epoch still present in retained GPU history.
+          if (radiosityEpoch === 0xffffffff)
+            throw new Error('Card radiosity epoch exhausted; rebuild the field allocation');
+          radiosityEpoch++;
+          radiosityInvalidation = cardRadiosity.schedule.invalidation;
+          radiosityCaptureRevision = cards.capture.revision;
+        }
+        radiosityUpdate = cardRadiosity.schedule.select(radiosityEpoch, captureSchedule.tiles);
+        const upload = cardRadiosity.buffers;
+        device.queue
+          .writeBuffer(
+            upload.frame.buffer,
+            0,
+            packCardRadiosityFrame(
+              cardRadiosity.plan,
+              radiosityUpdate,
+              frameIndex,
+              captureSchedule.tiles,
+              capture.width,
+            ),
+          )
+          .unwrap();
+        if (radiosityUpdate.tiles.length > 0)
+          device.queue
+            .writeBuffer(upload.pages.buffer, 0, Uint32Array.from(radiosityUpdate.tiles))
+            .unwrap();
+        return radiosityUpdate;
+      };
       // A capturing frame surfaces and lights exactly its fresh slice; the first
       // frame after the last slice relights every tile with the current lights.
       const schedule = () => {
@@ -1478,7 +1581,8 @@ export class RendererIrradianceField {
           if (slice.clear || phase === 'identity')
             cards.capture.clearTiles(pass, slice, phase).unwrap();
           cards.capture.recordPass(pass, slice, phase).unwrap();
-          if (phase === 'identity') encodedCapture = slice;
+          if (phase === (traversal === 'global-sdf' ? 'identity' : 'material'))
+            encodedCapture = slice;
         },
         recordReceiverFacts: (encoder) => {
           const work = schedule();
@@ -1680,51 +1784,10 @@ export class RendererIrradianceField {
             probes,
             composed: composeEncoded,
             canonicalEpoch: canonicalEncoded,
-            radiosity: undefined,
+            radiosity: prepareCardRadiosityFrame(work.direct),
+            radiosityLinksRun:
+              captureSchedule.slice() === undefined && !captureSchedule.pendingWork,
           };
-          if (cardRadiosity !== undefined) {
-            // Minor changes to the same directional light can relight the direct
-            // term while the budget refreshes indirect pages. Geometry, materials,
-            // other light edits and global lighting changes still retire old SH.
-            const directSourceChanged =
-              work.direct &&
-              (litLights === undefined ||
-                spatialRelightPending ||
-                globalLightChanged() ||
-                !onlyPrimaryDirectionalColorChanged(litLights, this.#lights));
-            if (
-              directSourceChanged ||
-              radiosityInvalidation !== cardRadiosity.schedule.invalidation ||
-              radiosityCaptureRevision !== cards.capture.revision
-            ) {
-              // Do not wrap into an epoch still present in retained GPU history.
-              if (radiosityEpoch === 0xffffffff)
-                throw new Error('Card radiosity epoch exhausted; rebuild the field allocation');
-              radiosityEpoch++;
-              radiosityInvalidation = cardRadiosity.schedule.invalidation;
-              radiosityCaptureRevision = cards.capture.revision;
-            }
-            radiosityUpdate = cardRadiosity.schedule.select(radiosityEpoch, captureSchedule.tiles);
-            attempt.radiosity = radiosityUpdate;
-            const upload = cardRadiosity.buffers;
-            device.queue
-              .writeBuffer(
-                upload.frame.buffer,
-                0,
-                packCardRadiosityFrame(
-                  cardRadiosity.plan,
-                  radiosityUpdate,
-                  frameIndex,
-                  captureSchedule.tiles,
-                  capture.width,
-                ),
-              )
-              .unwrap();
-            if (radiosityUpdate.tiles.length > 0)
-              device.queue
-                .writeBuffer(upload.pages.buffer, 0, Uint32Array.from(radiosityUpdate.tiles))
-                .unwrap();
-          }
           encodedCapture = undefined;
           composeEncoded = false;
           canonicalEncoded = undefined;
@@ -1818,7 +1881,8 @@ export class RendererIrradianceField {
               ? 0
               : probesSinceDirect + settled.probes.count;
           clipmap.commit(settled.probes);
-          if (settled.radiosity !== undefined) cardRadiosity?.schedule.commit(settled.radiosity);
+          if (settled.radiosity !== undefined && settled.radiosityLinksRun)
+            cardRadiosity?.schedule.commit(settled.radiosity);
           acceleration?.commit();
           const slice = settled.slice;
           if (slice !== undefined) {

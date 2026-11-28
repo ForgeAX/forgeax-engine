@@ -4,6 +4,12 @@ import {
   createPreparedGraphicsStore,
   type PreparedGraphicsKind,
 } from '../features/prepared-graphics-store';
+import {
+  isSceneDataTarget,
+  SCENE_DATA_TEMPORAL_V1_SCHEMA,
+  sceneDataTargetOwner,
+} from '../temporal/scene-data';
+import { createSceneDataCatalog } from '../temporal/scene-data-catalog';
 
 function prepare(
   transaction: ReturnType<ReturnType<typeof createPreparedGraphicsStore>['beginFrame']>,
@@ -14,6 +20,48 @@ function prepare(
 }
 
 describe('prepared graphics store transactions', () => {
+  it('retains semantic sampled tokens and changes bindings when their device owner changes', () => {
+    const store = createPreparedGraphicsStore();
+    const token = (deviceGeneration: number) =>
+      createSceneDataCatalog({
+        featureIdentity: 'reader',
+        generation: 1,
+        planIdentity: 'reader:1',
+        deviceGeneration,
+        rgba16floatRenderable: true,
+      }).require(SCENE_DATA_TEMPORAL_V1_SCHEMA);
+    const first = token(1);
+    const tx = store.beginFrame('reader', 1);
+    const pipeline = tx
+      .prepare('pipeline', 'pipeline', {
+        shader: 'reader',
+        vertexLayout: 'none',
+        colorFormats: ['rgba16float'],
+      })
+      .unwrap();
+    const binding = tx
+      .prepare('bindings', 'inputs', {
+        pipeline,
+        values: { depth: first, additionalTextures: [first] },
+      })
+      .unwrap();
+    const saved = tx.lookup(binding)?.descriptor;
+    expect(saved?.kind).toBe('bindings');
+    if (saved?.kind !== 'bindings') return;
+    expect(isSceneDataTarget(saved.values.depth)).toBe(true);
+    expect(sceneDataTargetOwner(saved.values.depth as typeof first)).toEqual(
+      sceneDataTargetOwner(first),
+    );
+    tx.commit().unwrap();
+    const next = store.beginFrame('reader', 1);
+    const nextBinding = next
+      .prepare('bindings', 'inputs', {
+        pipeline,
+        values: { depth: token(2), additionalTextures: [first] },
+      })
+      .unwrap();
+    expect(nextBinding).not.toBe(binding);
+  });
   it('retains the owner publication for unchanged commits and replaces changed generations', () => {
     const store = createPreparedGraphicsStore();
     const empty = store.beginFrame('quiet.feature', 4).commit().unwrap();

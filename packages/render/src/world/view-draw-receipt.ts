@@ -12,7 +12,7 @@ import {
 } from '../observation-budget';
 import { DynamicGeometryReceipt } from '../record/dynamic-geometry-receipt';
 import {
-  type createPresentationDraws,
+  type PresentationDrawEvidence,
   projectDisplayRenderables,
 } from '../render-system-presentation';
 import { EMPTY_FRAME_ROWS, sparseRowsOf } from '../scene/frame-list';
@@ -380,7 +380,7 @@ export class ViewDrawReceipt {
         readonly frame: number;
         /** Undefined when the capture failed: nothing is published for this frame. */
         readonly candidate: TerrainCandidate | undefined;
-        presented?: ReturnType<typeof createPresentationDraws>;
+        presented?: PresentationDrawEvidence;
       }
     | undefined;
 
@@ -390,7 +390,7 @@ export class ViewDrawReceipt {
   }
 
   /** Record time: the attempt's presentation is ready; these are its actual draws. */
-  stageTerrainPresented(presented: ReturnType<typeof createPresentationDraws>): void {
+  stageTerrainPresented(presented: PresentationDrawEvidence): void {
     if (this.terrainStage !== undefined) this.terrainStage.presented = presented;
   }
 

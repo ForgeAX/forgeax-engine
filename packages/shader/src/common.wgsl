@@ -77,6 +77,18 @@ fn sampleMaterialTexture(
   return sampleMaterialTextureLinear(texture, textureSampler, uv, uvScale);
 }
 
+// Standard surface-domain sampling: UE adds View.MaterialTextureMipBias to every
+// automatically filtered 2D material texture of the display view. Shadow, card
+// and capture views carry zero.
+fn sampleMaterialTextureBiased(
+  texture : texture_2d<f32>,
+  textureSampler : sampler,
+  uv : vec2<f32>,
+  uvScale : vec2<f32>,
+) -> vec4<f32> {
+  return textureSampleBias(texture, textureSampler, uv * uvScale, view.surfaceMipBias.x);
+}
+
 // Keep linear HDR writes finite and representable by rgba16float without
 // applying an LDR clamp. NaN/Inf remains an upstream producer failure.
 fn clampLinearHdr(color : vec3<f32>) -> vec3<f32> {
@@ -137,14 +149,14 @@ fn ditherUnorm8(value : vec3<f32>, pixelPosition : vec2<f32>) -> vec3<f32> {
 // aligned with Bevy's bevy_view::common and matches charter proposition 5
 // (consistent abstraction - one View struct everywhere).
 
-// View UBO: 1392-byte payload, 1536-byte dynamic slot (256-byte alignment).
+// View UBO: 1408-byte payload, 1536-byte dynamic slot (256-byte alignment).
 // view-ubo.ts owns matching host writes. Existing fields retain their offsets:
 // [0..528) camera and directional-shadow facts; [528..784) spot matrices;
 // [784..1024) temporal and cloud-shadow facts; [1024..1120) clipping planes;
 // [1120..1136) clipping control (count, intersection, clipShadows, reserved);
 // [1136..1168) analytic fog (color+density, heightFalloff/maxOpacity/translucent slot/frame time);
 // [1168..1264) atmosphere medium; [1264..1280) atmosphere control;
-// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets, [1312..1376) compact subsurface profiles; [1376..1392) ground solar reference.
+// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets, [1312..1376) compact subsurface profiles; [1376..1392) ground solar reference; [1392..1408) material texture sampling.
 struct AtmosphereMedium {
   originRadius: vec4<f32>, // world ground origin in km, ground radius
   rayleigh: vec4<f32>, // scattering RGB, density scale height
@@ -191,13 +203,13 @@ struct View {
   // Renderer-owned texel-snapped cloud shadow projection. The map itself is
   // group(0) bindings 16/17; these lanes carry its world-space basis and
   // bounded range/validity so every receiver can sample by world position.
-  cloudShadowOrigin : vec4<f32>, // xyz projection origin, w cloud base height
+  cloudShadowOrigin : vec4<f32>, // xyz projection origin, w cloud base height or UE reference far depth
   cloudShadowRight : vec4<f32>, // xyz projection right, w legacy thickness or Beer-map atmosphere strength
   cloudShadowUp : vec3<f32>,
   // Sun disc sin(half angle) = sin(0.5 * radians(DirectionalLight.sourceAngle)); 0 = point light.
   // Reuses the former cloudShadowUp.w padding lane (float 251), layout unchanged.
   sunSourceRadius : f32,
-  cloudShadowProjection : vec4<f32>,
+  cloudShadowProjection : vec4<f32>, // w: legacy 0, bounded Beer 1, UE clamp Beer 2
   clippingPlanes : array<vec4<f32>, 6>,
   clippingControl : vec4<f32>,
   // Analytic height fog shared by the opaque fog pass and translucent writers.
@@ -223,6 +235,10 @@ struct View {
   // CPU ground reference RGB. W = 0 for absent, 1 for ground direct lighting,
   // 2 when surfaces request per-pixel transmittance.
   groundSolar : vec4<f32>,
+  // X = automatic surface texture mip bias (UE View.MaterialTextureMipBias):
+  // negative under temporal upsampling of the display view, zero elsewhere.
+  // YZW are reserved.
+  surfaceMipBias : vec4<f32>,
 };
 
 // The mirror-only route fades to the environment twice as early as GGX.
@@ -398,7 +414,8 @@ fn viewDirectionToCamera(worldPosition : vec3<f32>) -> vec3<f32> {
 }
 
 fn view_atmosphere_fast_ap(v: View) -> bool {
-  return (u32(v.atmosphereControl.w) & 4u) != 0u;
+  // Bit 2 identifies UE5 atmosphere data; fast AP uses its own flag.
+  return (u32(v.atmosphereControl.w) & 16u) != 0u;
 }
 
 fn view_atmosphere_fast_ap_samples(v: View, slice: u32) -> u32 {
@@ -411,6 +428,10 @@ fn view_atmosphere_affects_height_fog(v: View) -> bool {
 
 fn view_atmosphere_aerial_enabled(v: View) -> bool {
   return (u32(v.atmosphereControl.w) & 1u) != 0u;
+}
+
+fn view_atmosphere_ue5(v: View) -> bool {
+  return (u32(v.atmosphereControl.w) & 4u) != 0u;
 }
 
 fn view_atmosphere_light_enabled(v: View) -> bool {
@@ -914,6 +935,7 @@ fn applyLodCoverage(position : vec2<f32>, fade : f32) {
 @group(0) @binding(20) var atmosphereAerialLuminance: texture_3d<f32>;
 @group(0) @binding(21) var atmosphereAerialTransmittance: texture_3d<f32>;
 @group(0) @binding(23) var atmosphereDistantSkyLight: texture_2d<f32>;
+@group(0) @binding(25) var<storage, read> atmosphereDistantSkyBuffer: vec4f;
 #endif
 
 // Surface direct-light matching is independent of camera visibility and casting.

@@ -63,6 +63,24 @@ function texture(data: number[]): TextureAsset {
   };
 }
 
+function expectPackedDecalUpload(capture: Parameters<typeof compactTape>[0]) {
+  const tape = decodeTape(capture.bytes).unwrap();
+  const projection = buildFrameModel(tape).works.filter((work) =>
+    work.pipeline.shaders.some((shader) => shader.source?.includes('struct DecalParams')),
+  );
+  const parameters = projection.map((work) =>
+    work.bindings.find((entry) => entry.groupIndex === 1 && entry.binding === 0),
+  );
+  expect(parameters.map((binding) => binding?.dynamicOffset)).toEqual([0, 512]);
+  const buffer = parameters[0]?.resourceId;
+  expect(buffer).toBeDefined();
+  expect(parameters[1]?.resourceId).toBe(buffer);
+  const writes = tape.events.filter(
+    (event) => event.kind === 'writeBuffer' && event.handleId === buffer,
+  );
+  expect(writes).toMatchObject([{ bufferOffset: 0, size: 1024 }]);
+}
+
 async function captureFailedDecalFrame(
   recorder: RecorderAttachment,
   draw: () => Promise<unknown>,
@@ -179,8 +197,10 @@ export async function verifyDecals(
     propagateTransforms(world).unwrap();
     return drawReadyFrame(renderer, { source: lease }, observe ? ['linear-hdr'] : undefined);
   };
+  let observedGeneration = 0;
   const observe = async (name: string) => {
     const receipt = await draw(true);
+    observedGeneration = receipt.graphGeneration;
     const observations = value(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations;
@@ -216,6 +236,10 @@ export async function verifyDecals(
     const initialCapture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
     const on = await observe('gpu-red');
+    const decalGeneration = observedGeneration;
+    expect(renderer.inspect({ fields: ['featureGraph'] }).featureGraph?.last.topologyKey).toContain(
+      `"${renderPath}Display"`,
+    );
     (await recorder.frameBoundary()).unwrap();
     await save('gpu-red.rhitape', compactTape((await initialCapture).unwrap()).bytes);
     expect(patch(on, 64, 64)[0]).toBeGreaterThan(patch(on, 64, 64)[1] * 2);
@@ -230,6 +254,7 @@ export async function verifyDecals(
       0.002,
     );
     world.set(decal, Transform, { quat: [0, 0, 0, 1] }).unwrap();
+    expect(observedGeneration).toBe(decalGeneration);
     const occluder = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 0.5] } },
@@ -257,12 +282,20 @@ export async function verifyDecals(
         { component: ProjectedDecal, data: { material: green, order: 1, roughnessOpacity: 0 } },
       )
       .unwrap();
+    const overlapCapture = recorder.captureFrame();
+    (await recorder.frameBoundary()).unwrap();
     const overlap = await observe('overlap-green');
+    (await recorder.frameBoundary()).unwrap();
+    const overlapTape = (await overlapCapture).unwrap();
+    expectPackedDecalUpload(overlapTape);
+    await save('overlap.rhitape', compactTape(overlapTape).bytes);
     expect(patch(overlap, 64, 64)[1]).toBeGreaterThan(patch(overlap, 64, 64)[0] * 2);
+    const overlapGeneration = observedGeneration;
     world.set(decal, ProjectedDecal, { order: 2 }).unwrap();
     expect(delta(patch(await observe('overlap-red'), 64, 64), patch(on, 64, 64))).toBeLessThan(
       0.005,
     );
+    expect(observedGeneration).toBe(overlapGeneration);
     world.despawn(second).unwrap();
     const pattern = testAssets(world)
       .create(texture([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 0]))

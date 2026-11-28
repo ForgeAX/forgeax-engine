@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { playwright } from '@vitest/browser-playwright';
 import { defineConfig } from 'vitest/config';
+import { selectBrowserExecutable } from '../../scripts/ci/browser-executable.mjs';
 import browserLaunch from '../../scripts/ci/browser-launch.json' with { type: 'json' };
 
 // This document-local DOM gate needs a real browser, but no renderer shaders or asset cook.
@@ -17,7 +18,9 @@ export default defineConfig({
       enabled: true,
       ui: false,
       headless: true,
-      provider: playwright({ launchOptions: { ...browserLaunch, chromiumSandbox: true } }),
+      provider: playwright({
+        launchOptions: { ...selectBrowserExecutable(browserLaunch), chromiumSandbox: true },
+      }),
       instances: [{ browser: 'chromium' }],
     },
   },

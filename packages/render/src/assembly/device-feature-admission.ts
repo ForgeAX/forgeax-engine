@@ -144,7 +144,7 @@ export function deriveDeviceFeatureAdmission(adapter: AdapterFeatureProbe): Devi
   if (adapter.features.has('timestamp-query')) {
     requiredFeatures.push('timestamp-query');
   }
-  // HDR effects can activate after construction, including packed Bloom.
+  // Packed HDR supports Bloom, cloud shadows, and UE desktop atmosphere tables.
   for (const feature of [
     'float32-filterable',
     'float32-blendable',

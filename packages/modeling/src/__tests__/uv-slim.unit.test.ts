@@ -83,6 +83,61 @@ function run(island: SlimIsland, start: Float64Array) {
   return r.value;
 }
 
+describe('slim fixed mask', () => {
+  const sheared = () => {
+    const island = grid(6);
+    const rnd = noise(11);
+    const start = planar(island);
+    for (let k = 0; k < start.length; k += 2) {
+      start[k] = (start[k] as number) * 2 + 0.03 * rnd();
+      start[k + 1] = (start[k + 1] as number) * 0.5 + 0.03 * rnd();
+    }
+    return { island, start };
+  };
+
+  it('held elements keep their exact start values while the others relax and never flip', () => {
+    const { island, start } = sheared();
+    const fixed = new Uint8Array(island.points.length);
+    for (const e of island.disk as number[]) fixed[e] = 1;
+    const r = slim(island, start, meter(), { fixed });
+    if (!r.ok || r.value === undefined) throw new Error('slim declined');
+    for (const e of island.disk as number[]) {
+      expect(r.value.uv[2 * e]).toBe(start[2 * e]);
+      expect(r.value.uv[2 * e + 1]).toBe(start[2 * e + 1]);
+    }
+    expect(flips(island, r.value.uv)).toBe(0);
+    expect(r.value.energy).toBeLessThan(slimEnergy(island, start));
+    const moved = island.points.findIndex(
+      (_, e) => fixed[e] !== 1 && (r.value as { uv: Float64Array }).uv[2 * e] !== start[2 * e],
+    );
+    expect(moved).toBeGreaterThanOrEqual(0);
+  });
+
+  it('everything held is a no-op and the iteration cap stops early', () => {
+    const { island, start } = sheared();
+    const all = new Uint8Array(island.points.length).fill(1);
+    const held = slim(island, start, meter(), { fixed: all });
+    if (!held.ok || held.value === undefined) throw new Error('slim declined');
+    expect(Array.from(held.value.uv)).toEqual(Array.from(start));
+    expect(held.value.iterations).toBe(0);
+    const fixed = new Uint8Array(island.points.length);
+    fixed[0] = 1;
+    const one = slim(island, start, meter(), { fixed, iterations: 1 });
+    if (!one.ok || one.value === undefined) throw new Error('slim declined');
+    expect(one.value.iterations).toBe(1);
+  });
+
+  it('a folded start with held elements is declined, not restarted from Tutte', () => {
+    const island = grid(4);
+    const start = planar(island);
+    start[2 * 5] = -3;
+    const fixed = new Uint8Array(island.points.length);
+    fixed[0] = 1;
+    const r = slim(island, start, meter(), { fixed });
+    expect(r.ok && r.value === undefined).toBe(true);
+  });
+});
+
 describe('slim (symmetric Dirichlet, flip-free)', () => {
   it('an isometric layout is a fixed point: energy 4, no iteration changes its shape', () => {
     const island = grid(5);

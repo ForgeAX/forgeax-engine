@@ -27,6 +27,12 @@ it('queries actual atmospheric BSM with an unfilterable32F map and independent a
   output[1]=atmosphere_visibility_sample(v,m,vec3f(0.0),depth,compare,cloud,filtering);
   v.cloudShadowRight.w=0.25;
   output[2]=atmosphere_visibility_sample(v,m,vec3f(0.0),depth,compare,cloud,filtering);
+  v.cloudShadowRight.w=1.0;
+  output[3]=atmosphere_visibility_sample(v,m,vec3f(0.06,-0.1,0.0),depth,compare,cloud,filtering);
+  v.cloudShadowProjection.w=2.0;
+  v.cloudShadowOrigin.w=50.0;
+  output[4]=atmosphere_visibility_sample(v,m,vec3f(0.06,-0.1,0.0),depth,compare,cloud,filtering);
+  output[5]=atmosphere_visibility_sample(v,m,vec3f(0.06,0.15,0.0),depth,compare,cloud,filtering);
 }`,
     { id: 'actual-atmosphere-shadow-test.wgsl', imports: engine.imports },
   );
@@ -51,11 +57,11 @@ it('queries actual atmospheric BSM with an unfilterable32F map and independent a
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
   });
   const output = device.createBuffer({
-    size: 16,
+    size: 24,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
   });
   const readback = device.createBuffer({
-    size: 16,
+    size: 24,
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
   });
   try {
@@ -87,7 +93,7 @@ it('queries actual atmospheric BSM with an unfilterable32F map and independent a
     });
     device.queue.writeTexture(
       { texture: map },
-      new Float32Array([10, 0.01, 1, 0, 10, 0.01, 1, 0, 10, 0.01, 1, 0, 10, 0.01, 1, 0]),
+      new Float32Array([0.01, 0.01, 1, 0, 0.01, 0.01, 1, 0, 0.01, 0.01, 1, 0, 0.01, 0.01, 1, 0]),
       { bytesPerRow: 32 },
       [2, 2],
     );
@@ -124,13 +130,13 @@ it('queries actual atmospheric BSM with an unfilterable32F map and independent a
     );
     pass.dispatchWorkgroups(1);
     pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, 16);
+    encoder.copyBufferToBuffer(output, 0, readback, 0, 24);
     device.queue.submit([encoder.finish()]);
     await readback.mapAsync(GPUMapMode.READ);
     const values = new Float32Array(readback.getMappedRange()).slice();
     readback.unmap();
-    const expected = [Math.exp(-0.9), 1, 0.75 + 0.25 * Math.exp(-0.9)];
-    for (let index = 0; index < 3; index++)
+    const expected = [Math.exp(-0.9), 1, 0.75 + 0.25 * Math.exp(-0.9), 1, Math.exp(-0.4), 1];
+    for (let index = 0; index < expected.length; index++)
       expect(
         Math.abs((values[index] ?? Number.NaN) - (expected[index] ?? Number.NaN)),
       ).toBeLessThan(1e-4);

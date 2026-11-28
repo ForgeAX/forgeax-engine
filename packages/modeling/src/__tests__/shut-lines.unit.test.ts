@@ -192,6 +192,7 @@ describe('measureShutLines', () => {
     expect(m.poisoned).toBeUndefined();
     const r = unwrap(measureShutLines(m.editMesh, { table: [row()] })).rows[0];
     expect(r?.coverage).toBeGreaterThanOrEqual(0.98);
+    expect(r?.uncovered).toEqual([]);
     expect(Math.abs((r?.gap?.median as number) - 0.0035)).toBeLessThan(5e-5);
     expect(Math.abs((r?.gap?.min as number) - 0.0035)).toBeLessThan(5e-5);
     expect(r?.flush).toBeLessThan(0.0003);
@@ -425,6 +426,25 @@ describe('shut-line gauge holes (B15 audit)', () => {
     // The uniform seam measures every station away from its ends.
     const u = unwrap(measureShutLines(pair().editMesh, { table: [row()] })).rows[0];
     expect([u?.skipped, u?.coverage]).toEqual([0, 1]);
+  });
+
+  // B15 audit A1, open: stations beyond reach at a seam's end are dropped from both `counted`
+  // and `skipped` (measureRow bounds the chain by its first and last in-reach station), so a
+  // The 13 mm slot over the last 30% of the seam is out of reach: the declared chain keeps it as
+  // an uncovered stretch running to the chain's end, so the row is unmeasured, not passing.
+  it('B15 A1: a 13 mm slot over the last 30% of a seam leaves an uncovered stretch', () => {
+    const m = pair({
+      gap: (y) => (y > 0.05 ? 0.013 : 0.0035),
+      ys: [-0.2, -0.15, -0.1, -0.05, 0, 0.02, 0.05, 0.06, 0.1, 0.14, 0.2],
+    });
+    const r = unwrap(measureShutLines(m.editMesh, { table: [row()] })).rows[0];
+    expect(r?.status).toBe('unmeasured');
+    expect(r?.failures).toContain('unmeasured');
+    const uncovered = r?.uncovered ?? [];
+    expect(uncovered.length).toBeGreaterThan(0);
+    expect(Math.max(...uncovered.map((u) => u.length))).toBeGreaterThan(0.1);
+    expect(Math.max(...uncovered.map((u) => u.to[1]))).toBeGreaterThan(0.18);
+    expect(r?.measuredLength).toBeLessThan(r?.declaredLength ?? 0);
   });
 
   it('A2: validate fails on a failing or unmeasured row', () => {
@@ -777,6 +797,7 @@ describe('open-sided panels (B15 audit A19)', () => {
     expect(r?.gap?.max).toBeCloseTo(0.0035, 6);
     expect(r?.skipped).toBeGreaterThanOrEqual(10);
     expect(r?.coverage).toBeLessThan(0.5);
-    expect(r?.failures).toEqual(['coverage']);
+    // The stretches between tabs are declared chain out of reach: unmeasured as well.
+    expect(r?.failures).toEqual(['coverage', 'unmeasured']);
   });
 });

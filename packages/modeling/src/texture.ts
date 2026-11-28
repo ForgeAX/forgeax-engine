@@ -1,5 +1,6 @@
 import { type EquirectAsset, err, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
 import type { Region2 } from './compute/region-ts';
+import { hypot3 } from './dmath';
 import { type ModelingError, modelingError } from './errors';
 import type { Point2 } from './primitives';
 import { type RegionInput, toRegion } from './region2d';
@@ -54,8 +55,80 @@ function powFraction(x: number, e: number): number {
   return out;
 }
 
-function encodeSrgb(v: number): number {
+export function encodeSrgb(v: number): number {
   return v <= 0.0031308 ? 12.92 * v : 1.055 * powFraction(v, 1 / 2.4) - 0.055;
+}
+
+/** Fast zero-allocation texture pack directly from flat linear RGBA Float32Array. */
+export function packFloat32Texture(
+  width: number,
+  height: number,
+  values: Float32Array,
+  options: TextureOptions = {},
+  content: 'color' | 'normal' | 'id' = 'color',
+): Result<TextureAsset, ModelingError> {
+  const w = requireSize('width', width);
+  if (!w.ok) return w;
+  const h = requireSize('height', height);
+  if (!h.ok) return h;
+  const srgb = options.colorSpace === 'srgb';
+  const wantMips = options.mips !== false;
+  if (!wantMips) {
+    const texels = width * height;
+    const data = new Uint8Array(texels * 4);
+    if (content === 'normal') {
+      for (let i = 0; i < texels * 4; i += 4) {
+        const nx = (values[i] as number) * 2 - 1;
+        const ny = (values[i + 1] as number) * 2 - 1;
+        const nz = (values[i + 2] as number) * 2 - 1;
+        const len = hypot3(nx, ny, nz);
+        const ux = len > 0 ? nx / len : 0;
+        const uy = len > 0 ? ny / len : 0;
+        const uz = len > 0 ? nz / len : 1;
+        data[i] = byte(ux * 0.5 + 0.5);
+        data[i + 1] = byte(uy * 0.5 + 0.5);
+        data[i + 2] = byte(uz * 0.5 + 0.5);
+        data[i + 3] = 255;
+      }
+    } else if (srgb) {
+      for (let i = 0; i < texels * 4; i += 4) {
+        const r = Math.max(0, Math.min(1, values[i] as number));
+        const g = Math.max(0, Math.min(1, values[i + 1] as number));
+        const b = Math.max(0, Math.min(1, values[i + 2] as number));
+        const a = Math.max(0, Math.min(1, values[i + 3] as number));
+        data[i] = byte(encodeSrgb(r));
+        data[i + 1] = byte(encodeSrgb(g));
+        data[i + 2] = byte(encodeSrgb(b));
+        data[i + 3] = byte(a);
+      }
+    } else {
+      for (let i = 0; i < texels * 4; i++) {
+        data[i] = byte(values[i] as number);
+      }
+    }
+    return ok({
+      kind: 'texture',
+      format: srgb ? 'rgba8unorm-srgb' : 'rgba8unorm',
+      colorSpace: srgb ? 'srgb' : 'linear',
+      shape: { viewDimension: '2d', extent: { width, height } },
+      mips: { kind: 'none' },
+      data,
+    });
+  }
+  const base = Float64Array.from(values);
+  if (content === 'normal') {
+    for (let i = 0; i < base.length; i += 4) {
+      const nx = (base[i] as number) * 2 - 1;
+      const ny = (base[i + 1] as number) * 2 - 1;
+      const nz = (base[i + 2] as number) * 2 - 1;
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      base[i] = (nx / len) * 0.5 + 0.5;
+      base[i + 1] = (ny / len) * 0.5 + 0.5;
+      base[i + 2] = (nz / len) * 0.5 + 0.5;
+      base[i + 3] = 1;
+    }
+  }
+  return ok(packTexture(width, height, base, options, content));
 }
 
 /** Pack per-texel colors into a texture; `texel(x, y)` returns linear RGBA. */
@@ -476,7 +549,7 @@ export interface MipChain {
 }
 
 /** Bump on any change to the filtering below: it is part of every encode key. */
-const MIP_POLICY = {
+export const MIP_POLICY = {
   normal: 'normal-rg-renorm/1',
   ormh: 'ormh-box/1',
   ormhToksvig: 'ormh-box-toksvig/2',

@@ -5,6 +5,7 @@ export type PlayPresentation = { attach: (element: HTMLElement) => () => void };
 declare module '@forgeax/engine-plugin' { interface EngineContextServices { viewPlayPresentation: PlayPresentation; } }
 import { createWorkspaceStateReader } from '@forgeax/view-workspace-core/workspace-state';
 import { attachPreviewRenderResizeSync } from '@forgeax/view-workspace-core/render-resize-sync';
+import { observePreviewFrameFocus } from '@forgeax/view-workspace-core/preview-surface';
 
 /** Browser resources live with the workspace connection, independently of viewport panels. */
 export const viewPlayPresentationPlugin = {
@@ -20,7 +21,7 @@ export const viewPlayPresentationPlugin = {
       ctx.provide('viewPlayPresentation', { attach: () => () => {} });
       return;
     }
-    let frame: HTMLElement | undefined;
+    let frame: HTMLIFrameElement | undefined;
     let releaseSurface: (() => Promise<void>) | undefined;
     let targetId: string | undefined;
     let anchor: HTMLElement | undefined;
@@ -103,6 +104,7 @@ export const viewPlayPresentationPlugin = {
     };
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : undefined;
     const win = document.defaultView;
+    const unobserveFrameFocus = observePreviewFrameFocus(document, () => frame);
     win?.addEventListener('resize', place);
     win?.addEventListener('scroll', place, true);
     const reader = createWorkspaceStateReader(client);
@@ -130,6 +132,7 @@ export const viewPlayPresentationPlugin = {
       observer?.disconnect();
       win?.removeEventListener('resize', place);
       win?.removeEventListener('scroll', place, true);
+      unobserveFrameFocus();
       await releaseSurface?.();
     });
   },

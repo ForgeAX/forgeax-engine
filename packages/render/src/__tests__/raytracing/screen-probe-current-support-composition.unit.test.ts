@@ -12,7 +12,11 @@ import {
   SCREEN_PROBE_STAGES,
   SCREEN_PROBE_TRACE_STAGES,
 } from '../../raytracing/screen-probe-kernels';
-import { packScreenProbeFrame, type ScreenProbeFrame } from '../../raytracing/screen-probe-plan';
+import {
+  packScreenProbeFrame,
+  SCREEN_PROBE_FRAME_BYTES,
+  type ScreenProbeFrame,
+} from '../../raytracing/screen-probe-plan';
 
 const frame: ScreenProbeFrame = {
   layout: {
@@ -92,7 +96,7 @@ it('derives hardware current-frame eligibility only from the selected World sour
       const strict = new Uint32Array(packScreenProbeFrame(input).buffer);
       expect(strict[10]).toBe(history);
       const candidate = packScreenProbeFrame({ ...input, reconstruction: 'current-support' });
-      expect(candidate.byteLength).toBe(192);
+      expect(candidate.byteLength).toBe(SCREEN_PROBE_FRAME_BYTES);
       const words = new Uint32Array(candidate.buffer);
       expect(words[10]).toBe((worldSource.traversal === 'ray-query' ? 24 : 8) | history);
       expect((words[10] ?? 0) & 7).toBe(history);
@@ -180,7 +184,9 @@ it('composes the actual Screen and composite consumers through their production 
       for (const binding of active.filter((global) => global.group === 0))
         expect(roster.map((slot) => SCREEN_PROBE_BINDINGS[slot][0])).toContain(binding.binding);
     }
-    expect(active.find((global) => global.group === 0 && global.binding === 0)?.span).toBe(192);
+    expect(active.find((global) => global.group === 0 && global.binding === 0)?.span).toBe(
+      SCREEN_PROBE_FRAME_BYTES,
+    );
     expect(active.find((global) => global.group === 0 && global.binding === 7)?.elementStride).toBe(
       96,
     );

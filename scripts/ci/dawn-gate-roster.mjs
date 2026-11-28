@@ -290,10 +290,11 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'screen-probe-support',
-    // Run 45412781828 spent 234 s in the first submit with eight raster threads
-    // and seven shader workers. The Linux diagnostic passed with four and one.
+    // Run 45814612938 spent 233 s in the first submit even with the worker cap.
+    // Share the locked Lavapipe bundle with Default GBuffer GI.
     nativeProcessSlots: 2,
     limitSoftwareGpuWorkers: true,
+    lockedGraphics: true,
     placementReserveSeconds: 240,
     files: ['packages/render/src/__tests__/raytracing/screen-probe-support.dawn.test.ts'],
     env: { GALLIVM_PERF: 'nopt' },
@@ -393,6 +394,21 @@ export const DAWN_GATE_SHARDS = Object.freeze([
   ]),
 ]);
 
+// Keep heavy first-device journeys and the owners present in the failed
+// two-worker receipts out of the shared phase.
+export const DAWN_ORDINARY_EXCLUSIVE_FILES = new Set([
+  'apps/learn-render/1.getting-started/4.textures/src/__tests__/textures-pixel.dawn.test.ts',
+  'packages/devkit/src/tools/__tests__/model-surface-views.dawn.test.ts',
+  'packages/modeling/examples/mech-gt/__tests__/s6a.case.dawn.test.ts',
+  'packages/render/src/__tests__/static-mesh-vertex-streams.dawn.test.ts',
+  'packages/render/src/__tests__/raytracing/world-bounds-index.dawn.test.ts',
+  'packages/runtime/src/__tests__/default-gbuffer-velocity.dawn.test.ts',
+  'packages/runtime/src/__tests__/forward-directional-screen-shadow.dawn.test.ts',
+  'packages/runtime/src/__tests__/renderer-diffuse.dawn.test.ts',
+  'packages/runtime/src/__tests__/renderer-screen-probe-barriers.dawn.test.ts',
+  'packages/runtime/src/__tests__/shadow-receiver-plane.dawn.test.ts',
+]);
+
 export const DAWN_GATE_GROUPS = [
   ...DAWN_GATE_SHARDS.map((_, index) => ({
     id: `ordinary-${index + 1}`,
@@ -403,8 +419,8 @@ export const DAWN_GATE_GROUPS = [
     // Run 45108873277 recorded OOM kills in ordinary lanes one and four.
     // Keep both ordinary workers and bound the per-worker software GPU heap.
     ...(index === 0 || index === 3 ? { softwareGpuHeapRasterThreads: 2 } : {}),
-    // Lane four still hit the 16 GB cap twice in run 45113927856 with
-    // the bounded allocator. Serialize execution without moving any files.
+    // Retain serial execution for the full profile. The daily lane drains
+    // its exclusive memory cohort before admitting two bounded forks.
     ...(index === 3 ? { serialOrdinary: true } : {}),
   })),
   ...Array.from({ length: 3 }, (_, partition) => ({

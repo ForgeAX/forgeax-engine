@@ -1,0 +1,11 @@
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { buildTurretAsset } from '../asset.ts';
+const t0 = performance.now();
+const a = buildTurretAsset();
+mkdirSync('/tmp/c4-turret-asset/work', { recursive: true });
+writeFileSync('/tmp/c4-turret-asset/work/low.fxem', a.low.snapshot());
+writeFileSync('/tmp/c4-turret-asset/work/high.fxem', a.high.snapshot());
+const lo = a.low.toMesh({ normals: { mode: 'autoSmooth', angle: 45 } });
+console.log(Math.round(performance.now() - t0), 'ms', lo.ok ? lo.value.report.triangles : lo.error, JSON.stringify(a.reports.map((r) => [r.part, r.highTriangles, r.lowTriangles])));
+const v = a.low.validate({ uniqueUv: false } as never);
+console.log(JSON.stringify(v.issues.filter((i) => i.code !== "face-nonplanar").map((i) => [i.code, i.severity, JSON.stringify(i.detail).slice(0, 200)])));

@@ -9,7 +9,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import type { PlanarCapture } from '../capture/planar-state';
 import { planarReflectionLevels } from '../capture/planar-target';
 import { addAtmosphereBackground } from '../environment/background';
-import { atmosphereTextures, atmosphereVolumeViews } from '../environment/luts';
+import { atmosphereAccesses, atmosphereVolumeViews } from '../environment/luts';
 import { atmosphereStorage } from '../environment/storage';
 import { RenderTargetDescriptorInvalidError } from '../errors/render';
 import { addGraphColorMipPasses } from '../graph-color-mips';
@@ -202,6 +202,7 @@ export function encodeCaptureScenePass(
     splitLdrSprite: false,
   };
   delete captureContext.planarReflectionView;
+  delete captureContext.planarReflectionPhysical;
   delete captureContext.gpuDrivenSelection;
   if (!keepGpuMaterials) delete captureContext.gpuDrivenStandardPbrFrameResources;
   encodeMainPass(captureContext, pass, FORWARD_PASS_SELECTOR, options);
@@ -460,12 +461,7 @@ export function addTargetCaptureGraphPasses(
     const added = builder.addRasterPass(`${label}-face.${slot}`, {
       accesses: [
         ...(lighting?.accesses ?? []),
-        ...(atmosphere === undefined
-          ? []
-          : atmosphereTextures(atmosphere).map((resource) => ({
-              resource,
-              usage: 'sampled-read' as const,
-            }))),
+        ...(atmosphere === undefined ? [] : atmosphereAccesses(atmosphere)),
         ...(environment === undefined
           ? []
           : [
@@ -617,27 +613,38 @@ function importRetainedPlanarView(
   state: CubeCaptureGraphState,
   retained: PlanarCapture,
 ): Result<GraphTextureView, RenderGraphError> {
-  const latest = () => state.planar?.current() ?? retained;
+  return importPlanarCaptureView(
+    builder,
+    retained.physical.descriptor,
+    () => (state.planar?.current() ?? retained).physical,
+  );
+}
+
+export function importPlanarCaptureView(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  descriptor: RenderTargetPhysical['descriptor'],
+  current: (frame: RenderPipelineFrame) => RenderTargetPhysical,
+): Result<GraphTextureView, RenderGraphError> {
   const texture = builder.importTexture(
     'planar-reflection.retained',
     {
-      format: retained.physical.descriptor.format,
-      size: {
-        width: retained.physical.descriptor.width,
-        height: retained.physical.descriptor.height,
-      },
-      mipLevelCount: renderTargetMipCount(retained.physical.descriptor),
+      format: descriptor.format,
+      size: { width: descriptor.width, height: descriptor.height },
+      mipLevelCount: renderTargetMipCount(descriptor),
       sampleCount: 1,
       dimension: '2d',
       usage: 0x10 | 0x04 | 0x01,
     },
-    () => latest().physical.resolveTexture ?? latest().physical.texture,
+    (frame) => {
+      const physical = current(frame);
+      return physical.resolveTexture ?? physical.texture;
+    },
   );
   if (!texture.ok) return texture;
   return builder.importView(
     texture.value,
     { dimension: '2d' },
-    () => latest().physical.resolveView,
+    (frame) => current(frame).resolveView,
   );
 }
 

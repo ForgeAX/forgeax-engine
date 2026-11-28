@@ -1,24 +1,27 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { maxOf, minOf, pushAll, replaceAll } from './arrays';
-import { jobTriangles, tsBackend } from './compute/boolean-ts';
+import { type CavityFault, cavityFault, jobTriangles, tsBackend } from './compute/boolean-ts';
 import {
   type BooleanOperation,
   type ComputeBackend,
   type ComputeJobReport,
   type ComputeLocation,
   type ComputePolicy,
+  DEFAULT_WORK_BUDGET,
   type FaceProvenance,
   runComputeJob,
+  WorkMeter,
 } from './compute/job';
+import { append } from './connect';
 import { mergeFlags } from './crease';
 import { bisectMesh } from './cut';
 import { type ModelingError, modelingError } from './errors';
 import { decodeSnapshot, encodeSnapshot } from './fxem';
 import {
   dot,
-  faceArea,
   faceCentroid,
   faceNormal,
+  facesArea,
   facesVolume,
   length,
   newell,
@@ -26,8 +29,10 @@ import {
   sub,
   type Tuple3,
   triangulateLoop,
+  windingNumber,
 } from './geom';
-import { EDGE_SHARP, EditMesh } from './mesh';
+import { components, faceContacts } from './intersect';
+import { EDGE_SHARP, EditMesh, FACE_FLOAT, partRole } from './mesh';
 import type { Attribution, OpDiagnostic, RoleCounts } from './ops';
 import { mergePlanar } from './planar';
 import { orient2d } from './predicates';
@@ -62,6 +67,15 @@ export interface BooleanOptions {
    * remainder except degenerate ones (a few tolerances wide).
    */
   readonly slivers?: number;
+  /**
+   * What joining a detail part does (BK46, `m.markRole`). It applies only to a session or
+   * FXEM operand whose faces are all `detail`, joined to a target that is not all `detail`
+   * (detail assemblies weld): `weld` (default) is the plain boolean, `float` (union) adds the
+   * operand as separate floating shells, `omit` leaves it out. A difference treats `float` as
+   * `weld`: a cut stays a real cut. Floating shells ride every later boolean untouched (a
+   * union carries the operand's too; other operations drop the operand's).
+   */
+  readonly details?: 'weld' | 'float' | 'omit';
 }
 
 export interface BooleanContext {
@@ -131,6 +145,118 @@ function closedCheck(mesh: EditMesh, which: string): Result<void, ModelingError>
         `the ${which} encloses a positive volume (outward-facing)`,
         { operand: which, volume: facesVolume(mesh, mesh.faces()) },
         'flip inside-out components with m.orient(sel.all())',
+      ),
+    );
+  }
+  return ok(undefined);
+}
+
+/** Contacts read per target scan: enough that same-component crossings cannot hide a real one. */
+const CROSS_SCAN = 256;
+
+/**
+ * A union with a tool whose cavity shells all lie inside the target does not need them: the
+ * target fills every cavity, so the tool joins as its outer solid. Returns the operand
+ * without those shells, or `undefined` when a cavity is not wholly covered (the component
+ * check then reports it). A target with a void of its own never takes the shortcut: that void
+ * may lie inside a covered cavity, where the target does not fill it.
+ */
+function withoutCoveredCavities(
+  target: EditMesh,
+  operand: EditMesh,
+  tolerance: number,
+): EditMesh | undefined {
+  const parts = components(operand);
+  const cavities: number[][] = [];
+  const solids: number[][] = [];
+  for (const faces of parts.faces)
+    (facesVolume(operand, faces) < 0 ? cavities : solids).push(faces);
+  if (cavities.length === 0) return undefined;
+  if (components(target).faces.some((faces) => facesVolume(target, faces) < 0)) return undefined;
+  const targetFaces = target.faces();
+  for (const faces of cavities) {
+    const shell = extractFaces(operand, faces);
+    for (const f of shell.faces()) {
+      if (!(windingNumber(target, targetFaces, faceCentroid(shell, f)) > 0.5 - 1e-6))
+        return undefined;
+    }
+    const probe = target.clone();
+    const base = components(probe).faces.length;
+    if (!append(probe, shell, {}, { label: 0, material: 0, tag: -1 }).ok) return undefined;
+    const joined = components(probe);
+    const { contacts } = faceContacts(probe, CROSS_SCAN, tolerance);
+    for (const c of contacts) {
+      if (c.contact !== 'cross') continue;
+      const [fa, fb] = c.faces;
+      if ((joined.of.get(fa) as number) >= base !== (joined.of.get(fb) as number) >= base)
+        return undefined;
+    }
+  }
+  return extractFaces(operand, solids.flat());
+}
+
+const CAVITY_HINTS: Record<CavityFault['kind'], string> = {
+  flat: 'a component without volume cannot be a tool: remove it or give it thickness',
+  nested:
+    'a cavity inside another cavity is a cavity the tool cannot carry: build the inner solid separately and union it after the cut',
+  orphan:
+    'a cavity that no solid of the tool contains is not a solid: remove it, or enlarge the solid so it surrounds the cavity',
+  touching:
+    'a cavity that touches the wall of its solid cannot be told apart from the outside: leave a wall of at least the tolerance around it',
+  crossing:
+    'a cavity that pokes through the wall of its solid, or into another cavity, is not a void inside a solid: keep each cavity wholly inside one solid and apart from the others',
+};
+
+/**
+ * The BSP evaluation treats the target as one solid and every tool component as its own
+ * solid, with each cavity shell grouped into the one outward shell that contains it. A
+ * component the evaluation cannot represent fails here instead of producing a closed mesh
+ * of the wrong volume: a cavity inside another cavity, a zero-volume tool component, and
+ * target components that cross each other (their union boundary is not any one
+ * component's).
+ */
+function componentCheck(
+  mesh: EditMesh,
+  which: 'target' | 'operand',
+  tolerance: number,
+  budget: number,
+): Result<void, ModelingError> {
+  const parts = components(mesh);
+  if (parts.faces.length < 2) return ok(undefined);
+  if (which === 'operand') {
+    const fault = cavityFault(mesh, tolerance, new WorkMeter(budget));
+    if (!fault.ok) return fault;
+    if (fault.value === undefined) return ok(undefined);
+    const { kind, component } = fault.value;
+    const faces = parts.faces[component] as number[];
+    return err(
+      modelingError(
+        'model-precondition',
+        'every component of the operand is a solid or a cavity strictly inside exactly one solid (no nested, flat, orphan, touching or crossing shells)',
+        {
+          operand: which,
+          fault: kind,
+          component,
+          faces: faces.length,
+          volume: facesVolume(mesh, faces),
+        },
+        CAVITY_HINTS[kind],
+      ),
+    );
+  }
+  const { contacts } = faceContacts(mesh, CROSS_SCAN, tolerance);
+  for (const contact of contacts) {
+    if (contact.contact !== 'cross') continue;
+    const [fa, fb] = contact.faces;
+    const ca = parts.of.get(fa);
+    const cb = parts.of.get(fb);
+    if (ca === cb) continue;
+    return err(
+      modelingError(
+        'model-precondition',
+        'the target components do not overlap each other (one boolean needs one solid)',
+        { operand: which, components: [ca, cb], faces: [fa, fb] },
+        'union the overlapping target bodies first with m.union(...), then rerun the boolean',
       ),
     );
   }
@@ -224,6 +350,72 @@ interface Written {
   readonly source: Map<number, SourceKey>;
 }
 
+interface FlaggedEdge {
+  readonly a: Tuple3;
+  readonly b: Tuple3;
+  readonly flags: number;
+  readonly lo: Tuple3;
+  readonly hi: Tuple3;
+}
+
+/**
+ * The flagged edges of a source face that can touch the output face: read once per
+ * source face, padded by the weld tolerance and the `onSegment` end slack, and kept in
+ * face order so merged flags do not depend on the filter.
+ */
+function flaggedNear(
+  cache: Map<number, FlaggedEdge[]>,
+  operand: number,
+  mesh: EditMesh,
+  sf: number,
+  target: EditMesh,
+  halves: readonly number[],
+  tolerance: number,
+): readonly FlaggedEdge[] {
+  const key = operand * 0x40000000 + sf;
+  let all = cache.get(key);
+  if (all === undefined) {
+    all = [];
+    for (const h of mesh.faceHalves(sf)) {
+      const flags = mesh.eFlags[h >> 1] as number;
+      if (flags === 0) continue;
+      const a = mesh.position(mesh.hVert[h] as number);
+      const b = mesh.position(mesh.hVert[mesh.hNext[h] as number] as number);
+      const pad =
+        2 *
+        (tolerance +
+          1e-9 * (Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]) + Math.abs(b[2] - a[2])));
+      all.push({
+        a,
+        b,
+        flags,
+        lo: [Math.min(a[0], b[0]) - pad, Math.min(a[1], b[1]) - pad, Math.min(a[2], b[2]) - pad],
+        hi: [Math.max(a[0], b[0]) + pad, Math.max(a[1], b[1]) + pad, Math.max(a[2], b[2]) + pad],
+      });
+    }
+    cache.set(key, all);
+  }
+  if (all.length === 0) return all;
+  const lo: Tuple3 = [Infinity, Infinity, Infinity];
+  const hi: Tuple3 = [-Infinity, -Infinity, -Infinity];
+  for (const h of halves) {
+    const p = target.position(target.hVert[h] as number);
+    for (let i = 0; i < 3; i++) {
+      lo[i] = Math.min(lo[i] as number, p[i] as number);
+      hi[i] = Math.max(hi[i] as number, p[i] as number);
+    }
+  }
+  return all.filter(
+    (e) =>
+      e.lo[0] <= hi[0] &&
+      e.hi[0] >= lo[0] &&
+      e.lo[1] <= hi[1] &&
+      e.hi[1] >= lo[1] &&
+      e.lo[2] <= hi[2] &&
+      e.hi[2] >= lo[2],
+  );
+}
+
 /**
  * Add one job output to `target`: faces take their source face's attributes (names
  * merged), corner values by barycentric mapping in the source triangle, intent
@@ -250,6 +442,7 @@ function writeOutput(
   }
   const vertexOf = new Map<number, number>();
   for (const v of output.vertices()) vertexOf.set(v, target.addVertex(...output.position(v)));
+  const flaggedEdges = new Map<number, FlaggedEdge[]>();
   const faces: number[] = [];
   const source = new Map<number, SourceKey>();
   for (const r of output.faces()) {
@@ -282,14 +475,7 @@ function writeOutput(
     ] as number[];
     const corners = tri.map((h) => mesh.position(mesh.hVert[h] as number));
     const halves = target.faceHalves(g);
-    const flagged = mesh
-      .faceHalves(sf)
-      .filter((h) => (mesh.eFlags[h >> 1] as number) !== 0)
-      .map((h) => ({
-        a: mesh.position(mesh.hVert[h] as number),
-        b: mesh.position(mesh.hVert[mesh.hNext[h] as number] as number),
-        flags: mesh.eFlags[h >> 1] as number,
-      }));
+    const flagged = flaggedNear(flaggedEdges, operand, mesh, sf, target, halves, tolerance);
     for (const h of halves) {
       const p = target.position(target.hVert[h] as number);
       const q = target.position(target.hVert[target.hNext[h] as number] as number);
@@ -425,10 +611,16 @@ function cutHoles(
     const s = key.get(f) as SourceKey;
     keys.set(f, `${s.operand}:${s.face}`);
   }
-  const names = [...new Set(keys.values())].sort();
+  // Face ids move with every cut: the buckets follow the live key map, in its insertion order.
+  const bucket = new Map<string, Set<number>>();
+  for (const [f, v] of keys) {
+    const members = bucket.get(v);
+    if (members === undefined) bucket.set(v, new Set([f]));
+    else members.add(f);
+  }
+  const names = [...bucket.keys()].sort();
   for (const k of names) {
-    // Face ids move with every cut, so membership is re-read from the live key map.
-    let group = new Set([...keys].filter(([, v]) => v === k).map(([f]) => f));
+    let group = new Set(bucket.get(k));
     const loops = regionLoops(mesh, group);
     if (loops === undefined || loops.length < 2) continue;
     const [operand, face] = k.split(':').map(Number) as [number, number];
@@ -465,11 +657,13 @@ function cutHoles(
       const nextGroup = new Set(group);
       for (const m of moved) {
         keys.delete(m.face);
+        bucket.get(m.from)?.delete(m.face);
         nextGroup.delete(m.face);
       }
       for (const { from, inGroup, created } of moved) {
         for (const g of created) {
           keys.set(g, from);
+          bucket.get(from)?.add(g);
           if (inGroup) nextGroup.add(g);
         }
       }
@@ -509,6 +703,51 @@ function interiorPoint(mesh: EditMesh, f: number): Tuple3 {
 
 function locationOf(mesh: EditMesh, f: number, reason: ComputeLocation['reason']): ComputeLocation {
   return { reason, position: faceCentroid(mesh, f), detail: { face: f } };
+}
+
+/**
+ * Reach of a result vertex beyond the operand bounds, relative to their diagonal. Cuts through
+ * grazing faces move a vertex by a fraction of a millimeter on a decimeter part; a defect that
+ * displaces or scales the result is orders of magnitude larger.
+ */
+const STRAY_REACH = 1e-2;
+
+function boundsOf(m: EditMesh, min: Tuple3, max: Tuple3): void {
+  for (const v of m.vertices()) {
+    const p = m.position(v);
+    for (let k = 0; k < 3; k++) {
+      min[k] = Math.min(min[k] as number, p[k] as number);
+      max[k] = Math.max(max[k] as number, p[k] as number);
+    }
+  }
+}
+
+/**
+ * The first result vertex outside the bounds the operation can reach, or undefined: the
+ * target's box for difference, intersection and split, the union of both boxes for union.
+ */
+function strayVertex(
+  result: EditMesh,
+  sources: readonly EditMesh[],
+  operation: BooleanOperation,
+  reach: number,
+): Tuple3 | undefined {
+  const min: Tuple3 = [Infinity, Infinity, Infinity];
+  const max: Tuple3 = [-Infinity, -Infinity, -Infinity];
+  boundsOf(sources[0] as EditMesh, min, max);
+  if (operation === 'union') boundsOf(sources[1] as EditMesh, min, max);
+  const slack = reach * length(sub(max, min));
+  for (const v of result.vertices()) {
+    const p = result.position(v);
+    for (let k = 0; k < 3; k++) {
+      if (
+        (p[k] as number) < (min[k] as number) - slack ||
+        (p[k] as number) > (max[k] as number) + slack
+      )
+        return p;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -555,6 +794,74 @@ export function booleanOp(
       }
     }
   }
+  const details = options.details ?? 'weld';
+  if (details !== 'weld' && details !== 'float' && details !== 'omit') {
+    return err(
+      modelingError('model-invalid-argument', "details is 'weld', 'float' or 'omit'", {
+        details: options.details,
+      }),
+    );
+  }
+  if (details !== 'weld' && (operation === 'intersection' || operation === 'split')) {
+    return err(
+      modelingError('model-invalid-argument', 'details joins a union or a difference', {
+        operation,
+        details,
+      }),
+    );
+  }
+  if (details !== 'weld' && 'faces' in operand) {
+    return err(
+      modelingError(
+        'model-invalid-argument',
+        'details joins a session or FXEM operand',
+        { details },
+        'build the detail in its own session, mark it with markRole, and join that session',
+      ),
+    );
+  }
+  if (details !== 'weld' && allDetail(b) && !allDetail(a)) {
+    if (details === 'omit') {
+      diagnostics.push({
+        severity: 'info',
+        message: `the ${operation} omits a detail operand (${b.faceCount} faces)`,
+        detail: { details, faces: b.faceCount },
+      });
+      return ok({ omitted: b.faceCount });
+    }
+    if (operation === 'union') return floatOperand(mesh, b, options, attribution);
+  }
+  const floatsA = floatingFaces(a);
+  const floatsB = floatingFaces(b);
+  const passengers: EditMesh[] = [];
+  if (floatsA.length > 0) {
+    passengers.push(extractFaces(a, floatsA));
+    a = extractFaces(a, withoutFaces(a, floatsA));
+  }
+  if (floatsB.length > 0) {
+    if (operation === 'union' && floatsB.length === b.faceCount) {
+      // Nothing solid to join: the operand's floating shells ride along as they are.
+      const carried = append(mesh, b, {}, { label: 0, material: 0, tag: -1 });
+      return carried.ok ? ok({ float: floatsB.length }) : carried;
+    }
+    if (operation === 'union') passengers.push(extractFaces(b, floatsB));
+    b = extractFaces(b, withoutFaces(b, floatsB));
+  }
+  for (const [which, solid, floats] of [
+    ['target', a, floatsA],
+    ['operand', b, floatsB],
+  ] as const) {
+    if (solid.faceCount === 0 && floats.length > 0) {
+      return err(
+        modelingError(
+          'model-precondition',
+          `the ${which} has a solid (non-floating) part to ${operation}`,
+          { operand: which, floatingFaces: floats.length },
+          'only floating detail shells remain: unfloat them with m.markFloat(sel.all(), false), or join a solid first',
+        ),
+      );
+    }
+  }
   if (
     options.slivers !== undefined &&
     !(Number.isFinite(options.slivers) && options.slivers >= 0)
@@ -565,12 +872,23 @@ export function booleanOp(
       }),
     );
   }
+  if (operation === 'union' && closedCheck(b, 'operand').ok) {
+    const solid = withoutCoveredCavities(a, b, context.tolerance);
+    if (solid !== undefined) b = solid;
+  }
   for (const [which, m] of [
     ['target', a],
     ['operand', b],
   ] as const) {
     const checked = closedCheck(m, which);
     if (!checked.ok) return checked;
+    const parts = componentCheck(
+      m,
+      which,
+      context.tolerance,
+      options.budget ?? context.budget ?? DEFAULT_WORK_BUDGET,
+    );
+    if (!parts.ok) return parts;
   }
   const inputs = [encodeSnapshot(a), encodeSnapshot(b)];
   const decoded = inputs.map((bytes) => decodeSnapshot(bytes));
@@ -700,7 +1018,7 @@ export function booleanOp(
   }
   const volumeA = facesVolume(sources[0] as EditMesh, (sources[0] as EditMesh).faces());
   const volumeB = facesVolume(sources[1] as EditMesh, (sources[1] as EditMesh).faces());
-  const area = (m: EditMesh) => m.faces().reduce((s, f) => s + faceArea(m, f), 0);
+  const area = (m: EditMesh) => facesArea(m, m.faces());
   // Welding moves a vertex by at most the tolerance, so the volume moves by at most
   // tolerance x surface area.
   const slack = context.tolerance * (area(sources[0] as EditMesh) + area(sources[1] as EditMesh));
@@ -761,6 +1079,19 @@ export function booleanOp(
       if (outside(sum, volumeA, volumeA)) volumeIssue({ volumes, volumeA });
       break;
     }
+  }
+  // A volume violation already makes the result partial and names its own location.
+  const stray = locations.some((l) => l.reason === 'volume')
+    ? undefined
+    : strayVertex(next, sources, operation, STRAY_REACH);
+  if (stray !== undefined) {
+    return err(
+      modelingError('model-internal', 'every result vertex lies within the operand bounds', {
+        guard: 'locality',
+        operation,
+        vertex: stray,
+      }),
+    );
   }
   for (const e of next.edges()) {
     if (!next.isBoundaryEdge(e) || locations.some((l) => l.reason === 'open-edge')) continue;
@@ -841,6 +1172,46 @@ export function booleanOp(
     message: `${operation} ran on the ${report.backend} backend (${report.quality})`,
     detail: summary,
   });
+  for (const shells of passengers) {
+    const carried = append(next, shells, {}, { label: 0, material: 0, tag: -1 });
+    if (!carried.ok) return carried;
+  }
   mesh.assign(next);
   return ok(roles);
+}
+
+function allDetail(mesh: EditMesh): boolean {
+  const faces = mesh.faces();
+  return faces.length > 0 && faces.every((f) => partRole(mesh, f) === 'detail');
+}
+
+function floatingFaces(mesh: EditMesh): number[] {
+  return mesh.faces().filter((f) => ((mesh.fFlags[f] as number) & FACE_FLOAT) !== 0);
+}
+
+function withoutFaces(mesh: EditMesh, faces: readonly number[]): number[] {
+  const drop = new Set(faces);
+  return mesh.faces().filter((f) => !drop.has(f));
+}
+
+/** `details: 'float'`: the detail operand joins as separate shells flagged floating. */
+function floatOperand(
+  mesh: EditMesh,
+  operand: EditMesh,
+  options: BooleanOptions,
+  attribution: Attribution,
+): Result<RoleCounts, ModelingError> {
+  const before = new Set(mesh.faces());
+  const added = append(mesh, operand, {}, attribution);
+  if (!added.ok) return added;
+  const material =
+    options.material === undefined
+      ? undefined
+      : mesh.nameIndex(mesh.materialNames, options.material);
+  for (const f of mesh.faces()) {
+    if (before.has(f)) continue;
+    mesh.fFlags[f] = (mesh.fFlags[f] as number) | FACE_FLOAT;
+    if (material !== undefined) mesh.fMaterial[f] = material;
+  }
+  return ok({ float: operand.faceCount });
 }

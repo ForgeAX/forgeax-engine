@@ -1,3 +1,7 @@
+import { decodedFromTexture, writePackedTextureLevels } from './texture-upload';
+
+export { writePackedTextureLevels } from './texture-upload';
+
 import {
   type AssetChange,
   copyStaticMeshRange,
@@ -232,46 +236,6 @@ export function writeAllPrefilterUniforms(
         new Float32Array([level, face, Number(sourceSpace === 'camera'), 0]),
       );
       if (!written.ok) return written;
-    }
-  }
-  return ok(undefined);
-}
-
-/**
- * Upload an offline-baked mip chain. Each
- * level uses its own block-padded bytesPerRow / rowsPerImage and mip-major
- * byte offset (deriveTextureLayout, SSOT block math); full-subresource copies
- * keep their logical size for non-block-aligned dimensions. writeTexture
- * avoids the 256 B copyBufferToTexture row-alignment trap.
- */
-export function writePackedTextureLevels(
-  device: Pick<RhiDevice, 'queue'>,
-  texture: Texture,
-  tex: TextureAsset,
-  format: GPUTextureFormat,
-  bytes: Uint8Array,
-): Result<void, AssetError | RhiError> {
-  const layout = deriveTextureLayout({ shape: tex.shape, format, mips: tex.mips });
-  if (!layout.ok) {
-    return err(
-      new AssetError({
-        code: 'invalid-source-format',
-        expected: layout.error.expected,
-        hint: layout.error.hint,
-      }),
-    );
-  }
-  for (const level of layout.value.levels) {
-    for (let image = 0; image < level.imagesPerMip; image++) {
-      const imageBytes = level.bytesPerRow * level.rowsPerImage;
-      const offset = level.byteOffset + image * imageBytes;
-      const writeRes = device.queue.writeTexture(
-        { texture, mipLevel: level.level, origin: { x: 0, y: 0, z: image } },
-        bytes.subarray(offset, offset + imageBytes),
-        { offset: 0, bytesPerRow: level.bytesPerRow, rowsPerImage: level.rowsPerImage },
-        { width: level.physicalWidth, height: level.physicalHeight, depthOrArrayLayers: 1 },
-      );
-      if (!writeRes.ok) return writeRes;
     }
   }
   return ok(undefined);
@@ -1690,12 +1654,9 @@ export class GpuResidencyCache {
 
   /**
    * Prewarm the mipmap pipeline cache for the given texture formats (D-9).
-   * Called from `createRenderer.initialization` (already async): builds the one-time
-   * mipmap shader module + per-format render pipeline into the mipmap-generator
-   * deviceCache so the per-texture mipmap blit at record-stage `ensureResident`
-   * is pure synchronous encoder work. A format absent from this list will make
-   * the sync `ensureResident` texture arm return a structured RhiError rather
-   * than lazily await a build (which would break the sync draw contract).
+   * Used by explicit Source preparation and by startup on backends that lack
+   * a native mipmap compiler. The shared generator owns the device module and
+   * the pipelines for each requested format.
    */
   async prewarmMipmapPipeline(
     device: RhiDevice,
@@ -1929,6 +1890,18 @@ export class GpuResidencyCache {
     source: RenderResourceScope | undefined = undefined,
   ): MeshGpuHandles | undefined {
     return this.meshGpuHandles.get(Number(handle), this.sourceNamespace(source));
+  }
+
+  /** Bind a synchronous mesh walk to one source namespace. Every read still
+   * addresses the current residency, including a same-scope replacement. */
+  meshResidencyReader(
+    source: RenderResourceScope,
+  ): (handle: number | undefined, generated?: TypesMeshAsset) => MeshGpuHandles | undefined {
+    const namespace = this.sourceNamespace(source);
+    return (handle, generated) =>
+      generated === undefined
+        ? this.meshGpuHandles.get(Number(handle), namespace)
+        : this.getGeneratedMesh(generated);
   }
 
   private nineSliceMesh: TypesMeshAsset | undefined;
@@ -2729,9 +2702,8 @@ export class GpuResidencyCache {
    *
    * - mesh POD -> synchronous vertex / index buffer upload (mirrors the
    *   pre-extraction `uploadMeshById`).
-   * - texture POD -> synchronous texture upload + mipmap blit (D-9). The
-   *   mipmap pipeline MUST have been prewarmed via `prewarmMipmapPipeline`;
-   *   an un-prewarmed format returns a structured RhiError (never awaits).
+   * - texture POD -> synchronous upload. Generated mips enter the frame's
+   *   preparation queue and resolve their format when recording that work.
    *
    * Cubemap is NOT routed here -- it is an eager user call
    * (`_uploadCubemapFromEquirect`). Builtin meshes are NOT routed here either
@@ -3127,9 +3099,8 @@ export class GpuResidencyCache {
 
   /**
    * Synchronous texture upload used by `ensureResident` (D-9). Identical to
-   * `uploadTexture` except the mipmap pipeline is read from the prewarmed
-   * cache when the Renderer records pending mip work -- an un-prewarmed format
-   * returns a structured RhiError instead of awaiting a build.
+   * `uploadTexture` except mip pipeline selection belongs to the pending mip
+   * recording. That recording resolves the format synchronously.
    */
   private uploadTextureSync(
     handle: AssetHandle<'texture' | 'gpu-texture'>,
@@ -4074,21 +4045,4 @@ export class GpuResidencyCache {
       throw cause;
     }
   }
-}
-
-/**
- * Synthesize the `DecodedImage` view the texture-upload prelude consumes from
- * a `TextureAsset` POD (the record-stage pull path holds only the POD). The
- * POD's `data` is the pixel bytes; `colorSpace` + `mips` drive the
- * consistency assertion + mip count.
- */
-function decodedFromTexture(tex: TextureAsset): DecodedImage {
-  return {
-    bytes: tex.data,
-    width: tex.shape.extent.width,
-    height: tex.shape.extent.height,
-    mime: 'image/png',
-    colorSpace: tex.colorSpace,
-    mipmap: tex.mips.kind === 'generate',
-  };
 }

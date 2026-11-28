@@ -263,6 +263,76 @@ describe('Standard PBR artifact assembly', () => {
     );
   });
 
+  it('assembles only requested native scene-index receipts and retains their identity', async () => {
+    const registry = new ShaderRegistry({ manifestUrl: undefined });
+    const materialProgram = vi.spyOn(registry, 'materialProgram');
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    Object.defineProperty(device, 'caps', {
+      value: { ...device.caps, backendKind: 'webgpu' },
+    });
+    const asyncCreateShaderModule = vi.fn(rhi.createShaderModule);
+    const immediateCreateShaderModule = vi.fn(rhi.createShaderModuleImmediate);
+    const seedShaderModule = vi.fn();
+    const materials = ['forgeax::default-standard-pbr', 'forgeax::pbr-skin'] as const;
+    const [pbrManifestEntry, pbrSkinManifestEntry] = materials.map((identifier) => ({
+      identifier,
+      sourcePath: `${identifier}.wgsl`,
+      composedWgsl: source,
+      paramSchema: '[]',
+      variants: [false, true].map((color) => ({
+        definesKey: `color=${color}`,
+        defines: {
+          STORAGE_BUFFER_AVAILABLE: true,
+          GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
+          VERTEX_COLOR_AVAILABLE: color,
+          ATMOSPHERE_AVAILABLE: (device.limits.maxSampledTexturesPerShaderStage ?? 0) >= 32,
+        },
+        composedWgsl: source,
+      })),
+    }));
+    const ready = await buildGpuDrivenPbrReadyModules({
+      registry,
+      device,
+      storageBufferCapable: true,
+      asyncCreateShaderModule,
+      immediateCreateShaderModule,
+      pbrSkinEntry: { hash: 'skin', wgsl: source, glsl: '', bindings: '[]' },
+      pbrManifestEntry,
+      pbrSkinManifestEntry,
+      extendedLightingShaderAvailable: false,
+      directionalPcssAvailable: false,
+      projectorAvailable: false,
+      seedShaderModule,
+      admitsVariant: ADMIT_EVERY_VARIANT,
+    });
+
+    expect(materialProgram).not.toHaveBeenCalled();
+    expect(ready.gpuDrivenPbrPrograms.get('unpublished|color=false')).toBeUndefined();
+    expect(materialProgram).not.toHaveBeenCalled();
+    for (const material of materials) {
+      for (const color of [false, true]) {
+        const key = `${material}|color=${color}`;
+        const before = materialProgram.mock.calls.length;
+        const prepared = ready.gpuDrivenPbrPrograms.get(key);
+        expect(materialProgram).toHaveBeenCalledTimes(before + 1);
+        expect(ready.gpuDrivenPbrPrograms.get(key)).toBe(prepared);
+        expect(materialProgram).toHaveBeenCalledTimes(before + 1);
+        expect(prepared?.module).toBeUndefined();
+        expect(prepared?.artifact.material).toBe(material);
+        expect(
+          prepared?.artifact.receipt?.vertexInputs.some(
+            (attribute) => attribute.semantic === 'color',
+          ),
+        ).toBe(color);
+      }
+    }
+    expect(asyncCreateShaderModule.mock.calls.map(([, descriptor]) => descriptor.label)).toEqual([
+      'gpu-driven-view',
+    ]);
+    expect(seedShaderModule.mock.calls.map(([label]) => label)).toEqual(['gpu-driven-view']);
+    expect(immediateCreateShaderModule).not.toHaveBeenCalled();
+  });
+
   it('reuses program facts when GPU prewarming rebuilds modules for another device', async () => {
     const registry = new ShaderRegistry({ manifestUrl: undefined });
     const program = registry.materialProgram(source);

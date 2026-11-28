@@ -17,7 +17,7 @@ import {
   rowMaterialSlot,
   rowMaterialSourcesKey,
 } from './row-materials';
-import { compactSourceDrawAt } from './source-draw-indices';
+import { compactSourceDrawAt, issuedSectionIndex } from './source-draw-indices';
 
 type Draws = Map<number, readonly GpuDrivenBatch[]>;
 type Meshes = Map<number, Draws>;
@@ -358,6 +358,30 @@ export class GpuDrawSelection {
     const index = compactSourceDrawAt(draws, drawItemIndex);
     const draw = index < 0 ? undefined : draws?.[index];
     return draw !== undefined && this.owns(source, draw, index);
+  }
+
+  /** A submitted section may match more than one draw in a borrowed table. */
+  hasSubmittedSection(source: RenderableSnapshot, section: number): boolean {
+    const draws = source.gpuDrivenDraws;
+    if (draws === undefined || this.empty) return false;
+    const at = issuedSectionIndex(draws, section);
+    if (at !== undefined) {
+      const draw = draws[at];
+      return draw !== undefined && this.owns(source, draw, at);
+    }
+    return draws.some((draw, index) => {
+      if (draw === undefined) return false;
+      const address = gpuDrivenSourceDrawItemIndex(draw, index);
+      return (address === section || Object.is(address, section)) && this.owns(source, draw, index);
+    });
+  }
+
+  ownsAny(source: RenderableSnapshot): boolean {
+    const draws = source.gpuDrivenDraws;
+    if (draws === undefined || this.empty) return false;
+    return draws.length <= MASK_DRAWS
+      ? this.ownershipMask(source, 'forward') !== 0
+      : draws.some((draw, index) => draw !== undefined && this.owns(source, draw, index));
   }
 
   ownsAll(source: RenderableSnapshot): boolean {

@@ -89,6 +89,7 @@ export interface ExtractedSampledCloudLayer extends ExtractedCookedCloudGeometry
   readonly useDetail: boolean;
   readonly skipEmpty: boolean;
   readonly viewSampleCountScale: number;
+  readonly viewBlueNoise?: boolean;
   readonly stopTransmittance: number;
   readonly diagnostic: readonly [number, number, number];
 }
@@ -105,6 +106,7 @@ export interface ExtractedProgramCloudLayer extends ExtractedCookedCloudGeometry
   readonly materialParameters: Float32Array;
   readonly windOffsetMeters: readonly [number, number, number];
   readonly viewSampleCountScale: number;
+  readonly viewBlueNoise?: boolean;
   readonly stopTransmittance: number;
 }
 
@@ -204,6 +206,9 @@ function validShadowProjection(mapSettings: CloudShadowSettings): boolean {
     Number.isSafeInteger(mapSettings.mapSamples) &&
     mapSettings.mapSamples >= 1 &&
     mapSettings.mapSamples <= 256 &&
+    Number.isInteger(mapSettings.spatialPasses) &&
+    (mapSettings.spatialPasses ?? 1) >= 0 &&
+    (mapSettings.spatialPasses ?? 1) <= 4 &&
     [0, 1].includes(mapSettings.mode) &&
     Number.isFinite(mapSettings.biasMeters) &&
     [mapSettings.strength, mapSettings.surfaceStrength, mapSettings.atmosphereStrength].every(
@@ -242,6 +247,8 @@ function extractCloudShadow(
     extentMeters: field('shadowExtentMeters') as number,
     resolution: field('shadowResolution') as number,
     mapSamples: field('shadowMapSamples') as number,
+    ue5Reference: field('shadowMapUe5Reference') !== 0,
+    spatialPasses: (field('shadowMapSpatialPasses') as number | undefined) ?? 1,
     mode: field('shadowMode') as number,
     cast: field('castCloudShadows') !== 0,
     biasMeters: field('shadowDepthBiasMeters') as number,
@@ -291,7 +298,12 @@ function extractProgramTrace(
     return err(
       new CloudLayerInvalidParameterError('trace', materialGuid, 'finite trace and wind settings'),
     );
-  return ok({ windOffsetMeters, viewSampleCountScale, stopTransmittance });
+  return ok({
+    windOffsetMeters,
+    viewSampleCountScale,
+    stopTransmittance,
+    viewBlueNoise: field('viewBlueNoise') !== 0,
+  });
 }
 
 function extractProgramCloud(
@@ -586,7 +598,13 @@ function extractSampledTrace(world: World, owner: EntityHandle, field: ReadCloud
       'valid wind offset and a bounded diagnostic pixel',
     );
 
-  return ok({ windOffsetMeters, diagnostic, viewSampleCountScale, stopTransmittance });
+  return ok({
+    windOffsetMeters,
+    diagnostic,
+    viewSampleCountScale,
+    stopTransmittance,
+    viewBlueNoise: field('viewBlueNoise') !== 0,
+  });
 }
 
 function extractUniformCloud(

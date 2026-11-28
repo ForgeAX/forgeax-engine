@@ -9,6 +9,7 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
+import { BREP_KERNEL_DIGEST } from './brep/kernel-digest';
 import { captureActive } from './capture';
 import { TS_BACKEND_IDENTITY } from './compute/boolean-ts';
 import { sha256 } from './compute/sha256';
@@ -16,6 +17,18 @@ import { type ModelingError, modelingError } from './errors';
 import type { ExportOptions } from './finish';
 import type { Model } from './model';
 import type { Rig, RigFinishOptions } from './rig';
+
+/** A JSON value: the form a job declares its non-textual inputs in. */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
+/** The exact stage's identity in every cook key; a Shape-using job changes with `src/brep/` while `TS_BACKEND_IDENTITY` stays. */
+const BREP_BACKEND_IDENTITY = `forgeax-modeling-brep@${BREP_KERNEL_DIGEST}`;
 
 /**
  * A rig program as a deferred job: the rig and its finish options (key and packageId
@@ -28,6 +41,8 @@ export interface RigJob<P extends object = Record<string, unknown>> {
   readonly name: string;
   /** Module exporting this job, for a cooker executor that runs it elsewhere (see `MeshJobExecutor`). */
   readonly module?: string;
+  /** See `MeshJob.fingerprint`. */
+  readonly fingerprint?: JsonValue;
   readonly build: (params: P) => {
     readonly rig: Rig;
     readonly finish: Omit<RigFinishOptions, 'key' | 'packageId'>;
@@ -46,6 +61,8 @@ export interface AssetsJob<P extends object = Record<string, unknown>> {
   readonly name: string;
   /** Module exporting this job, for a cooker executor that runs it elsewhere (see `MeshJobExecutor`). */
   readonly module?: string;
+  /** See `MeshJob.fingerprint`. */
+  readonly fingerprint?: JsonValue;
   readonly build: (
     params: P,
     /** `cache`: the cook host's compute-job store, for the job's compute options. */
@@ -78,6 +95,12 @@ type SetJob<P extends object> = RigJob<P> | AssetsJob<P>;
 export interface MeshJob<P extends object = Record<string, unknown>> {
   /** Registry name: letters, digits, `_`, `.` or `-`. */
   readonly name: string;
+  /**
+   * Everything the build reads beyond its own text, as JSON: values it closes over and
+   * the digest of helper modules it imports (`moduleDigest` in `@forgeax/engine-modeling/tools`).
+   * It joins the cooker identity and every input fingerprint, so editing it misses the DDC.
+   */
+  readonly fingerprint?: JsonValue;
   /** Build the session from the job parameters (JSON numbers, strings, booleans). */
   readonly build: (params: P) => Model;
   /** Export options of the published mesh. */
@@ -499,6 +522,7 @@ export function createMeshJobCooker(
       const text = [
         String(job.build),
         JSON.stringify('export' in job ? (job.export ?? null) : null),
+        JSON.stringify(job.fingerprint ?? null),
       ];
       digest = sha256(new TextEncoder().encode(JSON.stringify(text)));
       sourceDigests.set(job.name, digest);
@@ -573,7 +597,7 @@ export function createMeshJobCooker(
     concurrency: 'parallel',
     timeoutMs,
     cacheIdentity: () =>
-      `${TS_BACKEND_IDENTITY};jobs=${[...registry.values()]
+      `${TS_BACKEND_IDENTITY};${BREP_BACKEND_IDENTITY};jobs=${[...registry.values()]
         .map((job) => `${job.name}:${sourceOf(job)}`)
         .sort()
         .join(',')}`,
@@ -593,6 +617,7 @@ export function createMeshJobCooker(
           new TextEncoder().encode(
             JSON.stringify([
               TS_BACKEND_IDENTITY,
+              BREP_BACKEND_IDENTITY,
               source.job,
               sourceOf(job),
               source.key,

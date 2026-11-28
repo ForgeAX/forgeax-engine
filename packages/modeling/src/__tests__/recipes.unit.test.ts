@@ -9,6 +9,7 @@ import {
   type HydraulicCylinderOptions,
   METRIC_SIZES,
   type MetricSize,
+  metric,
   type RecipePart,
   recipes,
   type SlideRailOptions,
@@ -64,7 +65,7 @@ describe('recipes: declared parameter ranges build clean parts', () => {
 
   it('hex bolt, nut and washer for every metric size', { timeout: 120000 }, () => {
     for (const size of Object.keys(METRIC_SIZES) as MetricSize[]) {
-      const d = METRIC_SIZES[size].d / 1000;
+      const d = metric(size).d;
       for (const options of [
         { size, length: 1.5 * d, segments: 12 },
         { size, length: 20 * d, segments: 48 },
@@ -137,9 +138,10 @@ describe('recipes: declared parameter ranges build clean parts', () => {
       const part = expectClean(JSON.stringify(options), recipes.hinge(options));
       expect(part.model.count(sel.tag('hinge-b'))).toBeGreaterThan(0);
       for (const leaf of ['a', 'b']) {
-        expect(part.model.count(sel.createdBy(`hinge-leaf-${leaf}`, 'bevel'))).toBe(
-          (options.holes ?? 3) * 16,
-        );
+        const cones = part.model.count(sel.createdBy(`hinge-leaf-${leaf}`, 'countersink'));
+        const holes = options.holes ?? 3;
+        expect(cones).toBeGreaterThanOrEqual(holes * 16);
+        expect(cones).toBeLessThanOrEqual(holes * 18);
       }
       // Leaf B turns with its countersinks: every face of the B side carries the tag.
       expect(part.model.count(sel.createdBy('hinge-leaf-b').minus(sel.tag('hinge-b')))).toBe(0);

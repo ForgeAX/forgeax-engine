@@ -12,12 +12,16 @@ import type {
 } from '../../features/types';
 import { SkyPass } from '../../record/gpu-pass-timing/sky-pass-names';
 import { createAnalyticCloudFeature } from '../analytic-feature';
+import { CLOUD_DEPTH_RANGE_QUARTER } from '../contracts';
 import type { ExtractedCookedCloudLayer } from '../extract';
 import {
   type CloudLayerInspection,
   cloudCapabilitiesFromRhi,
   inspectCloudLayer,
 } from '../inspection';
+import { selectCloudShadowFormat } from '../lighting/shadow-format';
+import { cloudShadowSpatialLayout } from '../lighting/shadow-spatial-layout';
+import { CLOUD_MODE0_BLUE_NOISE } from '../tracing/blue-noise';
 import { type CloudRecordedAdoption, captureCloudAdoption } from './adoption';
 import {
   abortCloudHistory,
@@ -29,6 +33,7 @@ import {
   createCloudHistoryState,
   invalidateCloudHistory,
   prepareCloudHistory,
+  UE5_CLOUD_DEPTH_CLEAR_KM,
 } from './history';
 
 export const CLOUD_MODE0_TRACE_TARGETS = [
@@ -42,6 +47,27 @@ export const CLOUD_MODE0_PROBE_TARGETS = [
   'cloud-mode0-probe-depth',
 ] as const;
 export const CLOUD_MODE0_PROBE_PASS = SkyPass.cloudProbe;
+const UE5_CLEAR_DEPTH = Object.freeze({
+  r: UE5_CLOUD_DEPTH_CLEAR_KM,
+  g: UE5_CLOUD_DEPTH_CLEAR_KM,
+  b: UE5_CLOUD_DEPTH_CLEAR_KM,
+  a: UE5_CLOUD_DEPTH_CLEAR_KM,
+});
+const CLEAR_TRANSPORT = Object.freeze({ r: 0, g: 0, b: 0, a: 1 });
+
+function cloudMode0Clear(target: string, ueDepthKm: boolean) {
+  return ueDepthKm
+    ? { clearValue: target.includes('depth') ? UE5_CLEAR_DEPTH : CLEAR_TRANSPORT }
+    : {};
+}
+
+// The shader takes a one-based slice. Keep the spatial dither stable across
+// temporal updates so a newly traced pixel cannot alternate between noise values.
+const MODE0_STABLE_BLUE_NOISE_SLICE = 1;
+// A negative selector keeps the UE kilometer contract and takes midpoint samples.
+const MODE0_MIDPOINT_WITH_UE_DEPTH = -1;
+
+const MODE0_DEPTH_RANGE_ENTRY = /\bfn\s+fs_trace_mode_zero(?:_air)?_depth_range\s*\(/g;
 const CURRENT = [
   'cloud-history-radiance-current',
   'cloud-history-transmittance-current',
@@ -106,6 +132,7 @@ function cloudHistoryStamp(
   width: number,
   height: number,
   generation: number,
+  ueDepthKm: boolean,
 ): CloudHistoryStamp {
   return {
     lighting: cloudHistoryLighting(layer, facts),
@@ -117,7 +144,7 @@ function cloudHistoryStamp(
       layer.status !== 'analytic'
         ? `${layer.programIdentity}:${layer.cookIdentity}`
         : JSON.stringify(layer.sample),
-    policyIdentity: `${JSON.stringify({
+    policyIdentity: `${ueDepthKm ? 'ue5-desktop-km-v1' : 'meters'}:${JSON.stringify({
       ...layer,
       adoption: undefined,
       aerialPerspectiveIdentity: facts?.frame?.aerialPerspectiveIdentity,
@@ -145,6 +172,7 @@ function cloudHistoryStamp(
               extentMeters: layer.shadowMap.extentMeters,
               resolution: layer.shadowMap.resolution,
               mapSamples: layer.shadowMap.mapSamples,
+              spatialPasses: layer.shadowMap.spatialPasses,
               mode: layer.shadowMap.mode,
               cast: layer.shadowMap.cast,
               biasMeters: layer.shadowMap.biasMeters,
@@ -182,6 +210,23 @@ function cloudMode0Inspection(
       acceptedFrame: candidate.history?.resource.frameNumber,
       acceptedPhase: candidate.history?.resource.phase,
       resetReasons: candidate.resetReasons,
+      ...(layer.shadowMap === undefined
+        ? {}
+        : {
+            shadowMap: {
+              format: selectCloudShadowFormat(context.caps),
+              rawResolution: layer.shadowMap.resolution,
+              filteredResolution: cloudShadowSpatialLayout(
+                layer.shadowMap.resolution,
+                layer.shadowMap.spatialPasses,
+                layer.shadowMap.ue5Reference,
+              ).filteredResolution,
+              spatialPasses: layer.shadowMap.spatialPasses ?? 1,
+              traceSamples: layer.shadowMap.traceSamples ?? layer.shadowMap.mapSamples,
+              originMeters: layer.shadowMap.origin,
+              fullWidthMeters: layer.shadowMap.extentMeters,
+            },
+          }),
       diagnostic:
         layer.status === 'analytic'
           ? { mode: 0, status: 'inactive' }
@@ -203,35 +248,116 @@ function cloudMode0Inspection(
   };
 }
 
+type Mode0FullscreenProgram = Extract<
+  RenderFeatureResourceDeclaration,
+  { kind: 'fullscreen-program' }
+>;
+
+function mode0TraceProgram(
+  resource: Mode0FullscreenProgram,
+  params: NonNullable<Mode0FullscreenProgram['params']>,
+  layer: ExtractedCookedCloudLayer,
+  mode0: readonly number[],
+  useDepthRange: boolean,
+  ueDepthKm: boolean,
+  useNoise: boolean,
+): RenderFeatureResourceDeclaration {
+  const values = new Float32Array(params.defaultValue.slice().buffer);
+  const next = new Float32Array(
+    Math.max(
+      values.length,
+      layer.status === 'analytic' ? 16 : layer.status === 'program' ? 48 : 44,
+    ),
+  );
+  next.set(values);
+  next.set(mode0, layer.status === 'sampled' ? 40 : layer.status === 'program' ? 44 : 12);
+  if (useNoise && layer.status !== 'analytic') {
+    next[layer.status === 'sampled' ? 27 : 59] =
+      layer.viewBlueNoise === false ? MODE0_MIDPOINT_WITH_UE_DEPTH : MODE0_STABLE_BLUE_NOISE_SLICE;
+  }
+  const frameParams = new Uint8Array(next.buffer);
+  return {
+    ...resource,
+    // The cooked shader keeps this exact name; Naga rewrites identifiers ending in a digit.
+    fragmentEntryPoint: `fs_trace_mode_zero${
+      layer.lightEnvironment?.atmosphereAvailable === true ? '_air' : ''
+    }${useDepthRange ? '_depth_range' : ''}${ueDepthKm ? '_ue' : ''}`,
+    ...(useDepthRange || useNoise
+      ? {
+          reads: [
+            ...(resource.reads ?? []),
+            {
+              key: useDepthRange ? CLOUD_DEPTH_RANGE_QUARTER : 'unused-cloud-depth-range',
+              sampleType: 'unfilterable-float' as const,
+            },
+            ...(useNoise ? [CLOUD_MODE0_BLUE_NOISE] : []),
+          ],
+        }
+      : {}),
+    params: { byteSize: next.byteLength, defaultValue: frameParams },
+    paramsSource: 'current-view',
+    frameParams,
+  };
+}
+
+function mode0DepthRangeAvailable(
+  layer: ExtractedCookedCloudLayer,
+  view: RenderFeaturePlanContext['views'][number],
+  context: RenderFeaturePlanContext,
+): boolean {
+  const extent = view.frame.extent;
+  return (
+    context.caps.rg16floatRenderable === true &&
+    (layer.status !== 'program' ||
+      layer.rendererSource.match(MODE0_DEPTH_RANGE_ENTRY)?.length === 2) &&
+    view.targets.some((target) => target.name === 'depth' && target.sampleCount === 1) &&
+    (extent === undefined ||
+      (extent.internalWidth === extent.outputWidth &&
+        extent.internalHeight === extent.outputHeight))
+  );
+}
+
 function mode0TraceWork(
   work: RenderFeatureWork,
   layer: ExtractedCookedCloudLayer,
   mode0: readonly number[],
   transportFormat: CloudTransportFormat,
+  useDepthRange: boolean,
+  ueDepthKm = false,
 ) {
+  const useNoise = ueDepthKm && layer.status !== 'analytic';
   const traceResources = work.resources.map((resource): RenderFeatureResourceDeclaration => {
     if (
       resource.kind === 'fullscreen-program' &&
       resource.params !== undefined &&
       resource.name.startsWith('cloud-')
     ) {
-      const values = new Float32Array(resource.params.defaultValue.slice().buffer);
-      const next = new Float32Array(
-        Math.max(
-          values.length,
-          layer.status === 'analytic' ? 16 : layer.status === 'program' ? 48 : 44,
-        ),
+      return mode0TraceProgram(
+        resource,
+        resource.params,
+        layer,
+        mode0,
+        useDepthRange,
+        ueDepthKm,
+        useNoise,
       );
-      next.set(values);
-      next.set(mode0, layer.status === 'sampled' ? 40 : layer.status === 'program' ? 44 : 12);
+    }
+    if (
+      (useDepthRange || useNoise) &&
+      resource.kind === 'graphics-bindings' &&
+      resource.name === 'analytic-cloud-inputs'
+    ) {
+      const current = resource.values.additionalTextures;
       return {
         ...resource,
-        // The cooked shader keeps this exact name; Naga rewrites identifiers ending in a digit.
-        fragmentEntryPoint:
-          layer.lightEnvironment?.atmosphereAvailable === true
-            ? 'fs_trace_mode_zero_air'
-            : 'fs_trace_mode_zero',
-        params: { byteSize: next.byteLength, defaultValue: new Uint8Array(next.buffer) },
+        values: {
+          ...resource.values,
+          additionalTextures: [
+            ...(Array.isArray(current) ? current : []),
+            useDepthRange ? CLOUD_DEPTH_RANGE_QUARTER : false,
+            ...(useNoise ? [CLOUD_MODE0_BLUE_NOISE] : []),
+          ],
+        },
       };
     }
     if (resource.kind === 'graphics-program' && resource.name === 'analytic-cloud-pipeline')
@@ -239,7 +365,11 @@ function mode0TraceWork(
         ...resource,
         program: {
           ...resource.program,
-          colorFormats: [transportFormat, transportFormat, 'rgba32float'],
+          colorFormats: [
+            transportFormat,
+            transportFormat,
+            ueDepthKm ? 'rgba16float' : 'rgba32float',
+          ],
         },
       };
     return resource;
@@ -252,8 +382,12 @@ function mode0TraceWork(
       (pass.name === SkyPass.cloudSampledTrace || pass.name === SkyPass.cloudAnalyticTrace)
         ? {
             ...pass,
+            ...(useDepthRange
+              ? { sampledTargets: [...(pass.sampledTargets ?? []), CLOUD_DEPTH_RANGE_QUARTER] }
+              : {}),
             colorAttachments: CLOUD_MODE0_TRACE_TARGETS.map((target) => ({
               target,
+              ...cloudMode0Clear(target, ueDepthKm),
               loadOp: 'clear',
               storeOp: 'store',
             })),
@@ -261,7 +395,7 @@ function mode0TraceWork(
         : pass,
     ),
   } satisfies RenderFeatureWork;
-  return { trace, traceResources };
+  return trace;
 }
 
 function mode0ProbeWork(
@@ -335,16 +469,23 @@ function mode0ProbeWork(
   };
 }
 
+const MODE0_SCENE_BLEND = {
+  color: { operation: 'add', srcFactor: 'one', dstFactor: 'src-alpha' },
+  alpha: { operation: 'add', srcFactor: 'zero', dstFactor: 'one' },
+} as const;
+
 function mode0StageWork(
   stage: 'reconstruct' | 'compose',
   source: string,
   layer: ExtractedCookedCloudLayer,
-  candidate: CloudHistoryCandidate<ResourceStamp>,
   params: Uint8Array<ArrayBuffer>,
   id: string,
   transportFormat: CloudTransportFormat,
+  ueDepthKm: boolean,
+  blendIntoScene: boolean,
 ): RenderFeatureWork {
   const reconstruct = stage === 'reconstruct';
+  const blend = !reconstruct && blendIntoScene;
   const diagnostic =
     layer.status === 'sampled' || layer.status === 'program' ? (layer.diagnostic?.[0] ?? 0) : 0;
   const stageParams = reconstruct
@@ -353,7 +494,7 @@ function mode0StageWork(
         new Float32Array([
           ...new Float32Array(params.buffer),
           diagnostic,
-          0,
+          ueDepthKm ? Number(new Float32Array(params.buffer)[23]) * 0.001 : 0,
           0,
           0,
           layer.bottomMeters,
@@ -365,10 +506,12 @@ function mode0StageWork(
   const name = reconstruct ? SkyPass.cloudReconstruction : SkyPass.cloudResolve;
   const inputs = reconstruct
     ? [...CLOUD_MODE0_TRACE_TARGETS, ...PREVIOUS]
-    : ['motion-input', ...CURRENT];
+    : blend
+      ? CURRENT
+      : ['motion-input', ...CURRENT];
   const targets = reconstruct ? CURRENT : ['motion-output'];
   const reads = inputs.map((key) =>
-    key.endsWith('depth') || key.includes('depth-')
+    !ueDepthKm && (key.endsWith('depth') || key.includes('depth-'))
       ? { key, sampleType: 'unfilterable-float' as const }
       : key,
   );
@@ -380,8 +523,11 @@ function mode0StageWork(
         name,
         source,
         usesView: true,
+        ...(ueDepthKm ? { fragmentEntryPoint: blend ? 'fs_ue_blend' : 'fs_ue_mode' } : {}),
         reads: [...reads, { key: 'depth', sampleType: 'depth' }],
         params: { byteSize: stageParams.byteLength, defaultValue: stageParams },
+        paramsSource: 'current-view',
+        frameParams: stageParams,
       },
       {
         kind: 'graphics-program',
@@ -391,9 +537,13 @@ function mode0StageWork(
           vertexLayout: 'none',
           sampleCount: 1,
           colorFormats: reconstruct
-            ? [transportFormat, transportFormat, 'rgba32float']
-            : [transportFormat],
-          renderState: { depthWriteEnabled: false, depthCompare: 'always' },
+            ? [transportFormat, transportFormat, ueDepthKm ? 'rgba16float' : 'rgba32float']
+            : [blend ? 'rgba16float' : transportFormat],
+          renderState: {
+            depthWriteEnabled: false,
+            depthCompare: 'always',
+            ...(blend ? { blend: MODE0_SCENE_BLEND } : {}),
+          },
         },
       },
       {
@@ -417,26 +567,14 @@ function mode0StageWork(
       },
     ],
     passes: [
-      ...(reconstruct && candidate.history === undefined
-        ? [
-            {
-              kind: 'raster' as const,
-              name: SkyPass.cloudHistoryClear,
-              colorAttachments: PREVIOUS.map((target) => ({
-                target,
-                loadOp: 'clear' as const,
-                storeOp: 'store' as const,
-              })),
-              draws: [],
-            },
-          ]
-        : []),
+      // Reconstruction synthesizes neutral history in shader when there is no accepted page.
       {
         kind: 'raster',
         name,
         colorAttachments: targets.map((target) => ({
           target,
-          loadOp: 'clear',
+          ...(reconstruct ? cloudMode0Clear(target, ueDepthKm) : {}),
+          loadOp: blend ? 'load' : 'clear',
           storeOp: 'store',
         })),
         sampledTargets: [...inputs, 'depth'],
@@ -622,10 +760,19 @@ export function createMode0CloudFeature(
         const plannedView = context.views.find((view) => view.identity === id);
         if (layer === undefined || plannedView === undefined) continue;
         const { transportFormat, width, height } = mode0TargetSize(plannedView, facts);
+        const ueDepthKm = plannedView.targets.some(
+          (target) => target.name === 'cloud-mode0-trace-depth' && target.format === 'rgba16float',
+        );
+        const blendIntoScene =
+          ueDepthKm &&
+          plannedView.targets.some(
+            ({ name, format, sampleCount }) =>
+              name === 'motion-input' && format === 'rgba16float' && sampleCount === 1,
+          );
         const state = prepareViewHistory(states, id);
         const candidate = prepareCloudHistory(
           state,
-          cloudHistoryStamp(layer, facts, id, width, height, context.generation),
+          cloudHistoryStamp(layer, facts, id, width, height, context.generation, ueDepthKm),
         );
         const receipt = mode0Receipt(context, plannedView, facts, id, state, candidate, layer);
         receipts.push(receipt);
@@ -634,9 +781,18 @@ export function createMode0CloudFeature(
           [id]: cloudMode0Inspection(layer, candidate, id, context),
         };
         const mode0 = [candidate.pixelOffset[0], candidate.pixelOffset[1], width, height];
-        const { trace, traceResources } = mode0TraceWork(work, layer, mode0, transportFormat);
+        const useDepthRange = mode0DepthRangeAvailable(layer, plannedView, context);
+        const trace = mode0TraceWork(work, layer, mode0, transportFormat, useDepthRange, ueDepthKm);
         works.push(trace);
-        if (isMode0ProbeLayer(layer)) works.push(mode0ProbeWork(work, traceResources));
+        if (isMode0ProbeLayer(layer)) {
+          // The full-resolution probe has its own entry and input layout.
+          works.push(
+            mode0ProbeWork(
+              work,
+              mode0TraceWork(work, layer, mode0, transportFormat, false).resources,
+            ),
+          );
+        }
         const previousMatrix = candidate.history?.resource.matrix ?? receipt.resource.matrix;
         const params = new Uint8Array(
           new Float32Array([
@@ -660,7 +816,18 @@ export function createMode0CloudFeature(
               }),
             );
           }
-          works.push(mode0StageWork(stage, source, layer, candidate, params, id, transportFormat));
+          works.push(
+            mode0StageWork(
+              stage,
+              source,
+              layer,
+              params,
+              id,
+              transportFormat,
+              ueDepthKm,
+              blendIntoScene,
+            ),
+          );
         }
       }
       pending.set(data, receipts);

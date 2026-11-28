@@ -113,6 +113,44 @@ describe('uv.pack raster', () => {
     expect(m.validate({ uniqueUv: true }).issues.map((i) => i.code)).not.toContain('uv-overlap');
   }, 120_000);
 
+  it('snap puts every island rectangle on whole texels (falsifier: off leaves fractions)', () => {
+    const RES = 256;
+    const build = (snap: boolean) => {
+      const m = model();
+      for (let i = 0; i < 4; i++)
+        m.box({ size: [0.9 + 0.17 * i, 0.5 + 0.11 * i, 0.31 + 0.07 * i], center: [i * 2, 0, 0] });
+      m.markSharp(sel.edges.dihedral('>', 30));
+      m.uv.unwrap({ seams: 'sharp' });
+      expect(m.uv.pack({ resolution: RES, padding: 4, method: 'raster', snap }).status).toBe('ok');
+      expect(m.validate({ uniqueUv: true }).issues.map((i) => i.code)).not.toContain('uv-overlap');
+      return m;
+    };
+    const fractions = (m: Model) => {
+      const mesh = m.editMesh;
+      const measured = measureUv(mesh);
+      if (!measured.ok) throw measured.error;
+      const box = new Map<number, number[]>();
+      for (const f of mesh.faces()) {
+        const id = measured.value.faceIsland[f] as number;
+        const b = box.get(id) ?? [Infinity, Infinity, -Infinity, -Infinity];
+        for (const h of mesh.faceHalves(f)) {
+          const uv = mesh.corner('uv0', h);
+          if (uv === undefined) continue;
+          b[0] = Math.min(b[0] as number, uv[0] as number);
+          b[1] = Math.min(b[1] as number, uv[1] as number);
+          b[2] = Math.max(b[2] as number, uv[0] as number);
+          b[3] = Math.max(b[3] as number, uv[1] as number);
+        }
+        box.set(id, b);
+      }
+      return [...box.values()].flatMap((b) =>
+        b.map((v) => Math.abs(v * RES - Math.round(v * RES))),
+      );
+    };
+    expect(Math.max(...fractions(build(true)))).toBeLessThan(1e-6);
+    expect(Math.max(...fractions(build(false)))).toBeGreaterThan(0.05);
+  });
+
   it('stacks congruent islands on one placement with identical UVs', () => {
     const m = model();
     m.box({ size: [0.2, 0.1, 0.05], label: 'part' });
@@ -306,5 +344,83 @@ describe('validate texelDensity', () => {
         .validate({ texelDensity: { resolution: 1024, target: 320 } })
         .issues.find((i) => i.code === 'texel-density')?.detail.check,
     ).toBe('missing-channel');
+  });
+});
+
+type Box = readonly [number, number, number, number];
+
+describe('uv.pack groups and straight orientation', () => {
+  const bounds = (m: Model, tag: string) => {
+    const b = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const [u, v] of corners(m, sel.tag(tag))) {
+      b[0] = Math.min(b[0] as number, u);
+      b[1] = Math.min(b[1] as number, v);
+      b[2] = Math.max(b[2] as number, u);
+      b[3] = Math.max(b[3] as number, v);
+    }
+    return b as [number, number, number, number];
+  };
+
+  it('groups give each tag one atlas block; blocks do not intersect (falsifier: free pack interleaves)', () => {
+    const build = (groups: readonly string[] | undefined) => {
+      const m = model();
+      for (let i = 0; i < 6; i++) {
+        m.box({
+          size: [1 + 0.2 * (i % 3), 0.6, 0.4 + 0.1 * i],
+          center: [i * 2, 0, 0],
+          label: `b${i}`,
+        });
+        m.tag(sel.createdBy(`b${i}`), i % 2 === 0 ? 'even' : 'odd');
+      }
+      m.markSharp(sel.edges.dihedral('>', 30));
+      m.uv.unwrap({ seams: 'sharp' });
+      const r = m.uv.pack({
+        resolution: 256,
+        padding: 4,
+        method: 'raster',
+        ...(groups === undefined ? {} : { groups }),
+      });
+      expect(r.status).toBe('ok');
+      expect(m.validate({ uniqueUv: true }).issues.map((i) => i.code)).not.toContain('uv-overlap');
+      return m;
+    };
+    const apart = (a: Box, b: Box) => a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1];
+    const grouped = build(['even', 'odd']);
+    expect(apart(bounds(grouped, 'even'), bounds(grouped, 'odd'))).toBe(true);
+    const loose = build(undefined);
+    expect(apart(bounds(loose, 'even'), bounds(loose, 'odd'))).toBe(false);
+  });
+
+  it('rotate puts a tilted rectangle on the u/v axes', () => {
+    const m = model();
+    m.plane({ width: 4, height: 1, widthSegments: 4, heightSegments: 1 });
+    m.rotate(sel.all(), 'y', 33);
+    m.uv.unwrap({ seams: 'sharp' });
+    expect(m.uv.pack({ resolution: 256, padding: 4, method: 'raster', rotate: true }).status).toBe(
+      'ok',
+    );
+    const mesh = m.editMesh;
+    let worst = 0;
+    for (const f of mesh.faces()) {
+      const hs = mesh.faceHalves(f);
+      for (const [k, h] of hs.entries()) {
+        const a = mesh.corner('uv0', h) as ArrayLike<number>;
+        const b = mesh.corner('uv0', hs[(k + 1) % hs.length] as number) as ArrayLike<number>;
+        worst = Math.max(
+          worst,
+          Math.min(
+            Math.abs((b[0] as number) - (a[0] as number)),
+            Math.abs((b[1] as number) - (a[1] as number)),
+          ),
+        );
+      }
+    }
+    expect(worst).toBeLessThan(1e-4);
+  });
+
+  it('rejects groups on a non-raster pack', () => {
+    const m = model();
+    m.box({ size: [1, 1, 1] });
+    expect(m.uv.pack({ groups: ['a'] } as never).status).toBe('failed');
   });
 });

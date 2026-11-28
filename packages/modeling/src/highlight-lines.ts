@@ -19,8 +19,9 @@ import { reflectionPhase, type ZebraOptions } from './surface-analysis';
  * where the reflected view ray's angle around the stripe axis is a multiple of `width`
  * (`refine` is unused). `isophote`: the view-independent lines where the angle between the
  * patch normal (dS/du x dS/dv) and `direction` is a multiple of `step` degrees, so
- * n · direction = cos(k · step). `weld`: largest distance between line ends chained across
- * patch boundaries, meters (default 1e-6 x the diagonal of the patches' bounding box).
+ * n · direction = cos(k · step). `section`: planes cut p · normal = origin + k · step
+ * with distances in meters. `weld`: largest distance between line ends chained across patch
+ * boundaries, meters (default 1e-6 x the diagonal of the patches' bounding box).
  */
 export type HighlightOptions = (
   | ({ readonly field: 'reflection' } & ZebraOptions)
@@ -30,6 +31,14 @@ export type HighlightOptions = (
       /** Angle between neighbouring isophotes, degrees, in (0, 90]. */
       readonly step: number;
     }
+  | {
+      readonly field: 'section';
+      readonly normal: Tuple3;
+      /** Distance between neighbouring planes, meters (> 0). */
+      readonly step: number;
+      /** Plane offset of level 0 along `normal`, meters (default 0). */
+      readonly origin?: number;
+    }
 ) & {
   readonly weld?: number;
 };
@@ -37,7 +46,7 @@ export type HighlightOptions = (
 export interface HighlightLine {
   /** Cubic least-squares fit of the traced points. */
   readonly curve: NurbsCurve;
-  /** The line's angle in degrees: k x `width` (reflection) or k x `step` (isophote). */
+  /** The line's level: degrees for reflection/isophote, plane offset in meters for section. */
   readonly level: number;
   /** Indices of the patches the line crosses, in the order it crosses them. */
   readonly patches: readonly number[];
@@ -97,12 +106,14 @@ const POLE_COS = cos((POLE * Math.PI) / 180);
 export interface Field {
   /** Scalar per point and normal (NaN where the field is undefined). */
   readonly value: (p: Tuple3, n: Tuple3) => number;
-  /** The field in line spacings: level k lies at k (NaN where the field is undefined). */
+  /** The field in line spacings, used to measure joint jumps. */
   readonly coordinate: (p: Tuple3, n: Tuple3) => number;
   /** The level values crossing (lo, hi]: [level index, value][]. */
   readonly levels: (lo: number, hi: number) => [number, number][];
-  /** Degrees per level index. */
-  readonly degrees: number;
+  /** Reported value per level index: degrees, or meters for section. */
+  readonly step: number;
+  /** Reported value at level index zero (0 for reflection/isophote, origin for section). */
+  readonly origin: number;
   /** Value range of a branch cut (cells spanning more than half of it are skipped). */
   readonly period: number;
 }
@@ -123,33 +134,68 @@ export function fieldOf(options: HighlightOptions): Result<Field, ModelingError>
       value,
       coordinate: value,
       levels,
-      degrees: options.width ?? 4,
+      step: options.width ?? 4,
+      origin: 0,
       period: reflection.value.period,
     });
   }
-  if (options.field !== 'isophote')
+  if (options.field === 'isophote') {
+    const step = options.step;
+    if (!(Number.isFinite(step) && step > 0 && step <= 90))
+      return err(invalid('isophote step is in (0, 90] degrees', { step }));
+    const d = options.direction;
+    const length = Array.isArray(d) && d.every(Number.isFinite) ? norm(d) : 0;
+    if (!(length > 0))
+      return err(invalid('isophote direction is a nonzero vector', { direction: d }));
+    const direction: Tuple3 = [d[0] / length, d[1] / length, d[2] / length];
+    // n · direction = 1 and = -1 are single points, not lines.
+    const table: [number, number][] = [];
+    for (let k = 1; k * step < 180; k++) table.push([k, cos((k * step * Math.PI) / 180)]);
+    return ok({
+      value: (_p, n) => dot(n, direction),
+      coordinate: (_p, n) =>
+        (atan2(norm(cross(n, direction)), dot(n, direction)) * 180) / Math.PI / step,
+      levels: (lo, hi) => table.filter(([, c]) => lo < c && c <= hi),
+      step,
+      origin: 0,
+      period: Number.POSITIVE_INFINITY,
+    });
+  }
+  if (options.field !== 'section')
     return err(
-      invalid("field is 'reflection' or 'isophote'", {
+      invalid("field is 'reflection', 'isophote' or 'section'", {
         field: (options as { readonly field?: unknown }).field,
       }),
     );
   const step = options.step;
-  if (!(Number.isFinite(step) && step > 0 && step <= 90))
-    return err(invalid('isophote step is in (0, 90] degrees', { step }));
-  const d = options.direction;
-  const length = Array.isArray(d) && d.every(Number.isFinite) ? norm(d) : 0;
-  if (!(length > 0))
-    return err(invalid('isophote direction is a nonzero vector', { direction: d }));
-  const direction: Tuple3 = [d[0] / length, d[1] / length, d[2] / length];
-  // n · direction = 1 and = -1 are single points, not lines.
-  const table: [number, number][] = [];
-  for (let k = 1; k * step < 180; k++) table.push([k, cos((k * step * Math.PI) / 180)]);
+  if (!(Number.isFinite(step) && step > 0))
+    return err(invalid('section step is a positive finite distance in meters', { step }));
+  const n = options.normal;
+  const scale =
+    Array.isArray(n) && n.length === 3 && n.every(Number.isFinite)
+      ? Math.max(Math.abs(n[0] as number), Math.abs(n[1] as number), Math.abs(n[2] as number))
+      : 0;
+  if (!(scale > 0)) return err(invalid('section normal is a nonzero finite vector', { normal: n }));
+  const scaled: Tuple3 = [n[0] / scale, n[1] / scale, n[2] / scale];
+  const length = norm(scaled);
+  const normal: Tuple3 = [scaled[0] / length, scaled[1] / length, scaled[2] / length];
+  const origin = options.origin ?? 0;
+  if (!Number.isFinite(origin))
+    return err(invalid('section origin is a finite plane offset in meters', { origin }));
+  const levels = (lo: number, hi: number): [number, number][] => {
+    const first = Math.floor((lo - origin) / step) + 1;
+    const last = Math.floor((hi - origin) / step);
+    const out: [number, number][] = [];
+    if (!Number.isFinite(first) || !Number.isFinite(last)) return out;
+    for (let k = first; k <= last; k++) out.push([k, origin + k * step]);
+    return out;
+  };
   return ok({
-    value: (_p, n) => dot(n, direction),
-    coordinate: (_p, n) =>
-      (atan2(norm(cross(n, direction)), dot(n, direction)) * 180) / Math.PI / step,
-    levels: (lo, hi) => table.filter(([, c]) => lo < c && c <= hi),
-    degrees: step,
+    value: (p) => dot(p, normal),
+    coordinate: (p) => (dot(p, normal) - origin) / step,
+    levels,
+    step,
+    origin,
     period: Number.POSITIVE_INFINITY,
   });
 }
@@ -430,7 +476,8 @@ export function traceHighlights(
 ): Result<
   {
     readonly traces: readonly HighlightTrace[];
-    readonly degrees: number;
+    readonly step: number;
+    readonly origin: number;
     readonly diagonal: number;
   },
   ModelingError
@@ -465,7 +512,8 @@ export function traceHighlights(
   });
   return ok({
     traces: traces.filter((t) => longEnough(t.points, diagonal)),
-    degrees: field.value.degrees,
+    step: field.value.step,
+    origin: field.value.origin,
     diagonal,
   });
 }
@@ -511,7 +559,11 @@ export function highlightLines(
     if (!fit.ok) return fit;
     const patches: number[] = [];
     for (const q of trace.points) if (!patches.includes(q.patch)) patches.push(q.patch);
-    lines.push({ curve: fit.value.curve, level: trace.level * traced.value.degrees, patches });
+    lines.push({
+      curve: fit.value.curve,
+      level: traced.value.origin + trace.level * traced.value.step,
+      patches,
+    });
   }
   return ok({ lines });
 }

@@ -25,6 +25,7 @@ import {
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import type { RhiBackendPack } from '../assembly/backend-contract';
 import { createRenderer as constructRenderer } from '../assembly/factory';
 import {
@@ -1918,7 +1919,7 @@ describe('factory contract', () => {
     await renderer.dispose();
   });
 
-  it('rebuilds the TAA graph when MotionBlur is added', async () => {
+  it('records the first completed TAA frame after MotionBlur is added', async () => {
     const renderer = await constructRenderer(
       { width: 64, height: 64, getContext: () => null },
       { rhi },
@@ -1943,8 +1944,10 @@ describe('factory contract', () => {
       .unwrap();
     const frameInput = () => ({ source: attached.value });
     expect(world.update().ok).toBe(true);
-    expect(renderer.draw(frameInput()).ok).toBe(true);
-    expect(renderer.inspect().perFramePassNames).not.toContain('motion-blur');
+    const before = await drawReadyFrame(renderer, frameInput());
+    const initial = renderer.inspect();
+    expect(initial.perFramePassNames).toContain('taa-resolve');
+    expect(initial.perFramePassNames).not.toContain('motion-blur');
 
     expect(
       world.addComponent(camera, {
@@ -1953,11 +1956,9 @@ describe('factory contract', () => {
       }).ok,
     ).toBe(true);
     expect(world.update().ok).toBe(true);
-    const motionDraw = renderer.draw(frameInput());
-    if (!motionDraw.ok) {
-      throw new Error(JSON.stringify({ error: motionDraw.error, events: errors }));
-    }
+    const motionDraw = await drawReadyFrame(renderer, frameInput());
     const inspection = renderer.inspect();
+    expect(motionDraw.frameId).toBeGreaterThan(before.frameId);
     expect(inspection.perFramePassNames).toContain('motion-blur');
     // The same Rhi device/frame admitted the compute plan, graph, and both
     // production dispatches. This is the application-side admission proof;
@@ -1968,10 +1969,19 @@ describe('factory contract', () => {
       storageTexture: true,
       rgba16floatRenderable: true,
     });
-    expect(inspection.motionBlur).toMatchObject({ lane: 'compute', passCount: 2 });
-    expect(inspection.perFramePassNames).toContain('motion-blur');
+    expect(inspection.motionBlur).toMatchObject({
+      lane: 'compute',
+      passCount: 2,
+      execution: {
+        deviceGeneration: motionDraw.deviceGeneration,
+        passes: [{ name: 'motion-blur-tile-summary' }, { name: 'motion-blur' }],
+      },
+    });
     expect(inspection.recoveryEvidence.graph).toMatchObject({ ready: true });
-    expect(inspection.featureGraph?.compileSuccesses ?? 0).toBeGreaterThan(0);
+    expect(inspection.featureGraph?.compileSuccesses ?? 0).toBeGreaterThan(
+      initial.featureGraph?.compileSuccesses ?? 0,
+    );
+    expect(errors).toEqual([]);
     // The graph is present, but this is the first accepted temporal pair
     // after the effect was added. Inspection must expose the reset boundary
     // until a subsequent successful pair can provide a valid baseline.
@@ -2024,15 +2034,7 @@ describe('factory contract', () => {
             })
             .unwrap();
           expect(world.update().ok).toBe(true);
-          const draw = renderer.draw({ source: attached.value });
-          expect(
-            draw.ok,
-            JSON.stringify({ error: draw.ok ? undefined : draw.error, events: errors }),
-          ).toBe(true);
-          if (!draw.ok || draw.value === undefined) continue;
-          const completed = await draw.value.completed;
-          expect(completed.ok).toBe(true);
-          if (!completed.ok) continue;
+          const receipt = await drawReadyFrame(renderer, { source: attached.value });
           const inspection = renderer.inspect();
           const names = inspection.perFramePassNames;
           const genericIndex = names.indexOf('generic-post-probe');
@@ -2051,12 +2053,13 @@ describe('factory contract', () => {
           expect(inspection.motionBlur).toMatchObject({
             enabled: true,
             passCount: 2,
-            execution: { passes: [{ name: 'motion-blur-tile-summary' }, { name: 'motion-blur' }] },
+            execution: {
+              deviceGeneration: receipt.deviceGeneration,
+              passes: [{ name: 'motion-blur-tile-summary' }, { name: 'motion-blur' }],
+            },
           });
-          // A completed two-pass execution is the public Renderer proof that
-          // the named motion-blurred-color target had a writer and was then
-          // consumed by the shared output chain.
           expect(inspection.featureGraph?.compileSuccesses ?? 0).toBeGreaterThan(0);
+          expect(errors).toEqual([]);
         } finally {
           await renderer.dispose();
         }

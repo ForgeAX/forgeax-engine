@@ -1,6 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
+  ANTIALIAS_FXAA,
   Camera,
   DirectionalLight,
   Materials,
@@ -8,6 +9,7 @@ import {
   MeshRenderer,
   ReflectionProbe,
 } from '@forgeax/engine-render';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
 import { attachRecorder, buildFrameModel, summarizePasses } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -79,7 +81,7 @@ it.each([
       )
       .unwrap();
   });
-  world
+  const camera = world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 7] } },
       {
@@ -133,7 +135,10 @@ it.each([
     }
     expect(renderer.inspect().reflectionProbes.activeCount).toBe(probes.length);
     await draw();
-    // Ready local probes also demand the reflection fallback attachment.
+    // Change the view's physical stages while the overflow probe lane is active.
+    const compile = renderGraphCompileCount();
+    const bind = renderOrderedViewBindCount();
+    world.set(camera, Camera, { antialias: ANTIALIAS_FXAA }).unwrap();
     expect(await captureLighting()).toEqual([
       compact
         ? 'fs_standard_deferred_compact_reflections_channels_array_dual'
@@ -142,6 +147,10 @@ it.each([
         ? 'fs_standard_deferred_compact_reflections_overflow'
         : 'fs_standard_deferred_reflections_overflow',
     ]);
+
+    const bindings = renderOrderedViewBindCount() - bind;
+    expect(bindings).toBeGreaterThan(0);
+    expect(renderGraphCompileCount() - compile).toBe(bindings);
 
     for (const probe of probes) world.despawn(probe).unwrap();
     await draw();

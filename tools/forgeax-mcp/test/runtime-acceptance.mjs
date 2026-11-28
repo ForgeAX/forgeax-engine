@@ -44,7 +44,9 @@ try {
   const failure = JSON.stringify(result.error, (_key, value) =>
     value instanceof Error ? { message: value.message, cause: value.cause } : value);
   browser = await chromium.launch({
-    executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE,
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE
+      ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
+      : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: true, args: ['--disable-gpu'], chromiumSandbox: true,
   });
   const page = await browser.newPage({ viewport: { width: 640, height: 480 } });

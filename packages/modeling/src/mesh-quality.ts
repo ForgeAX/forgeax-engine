@@ -3,7 +3,7 @@ import { maxOf } from './arrays';
 import { type Flow, type FlowGuide, flowAt, lineAngle } from './compute/line-field';
 import { atan2, hypot3 } from './dmath';
 import { type ModelingError, modelingError } from './errors';
-import type { Tuple3 } from './geom';
+import { type Tuple3, triangleArea, triangleAspect } from './geom';
 import { EDGE_SHARP, type EditMesh, NONE } from './mesh';
 
 /**
@@ -214,6 +214,18 @@ export function meshQuality(
     ? { interior: [] as number[], border: [] as number[] }
     : undefined;
   for (const f of faces) {
+    for (const v of mesh.faceVertices(f)) {
+      const p = mesh.position(v);
+      if (!(Number.isFinite(p[0]) && Number.isFinite(p[1]) && Number.isFinite(p[2])))
+        return err(
+          modelingError('model-degenerate', 'every measured vertex position is finite', {
+            face: f,
+            vertex: v,
+          }),
+        );
+    }
+  }
+  for (const f of faces) {
     const vs = mesh.faceVertices(f);
     if (vs.length !== 3) {
       ngons++;
@@ -222,11 +234,11 @@ export function meshQuality(
     const [a, b, c] = vs.map((v) => mesh.position(v)) as unknown as [Tuple3, Tuple3, Tuple3];
     const dist = (p: Tuple3, q: Tuple3) => hypot3(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
     const e = [dist(b, c), dist(c, a), dist(a, b)] as [number, number, number];
-    const s = (e[0] + e[1] + e[2]) / 2;
-    const A = Math.sqrt(Math.max(0, s * (s - e[0]) * (s - e[1]) * (s - e[2])));
+    const A = triangleArea(a, b, c);
     area += A;
     const longest = maxOf(e);
-    aspects.push(A > 0 ? (longest * longest) / (2 * A) : Number.POSITIVE_INFINITY);
+    const aspect = triangleAspect(a, b, c);
+    aspects.push(aspect);
     // Law of cosines per corner; the smallest angle faces the shortest edge.
     let smallest = 180;
     for (let i = 0; i < 3; i++) {
@@ -255,7 +267,7 @@ export function meshQuality(
       ];
       const d = flowAt(guide.flow, centroid, normal);
       if (d !== undefined) {
-        if ((longest * longest) / (2 * A) < FLOW_ASPECT) flowSkipped++;
+        if (aspect < FLOW_ASPECT) flowSkipped++;
         else {
           // The longest edge is opposite the corner whose edge length e[i] is largest.
           const i = e.indexOf(longest);

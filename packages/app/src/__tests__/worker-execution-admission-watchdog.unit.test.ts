@@ -323,8 +323,40 @@ describe('Worker frame admission watchdog', () => {
     }
   });
 
+  it('bounds a material expansion and keeps the next source frame on its steady deadline', async () => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      emit({ kind: 'render-complete', epoch: 1, frame: completeMessage(frame) });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      expect(next.frameId).toBeGreaterThan(frame.frameId);
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'render-preparation',
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(app.lastError).toBeUndefined();
+      emit({ ...completeMessage(next), kind: 'simulation-complete' });
+      emit({ kind: 'render-complete', epoch: 1, frame: completeMessage(next) });
+      callbacks.at(-1)?.(32);
+      expect(lastFrame().frameId).toBeGreaterThan(next.frameId);
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 2_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
+  });
+
   it.each([
     'render-wait',
+    'render-preparation',
     'source',
   ] as const)('retains the %s admission phase across native visibility suspension', async (phase) => {
     const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
@@ -350,13 +382,13 @@ describe('Worker frame admission watchdog', () => {
       expect(app.lastError).toBeUndefined();
       visibility(true);
       await vi.advanceTimersByTimeAsync(2_001);
-      if (phase === 'render-wait') {
+      if (phase !== 'source') {
         expect(app.lastError).toBeUndefined();
         await vi.advanceTimersByTimeAsync(8_000);
       }
       expect(app.execution.report().fault).toMatchObject({
         code: 'app-execution-deadline-exceeded',
-        detail: { phase: 'frame', timeoutMs: phase === 'render-wait' ? 10_000 : 2_000 },
+        detail: { phase: 'frame', timeoutMs: phase === 'source' ? 2_000 : 10_000 },
       });
       expect(frames()).toHaveLength(2);
     } finally {

@@ -1,0 +1,33 @@
+{
+  "tool": "im",
+  "case": "brep-sphere-quad",
+  "available": true,
+  "toolCommit": "7b3160864a2e1025af498c84cfed91cbfb613698",
+  "inputSha256": "16c0a9bb9004306504754ac2dca4deed0729ab35d230d3be69bc7a2a5c22f79d",
+  "inputFaces": 16128,
+  "targetFaces": 600,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["-f", "150", "-c", "30", "-d", "-t", "1", "-o", "<out.obj>", "<in.obj>"],
+      "cwd": null,
+      "wallSeconds": 0.164824834,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "faces": 150,
+        "crease": 30,
+        "mode": "pure quad, -f target/4 (pure-quad 2x2 subdivision)"
+      }
+    }
+  ],
+  "wallSeconds": 0.164824834,
+  "outcome": "ok",
+  "outputSha256": "93fd1db732b6d585e85864427eab62a58d387924659da8a1b498643d4da2d74f",
+  "rawOutputSha256": "47cfdfcad428f45143a2e366e89ef3580fe1b52e539d1b1df5266d50f683a47c",
+  "outputFaces": 600,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

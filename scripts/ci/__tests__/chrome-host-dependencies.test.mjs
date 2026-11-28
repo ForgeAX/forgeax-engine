@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
 const action = readFileSync(
-  resolve('.github/actions/install-playwright-chrome-beta/action.yml'),
+  resolve('.github/actions/install-playwright-chrome/action.yml'),
   'utf8',
 );
 const detector = action
@@ -19,7 +19,7 @@ const minimumMajor = JSON.parse(
   readFileSync(resolve('scripts/ci/browser-version-policy.json'), 'utf8'),
 ).minimumMajor;
 const verifier = action
-  .split('    - name: Verify Chrome Beta binary (Linux only)')[1]
+  .split('    - name: Verify Chrome binary (Linux only)')[1]
   .split('      run: |\n')[1]
   .split('\n    - name:')[0]
   .split('\n')
@@ -40,7 +40,7 @@ for (const displayAvailable of [false, true])
           chmodSync(path, 0o755);
           return path;
         };
-        const chrome = executable('google-chrome-beta', `echo Google Chrome ${major}.0.0.0 beta`);
+        const chrome = executable('google-chrome', `echo Google Chrome ${major}.0.0.0`);
         symlinkSync(process.execPath, join(root, 'node'));
         executable('ldd', 'exit 0');
         symlinkSync('/usr/bin/grep', join(root, 'grep'));
@@ -51,7 +51,7 @@ for (const displayAvailable of [false, true])
           [
             '-eu',
             '-c',
-            detector.replace('binary=/opt/google/chrome-beta/chrome', `binary=${quote(chrome)}`),
+            detector.replace('binary=/opt/google/chrome/chrome', `binary=${quote(chrome)}`),
           ],
           { env: { PATH: root, GITHUB_OUTPUT: output }, stdio: 'pipe' },
         );
@@ -65,7 +65,7 @@ for (const displayAvailable of [false, true])
             [
               '-eu',
               '-c',
-              verifier.replace('binary=/opt/google/chrome-beta/chrome', `binary=${quote(chrome)}`),
+              verifier.replace('binary=/opt/google/chrome/chrome', `binary=${quote(chrome)}`),
             ],
             { env: { PATH: root }, stdio: 'pipe' },
           );

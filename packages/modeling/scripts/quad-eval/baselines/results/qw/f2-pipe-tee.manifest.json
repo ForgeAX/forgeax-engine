@@ -1,0 +1,47 @@
+{
+  "tool": "qw",
+  "case": "f2-pipe-tee",
+  "available": true,
+  "toolCommit": "9d1f27ad3c6e8b2800df27e2c14f70c5baf0250e",
+  "inputSha256": "03e7c0439b5a86368c0f1f38fa3a6d70dc242828f19e09b32de8b1771e7c7be1",
+  "inputFaces": 1372,
+  "targetFaces": 3000,
+  "sharpDeg": 30,
+  "attempts": [
+    {
+      "argv": ["quadwild", "input.obj"],
+      "cwd": "<run dir with basic_setup.txt>",
+      "wallSeconds": 302.253561747,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "do_remesh": 1,
+        "sharp_feature_thr": 30,
+        "alpha": 0.01,
+        "scaleFact": 1
+      }
+    },
+    {
+      "argv": ["quadwild", "input.obj"],
+      "cwd": "<run dir with basic_setup.txt>",
+      "wallSeconds": 277.871315364,
+      "status": 0,
+      "signal": null,
+      "settings": {
+        "do_remesh": 1,
+        "sharp_feature_thr": 30,
+        "alpha": 0.01,
+        "scaleFact": 1.3555
+      }
+    }
+  ],
+  "wallSeconds": 580.1248771109999,
+  "outcome": "ok",
+  "outputSha256": "971384e842790d2e10366d5930005242e257c24c2621fc65a228dd75468cff3e",
+  "rawOutputSha256": "7e788d61630233b800c90651aae8f0f348d3c0776c2038be97debeaeb2e9c3ba",
+  "outputFaces": 3223,
+  "dropped": {
+    "count": 0,
+    "sides": {}
+  }
+}

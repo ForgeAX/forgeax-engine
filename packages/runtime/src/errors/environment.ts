@@ -3,4 +3,4 @@
 export {
   EngineEnvironmentError,
   type EngineEnvironmentErrorDetail,
-} from '@forgeax/engine-render/internal/construct-renderer';
+} from '@forgeax/engine-render/internal/backend-contract';

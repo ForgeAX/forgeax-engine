@@ -10,23 +10,26 @@ import {
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { MESH_DRAW_PARAMETER_FLOATS } from '../components/mesh-draw-parameters';
 import { GpuDirtyRanges } from '../gpu-dirty-ranges';
-import { previousInstanceRows, sameInstanceOrdinal } from '../instance-generations';
+import {
+  type InstanceOrdinalOrder,
+  matchInstanceOrdinals,
+  previousInstanceOrdinal,
+  SAME_INSTANCE_ORDINALS,
+} from '../instance-generations';
 
 import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
-import type {
-  DispatchEntry,
-  DispatchList,
-  MaterialSnapshot,
-  RenderableSnapshot,
-} from '../render-system-extract';
+import type { RenderResourceScope } from '../publication/resource-scope';
+import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { CapturedSceneTransform } from '../scene/captured-transform';
-import { SceneDrawSlot } from '../scene/mesh-draw';
+import type { MaterialFrame } from '../scene/material-dispatch';
+import { drawPoseStorage, SceneDrawSlot } from '../scene/mesh-draw';
 import {
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_Z,
   type TransparentSortConfig,
 } from '../systems/transparent-sort-config';
 import { recordContext } from '../world/view-record-context';
+import { recordingDrawPose } from './draw-row-pages';
 import { getOpaqueResourceIdentity, type ValidatedRenderable } from './frame-snapshot';
 import type { _InternalRenderPipelineContext } from './render-context';
 
@@ -74,20 +77,18 @@ function copyMat4(out: Float32Array, at: number, from: Float32Array, base: numbe
   for (let k = 0; k < 16; k++) out[at + k] = from[base + k] as number;
 }
 
-export type InstanceRowLookup = (ordinal: number) => number | undefined;
-
 /** Check the complete identity columns once, including rows outside the physical upload. */
 export function instanceStoragePairing(
   count: number,
   previousCount: number,
   generations?: Uint32Array,
   previousGenerations?: Uint32Array,
-): InstanceRowLookup | undefined {
+): InstanceOrdinalOrder | undefined {
   if (generations === undefined && previousGenerations === undefined)
-    return count === previousCount ? sameInstanceOrdinal : undefined;
+    return count === previousCount ? SAME_INSTANCE_ORDINALS : undefined;
   if (generations?.length !== count || previousGenerations?.length !== previousCount)
     return undefined;
-  return previousInstanceRows(generations, previousGenerations);
+  return matchInstanceOrdinals(generations, previousGenerations);
 }
 
 /** Project current and submitted matrices into one physical InstanceData window. */
@@ -97,7 +98,8 @@ export function packInstanceStorageRange(
   previous: Float32Array,
   first: number,
   count: number,
-  lookup: InstanceRowLookup | undefined,
+  order: InstanceOrdinalOrder | undefined,
+  generations: Uint32Array | undefined,
 ): Float32Array {
   if (
     out.length !== count * INSTANCE_STORAGE_STRIDE_FLOATS ||
@@ -105,8 +107,8 @@ export function packInstanceStorageRange(
     (first + count) * 16 > transforms.length
   )
     throw new RangeError('Instance storage output must match the packed instance count');
-  if (lookup === sameInstanceOrdinal || lookup === undefined) {
-    const old = lookup === undefined ? transforms : previous;
+  if (order === SAME_INSTANCE_ORDINALS || order === undefined) {
+    const old = order === undefined ? transforms : previous;
     for (let local = 0; local < count; local++) {
       const source = (first + local) * 16;
       const target = local * INSTANCE_STORAGE_STRIDE_FLOATS;
@@ -118,7 +120,7 @@ export function packInstanceStorageRange(
       const ordinal = first + local;
       const target = local * INSTANCE_STORAGE_STRIDE_FLOATS;
       copyMat4(out, target, transforms, ordinal * 16);
-      const old = lookup(ordinal);
+      const old = previousInstanceOrdinal(order, generations?.[ordinal], ordinal);
       if (old === undefined) copyMat4(out, target + 16, transforms, ordinal * 16);
       else copyMat4(out, target + 16, previous, old * 16);
     }
@@ -135,13 +137,21 @@ export function packInstanceStorageBuffer(
   previousGenerations?: Uint32Array,
 ): Float32Array {
   const count = Math.floor(transforms.length / 16);
-  const lookup = instanceStoragePairing(
+  const order = instanceStoragePairing(
     count,
     Math.floor(previousTransforms.length / 16),
     generations,
     previousGenerations,
   );
-  return packInstanceStorageRange(out, transforms, previousTransforms, 0, count, lookup);
+  return packInstanceStorageRange(
+    out,
+    transforms,
+    previousTransforms,
+    0,
+    count,
+    order,
+    generations,
+  );
 }
 
 /**
@@ -463,10 +473,11 @@ const MESH_STRIDE_FLOATS = MESH_PER_ENTITY_STRIDE / Float32Array.BYTES_PER_ELEME
 // Clean slots this close together are re-sent with their neighbours so a
 // scattered change still flushes as a few contiguous writes.
 const MESH_DIRTY_MERGE_GAP_SLOTS = 8;
+const MESH_UPLOAD_STAMP_STRIDE = 3;
 
 type MeshUpload = Pick<
   ValidatedRenderable,
-  'source' | 'meshSlot' | 'foldedMeshSlot' | 'world' | 'sceneSlot'
+  'source' | 'meshSlot' | 'foldedMeshSlot' | 'world' | 'sceneSlot' | 'recordingPose'
 >;
 
 export function meshDrawSlot(
@@ -504,7 +515,7 @@ function newMeshPage(page: number, first: number): MeshSsboMirror {
     bits: new Uint32Array(bytes.buffer),
     known: new Uint8Array(1),
     dirty: [],
-    stamps: new Float64Array(2),
+    stamps: new Float64Array(MESH_UPLOAD_STAMP_STRIDE),
     modes: new Uint8Array(1),
   };
 }
@@ -516,7 +527,6 @@ function reserveMeshRow(
   start: number,
   end: number,
 ): MeshSsboMirror {
-  if (slot >= page.first && slot < page.first + page.known.length) return page;
   const low = Math.min(page.first, slot);
   const high = Math.max(page.first + page.known.length, slot + 1);
   const capacity = Math.min(end - start, Math.max(high - low, page.known.length * 2));
@@ -525,11 +535,11 @@ function reserveMeshRow(
   const shift = page.first - first;
   const bytes = new Uint8Array(capacity * MESH_PER_ENTITY_STRIDE);
   const known = new Uint8Array(capacity);
-  const stamps = new Float64Array(capacity * 2);
+  const stamps = new Float64Array(capacity * MESH_UPLOAD_STAMP_STRIDE);
   const modes = new Uint8Array(capacity);
   bytes.set(page.bytes, shift * MESH_PER_ENTITY_STRIDE);
   known.set(page.known, shift);
-  stamps.set(page.stamps, shift * 2);
+  stamps.set(page.stamps, shift * MESH_UPLOAD_STAMP_STRIDE);
   modes.set(page.modes, shift);
   page.first = first;
   page.bytes = bytes;
@@ -562,6 +572,7 @@ class MeshUploadPages {
         return this.dense;
       }
       const end = dense.first + dense.known.length;
+      if (slot >= dense.first && slot < end) return dense;
       if (
         this.denseEnd === Number.MAX_SAFE_INTEGER &&
         (slot < dense.first - MESH_DIRTY_MERGE_GAP_SLOTS ||
@@ -587,7 +598,9 @@ class MeshUploadPages {
       }
       this.current = page;
     }
-    return reserveMeshRow(page, slot, id * width, (id + 1) * width);
+    return slot >= page.first && slot < page.first + page.known.length
+      ? page
+      : reserveMeshRow(page, slot, id * width, (id + 1) * width);
   }
 }
 
@@ -625,11 +638,12 @@ function writeMeshSlotCandidate(entry: MeshUpload, foldHead: boolean): void {
     candidate[33] = meshSurfaceFlags(entry.source);
     return;
   }
-  const transform = entry.source.transform;
+  const transform = recordingDrawPose(entry);
   const previous = entry.source.temporal?.previousTransform;
-  CapturedSceneTransform.write(candidate, 0, transform);
-  if (previous === undefined || previous === transform) candidate.copyWithin(16, 0, 16);
-  else CapturedSceneTransform.write(candidate, 16, previous);
+  const prior = previous === undefined ? undefined : CapturedSceneTransform.storage(previous);
+  CapturedSceneTransform.writeStorage(candidate, 0, transform);
+  if (prior === undefined || prior === transform) candidate.copyWithin(16, 0, 16);
+  else CapturedSceneTransform.writeStorage(candidate, 16, prior);
   candidate[32] = entry.source.temporal?.reactive === true ? 1 : 0;
   candidate[33] = meshSurfaceFlags(entry.source);
 }
@@ -667,6 +681,25 @@ function flushMeshRun(
   mirror.known.fill(1, first - mirror.first, end - mirror.first);
 }
 
+function nativeUploadPose(entry: MeshUpload) {
+  if (entry.recordingPose !== undefined) return entry.recordingPose;
+  const record = entry.sceneSlot;
+  return record instanceof SceneDrawSlot && record.ownsSnapshot(entry.source) ? record : undefined;
+}
+
+function trackMeshSlotWrite(
+  pages: MeshUploadPages,
+  mirror: MeshSsboMirror,
+  row: number,
+  slot: number,
+  length: number,
+): void {
+  if (!stageMeshSlot(mirror, row, length) || mirror.known[row] === 2) return;
+  if (mirror.dirty.length === 0) pages.pending.push(mirror);
+  mirror.dirty.push(slot);
+  mirror.known[row] = 2;
+}
+
 /**
  * Stage actual source/folded transforms at their physical addresses. Reordering
  * or shortening a pass list never moves another draw's bytes. Main, shadow and
@@ -680,36 +713,24 @@ function flushMeshRun(
  * @internal
  */
 function stageMeshDraw(
-  meshStorageBuffer: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
+  pages: MeshUploadPages,
   entry: MeshUpload,
   folded: boolean,
   visibleSurfaceBases: ReadonlyMap<number, number> | undefined,
   storageBuffer: boolean,
-  slot = meshDrawSlot(entry, folded),
-  context?: Pick<_InternalRenderPipelineContext, 'world'>,
+  slot: number,
+  world: RenderResourceScope | undefined,
 ): void {
-  const buffer =
-    meshStorageBuffer.pages === undefined ? meshStorageBuffer.buffer : meshStorageBuffer;
-  if (buffer === null) throw new Error('mesh draw storage is not allocated');
-  let pages = mirrors.get(buffer);
-  if (pages === undefined) {
-    const stride = meshStorageBuffer.pages?.byteStride;
-    pages = new MeshUploadPages(
-      stride === undefined ? undefined : Math.max(1, Math.floor(stride / MESH_PER_ENTITY_STRIDE)),
-    );
-    mirrors.set(buffer, pages);
-  }
   const mirror = pages.row(slot);
   const row = slot - mirror.first;
   const surfaceBase = visibleSurfaceBases?.get(entry.source.entityKey);
-  const stamp = row * 2;
-  const record = entry.sceneSlot;
-  const nativeVersion =
-    record instanceof SceneDrawSlot ? record.meshUploadVersion(entry.source) : undefined;
-  const sourceIdentity = nativeVersion ?? getOpaqueResourceIdentity(entry.source);
+  const stamp = row * MESH_UPLOAD_STAMP_STRIDE;
+  const pose = nativeUploadPose(entry);
+  const sourceOwner = pose?.uploadOwner ?? getOpaqueResourceIdentity(entry.source);
+  const sourceVersion = pose?.version ?? 0;
   const parameters = folded
     ? undefined
-    : (entry.world ?? context?.world)?.drawParameters?.(entry.source.entityKey, parameterRead);
+    : (entry.world ?? world)?.drawParameters?.(entry.source.entityKey, parameterRead);
   const offset = storageBuffer ? MESH_DRAW_PARAMETER_OFFSET : MESH_UNIFORM_DRAW_PARAMETER_OFFSET;
   if (parameters !== undefined) {
     if (parameters.length < MESH_DRAW_PARAMETER_FLOATS)
@@ -727,8 +748,9 @@ function stageMeshDraw(
   const base = surfaceBase ?? 0;
   if (
     mirror.known[row] !== 0 &&
-    mirror.stamps[stamp] === sourceIdentity &&
-    mirror.stamps[stamp + 1] === base &&
+    mirror.stamps[stamp] === sourceOwner &&
+    mirror.stamps[stamp + 1] === sourceVersion &&
+    mirror.stamps[stamp + 2] === base &&
     previousMode === mode &&
     (parameters === undefined || parametersMatch(mirror, row, offset))
   )
@@ -741,13 +763,10 @@ function stageMeshDraw(
     parameters !== undefined,
     offset,
   );
-  if (stageMeshSlot(mirror, row, length) && mirror.known[row] !== 2) {
-    if (mirror.dirty.length === 0) pages.pending.push(mirror);
-    mirror.dirty.push(slot);
-    mirror.known[row] = 2;
-  }
-  mirror.stamps[stamp] = sourceIdentity;
-  mirror.stamps[stamp + 1] = base;
+  trackMeshSlotWrite(pages, mirror, row, slot, length);
+  mirror.stamps[stamp] = sourceOwner;
+  mirror.stamps[stamp + 1] = sourceVersion;
+  mirror.stamps[stamp + 2] = base;
   mirror.modes[row] = mode;
 }
 
@@ -788,23 +807,52 @@ function writeMeshSurfaceCandidate(
   }
 }
 
-/** Stage only the row selected by a real draw. Recording never sweeps rows for updates. */
-export function prepareMeshDraw(
-  c: _InternalRenderPipelineContext,
-  entry: MeshUpload,
-  folded = false,
-  slot = meshDrawSlot(entry, folded),
-): number {
-  stageMeshDraw(
-    c.pipelineState.meshStorageBuffer,
-    entry,
-    folded,
-    c.visibleSurface?.entityBases,
-    c.runtime.device.caps.storageBuffer,
-    slot,
-    c,
-  );
-  return slot;
+type MeshUploadStorage = Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>;
+
+/** Each pass stages into the owner of the actual backing used by its draws. */
+export class MeshDrawUploads {
+  private identity: object | undefined;
+  private pages: MeshUploadPages | undefined;
+
+  constructor(
+    private readonly storage: MeshUploadStorage,
+    private readonly storageBuffer: boolean,
+    private readonly surfaceBases?: ReadonlyMap<number, number>,
+    private readonly world?: RenderResourceScope,
+  ) {}
+
+  static forPass(c: _InternalRenderPipelineContext): MeshDrawUploads {
+    return new MeshDrawUploads(
+      c.pipelineState.meshStorageBuffer,
+      c.runtime.device.caps.storageBuffer,
+      c.visibleSurface?.entityBases,
+      c.world,
+    );
+  }
+
+  /** Buffer replacements can occur while assembling the current pass. */
+  stage(entry: MeshUpload, folded = false, slot = meshDrawSlot(entry, folded)): number {
+    const storage = this.storage;
+    const paged = storage.pages;
+    const identity = paged === undefined ? storage.buffer : storage;
+    if (identity === null) throw new Error('mesh draw storage is not allocated');
+    let pages = this.pages;
+    if (this.identity !== identity || pages === undefined) {
+      pages = mirrors.get(identity);
+      if (pages === undefined) {
+        pages = new MeshUploadPages(
+          paged === undefined
+            ? undefined
+            : Math.max(1, Math.floor(paged.byteStride / MESH_PER_ENTITY_STRIDE)),
+        );
+        mirrors.set(identity, pages);
+      }
+      this.identity = identity;
+      this.pages = pages;
+    }
+    stageMeshDraw(pages, entry, folded, this.surfaceBases, this.storageBuffer, slot, this.world);
+    return slot;
+  }
 }
 
 /** Flush the addresses explicitly staged by draws; failed ranges remain pending. */
@@ -854,15 +902,14 @@ export function uploadMeshSsboBatch(
   visibleSurfaceBases?: ReadonlyMap<number, number>,
   storageBuffer = true,
 ): number {
+  const writes = new MeshDrawUploads(meshStorageBuffer, storageBuffer, visibleSurfaceBases);
   let nextIndex = 0;
   for (const entry of main) {
     const index = nextIndex++;
-    stageMeshDraw(meshStorageBuffer, entry, false, visibleSurfaceBases, storageBuffer);
-    if (foldDispatchPlan?.headBuckets.has(index))
-      stageMeshDraw(meshStorageBuffer, entry, true, visibleSurfaceBases, storageBuffer);
+    writes.stage(entry);
+    if (foldDispatchPlan?.headBuckets.has(index)) writes.stage(entry, true);
   }
-  for (const entry of shadow)
-    stageMeshDraw(meshStorageBuffer, entry, false, visibleSurfaceBases, storageBuffer);
+  for (const entry of shadow) writes.stage(entry);
   return flushMeshDrawUploads(queue, meshStorageBuffer);
 }
 
@@ -898,51 +945,17 @@ export interface FoldBucket {
   readonly sortKey: number;
 }
 
-/**
- * Minimal renderable shape consumed by the helper. The real
- * `RenderableSnapshot` carries many more fields; the helper only reads
- * `transform.world` (a Float32Array of 16 column-major floats) and
- * `material.transparent` (the LDR-split-sub-pass fold gate, see PR #502
- * fix + feat-20260625 R2 fix-up: geometry-pass entities — non-transparent
- * materials — MUST stay direct because the sprite-pass dispatch path
- * that consumes `headBuckets` does not run for them; folding them would
- * overwrite their mesh-SSBO slot with identity and collapse 3D geometry
- * to origin).
- *
- * Production callers pass `RenderableSnapshot[]` straight through —
- * `RenderableSnapshot.material.transparent` is `boolean | undefined`
- * (derived by the extract stage from `passes[0].renderState.blend !==
- * undefined`, the post-feat-20260626-collapse SSOT; see
- * `MaterialSnapshot.transparent`), structurally compatible with this
- * minimal shape. The gate read inside the helper uses `=== true` /
- * `!== true` so both `false` and `undefined` stay direct.
- *
- * feat-20260625-refactor-sprite-as-transparent-mesh R2 fix-up: the
- * transparent flag identifies the LDR split sub-pass, while the shader id
- * identifies the sprite owner that is safe to fold. Standard PBR Alpha Blend
- * remains direct so its geometry pass keeps one projection row per draw.
- */
+/** Draw fields read by the Sprite fold after dispatch admission. Standard
+ * transparency keeps its original geometry and mesh slot. */
 export interface FoldRenderableLike {
   readonly instances?: unknown;
   readonly spriteInstances?: unknown;
-  readonly transform: { readonly world: Float32Array };
-  readonly material: import('../render-system-extract').MaterialSnapshot;
+  readonly transform: RenderableSnapshot['transform'];
+  readonly material: MaterialResource;
   readonly spriteRegion?: import('../sprite-region').SpriteRegion | undefined;
 }
 
-/** Capture every fact used by folding at both retained and borrowed frame seams. */
-export function foldRenderableSnapshot(
-  source: Pick<RenderableSnapshot, 'transform' | 'spriteRegion' | 'instances' | 'spriteInstances'>,
-  material: MaterialSnapshot,
-): FoldRenderableLike {
-  return {
-    transform: source.transform,
-    material,
-    spriteRegion: source.spriteRegion,
-    instances: source.instances,
-    spriteInstances: source.spriteInstances,
-  };
-}
+export type FoldRowReader = (index: number) => FoldRenderableLike | undefined;
 
 type ParamSnapshot = MaterialResource['snapshot']['paramSnapshot'];
 
@@ -961,11 +974,22 @@ function sameParamSnapshot(a: ParamSnapshot, b: ParamSnapshot): boolean {
   return true;
 }
 
-function isFoldEligible(entry: DispatchEntry, renderables: readonly FoldRenderableLike[]): boolean {
-  const source = renderables[entry.renderableIndex];
-  if (source?.instances !== undefined || source?.spriteInstances !== undefined) return false;
-  const material = source?.material;
-  return material?.transparent === true && materialUsesSpriteGeometry(material);
+function foldMaterial(
+  source: FoldRenderableLike | undefined,
+  materials: MaterialFrame | undefined,
+): MaterialSnapshot | undefined {
+  if (
+    source === undefined ||
+    source.instances !== undefined ||
+    source.spriteInstances !== undefined
+  )
+    return undefined;
+  const material =
+    materials === undefined ? source.material.snapshot : materials.get(source.material)?.snapshot;
+  if (material === undefined) throw new Error('Draw folding requires its accepted material');
+  return material.transparent === true && materialUsesSpriteGeometry(material)
+    ? material
+    : undefined;
 }
 
 /**
@@ -978,7 +1002,8 @@ function isFoldEligible(entry: DispatchEntry, renderables: readonly FoldRenderab
 export function foldDispatchBuckets(
   orderedEntries: DispatchList,
   mode: TransparentSortConfig['mode'],
-  renderables: readonly FoldRenderableLike[],
+  read: FoldRowReader,
+  materials?: MaterialFrame,
 ): readonly FoldBucket[] {
   if (mode !== TRANSPARENT_SORT_MODE_LAYER_Z && mode !== TRANSPARENT_SORT_MODE_LAYER_Y) return [];
   const buckets: FoldBucket[] = [];
@@ -989,19 +1014,24 @@ export function foldDispatchBuckets(
       runStart += 1;
       continue;
     }
-    if (!isFoldEligible(head, renderables)) {
+    const source = read(head.renderableIndex);
+    const material = foldMaterial(source, materials);
+    if (source === undefined || material === undefined) {
       runStart += 1;
       continue;
     }
-    const headSortKey = readSortKey(mode, head.renderableIndex, renderables);
+    const headSortKey = readSortKey(mode, source);
     let runEnd = runStart + 1;
     while (runEnd < orderedEntries.length) {
       const cand = orderedEntries.at(runEnd);
       if (cand === undefined) break;
       if (cand.layer !== head.layer) break;
       if (cand.materialHandle !== head.materialHandle) break;
-      const headRegion = renderables[head.renderableIndex]?.spriteRegion;
-      const candidateRegion = renderables[cand.renderableIndex]?.spriteRegion;
+      const next = read(cand.renderableIndex);
+      const nextMaterial = foldMaterial(next, materials);
+      if (next === undefined || nextMaterial === undefined) break;
+      const headRegion = source.spriteRegion;
+      const candidateRegion = next.spriteRegion;
       if (
         headRegion !== candidateRegion &&
         (headRegion === undefined ||
@@ -1012,19 +1042,8 @@ export function foldDispatchBuckets(
       // A bucket draws with its head's material slot, so differing per-entity
       // values (SpriteRegionOverride regions) split the run. Each override owns
       // its snapshot object, so equal regions must compare by value to fold.
-      if (
-        !sameParamSnapshot(
-          renderables[cand.renderableIndex]?.material.paramSnapshot,
-          renderables[head.renderableIndex]?.material.paramSnapshot,
-        )
-      )
-        break;
-      // Defensive: cand transparent must also be true to join the run.
-      // Same materialHandle implies same transparent flag in production
-      // (material asset identity), but the check costs O(1) per cand and
-      // makes the bucket invariant locally readable.
-      if (!isFoldEligible(cand, renderables)) break;
-      const candSortKey = readSortKey(mode, cand.renderableIndex, renderables);
+      if (!sameParamSnapshot(nextMaterial.paramSnapshot, material.paramSnapshot)) break;
+      const candSortKey = readSortKey(mode, next);
       if (candSortKey !== headSortKey) break;
       runEnd += 1;
     }
@@ -1034,7 +1053,7 @@ export function foldDispatchBuckets(
       continue;
     }
     const run = orderedEntries.slice(runStart, runEnd);
-    const transforms = assembleTransforms(run, renderables);
+    const transforms = assembleTransforms(run, read);
     buckets.push({
       entries: run,
       bucketSize: run.length,
@@ -1048,30 +1067,30 @@ export function foldDispatchBuckets(
   return buckets;
 }
 
-function assembleTransforms(
-  run: DispatchList,
-  renderables: readonly FoldRenderableLike[],
-): Float32Array {
+function assembleTransforms(run: DispatchList, read: FoldRowReader): Float32Array {
   const out = new Float32Array(run.length * 16);
   for (let i = 0; i < run.length; i++) {
     const e = run.at(i);
     if (e === undefined) continue;
-    const w = renderables[e.renderableIndex]?.transform.world;
-    if (w !== undefined) out.set(w, i * 16);
+    const source = read(e.renderableIndex);
+    if (source !== undefined)
+      CapturedSceneTransform.writeStorage(out, i * 16, drawPoseStorage(source));
   }
   return out;
 }
 
-function readSortKey(
-  mode: TransparentSortConfig['mode'],
-  renderableIndex: number,
-  renderables: readonly FoldRenderableLike[],
-): number {
-  const w = renderables[renderableIndex]?.transform.world;
-  if (w === undefined) return 0;
+function readSortKey(mode: TransparentSortConfig['mode'], source: FoldRenderableLike): number {
   // mode 0 (LAYER_Z): sort-axis is Z, column 3 row 2 = world[14].
   // mode 1 (LAYER_Y): sort-axis is Y, column 3 row 1 = world[13].
-  return ((mode === TRANSPARENT_SORT_MODE_LAYER_Z ? w[14] : w[13]) ?? 0) as number;
+  const axis = mode === TRANSPARENT_SORT_MODE_LAYER_Z ? 14 : 13;
+  return CapturedSceneTransform.lane(drawPoseStorage(source), axis) ?? 0;
+}
+
+export interface FoldDraw {
+  readonly bucketSize: number;
+  readonly transforms: Float32Array;
+  /** Positions of validated members in this draw's recording roster, in instance order. */
+  readonly memberPositions: readonly number[];
 }
 
 /**
@@ -1096,7 +1115,7 @@ function readSortKey(
  * ordering; materialSlotIndices owns its separate material-table lookup.
  */
 export interface FoldDispatchPlan {
-  readonly headBuckets: ReadonlyMap<number, FoldBucket>;
+  readonly headBuckets: ReadonlyMap<number, FoldDraw>;
   readonly skipIndices: ReadonlySet<number>;
   readonly foldedBucketCount: number;
 }
@@ -1123,7 +1142,7 @@ export function buildFoldDispatchPlan(
 ): FoldDispatchPlan {
   if (maxBucketSize < 2 || Math.trunc(maxBucketSize) !== maxBucketSize)
     throw new RangeError('Fold page capacity must be an integer of at least two');
-  const headBuckets = new Map<number, FoldBucket>();
+  const headBuckets = new Map<number, FoldDraw>();
   const skipIndices = new Set<number>();
   let foldedBucketCount = 0;
   for (const bucket of foldPages(buckets, maxBucketSize)) {
@@ -1132,15 +1151,21 @@ export function buildFoldDispatchPlan(
     if (headEntry === undefined) continue;
     const headValidatedIdx = renderableIndexToValidatedIndex.get(headEntry.renderableIndex);
     if (headValidatedIdx === undefined) continue;
-    headBuckets.set(headValidatedIdx, bucket);
-    foldedBucketCount += 1;
+    const memberPositions = [headValidatedIdx];
     for (let i = 1; i < bucket.entries.length; i++) {
       const memberEntry = bucket.entries.at(i);
       if (memberEntry === undefined) continue;
       const memberValidatedIdx = renderableIndexToValidatedIndex.get(memberEntry.renderableIndex);
       if (memberValidatedIdx === undefined) continue;
+      memberPositions.push(memberValidatedIdx);
       skipIndices.add(memberValidatedIdx);
     }
+    headBuckets.set(headValidatedIdx, {
+      bucketSize: bucket.bucketSize,
+      transforms: bucket.transforms,
+      memberPositions,
+    });
+    foldedBucketCount += 1;
   }
   return { headBuckets, skipIndices, foldedBucketCount };
 }

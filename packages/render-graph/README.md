@@ -11,7 +11,9 @@ A graph author declares four facts once:
 3. the exact access mode;
 4. the pass kind and declaration order.
 
-Stock pipelines use `RenderGraphBuilder.procedure(options)`. Appending a pass emits its ordered resource operands. `bindResources()` checks inherited texture contents, finalizes attachment stores and resolves, and binds the physical resources. Authored pipelines can supply all declarations before analysis through `compile(options)` or the procedure's `'deferred'` mode. Both modes execute in declaration order and expose RAW/WAR/WAW dependencies through inspection.
+Built-in display uses `RenderGraphBuilder.orderedView(options)`. Appending a pass emits ordered operands, joins usages on their physical slots, and records neighboring raster candidates using their attachment shape. `bindResources()` binds that stream to the device directly. It checks inherited texture contents, finalizes attachment stores and resolves, and binds each resource and its declared views in address order. Final native grouping reads only the recorded candidate runs. A shared pass-local texture's first physical binding owns its lease. The binding walk publishes active imports, views and owned leases directly. A failed allocation releases those leases immediately, and a recording releases them after its queue fence.
+
+The generic `procedure(options)` also emits ordered operands by default. Authored pipelines can provide all declarations before analysis through `compile(options)` or the procedure's `'deferred'` mode. All entries execute in declaration order and expose RAW/WAR/WAW dependencies through inspection.
 
 ```mermaid
 flowchart LR

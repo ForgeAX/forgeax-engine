@@ -33,7 +33,9 @@ it('keeps the original native storage run and detached transform owner', () => {
     source.entries.map((entry) => [entry.renderableIndex, entry.renderableIndex]),
   );
   const plan = buildFoldDispatchPlan([source], indices);
-  expect(plan.headBuckets.get(0)).toBe(source);
+  const draw = plan.headBuckets.get(0);
+  expect(draw?.transforms).toBe(source.transforms);
+  expect(draw?.memberPositions).toHaveLength(10000);
   expect(plan.skipIndices.size).toBe(9999);
 });
 

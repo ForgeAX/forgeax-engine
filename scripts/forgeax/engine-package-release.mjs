@@ -32,7 +32,6 @@ const sha = (algorithm, bytes, encoding = 'hex') =>
 async function packageArchive(directory, version, source) {
   const { channel } = releasePolicy(version);
   if (
-    (channel !== 'next' && channel !== 'rc') ||
     !/^[0-9a-f]{40}$/.test(source) ||
     (channel === 'next' && !version.endsWith(`.${source.slice(0, 12)}`))
   )
@@ -298,7 +297,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [stage, directory, version, source, ...extra] = process.argv.slice(2);
   if (stage === 'seal') {
     const item = await packageArchive(directory, version, source);
-    if (releasePolicy(version).channel === 'rc') {
+    if (releasePolicy(version).channel !== 'next') {
       await readChannel(version);
       await versionExists(item);
     }

@@ -2162,6 +2162,7 @@ export function createEngineWorkspaceAppTarget(
   const pick = tools?.pick;
   const highlight = tools?.highlight;
   const assistance = tools?.assistance;
+  const viewportOutput = tools?.viewportOutput;
   const preview: EngineWorkspacePreview = {
     get target() {
       return currentTarget;
@@ -2230,6 +2231,24 @@ export function createEngineWorkspaceAppTarget(
                   highlight: (value: { entityId?: string }) => {
                     assertOpen();
                     return highlight(value);
+                  },
+                }
+              : {}),
+            ...(viewportOutput
+              ? {
+                  viewportOutput: {
+                    get: () => {
+                      assertOpen();
+                      return viewportOutput.get();
+                    },
+                    set: (
+                      value: Parameters<
+                        NonNullable<EngineWorkspaceTargetTools['viewportOutput']>['set']
+                      >[0],
+                    ) => {
+                      assertOpen();
+                      return viewportOutput.set(value);
+                    },
                   },
                 }
               : {}),

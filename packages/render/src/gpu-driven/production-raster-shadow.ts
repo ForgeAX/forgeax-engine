@@ -12,6 +12,7 @@ import type { CameraSnapshot } from '../render-contract';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { FrameSet } from '../scene/frame-set';
 import { type ShadowMaterialContent, sameShadowMaterial } from '../scene/material-shadow-content';
+import { slotContent } from '../scene/mesh-draw';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import type { BatchPass } from './batch-execution';
@@ -131,11 +132,12 @@ interface ChannelSlots {
 }
 
 function admitsChannels(row: RenderSceneSlot | undefined, mask: number): boolean {
+  if (row === undefined) return false;
+  const content = slotContent(row);
   return (
-    row !== undefined &&
-    row.snapshot.shadowCaster !== false &&
-    row.snapshot.authorVisible !== false &&
-    (mask === 0xffffffff || ((row.snapshot.shadowChannels ?? 0xffffffff) & mask) !== 0)
+    content.shadowCaster !== false &&
+    content.authorVisible !== false &&
+    (mask === 0xffffffff || ((content.shadowChannels ?? 0xffffffff) & mask) !== 0)
   );
 }
 

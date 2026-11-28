@@ -56,14 +56,20 @@ import {
   type RenderSceneSource,
   registerSceneSystem,
 } from '../world/scene-systems';
+import type { RecordingScenePose } from './captured-transform';
 import type { DrawEvidence } from './draw-evidence';
 import { type FrameList, FrameProjection, sparseRowsOf } from './frame-list';
 import { FrameIntersection } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
+import { SceneDrawSlot } from './mesh-draw';
 import type { MeshFrame } from './mesh-frame';
 import { attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
 import type { ProbeBlendBufferProjection } from './probe-blend';
-import { type FrameCacheTally, writeTransformedWorldBounds } from './render-scene-snapshots';
+import {
+  type FrameCacheTally,
+  writeSnapshotWorldBounds,
+  writeTransformedWorldBounds,
+} from './render-scene-snapshots';
 import type { RenderSceneBounds, RenderSceneSlot } from './render-scene-types';
 import {
   GeneratedViewRows,
@@ -159,6 +165,13 @@ export interface PersistentShadowCasterProjection {
     out: box3.Box3,
     slot?: RenderSceneSlot,
   ) => boolean;
+  /** Built-in bounds also consume a numeric replacement of the placed slot's pose. */
+  readonly recordingWorldBoundsOf?: (
+    source: RenderableSnapshot,
+    out: box3.Box3,
+    slot: RenderSceneSlot | undefined,
+    pose: RecordingScenePose | undefined,
+  ) => boolean;
   readonly renderables: FrameList<RenderableSnapshot>;
   readonly dispatch: DispatchList;
   /** Skin membership when the original fixed scene rows own the complete source projection. */
@@ -219,10 +232,15 @@ export interface PersistentGpuDrivenState {
     /** A located row can be projected directly only with its paired fixed-frame locator. */
     readonly locate?: (slot: number) => RenderSceneSlot | undefined;
     readonly project?: (row: RenderSceneSlot) => RenderableSnapshot | undefined;
-    /** Apply this exact camera's physical slot selection before issuing a draw. */
+    /** The current non-temporal, unadorned projection can reuse a placed authored draw. */
+    readonly borrowPose?: (
+      placed: import('./mesh-draw').SceneDrawSlot,
+      into: import('./captured-transform').RecordingScenePose,
+    ) => boolean;
+    /** Apply this Pass's camera and caster selection before issuing a draw. */
     readonly projectCamera?: (
       row: RenderSceneSlot,
-      camera: Pick<CameraSnapshot, 'cullMask'>,
+      camera: Pick<CameraSnapshot, 'cullMask'> & { readonly shadow?: boolean },
       visibility: import('./persistent-cull').SlotCameraVisibility,
     ) => RenderableSnapshot | undefined;
   };
@@ -392,7 +410,10 @@ export class PersistentRenderScene {
     }
     try {
       view.skin?.discardFrame();
-      return view.skin?.prepareFrame(view.projection.slotsSnapshot());
+      return view.skin?.prepareFrame(
+        view.projection.slotsSnapshot(),
+        this.options.getDevice?.().caps.storageBuffer !== true,
+      );
     } catch (cause) {
       view.skin = undefined;
       this.retireView();
@@ -775,6 +796,7 @@ export class PersistentRenderScene {
     adoption: RenderSceneAdoption,
     buildCandidateFrame?: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
     profileSession?: RecorderSession,
+    renderKernel?: import('../record/render-kernel-bridge').RenderKernelBridge,
   ): ExtractedFrame {
     const advance = this.sharedStep(() => adoptedAdvance(adoption));
     const resourceFrame =
@@ -784,12 +806,18 @@ export class PersistentRenderScene {
     if (buildCandidateFrame !== undefined) this.shared.fenceViewResourceFrame(resourceFrame);
     const identity = renderFeatureViewIdentity(resourceFrame.cameras[0]);
     if (profileSession === undefined)
-      return this.deriveFramePlan(this.follow(advance), resourceFrame, identity);
+      return this.deriveFramePlan(
+        this.follow(advance),
+        resourceFrame,
+        identity,
+        undefined,
+        renderKernel,
+      );
     const view = runProfiledRenderPhase(profileSession, 'extract/follow-adoption', () =>
       this.follow(advance),
     );
     return runProfiledRenderPhase(profileSession, 'extract/derive-view', () =>
-      this.deriveFramePlan(view, resourceFrame, identity, profileSession),
+      this.deriveFramePlan(view, resourceFrame, identity, profileSession, renderKernel),
     );
   }
 
@@ -798,11 +826,14 @@ export class PersistentRenderScene {
     adoption: RenderSceneAdoption,
     frame: ExtractedFrame,
     viewIdentity: string | undefined,
+    renderKernel?: import('../record/render-kernel-bridge').RenderKernelBridge,
   ): ExtractedFrame {
     return this.deriveFramePlan(
       this.follow(this.sharedStep(() => adoptedAdvance(adoption))),
       frame,
       viewIdentity,
+      undefined,
+      renderKernel,
     );
   }
 
@@ -1124,6 +1155,7 @@ export class PersistentRenderScene {
     resourceFrame: ExtractedFrame,
     viewIdentity: string | undefined,
     profileSession?: RecorderSession,
+    renderKernel?: import('../record/render-kernel-bridge').RenderKernelBridge,
   ): ExtractedFrame {
     const entry = view.shared;
     const projection = view.projection;
@@ -1168,7 +1200,7 @@ export class PersistentRenderScene {
     const frameWithProbes = attachProbeRecords(
       { ...candidateFrame, renderables: drawableCandidates },
       drawableCandidates,
-      projection.slotsSnapshot(),
+      acceptedSlots.identities,
       entry.probeProjection,
       this.probeAttachMemo,
     );
@@ -1226,6 +1258,7 @@ export class PersistentRenderScene {
       gpuSelection: this.gpuCullSelection(entry.token),
       plan: () => this.shared.batchPlan(entry),
       slotDraws: () => this.slotDraws(view),
+      renderKernel,
     };
     const { frame: result, subsurface } =
       profileSession === undefined
@@ -1249,6 +1282,36 @@ export class PersistentRenderScene {
               (source) => source.terrainSection !== undefined || source.generatedMesh !== undefined,
             )
           : EMPTY_VIEW_DRAWS;
+    const worldBoundsOf = (
+      source: RenderableSnapshot,
+      out: box3.Box3,
+      row?: RenderSceneSlot,
+      pose?: RecordingScenePose,
+    ): boolean => {
+      if (!residencySelected(residencySelection, source.residencyGroup)) return false;
+      if (source.terrainSection !== undefined || source.generatedMesh !== undefined)
+        return pose === undefined
+          ? writeSnapshotWorldBounds(out, source)
+          : writeTransformedWorldBounds(out, source.localAabb, pose.poseColumn, pose.poseOffset);
+      const placed = sceneRow(row, source);
+      if (pose !== undefined && placed instanceof SceneDrawSlot)
+        return projection.writeCullingPoseBounds(
+          placed.slot,
+          pose.version,
+          placed.content,
+          pose.poseColumn,
+          pose.poseOffset,
+          out,
+          meshFrame,
+          materialFrame,
+          skinFrame,
+        );
+      const slot = placed ?? shadowSlots.lookup(source.entityKey);
+      return (
+        slot !== undefined &&
+        projection.writeCullingWorldBoundsAt(slot, out, meshFrame, materialFrame, skinFrame)
+      );
+    };
     this.shadowProjection = {
       get hasDeformingCaster() {
         const slots = sceneSkinSlotsOf(ownedFrame.renderables, shadowSlots);
@@ -1294,14 +1357,8 @@ export class PersistentRenderScene {
       get materialPrograms() {
         return materialProgramProjection.project(ownedFrame.dispatch, materialFrame);
       },
-      worldBoundsOf: (source, out, row) => {
-        if (!residencySelected(residencySelection, source.residencyGroup)) return false;
-        const slot = sceneRow(row, source) ?? shadowSlots.lookup(source.entityKey);
-        return source.terrainSection !== undefined || source.generatedMesh !== undefined
-          ? writeTransformedWorldBounds(out, source.localAabb, source.transform.world)
-          : slot !== undefined &&
-              projection.writeCullingWorldBoundsAt(slot, out, meshFrame, materialFrame, skinFrame);
-      },
+      worldBoundsOf,
+      recordingWorldBoundsOf: worldBoundsOf,
     };
 
     this.terrainCandidate = viewDraws.some((source) => source.terrainSection !== undefined)

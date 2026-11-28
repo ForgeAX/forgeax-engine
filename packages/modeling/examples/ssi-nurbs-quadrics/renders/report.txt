@@ -1,0 +1,6 @@
+s-bend-sphere: faces 48, branches 96, closed 0, partials 0, max bound 5.95e-8
+s-bend-cone: faces 48, branches 33, closed 1, partials 0, max bound 9.92e-8
+s-bend-torus: faces 48, branches 67, closed 0, partials 0, max bound 9.99e-8
+transition-sphere: faces 80, branches 160, closed 0, partials 0, max bound 1.35e-8
+transition-cone: faces 80, branches 42, closed 0, partials 0, max bound 7.46e-8
+transition-torus: faces 80, branches 38, closed 0, partials 0, max bound 6.89e-8

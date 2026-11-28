@@ -35,13 +35,6 @@ describe('engine declaration graph', () => {
     );
   });
 
-  it('declares the NPC project in the root composite graph', () => {
-    const config = JSON.parse(readFileSync(resolve(engineRoot, 'tsconfig.json'), 'utf8')) as {
-      references?: Array<{ path?: string }>;
-    };
-    expect(config.references?.map((reference) => reference.path)).toContain('./packages/npc');
-  });
-
   it.each([
     'animation',
     'navigation',
@@ -58,7 +51,6 @@ describe('engine declaration graph', () => {
   });
 
   it.each([
-    'npc',
     'ecs',
     'runtime',
     'types',

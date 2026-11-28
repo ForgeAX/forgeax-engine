@@ -21,8 +21,10 @@ import {
   createDynamicGeometrySourceHost,
   prepareExtractContext,
   prepareRenderPublicationTransfer,
+  prepareSourceMeshPrograms,
   renderMaterialContext,
   StagedMeshSourceError,
+  sourceMaterialProgramDemand,
 } from '@forgeax/engine-render/internal';
 import { ownPipelineLibrary, textureReadbackLayout } from '@forgeax/engine-rhi';
 import {
@@ -30,7 +32,13 @@ import {
   createRhiDebugError,
   tapeArtifact,
 } from '@forgeax/engine-rhi-debug';
-import { err, ok, type TaskExecutor, textureFormatBlock } from '@forgeax/engine-types';
+import {
+  beginLoadTimeline,
+  err,
+  ok,
+  type TaskExecutor,
+  textureFormatBlock,
+} from '@forgeax/engine-types';
 import { ConfigurationRequests, staleConfiguration } from '../configuration-apply';
 import type { EngineStartupPlan } from '../configuration-types';
 import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
@@ -45,6 +53,11 @@ import {
 } from './protocol';
 import { forwardRenderBackend } from './render-backend';
 import type { RenderWorkerConnection } from './render-worker-browser-channel';
+import {
+  openRenderWorker,
+  preloadRenderWorker,
+  type RenderWorkerPreload,
+} from './render-worker-preload';
 import {
   MESH_RESIDENCY_REQUEST_LIMIT,
   type RenderWorkerInput,
@@ -226,13 +239,11 @@ export class SourceRenderWorker {
   private deadline: ReturnType<typeof setTimeout> | undefined;
   private epoch = 1;
   private initializationSent = false;
-  private preloadFailure:
-    | { readonly kind: 'constructor'; readonly cause: unknown }
-    | { readonly kind: 'module'; readonly cause: string }
-    | undefined;
+  private preloaded: RenderWorkerPreload | undefined;
   private readonly source = crypto.randomUUID();
   private readonly publicationCapacity: 2 | 3 | 4;
   private readonly transferBudgetBytes: number;
+  private inFlightTransferBytes = 0;
   private disposed = false;
   private inspectionReady = false;
   private preparingMeshBaseline = false;
@@ -292,12 +303,13 @@ export class SourceRenderWorker {
       readonly frameId: number;
       readonly fixedStep: number;
       readonly transferBytes: number;
-      readonly deviceGeneration?: number;
-      readonly graphGeneration?: number;
-      readonly featureIdentities?: readonly string[];
+      deviceGeneration?: number;
+      graphGeneration?: number;
+      featureIdentities?: readonly string[] | undefined;
     }
   >();
   private capacityWaiters: (() => void)[] = [];
+  private pendingPublicationTransfer: Promise<void> | undefined;
   private readonly meshResidency: SourceMeshResidency;
   private readonly disposeMeshPresenter: () => void;
   private readonly closedLevelEntities = new Set<number>();
@@ -448,35 +460,15 @@ export class SourceRenderWorker {
   }
 
   private createWorker(): RenderWorkerConnection {
-    return (
-      this.openBrowserRenderWorker?.() ??
-      new Worker(new URL('./render-worker-runtime.mjs', import.meta.url), {
-        type: 'module',
-        name: 'forgeax-render',
-      })
-    );
+    return this.openBrowserRenderWorker?.() ?? openRenderWorker();
   }
 
   /** Admit CPU shader inputs in the child; device startup remains owned by start(). */
-  preloadModule(): void {
-    if (this.disposed || this.worker !== undefined || this.preloadFailure !== undefined) return;
-    try {
-      const worker = this.createWorker();
-      this.worker = worker;
-      worker.onerror = (event) => {
-        // Staged errors remain owned here, including queued events after disposal.
-        event.preventDefault();
-        if (this.worker === worker && this.preloadFailure === undefined)
-          this.preloadFailure = { kind: 'module', cause: event.message };
-      };
-      const shaderManifestUrl = this.init.shaderManifestUrl;
-      worker.postMessage({
-        kind: 'stage-shader-manifest',
-        ...(shaderManifestUrl === undefined ? {} : { url: shaderManifestUrl }),
-      } satisfies RenderWorkerInput);
-    } catch (cause) {
-      this.preloadFailure = { kind: 'constructor', cause };
-    }
+  preloadModule(early?: RenderWorkerPreload): void {
+    if (this.disposed || this.worker !== undefined || this.preloaded !== undefined) return;
+    this.preloaded =
+      early ?? preloadRenderWorker(this.init.shaderManifestUrl, () => this.createWorker());
+    this.worker = this.preloaded.worker;
   }
   async start(
     canvas: OffscreenCanvas,
@@ -485,7 +477,8 @@ export class SourceRenderWorker {
   ): Promise<void> {
     if (this.disposed) return;
     const epoch = this.epoch;
-    const preloadFailure = this.preloadFailure;
+    const preloadFailure = this.preloaded?.failure;
+    this.preloaded = undefined;
     if (preloadFailure?.kind === 'constructor') throw preloadFailure.cause;
     const worker = this.worker ?? this.createWorker();
     this.worker = worker;
@@ -500,6 +493,7 @@ export class SourceRenderWorker {
       let ready = false;
       let failurePending = false;
       let acceptingReady = false;
+      let startedSourcePrograms = false;
       const failure = (
         cause: unknown,
         failure?: Extract<RenderWorkerOutput, { kind: 'failed' }>,
@@ -586,6 +580,49 @@ export class SourceRenderWorker {
       }
       const acceptsSceneMessages = (): boolean => !this.disposed && !failurePending;
       worker.onerror = (event) => failure(event.message);
+      const prepareInitialSourcePrograms = (
+        message: Extract<RenderWorkerOutput, { kind: 'device-admitted' }>,
+      ) => {
+        if (
+          ready ||
+          acceptingReady ||
+          startedSourcePrograms ||
+          epoch !== 1 ||
+          message.identity.source !== this.source ||
+          message.identity.epoch !== epoch ||
+          this.init.startup?.rendering.profile.renderPath !== 'forward'
+        )
+          return;
+        startedSourcePrograms = true;
+        const end = beginLoadTimeline('boot', 'first-source-material-programs');
+        try {
+          const limit = message.maxSampledTexturesPerShaderStage;
+          // Request the same program domain as the first source publication.
+          // Scene/frame ownership remains with the ordinary frame admission.
+          const demand = sourceMaterialProgramDemand(this.init.startup.rendering.profile);
+          prepareSourceMeshPrograms(this.world, {
+            assets: this.assets,
+            ...renderMaterialContext(
+              message.capabilities,
+              limit === undefined ? undefined : { maxSampledTexturesPerShaderStage: limit },
+            ),
+            ...(demand === undefined ? {} : { materialProgramDemand: demand }),
+          });
+          end(undefined, { ok: true });
+        } catch {
+          // Normal frame admission still owns the error if its selection fails.
+          end(undefined, { ok: false });
+        }
+      };
+      const receiveSceneIndexDemand = (
+        message: Extract<RenderWorkerOutput, { kind: 'scene-index-demand' }>,
+      ) => {
+        if (ready && this.matchesSourceWorld(message, epoch)) {
+          const demand = this.publisher?.materialProgramDemand;
+          if (demand?.sceneIndex === false)
+            this.publisher?.requireMaterialPrograms({ ...demand, sceneIndex: true });
+        }
+      };
       worker.onmessage = (event: MessageEvent<RenderWorkerOutput>) => {
         if (this.worker !== worker || this.epoch !== epoch) return;
         const message = event.data;
@@ -593,9 +630,11 @@ export class SourceRenderWorker {
         if (!acceptsSceneMessages()) return;
         const validateSceneMessage = () => {
           if (
-            (message.kind === 'geometry-observation-result' ||
+            (message.kind === 'device-admitted' ||
+              message.kind === 'geometry-observation-result' ||
               message.kind === 'inspect-result' ||
               message.kind === 'renderer-error' ||
+              message.kind === 'scene-index-demand' ||
               message.kind === 'submitted' ||
               message.kind === 'completed') &&
             !validWorkerIdentity(message.identity)
@@ -656,7 +695,15 @@ export class SourceRenderWorker {
           return true;
         };
         if (!validateSceneMessage()) return;
+        if (message.kind === 'device-admitted') {
+          prepareInitialSourcePrograms(message);
+          return;
+        }
         const receiveSceneResult = () => {
+          if (message.kind === 'scene-index-demand') {
+            receiveSceneIndexDemand(message);
+            return true;
+          }
           if (
             message.kind === 'geometry-observation-result' ||
             message.kind === 'hdr-observation-result'
@@ -665,11 +712,7 @@ export class SourceRenderWorker {
             return true;
           }
           if (message.kind === 'inspect-result') {
-            if (
-              message.identity.source === this.source &&
-              message.identity.epoch === epoch &&
-              message.worldIdentity === this.world.identity
-            )
+            if (this.matchesSourceWorld(message, epoch))
               this.inspectionRequests.get(message.requestId)?.finish(message.result);
             return true;
           }
@@ -742,10 +785,13 @@ export class SourceRenderWorker {
                 retainHidden: true,
               });
             this.captureCandidatePipelines = (input) => {
+              const demand = this.publisher?.materialProgramDemand;
               const captured = captureMeshPipelinePreparation({
                 ...input,
                 assets: this.assets,
                 capabilities: message.capabilities,
+                materialProgramDemand:
+                  demand === undefined ? undefined : { ...demand, sceneIndex: true },
                 ...(message.limits === undefined ? {} : { limits: message.limits }),
               });
               if (!captured.ok) return captured;
@@ -771,6 +817,7 @@ export class SourceRenderWorker {
               (handle, revision) => this.meshResidency.holdsPrepared(handle, revision),
               (handle) => this.dynamicGeometry.pendingMeshPreparation(this.world, handle),
               (entity) => this.closedLevelEntities.has(entity),
+              sourceMaterialProgramDemand(this.init.startup?.rendering.profile),
             );
             ready = true;
             this.inspectionReady = true;
@@ -819,14 +866,13 @@ export class SourceRenderWorker {
                 );
                 return;
               }
-              this.publishedFrames.set(message.revision, {
-                ...submitted,
-                deviceGeneration: message.frame.deviceGeneration,
-                ...(message.frame.graphGeneration === undefined
-                  ? {}
-                  : { graphGeneration: message.frame.graphGeneration }),
-                featureIdentities: message.features.map((feature) => feature.identity),
-              });
+              submitted.deviceGeneration = message.frame.deviceGeneration;
+              if (message.frame.graphGeneration !== undefined)
+                submitted.graphGeneration = message.frame.graphGeneration;
+              submitted.featureIdentities =
+                message.features.length === 0
+                  ? undefined
+                  : message.features.map((feature) => feature.identity);
             } catch (cause) {
               failure(cause, undefined, false);
               return;
@@ -929,7 +975,7 @@ export class SourceRenderWorker {
               return true;
             };
             if (!retireCompletedPublication()) return;
-            this.publishedFrames.delete(message.revision);
+            this.releasePublicationTransfer(message.revision);
             this.releaseCapacityWaiters();
             if (proof !== undefined) {
               this.meshResidency.complete(proof);
@@ -950,7 +996,7 @@ export class SourceRenderWorker {
                 message.frame.frameId > this.latestCompletedTerrainFrame)
             )
               this.latestCompletedTerrainFrame = message.frame.frameId;
-            if (this.publisher?.inspect().inFlight) this.armFrameDeadline();
+            if (this.publishedFrames.size !== 0) this.armFrameDeadline();
           };
           completeSourceFrame();
         }
@@ -1078,16 +1124,17 @@ export class SourceRenderWorker {
       ...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),
     };
   }
-  private outstandingTransferBytes(): number {
-    let bytes = 0;
-    for (const flight of this.publishedFrames.values()) bytes += flight.transferBytes;
-    return bytes;
+  private releasePublicationTransfer(revision: number): void {
+    const flight = this.publishedFrames.get(revision);
+    if (flight === undefined) return;
+    this.publishedFrames.delete(revision);
+    this.inFlightTransferBytes -= flight.transferBytes;
   }
   get hasPublicationCapacity(): boolean {
     return (
       this.inspectionReady &&
       this.publishedFrames.size < this.publicationCapacity &&
-      this.outstandingTransferBytes() < this.transferBudgetBytes
+      this.inFlightTransferBytes < this.transferBudgetBytes
     );
   }
   private settleReadyWait(): void {
@@ -1135,6 +1182,13 @@ export class SourceRenderWorker {
       throw new Error('Render Worker is not ready');
     const geometryFault = this.dynamicGeometry.dynamicGeometryFault(this.world);
     if (geometryFault !== undefined) throw geometryFault;
+    if (publisher.materialProgramExpansionPending)
+      this.post({
+        kind: 'frame-admission',
+        worldIdentity: this.world.identity,
+        frameId: frame.frameId,
+        phase: 'render-preparation',
+      });
     const candidate = publisher
       .prepare(sampleTimeSeconds, frame.temporalReset === true, {
         frameId: frame.frameId,
@@ -1163,12 +1217,15 @@ export class SourceRenderWorker {
         width: frame.canvasWidth,
         height: frame.canvasHeight,
         publication,
+        ...(publisher.materialProgramDemand?.sceneIndex === false
+          ? { sourceSceneIndexDeferred: true as const }
+          : {}),
         ...selection,
         sourceFixedStep,
         engineUpdateMs,
         engineCreditWaitMs,
       } satisfies RenderWorkerInput;
-      if (this.outstandingTransferBytes() + transferBytes <= this.transferBudgetBytes) {
+      if (this.inFlightTransferBytes + transferBytes <= this.transferBudgetBytes) {
         this.sendPublication(worker, postMessage, message, candidate, transfers, transferBytes);
         return;
       }
@@ -1183,14 +1240,21 @@ export class SourceRenderWorker {
             this.disposed
           )
             throw new Error('Render Worker session ended during publication transfer admission');
-        } while (this.outstandingTransferBytes() + transferBytes > this.transferBudgetBytes);
+        } while (this.inFlightTransferBytes + transferBytes > this.transferBudgetBytes);
         message.engineCreditWaitMs += performance.now() - waitStarted;
         this.sendPublication(worker, postMessage, message, candidate, transfers, transferBytes);
       };
-      return resume().catch((cause) => {
-        this.discardPublication(worker, frame.frameId, candidate, cause);
-        throw cause;
-      });
+      const transfer = resume()
+        .catch((cause) => {
+          this.discardPublication(worker, frame.frameId, candidate, cause);
+          throw cause;
+        })
+        .finally(() => {
+          if (this.pendingPublicationTransfer === transfer)
+            this.pendingPublicationTransfer = undefined;
+        });
+      this.pendingPublicationTransfer = transfer;
+      return transfer;
     } catch (cause) {
       this.discardPublication(worker, frame.frameId, candidate, cause);
       throw cause;
@@ -1210,6 +1274,7 @@ export class SourceRenderWorker {
       fixedStep: message.sourceFixedStep,
       transferBytes,
     });
+    this.inFlightTransferBytes += transferBytes;
     candidate.observation?.phase('send');
     post.call(worker, message, transfers);
     candidate.observation?.count('send-returned');
@@ -1224,7 +1289,7 @@ export class SourceRenderWorker {
     cause: unknown,
   ): void {
     if (worker === this.worker && candidate.message.epoch === this.epoch) {
-      this.publishedFrames.delete(candidate.packet.revision);
+      this.releasePublicationTransfer(candidate.packet.revision);
       this.closedLevelRows.failSelection(frameId, cause);
     }
     candidate.observation?.count('send-or-accept-error');
@@ -1330,6 +1395,21 @@ export class SourceRenderWorker {
     const epoch = this.epoch;
     if (worker === undefined || this.disposed)
       return err(staleConfiguration('the Render Worker is unavailable'));
+    if (
+      this.publisher?.requireMaterialPrograms(
+        sourceMaterialProgramDemand(plan.rendering.profile),
+      ) === true
+    ) {
+      // Render applies configuration after its already posted draws. A packet
+      // parked on byte credit must join that earlier draw sequence as well.
+      try {
+        await this.pendingPublicationTransfer;
+      } catch {
+        return err(staleConfiguration('an earlier Render publication failed'));
+      }
+      if (this.worker !== worker || this.epoch !== epoch || this.disposed)
+        return err(staleConfiguration('the Render Worker was replaced'));
+    }
     const result = await this.configurationRequests.request(
       plan,
       previousRevision,
@@ -1485,6 +1565,20 @@ export class SourceRenderWorker {
       }
     });
   }
+  private matchesSourceWorld(
+    message: Pick<
+      Extract<RenderWorkerOutput, { kind: 'inspect-result' }>,
+      'identity' | 'worldIdentity'
+    >,
+    epoch: number,
+  ): boolean {
+    return (
+      message.identity.source === this.source &&
+      message.identity.epoch === epoch &&
+      message.worldIdentity === this.world.identity
+    );
+  }
+
   /** Delivers a one-shot diagnostic result only to the matching session and request. */
   private receiveOneShotResult(
     message: Extract<
@@ -1493,12 +1587,7 @@ export class SourceRenderWorker {
     >,
     epoch: number,
   ): void {
-    if (
-      message.identity.source !== this.source ||
-      message.identity.epoch !== epoch ||
-      message.worldIdentity !== this.world.identity
-    )
-      return;
+    if (!this.matchesSourceWorld(message, epoch)) return;
     if (message.kind === 'geometry-observation-result') {
       if (this.oneShotRequests.geometry?.id === message.requestId)
         this.oneShotRequests.geometry.finish(message.result);
@@ -1675,6 +1764,7 @@ export class SourceRenderWorker {
       this.meshResidency.clear('Render Worker session ended');
     }
     this.publishedFrames.clear();
+    this.inFlightTransferBytes = 0;
     this.releaseCapacityWaiters();
     for (const request of this.inspectionRequests.values())
       request.finish(rendererInspectionFailure('session-ended'));
@@ -1701,7 +1791,7 @@ export class SourceRenderWorker {
     this.worker?.terminate();
     this.worker = undefined;
     this.initializationSent = false;
-    this.preloadFailure = undefined;
+    this.preloaded = undefined;
     this.latestGpuPassTiming = undefined;
     this.latestCompletedTerrainFrame = undefined;
     this.publisher?.dispose();

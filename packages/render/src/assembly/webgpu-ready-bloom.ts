@@ -296,6 +296,7 @@ export function createBloomResourceOwner(
   cache: PipelineCache,
   modules: EngineShaderModules,
   enabled: boolean,
+  prepareModules?: () => void,
 ): BloomResourceOwner {
   let ready = false;
   let active: BloomPersistentBundle | undefined;
@@ -325,6 +326,7 @@ export function createBloomResourceOwner(
   return {
     ensureBloomResources: () => {
       if (!enabled || ready) return;
+      prepareModules?.();
       const scope = rendererScope.createChild(`${rendererScope.owner}:standard-bloom`);
       try {
         candidate = buildBloomBundle(device, provider, cache, scope, modules, generation + 1);

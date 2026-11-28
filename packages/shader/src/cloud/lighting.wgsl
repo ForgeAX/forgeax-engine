@@ -1,5 +1,8 @@
 #define_import_path forgeax_cloud::lighting
-#import forgeax_view::common::{AtmosphereMedium}
+#import forgeax_view::common::{AtmosphereMedium, view_atmosphere_ue5}
+#ifdef ATMOSPHERE_AVAILABLE
+#import forgeax_view::common::{view, atmosphereDistantSkyBuffer}
+#endif
 #import forgeax_atmosphere::optics::{atmosphere_position, atmosphere_solar_transmittance}
 
 fn cloud_solar_light(medium: AtmosphereMedium, worldPosition: vec3f, groundTransmittance: vec3f,
@@ -14,7 +17,12 @@ fn cloud_solar_light(medium: AtmosphereMedium, worldPosition: vec3f, groundTrans
 fn cloud_sky_light(ambient: vec4f, enabled: bool, outerSun: vec3f,
   distantSky: texture_2d<f32>) -> vec3f {
   if !enabled { return vec3f(0.0); }
-  if ambient.w > 0.5 { return textureLoad(distantSky, vec2i(0), 0).rgb * outerSun; }
+  if ambient.w > 0.5 {
+#ifdef ATMOSPHERE_AVAILABLE
+    if view_atmosphere_ue5(view) { return atmosphereDistantSkyBuffer.rgb; }
+#endif
+    return textureLoad(distantSky, vec2i(0), 0).rgb * outerSun;
+  }
   return ambient.rgb;
 }
 

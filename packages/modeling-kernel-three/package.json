@@ -1,0 +1,62 @@
+{
+  "name": "@forgeax/modeling-kernel-three",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Zero-copy Three.js BufferGeometry adapter for @forgeax/modeling-kernel (zero ForgeaX engine dependencies).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/modeling-kernel": "workspace:*"
+  },
+  "peerDependencies": {
+    "three": ">=0.160.0"
+  },
+  "devDependencies": {
+    "tsup": "^9.0.0",
+    "typescript": "^6.0.0",
+    "vitest": "^4.1.12"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "Three.js BufferGeometry adapter library with no runtime canvas."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "Thin zero-copy adapter has no standalone benchmark suite."
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "Adapter correctness is covered by Vitest unit tests."
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Maintained adapter package, not a spike report."
+      }
+    }
+  }
+}

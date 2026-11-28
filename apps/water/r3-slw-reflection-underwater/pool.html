@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>水光 · Interactive Pool | ForgeAX</title>
+  </head>
+  <body>
+    <canvas id="pool" tabindex="0" aria-label="交互式泳池，点击水面制造涟漪"></canvas>
+    <header><a href="./">FORGEAX <span>/ WATER STUDIES</span></a><span class="edition">01 — OPTICS</span></header>
+    <main id="panel">
+      <div class="eyebrow"><span class="live-dot"></span> REALTIME WATER EXPERIMENT</div>
+      <h1>水光<span>Light, in motion.</span></h1>
+      <p class="intro">轻触水面，让光在池底流动。<br />一束光、一池水，以及不断变化的折射。</p>
+      <div class="divider"></div>
+      <div class="section-label">探索泳池 <span>INTERACT</span></div>
+      <dl class="instructions">
+        <div><dt>点击 / 划过水面</dt><dd>制造涟漪</dd></div>
+        <div><dt>拖动球体</dt><dd>扰动水面</dd></div>
+        <div><dt>右键拖动 / 滚轮</dt><dd>环绕 / 缩放</dd></div>
+        <div><dt><kbd>L</kbd> 光照跟随视角</dt><dd><kbd>R</kbd> 重置</dd></div>
+      </dl>
+      <div class="divider"></div>
+      <div class="section-label">光与波 <span>CONTROLS</span></div>
+      <label class="toggle"><span>动态焦散 <small>折射后的光能汇聚</small></span><input id="caustics" type="checkbox" checked /><i></i></label>
+      <label class="toggle"><span>球体重力 <small>浮力与水面扰动</small></span><input id="gravity" type="checkbox" /><i></i></label>
+      <label class="slider-label" for="gain">焦散强度 <output id="gain-value">1.00</output></label>
+      <input id="gain" type="range" min="0" max="2" step="0.05" value="1" />
+      <div class="buttons"><button id="pause" type="button">暂停波动 <kbd>SPACE</kbd></button><button id="reset" type="button" aria-label="重置泳池">↺</button></div>
+      <div class="buttons views"><button id="reference-view" type="button">原版观察视角</button><button id="underwater-view" type="button">进入水下</button></div>
+      <details><summary>观察光能场</summary><label class="toggle"><span>显示焦散纹理</span><input id="field" type="checkbox" /><i></i></label><p>水面网格沿折射方向投影，以面积比计算光能密度。重叠光束加法累积。</p></details>
+      <p class="provenance">PROCEDURAL ASSETS ONLY<br /><span>瓷砖 · 天空 · 几何 · 水面，全部由代码生成。</span></p>
+    </main>
+    <footer><span id="status">正在准备水面与光线…</span></footer>
+    <script type="module" src="/src/pool/main.ts"></script>
+  </body>
+</html>

@@ -6,7 +6,7 @@ import type { Region2, Shape2 } from './compute/region-ts';
 import { atan2, hypot2 } from './dmath';
 import { type ModelingError, modelingError } from './errors';
 import { add, cross, dot, length, normalize, scale, sub, type Tuple3 } from './geom';
-import { type EditMesh, FACE_EDGE_ROUND } from './mesh';
+import { type EditMesh, FACE_EDGE_ROUND, FACE_SURFACE_TRIM } from './mesh';
 import {
   checkCurve,
   checkSurface,
@@ -844,6 +844,7 @@ export function appendSurface(
   // Half the validate limit: offset copies (shell inner walls) stay under it.
   const flatness = options.nonPlanar === 'keep' ? Infinity : tolerance * 5;
   let split = 0;
+  let pinched = 0;
   for (const [index, patch] of patches.entries()) {
     const added = emitPatch(
       mesh,
@@ -858,7 +859,8 @@ export function appendSurface(
       counts,
     );
     if (!added.ok) return added;
-    split += added.value;
+    split += added.value.split;
+    pinched += added.value.pinched;
   }
   const report = seams.report(names, welder);
   if (report.length > 0) {
@@ -871,6 +873,13 @@ export function appendSurface(
         vertices: seams.tolerantVertices(names),
         chains: seams.tolerantChains(names),
       },
+    });
+  }
+  if (pinched > 0) {
+    diagnostics.push({
+      severity: 'warn',
+      message: `${pinched} cell(s) lost a corner to vertex snapping (snap ${snap} m): a quad became a triangle; lower snap or widen the patch`,
+      detail: { cells: pinched, snap },
     });
   }
   if (split > 0) {
@@ -1447,7 +1456,7 @@ function emitPatch(
   attribution: Attribution,
   flatness: number,
   counts: RoleCounts,
-): Result<number, ModelingError> {
+): Result<{ split: number; pinched: number }, ModelingError> {
   const spec = patch.spec;
   const fail = patchFailure(index);
   const { imprints, lu, lv } = cut;
@@ -1477,6 +1486,7 @@ function emitPatch(
     { loops: number[][]; uvs: Point2[][]; trim: boolean[]; band: boolean[] }
   >();
   let split = 0;
+  let pinched = 0;
   for (const piece of pieces) {
     // A closed band welds its piece rings to two vertices: its fan triangles would
     // retrace the welded edge.
@@ -1493,6 +1503,8 @@ function emitPatch(
       ids.pop();
       uvs.pop();
     }
+    // Welding merged corners of one cell: the cell lost a corner (a quad became a triangle).
+    if (new Set(ids).size < new Set(piece.loop.map((p) => `${p[0]},${p[1]}`)).size) pinched++;
     let group = byGroup.get(piece.imprint);
     if (group === undefined) {
       group = { loops: [], uvs: [], trim: [], band: [] };
@@ -1540,7 +1552,10 @@ function emitPatch(
     const imprintTag = imprint?.tag === undefined ? -1 : mesh.tagIndex(imprint.tag, true);
     for (const [n, f] of faces.value.entries()) {
       if (patchTag >= 0) mesh.addTag(f, patchTag);
-      if (group.trim[n] === true) mesh.addTag(f, mesh.tagIndex('trim', true));
+      if (group.trim[n] === true) {
+        mesh.addTag(f, mesh.tagIndex('trim', true));
+        mesh.fFlags[f] = (mesh.fFlags[f] as number) | FACE_SURFACE_TRIM;
+      }
       if (group.band[n] === true) mesh.addTag(f, mesh.tagIndex('support', true));
       if (spec.transition?.kind === 'blend')
         mesh.fFlags[f] = (mesh.fFlags[f] as number) | FACE_EDGE_ROUND;
@@ -1553,7 +1568,7 @@ function emitPatch(
       }
     }
   }
-  return ok(split);
+  return ok({ split, pinched });
 }
 
 /** Corner index loops of a face: a non-planar quad becomes two triangles on its shorter diagonal. */

@@ -43,6 +43,19 @@ export function isDeferredPostProcessEntry(entry: PostProcessShaderEntry): boole
   return deferredSources.has(entry);
 }
 
+/** An engine-owned source remains owned when a consumer selects another entry point. */
+export function postProcessFragmentEntry(
+  entry: PostProcessShaderEntry,
+  fragmentEntryPoint: string,
+): PostProcessShaderEntry {
+  const variant = { ...entry, fragmentEntryPoint };
+  const source = deferredSources.get(entry);
+  if (source === undefined) return variant;
+  Object.freeze(variant);
+  deferredSources.set(variant, source);
+  return variant;
+}
+
 /** Retirement must not prepare an unused declaration just to invalidate its module. */
 export function preparedPostProcessSource(entry: PostProcessShaderEntry): string | undefined {
   const state = deferredSources.get(entry);

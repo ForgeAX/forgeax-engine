@@ -1,0 +1,79 @@
+{
+ "tests": [
+  "src/__tests__/uv-density.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "455-multiplier",
+   "file": "src/compute/uv-ts.ts",
+   "old": "const k = Math.sqrt(facts.area3d / facts.areaUv) * multiplier;",
+   "new": "const k = Math.sqrt(facts.area3d / facts.areaUv);"
+  },
+  {
+   "id": "455-sort",
+   "file": "src/compute/uv-parts.ts",
+   "old": "    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))\n",
+   "new": ""
+  },
+  {
+   "id": "455-achievable",
+   "file": "src/compute/uv-ts.ts",
+   "old": "achievable = a;",
+   "new": "achievable = a * 1.5;"
+  },
+  {
+   "id": "455-validate-mult",
+   "file": "src/validate.ts",
+   "old": "target: budget.target * multiplier,",
+   "new": "target: budget.target,"
+  },
+  {
+   "id": "455-mean",
+   "file": "src/compute/uv-ts.ts",
+   "old": "if (a3 > 0 && au > 0) mean = Math.sqrt(a3 / au);",
+   "new": ""
+  },
+  {
+   "id": "455-nonuniform",
+   "file": "src/compute/uv-ts.ts",
+   "old": "const k = Math.sqrt(facts.area3d / facts.areaUv) * multiplier;\n          for (const p of uv) {\n            p[0] *= k;",
+   "new": "const k = Math.sqrt(facts.area3d / facts.areaUv) * multiplier;\n          for (const p of uv) {\n            p[0] *= k * 1.05;"
+  },
+  {
+   "id": "455-mixed-warn",
+   "file": "src/uv.ts",
+   "old": "if (table.mixed > 0) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "455-empty-warn",
+   "file": "src/uv.ts",
+   "old": "if (empty.length > 0) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "455-badparts-validate",
+   "file": "src/validate.ts",
+   "old": "if (parts !== undefined && !validParts(parts)) {\n    issues.push",
+   "new": "if (false) {\n    issues.push"
+  },
+  {
+   "id": "455-badparts-pack",
+   "file": "src/compute/uv-ts.ts",
+   "old": "if (parts !== undefined && !(params.normalize && validParts(parts))) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "455-ratio",
+   "file": "src/uv.ts",
+   "old": "ratio: base > 0 ? r.texelsPerMeter / base : 0,",
+   "new": "ratio: 1,"
+  },
+  {
+   "id": "455-majority-any",
+   "file": "src/compute/uv-parts.ts",
+   "old": "    if (count > most) {",
+   "new": "    if (count > most && k === 0) {"
+  }
+ ]
+}

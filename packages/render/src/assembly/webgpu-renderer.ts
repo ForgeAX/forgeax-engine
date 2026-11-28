@@ -8,15 +8,17 @@ import {
   defaultMaterialVertexEntry,
   positionOnlyMaterialBuffer,
 } from '../pipeline-builder';
+import { createRenderKernelBridge } from '../record/render-kernel-bridge';
 import { retainPipelinePrimitiveReflection } from '../reflection/primitive-bindings';
 import {
   prepareTargetEnvironment,
   type RenderTargetEnvironmentLease,
 } from '../targets/environment';
 import { deferredPostProcessEntry } from './deferred-post-process-entry';
+import { createDeferredVolumePreparation } from './deferred-volume-preparation';
 import { extendedLightingFallbackCandidate } from './extended-lighting-fallback';
 import {
-  buildFullscreenFeaturePipeline,
+  createFullscreenPipelineBuilder,
   prewarmFullscreenFeatureModules,
 } from './fullscreen-feature-preparation';
 import { createLevelSourceAccess } from './level-source-access';
@@ -95,11 +97,7 @@ import type {
 import { shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { InstanceProjectionStore } from '../instances';
-import {
-  isOutputColorSpace,
-  OUTPUT_COLOR_SPACES,
-  type OutputColorSpace,
-} from '../output-color-space';
+import type { OutputColorSpace } from '../output-color-space';
 import { projectPointShadowInspection } from '../point-shadow-inspection';
 import { type PublishedRenderFrameInput, RenderPublicationError } from '../publication/contract';
 import { SurfaceDynamicInputReceiver } from '../publication/dynamic-input';
@@ -120,7 +118,6 @@ import { isFrameObservationDomain } from '../render-contract';
 import { registerRenderSourceSystems } from '../scene/source-systems';
 import { captureSurfaceDynamicInput, surfaceDynamicInputOf } from '../surface/frame-source';
 import { createTerrainReceiptOwner } from '../terrain/submitted.js';
-import { prepareVolumePrograms } from '../volume/programs';
 import { isOwnedWaterMeshAdmissionUploadClosure } from '../water/mesh-source-admission';
 import {
   WATER_INFO_FEATURE_IDENTITY,
@@ -164,6 +161,13 @@ import {
 } from './published-mesh-residency';
 import { captureShadowWorkload } from './shadow-workload';
 import { createUiCompositor } from './ui-compositor';
+import {
+  getRendererViewportOutput,
+  projectViewportOutputInspectionField,
+  setRendererOutputColorSpace,
+  setRendererProfile,
+  setRendererViewportOutput,
+} from './webgpu-renderer-viewport-output';
 
 export type { MaterialShaderManifestEntry } from '@forgeax/engine-shader';
 
@@ -185,13 +189,9 @@ import { withBuiltinRenderFeatures } from '../features/builtins';
 import { registerDepthOfFieldBuiltins } from '../features/depth-of-field/depth-of-field-assembly';
 import { createRenderFeatureHost } from '../features/host';
 import type { RenderFeature, RenderFeatureShaderModuleMode } from '../features/types';
-import {
-  type PostProcessShaderEntry,
-  postProcessShaderModuleLabel,
-} from '../fullscreen-post-process-pass';
+import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
 import { SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
 import { createRenderProfileSelection } from '../pipeline/render-profile-selection';
-import { registerSingleLayerMediumBuiltins } from '../pipeline/single-layer-medium-passes';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { type PipelineSpec, PipelineSpecError } from '../pipeline-spec';
@@ -357,7 +357,6 @@ import {
   prepareBackgroundPipelineLibrary,
   prepareDevicePipelineLibrary,
 } from './webgpu-ready';
-import { HDR_COLOR_ATTACHMENT_FORMAT } from './webgpu-ready-contract';
 import {
   tryCreateRendererFromBackend as tryCreateRendererFromBackendBootstrap,
   type WebGPURendererInternals,
@@ -433,10 +432,8 @@ async function makeWebGPURenderer(
       internals.healthRegistry.getLastSnapshot().reason === 'alive',
   );
   const featureHostResult = createRenderFeatureHost(
-    withBuiltinRenderFeatures(
-      internals.options?.features ?? [],
-      internals.device.caps,
-      (frame, view, adoption) => cloudAdoption.record(frame, view, adoption),
+    withBuiltinRenderFeatures(internals.options?.features ?? [], (frame, view, adoption) =>
+      cloudAdoption.record(frame, view, adoption),
     ),
     renderWorld,
     internals.errorRegistry.fire.bind(internals.errorRegistry),
@@ -639,6 +636,16 @@ async function makeWebGPURenderer(
         signal,
       ),
   };
+  const immediateShaderModuleFactory: typeof renderShaderModuleFactory = {
+    createShaderModule: (descriptor) =>
+      getShaderModuleAdapter('immediate').createShaderModule(descriptor),
+    isPending: (error) => getShaderModuleAdapter('immediate').isPending(error),
+    peekShaderModule: (descriptor) => peekShaderModule(descriptor, 'immediate'),
+    pendingShaderModuleCompletion: (signal) =>
+      (
+        candidateShaderState ?? activeShaderState
+      ).sharedImmediateShaderModuleAdapter?.pendingCompletion(signal),
+  };
   const featureShaderScopes = new WeakMap<RenderFeature<unknown>, DeviceScope>();
   const getShader = (): ShaderCatalog => {
     const state = candidateShaderState ?? activeShaderState;
@@ -735,7 +742,6 @@ async function makeWebGPURenderer(
                 ? renderInternals.getMaterialShaderArtifact
                 : undefined,
             ),
-          renderWorld,
           internals.options.dynamicGeometryMeshBudgetBytes,
         );
   // feat-20260527-sprite-nineslice M4 / w16 (D-5): detached host-owned
@@ -986,6 +992,17 @@ async function makeWebGPURenderer(
   const drewWithModule = (label: string): boolean =>
     activeShaderState.sharedShaderModuleAdapter?.hasModule(label) === true ||
     activeShaderState.sharedImmediateShaderModuleAdapter?.hasModule(label) === true;
+  const volumePreparation = createDeferredVolumePreparation({
+    device: () => internals.device,
+    isCurrent: (scope) =>
+      !disposed &&
+      scope.isAlive() &&
+      scope === activeDeviceScope &&
+      candidateShaderState === undefined &&
+      internals.healthRegistry.getLastSnapshot().reason === 'alive',
+    shaderModuleFactory: (dev) =>
+      dev.caps.backendKind === 'webgpu' ? immediateShaderModuleFactory : renderShaderModuleFactory,
+  });
   const buildPipeline = async (
     scope: DeviceScope = activeDeviceScope,
     device: RhiDevice = currentBuildDevice(),
@@ -1042,7 +1059,8 @@ async function makeWebGPURenderer(
         }
       },
       (label, module, source) => {
-        ensureBuildAlive();
+        // Native passes may first publish a module after this generation is installed.
+        if (scope !== activeDeviceScope || !scope.isAlive()) ensureBuildAlive();
         seededModules.set(label, module);
         shaderAdapter.seedModule(label, module, source);
         immediateAdapter.seedModule(label, module, source);
@@ -1054,28 +1072,25 @@ async function makeWebGPURenderer(
         }
         materialShaderPipelineSelections.set(pso as object, { contract: group2Contract });
       },
-      (source: string, nativeSource?: () => string) => {
+      (source: () => string, nativeSource?: () => string) => {
         ensureBuildAlive();
         if (buildState !== undefined || tonemapRegistered) return;
         const params = {
           byteSize: TONEMAP_PARAMS_LAYOUT.byteSize,
           defaultValue: new Uint8Array(TONEMAP_PARAMS_LAYOUT.byteSize),
         };
-        renderSystem.registerBuiltinPostProcess(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID, {
-          source,
-          params,
-          reads: ['hdrColor'],
-        });
-        renderSystem.registerBuiltinPostProcess(STANDARD_OUTPUT_GLARE_FEATURE_ID, {
-          source,
-          params,
-          reads: ['hdrColor', 'glare'],
-        });
-        renderSystem.registerBuiltinPostProcess(STANDARD_OUTPUT_SMAA_FEATURE_ID, {
-          source,
-          params,
-          reads: ['hdrColor', 'smaa-weights'],
-        });
+        renderSystem.registerBuiltinPostProcess(
+          STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
+          deferredPostProcessEntry({ params, reads: ['hdrColor'] }, source),
+        );
+        renderSystem.registerBuiltinPostProcess(
+          STANDARD_OUTPUT_GLARE_FEATURE_ID,
+          deferredPostProcessEntry({ params, reads: ['hdrColor', 'glare'] }, source),
+        );
+        renderSystem.registerBuiltinPostProcess(
+          STANDARD_OUTPUT_SMAA_FEATURE_ID,
+          deferredPostProcessEntry({ params, reads: ['hdrColor', 'smaa-weights'] }, source),
+        );
         if (nativeSource !== undefined)
           renderSystem.registerBuiltinPostProcess(
             STANDARD_OUTPUT_V2_FEATURE_ID,
@@ -1125,20 +1140,17 @@ async function makeWebGPURenderer(
         registerDepthOfFieldBuiltins(renderSystem, entries);
         depthOfFieldRegistered = true;
       },
-      async (sources: VolumetricFogShaderSources) => {
-        ensureBuildAlive();
-        await prepareVolumePrograms(
-          {
-            device,
-            deviceScope: scope,
-            shaderModuleFactory: renderShaderModuleFactory,
-            isCurrent: buildIsCurrent,
-          },
+      async (sources: VolumetricFogShaderSources, preparePipelines: boolean) => {
+        const restorePreparedPrograms =
+          buildState !== undefined && volumePreparation.sources(activeDeviceScope) !== undefined;
+        await volumePreparation.installFromBuild(
+          scope,
+          device,
           sources,
-          HDR_COLOR_ATTACHMENT_FORMAT,
+          preparePipelines || restorePreparedPrograms,
+          buildIsCurrent,
+          ensureBuildAlive,
         );
-        ensureBuildAlive();
-        internals.volumetricFogShaders = sources;
       },
       (sources: SsrShaderSources | undefined, pyramid: DepthPyramidShaderSources) => {
         ensureBuildAlive();
@@ -1818,29 +1830,20 @@ async function makeWebGPURenderer(
     getMaterialShaderPipelineFor,
     getMaterialShaderPipelineEntryFor,
   );
-  // Post-process modules share the async shader adapter: pending compilation
-  // returns null; subsequent frames consume the cached pipeline. Group 0 is
-  // reserved for View, group 1 holds inputs; vs_main/fs_main draw a fullscreen
-  // triangle into the requested color formats.
-  const buildPostProcessPipeline = (
-    entry: PostProcessShaderEntry,
-    bgl: BindGroupLayout,
-    colorFormats: readonly GPUTextureFormat[],
-    label: string,
-  ): RenderPipeline | null =>
-    buildFullscreenFeaturePipeline(entry, bgl, colorFormats, label, {
-      device: currentBuildDevice(),
-      modules: getShaderModuleAdapter(),
-      errorRegistry: internals.errorRegistry,
-      viewLayout: currentPipelineState()?.viewBindGroupLayout,
-      emptyLayout: currentEmptyPostProcessBgl(),
-      publishEmptyLayout: (layout) => {
-        if (candidateBuildState !== undefined) {
-          candidateBuildState.emptyPostProcessBgl = layout;
-          candidateEmptyPostProcessBgl = layout;
-        } else emptyPostProcessBgl = layout;
-      },
-    });
+  const buildPostProcessPipeline = createFullscreenPipelineBuilder({
+    device: currentBuildDevice,
+    adapter: getShaderModuleAdapter,
+    nativeImmediate: internals.pack.createShaderModuleImmediate !== undefined,
+    errorRegistry: internals.errorRegistry,
+    viewLayout: () => currentPipelineState()?.viewBindGroupLayout,
+    emptyLayout: currentEmptyPostProcessBgl,
+    publishEmptyLayout: (layout) => {
+      if (candidateBuildState !== undefined) {
+        candidateBuildState.emptyPostProcessBgl = layout;
+        candidateEmptyPostProcessBgl = layout;
+      } else emptyPostProcessBgl = layout;
+    },
+  });
   const viewportHits = createViewportHitRequests({
     warmup: internals.options?.viewportHitWarmup === true,
     device: () => internals.device,
@@ -1854,8 +1857,10 @@ async function makeWebGPURenderer(
       ).unwrap(),
     trackMeshes: (completion) => gpuStore.trackMeshSubmission(completion),
   });
+  const renderKernel = createRenderKernelBridge(internals.options?.renderKernel);
   const renderInternals: RenderSystemInternals = {
     viewportHits,
+    renderKernel,
     options: internals.options,
     get presentationOutput() {
       return ui?.owner.output;
@@ -1888,16 +1893,7 @@ async function makeWebGPURenderer(
       internals.featureHost = host;
     },
     shaderModuleFactory: renderShaderModuleFactory,
-    immediateShaderModuleFactory: {
-      createShaderModule: (descriptor) =>
-        getShaderModuleAdapter('immediate').createShaderModule(descriptor),
-      isPending: (error) => getShaderModuleAdapter('immediate').isPending(error),
-      peekShaderModule: (descriptor) => peekShaderModule(descriptor, 'immediate'),
-      pendingShaderModuleCompletion: (signal) =>
-        (
-          candidateShaderState ?? activeShaderState
-        ).sharedImmediateShaderModuleAdapter?.pendingCompletion(signal),
-    },
+    immediateShaderModuleFactory,
     profiler: internals.options?.profiler,
     // Keep device/context getters live so recovery swaps are observed by the
     // record stage without reconstructing the RendererState.
@@ -2119,6 +2115,9 @@ async function makeWebGPURenderer(
     get debugOverlay() {
       return internals.debugOverlay;
     },
+    get viewportOutput() {
+      return internals.viewportOutput ?? internals.options?.viewportOutput;
+    },
     // feat-20260608-create-app-param-surface-trim / M1 / AC-02: clearColor
     // is no longer threaded through createRendererState; the record stage
     // reads `camera.clearColor` straight from the Camera SoA column
@@ -2237,16 +2236,17 @@ async function makeWebGPURenderer(
     ownedRenderTargets: renderTargetHost,
     markRenderTargetSubmitted: (target, physical) =>
       renderTargetHost.markTargetSubmitted(target, physical),
+    stageRenderTargetWrite: renderTargetHost.stageRenderTargetWrite,
     resolveRenderTargetTextureSource: (source) =>
       renderTargetHost.resolveRenderTargetTextureSource(source),
     externalTextures: externalTextureHost,
-    encodeRenderTargetReadbacks: (encoder, written) =>
-      renderTargetHost.encodePendingReadbacks(encoder, written),
+    encodeRenderTargetReadbacks: (encoder) => renderTargetHost.encodePendingReadbacks(encoder),
     encodeFramebufferSnapshots: (encoder, source) =>
       renderTargetHost.encodeFramebufferSnapshots(encoder, source),
     get volumetricFogShaders() {
-      return internals.volumetricFogShaders;
+      return volumePreparation.sources(activeDeviceScope);
     },
+    requestVolumetricFogPrograms: () => volumePreparation.request(activeDeviceScope),
     // Readiness-prewarmed SSR sources stay visible through the live internals seam.
     get ssrShaders() {
       return internals.ssrShaders;
@@ -2270,14 +2270,8 @@ async function makeWebGPURenderer(
     internals.options?.maxRenderShortSide,
     () => publicationReceiver?.borrowAcceptedDemand(),
   );
-  internals.lossObserver.current = (detail) => {
-    renderInternals.submittedPassNames = [];
-    for (const continuation of frameContinuations.keys())
-      continuation.terminate({ code: 'device-lost', detail });
-  };
   cameraViewsForTargetPromotion = cameraViews;
   attachGpuPassTimingSession(internals, gpuPassTimingSession);
-  registerSingleLayerMediumBuiltins(renderSystem);
   registerStandardPostProcessBuiltins(renderSystem);
   // The Standard pipeline is the sole built-in graph owner. Feature plans are
   // projected into that graph directly; no second post-process registry is
@@ -2324,6 +2318,15 @@ async function makeWebGPURenderer(
     disposeOwnedObservationCaptures,
     disposeReceiptObservationCaptures,
   } = observationOwner;
+  internals.lossObserver.current = (detail) => {
+    renderInternals.submittedPassNames = [];
+    for (const continuation of frameContinuations.keys())
+      continuation.terminate({ code: 'device-lost', detail });
+    renderTargetHost.onDeviceLost();
+    viewportHits.invalidate('device-generation');
+    pendingObservationDomains = undefined;
+    disposeReceiptObservationCaptures();
+  };
   Object.assign(internals, { observationCaptureOwner });
   const staleObservationReceipt = (receipt: FrameReceipt): FrameReceiptStaleError | undefined =>
     disposed ||
@@ -2780,6 +2783,7 @@ async function makeWebGPURenderer(
     return [
       internals.device.pipelineLibrary?.pendingRuntimeCompilation?.(),
       gpuStore.pendingCubemapCompletion(),
+      volumePreparation.pendingCompletion(activeDeviceScope),
       preparedPipelineOwners.get(currentPipelineCacheState())?.pendingCompletion(),
       shaderState.shaderInstance?.pendingTemplatePreparations(),
       shaderState.shaderInstance?.pendingMaterialPreparations(),
@@ -2941,7 +2945,7 @@ async function makeWebGPURenderer(
       renderSubmission(renderWorld).accepted,
       receipt,
     );
-    renderTargetHost.onFrameSubmitted(completed, receipt);
+    renderTargetHost.onFrameSubmitted(completed, receipt, renderSubmission(renderWorld).accepted);
     latestReceipt = receipt;
     latestPublicationRevision = publicationReceiver?.acceptedRevision ?? 0;
     latestLodObservation = {
@@ -3109,74 +3113,33 @@ async function makeWebGPURenderer(
       renderTargetHost.requestFramebufferSnapshot(target, request),
     destroyRenderTarget: (target) => renderTargetHost.destroyRenderTarget(target),
     importTexture: (input) => externalTextureHost.importTexture(input),
-    requestViewportHit: (request, signal) =>
-      disposed || surfaceReleased
-        ? Promise.resolve({ kind: 'unavailable', reason: 'renderer' })
-        : viewportHits.request(request, signal),
+    requestViewportHit(request, signal) {
+      if (disposed || surfaceReleased)
+        return Promise.resolve({ kind: 'unavailable', reason: 'renderer' });
+      if (internals.healthRegistry.getLastSnapshot().reason === 'device-lost')
+        return Promise.resolve({ kind: 'stale', reason: 'device-generation' });
+      if (publicationReceiver !== undefined) return viewportHits.request(request, signal);
+      for (const world of attachedWorlds)
+        if (world.identity === request.worldIdentity) return viewportHits.request(request, signal);
+      return Promise.resolve({ kind: 'stale', reason: 'world-or-request' });
+    },
     nativeDevice: () => externalTextureHost.nativeDevice(),
-    setProfile(profile: RenderProfile): RenderResult<void, RenderError> {
-      if (
-        activeProfile.configurationRevision !== undefined &&
-        profile?.configurationRevision === undefined
-      )
-        return err(
-          new RendererOperationError('frame-input-invalid', {
-            operation: 'set-profile',
-            cause: new RendererContractFailureError(
-              'draw',
-              'Use App.configuration for a managed Renderer; constructor policy cannot bypass its revision',
-            ),
-          }),
-        );
-      const invalid = selectProfile.validate(profile, internals.device);
-      if (invalid !== undefined) {
-        return err(
-          new RendererOperationError('frame-input-invalid', {
-            operation: 'set-profile',
-            cause: new RendererContractFailureError('draw', invalid),
-          }),
-        );
-      }
-      const previous = activeProfile;
-      activeProfile = freezeRenderProfile(profile);
-      try {
-        cameraViews.configureStandard(undefined);
-        return ok(undefined);
-      } catch (cause) {
-        activeProfile = previous;
-        try {
-          cameraViews.configureStandard(undefined);
-        } catch {
-          // The original structured profile failure remains authoritative.
-        }
-        return err(
-          new RendererOperationError('graph-build-failed', {
-            operation: 'set-profile',
-            cause: structuredRendererCause(cause, 'set-profile'),
-          }),
-        );
-      }
-    },
-    setOutputColorSpace(colorSpace: OutputColorSpace): RenderResult<void, RenderError> {
-      if (!isOutputColorSpace(colorSpace)) {
-        return err(
-          new RendererOperationError('frame-input-invalid', {
-            operation: 'set-output-color-space',
-            cause: {
-              code: 'output-color-space-invalid',
-              expected: `one of ${OUTPUT_COLOR_SPACES.join(' | ')}`,
-              hint: "pass 'srgb' or 'display-p3'",
-              detail: { received: String(colorSpace) },
-            },
-          }),
-        );
-      }
-      const state = internals.outputColorSpace;
-      if (state.requested === colorSpace) return ok(undefined);
-      state.requested = colorSpace;
-      if (pipelineState !== null) pipelineState.perPassResources.configured = false;
-      return ok(undefined);
-    },
+    setProfile: (profile: RenderProfile): RenderResult<void, RenderError> =>
+      setRendererProfile(
+        internals,
+        cameraViews,
+        selectProfile,
+        () => activeProfile,
+        (next) => {
+          activeProfile = next;
+        },
+        profile,
+      ),
+    setOutputColorSpace: (colorSpace: OutputColorSpace): RenderResult<void, RenderError> =>
+      setRendererOutputColorSpace(internals, pipelineState, colorSpace),
+    setViewportOutput: (mode) =>
+      setRendererViewportOutput(internals, cameraViews, selectedProfile, mode),
+    getViewportOutput: () => getRendererViewportOutput(internals, cameraViews, selectedProfile),
     inspectLodOcclusion() {
       const inspected = cameraViews.currentOwner;
       return {
@@ -3257,6 +3220,13 @@ async function makeWebGPURenderer(
       });
       const inspection = {
         ...(want('debugOverlay') ? debugOverlayInspectionField(renderWorld) : {}),
+        ...projectViewportOutputInspectionField(
+          internals,
+          cameraViews,
+          selectedProfile,
+          want('viewportOutput'),
+          (fields as readonly string[] | undefined)?.includes('viewportOutput') === true,
+        ),
         ...(fields?.some((field) => field === 'shaderTemplates') === true
           ? { shaderTemplates: getShader().programTemplateInspection({ includePrograms: true }) }
           : {}),
@@ -3381,6 +3351,7 @@ async function makeWebGPURenderer(
     }),
     detachScene(world: World): void {
       if (!attachedWorlds.delete(world)) return;
+      viewportHits.detachWorld(world.identity);
       dynamicGeometryHost.invalidateDynamicGeometryWorld(world);
       for (const [lease, leaseWorld] of attachedLeases) {
         if (leaseWorld === world) lease.dispose();
@@ -3396,11 +3367,12 @@ async function makeWebGPURenderer(
     requestObservation(
       domains: readonly FrameObservationDomain[],
     ): RenderResult<void, RenderError> {
-      if (disposed) {
+      const state = disposed ? 'disposed' : internals.healthRegistry.getLastSnapshot().reason;
+      if (state === 'disposed' || state === 'device-lost') {
         return err(
           new RendererOperationError('renderer-state-invalid', {
             operation: 'request-observation',
-            state: 'disposed',
+            state,
           }),
         );
       }
@@ -3779,6 +3751,7 @@ async function makeWebGPURenderer(
       if (disposed) return ok(undefined);
       disposed = true;
       viewportHits.invalidate();
+      renderKernel.dispose();
       terrainReceipts.clear();
       // A live backend's unresolved loss promise must not retain this renderer.
       internals.lossObserver.current = null;

@@ -2,6 +2,7 @@ import { createPresentationMatrixReader } from '@forgeax/engine-scene/internal';
 import type { SkeletonAsset } from '@forgeax/engine-types';
 import type { GpuInputArena } from '../gpu-input-arena';
 import type { RenderResourceScope } from '../publication/resource-scope';
+import { slotContent } from './mesh-draw';
 import type { RenderSceneApplyResult } from './render-scene-types';
 import type { SceneSlotFrame } from './scene-slots';
 import { SkinSceneInputs } from './skin-scene-inputs';
@@ -51,9 +52,9 @@ export class CompositionSkinAdoption {
     try {
       if (
         entry.skin === undefined &&
-        (delta.createdSlots.some((slot) => slot.snapshot.skinBinding !== undefined) ||
-          delta.contentUpdatedSlots.some((slot) => slot.snapshot.skinBinding !== undefined) ||
-          delta.recreatedSlots.some((slot) => slot.snapshot.skinBinding !== undefined))
+        (delta.createdSlots.some((slot) => slotContent(slot).skinBinding !== undefined) ||
+          delta.contentUpdatedSlots.some((slot) => slotContent(slot).skinBinding !== undefined) ||
+          delta.recreatedSlots.some((slot) => slotContent(slot).skinBinding !== undefined))
       ) {
         entry.skin = new SkinSceneInputs(this.host.inputArena(), (handle) => {
           const definition = entry.source?.resolveAsset<SkeletonAsset>(handle);
@@ -95,7 +96,7 @@ export class CompositionSkinAdoption {
       if (skin === undefined) return;
       if (baseline) for (const joint of skin.firstJoints() ?? []) skin.joint(joint, undefined);
       for (const joint of retired) skin.joint(joint, undefined);
-      for (const index of rows) skin.joint(entities[index] as number, transforms, index * 16);
+      skin.publishedJoints(rows, entities, transforms);
     } catch (cause) {
       this.fail(entry, cause);
     }

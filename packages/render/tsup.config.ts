@@ -8,9 +8,13 @@ export default defineConfig({
   entry: [
     'src/index.ts',
     'src/authoring.ts',
+    'src/debug-view/index.ts',
     'src/internal.ts',
     'src/temporal/index.ts',
+    'src/assembly/backend-contract.ts',
     'src/construct-renderer.ts',
+    'src/host-data.ts',
+    'src/kernel/index.ts',
     'src/tasks.ts',
   ],
   splitting: true,
@@ -25,6 +29,7 @@ export default defineConfig({
     '@forgeax/engine-ecs',
     '@forgeax/engine-math',
     '@forgeax/engine-pack',
+    '@forgeax/engine-render-kernel',
     // Backend modules own process-local device registries (for example the
     // WebGPU RhiDevice -> GPUDevice reverse lookup used by lazy shader
     // compilation). Bundling a second copy makes an otherwise live device

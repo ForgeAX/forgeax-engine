@@ -355,27 +355,45 @@ describe('bounded barrel distortion mapping', () => {
     const camera = extractCameraSnapshots(world)[0];
     if (camera === undefined) throw new Error('Camera fixture missing');
     const state = { lastSuccessfulBarrelDistortion: undefined } as unknown as RenderFrameState;
-    const graph = { inspect: () => ({ passes: active ? [{ name: 'barrel-distortion' }] : [] }) };
-    const accepted = resolveSubmittedBarrelMapping(state, graph, camera, 640, 360);
+    const hasBarrelPass = active;
+    const accepted = resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 360);
     expect(accepted).toBeDefined();
     state.lastSuccessfulBarrelDistortion = accepted;
-    expect(resolveSubmittedBarrelMapping(state, graph, camera, 640, 360)).toBe(accepted);
-    expect(resolveSubmittedBarrelMapping(state, graph, camera, 800, 360)).not.toBe(accepted);
-    expect(resolveSubmittedBarrelMapping(state, graph, camera, 640, 480)).not.toBe(accepted);
+    expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 360)).toBe(accepted);
+    expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 800, 360)).not.toBe(
+      accepted,
+    );
+    expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 480)).not.toBe(
+      accepted,
+    );
     expect(
-      resolveSubmittedBarrelMapping(state, graph, { ...camera, far: camera.far + 1 }, 640, 360),
+      resolveSubmittedBarrelMapping(
+        state,
+        hasBarrelPass,
+        { ...camera, far: camera.far + 1 },
+        640,
+        360,
+      ),
     ).not.toBe(accepted);
     expect(
-      resolveSubmittedBarrelMapping(state, graph, { ...camera, fov: camera.fov + 0.1 }, 640, 360),
+      resolveSubmittedBarrelMapping(
+        state,
+        hasBarrelPass,
+        { ...camera, fov: camera.fov + 0.1 },
+        640,
+        360,
+      ),
     ).not.toBe(accepted);
     const moved = { ...camera, world: new Float32Array(camera.world) };
     moved.world[12] = 3;
-    const next = resolveSubmittedBarrelMapping(state, graph, moved, 640, 360);
+    const next = resolveSubmittedBarrelMapping(state, hasBarrelPass, moved, 640, 360);
     expect(next).not.toBe(accepted);
     expect(next?.camera?.viewMatrix[12]).toBe(-3);
     expect(accepted?.camera?.viewMatrix[12]).toBe(0);
     const shifted = { ...camera, projectionOffset: [0.1, 0] as const };
-    expect(resolveSubmittedBarrelMapping(state, graph, shifted, 640, 360)).not.toBe(accepted);
+    expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, shifted, 640, 360)).not.toBe(
+      accepted,
+    );
   });
 
   it('retains accepted warp parameters while refreshing the submitted camera on a graph fallback', () => {
@@ -384,24 +402,23 @@ describe('bounded barrel distortion mapping', () => {
     const camera = extractCameraSnapshots(world)[0];
     if (camera === undefined) throw new Error('Camera fixture missing');
     const state = { lastSuccessfulBarrelDistortion: undefined } as unknown as RenderFrameState;
-    const graph = { inspect: () => ({ passes: [{ name: 'barrel-distortion' }] }) };
-    const accepted = resolveSubmittedBarrelMapping(state, graph, camera, 640, 360);
+    const hasBarrelPass = true;
+    const accepted = resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 360);
     state.lastSuccessfulBarrelDistortion = accepted;
     state.barrelDistortionGraphResolution = 'retained';
     const edited = { ...camera, barrelDistortion: { strength: 0.3, centerX: 0.5, centerY: 0.5 } };
-    expect(resolveSubmittedBarrelMapping(state, graph, edited, 640, 360)).toBe(accepted);
+    expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, edited, 640, 360)).toBe(accepted);
     const moved = { ...edited, world: new Float32Array(camera.world) };
     moved.world[12] = 2;
-    const next = resolveSubmittedBarrelMapping(state, graph, moved, 640, 360);
+    const next = resolveSubmittedBarrelMapping(state, hasBarrelPass, moved, 640, 360);
     expect(next).not.toBe(accepted);
     expect(next?.strength).toBe(accepted?.strength);
     expect(next?.camera?.viewMatrix[12]).toBe(-2);
     delete state.barrelDistortionGraphResolution;
-    expect(resolveSubmittedBarrelMapping(state, graph, edited, 640, 360)?.strength).toBe(0.3);
-    expect(
-      resolveSubmittedBarrelMapping(state, { inspect: () => ({ passes: [] }) }, camera, 640, 360)
-        ?.strength,
-    ).toBe(0);
+    expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, edited, 640, 360)?.strength).toBe(
+      0.3,
+    );
+    expect(resolveSubmittedBarrelMapping(state, false, camera, 640, 360)?.strength).toBe(0);
     expect(accepted?.camera?.viewMatrix[12]).toBe(0);
   });
 
@@ -489,7 +506,7 @@ it('detaches submitted camera data before scratch is reused or reentered', () =>
   spawnBarrelTestCamera(world);
   const camera = extractCameraSnapshots(world)[0];
   if (camera === undefined) throw new Error('Camera fixture missing');
-  const graph = { inspect: () => ({ passes: [] }) };
+  const hasBarrelPass = false;
   const state = { lastSuccessfulBarrelDistortion: undefined } as unknown as RenderFrameState;
   const moved = { ...camera, world: new Float32Array(camera.world) };
   moved.world[12] = 7;
@@ -500,12 +517,12 @@ it('detaches submitted camera data before scratch is reused or reentered', () =>
     get world() {
       if (!reentered) {
         reentered = true;
-        inner = resolveSubmittedBarrelMapping(state, graph, moved, 640, 360);
+        inner = resolveSubmittedBarrelMapping(state, hasBarrelPass, moved, 640, 360);
       }
       return camera.world;
     },
   };
-  const outer = resolveSubmittedBarrelMapping(state, graph, nested, 640, 360);
+  const outer = resolveSubmittedBarrelMapping(state, hasBarrelPass, nested, 640, 360);
   expect(outer?.camera?.viewMatrix[12]).toBe(0);
   expect(inner?.camera?.viewMatrix[12]).toBe(-7);
   const broken = {
@@ -514,10 +531,10 @@ it('detaches submitted camera data before scratch is reused or reentered', () =>
       throw new Error('Camera read failed');
     },
   };
-  expect(() => resolveSubmittedBarrelMapping(state, graph, broken, 640, 360)).toThrow(
+  expect(() => resolveSubmittedBarrelMapping(state, hasBarrelPass, broken, 640, 360)).toThrow(
     'Camera read failed',
   );
-  resolveSubmittedBarrelMapping(state, graph, moved, 800, 600);
+  resolveSubmittedBarrelMapping(state, hasBarrelPass, moved, 800, 600);
   expect(outer?.camera?.viewMatrix[12]).toBe(0);
   expect(inner?.camera?.viewMatrix[12]).toBe(-7);
 });
@@ -527,16 +544,16 @@ it('validates a current FOV before reusing an equal submitted camera', () => {
   spawnBarrelTestCamera(world);
   const camera = extractCameraSnapshots(world)[0];
   if (camera === undefined) throw new Error('Camera fixture missing');
-  const graph = { inspect: () => ({ passes: [] }) };
+  const hasBarrelPass = false;
   const state = { lastSuccessfulBarrelDistortion: undefined } as unknown as RenderFrameState;
-  const accepted = resolveSubmittedBarrelMapping(state, graph, camera, 640, 360);
+  const accepted = resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 360);
   state.lastSuccessfulBarrelDistortion = accepted;
-  expect(resolveSubmittedBarrelMapping(state, graph, camera, 640, 360)).toBe(accepted);
+  expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 360)).toBe(accepted);
   expect(() =>
-    resolveSubmittedBarrelMapping(state, graph, { ...camera, fov: Number.NaN }, 640, 360),
+    resolveSubmittedBarrelMapping(state, hasBarrelPass, { ...camera, fov: Number.NaN }, 640, 360),
   ).toThrow();
-  expect(resolveSubmittedBarrelMapping(state, graph, camera, 0, 360)).toBeUndefined();
-  expect(resolveSubmittedBarrelMapping(state, graph, camera, 640, 360)).toBe(accepted);
+  expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 0, 360)).toBeUndefined();
+  expect(resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 360)).toBe(accepted);
 });
 
 it('compares all submitted matrix values, including signed zero, without retaining borrowed storage', () => {
@@ -544,23 +561,23 @@ it('compares all submitted matrix values, including signed zero, without retaini
   spawnBarrelTestCamera(world);
   const camera = extractCameraSnapshots(world)[0];
   if (camera === undefined) throw new Error('Camera fixture missing');
-  const graph = { inspect: () => ({ passes: [] }) };
+  const hasBarrelPass = false;
   const projection = new Float32Array(16);
   const captured = { ...camera, captureProjection: projection };
   const state = { lastSuccessfulBarrelDistortion: undefined } as unknown as RenderFrameState;
-  const accepted = resolveSubmittedBarrelMapping(state, graph, captured, 640, 360);
+  const accepted = resolveSubmittedBarrelMapping(state, hasBarrelPass, captured, 640, 360);
   state.lastSuccessfulBarrelDistortion = accepted;
   expect(
     resolveSubmittedBarrelMapping(
       state,
-      graph,
+      hasBarrelPass,
       { ...captured, captureProjection: new Float32Array(projection) },
       640,
       360,
     ),
   ).toBe(accepted);
   projection[15] = -0;
-  const changed = resolveSubmittedBarrelMapping(state, graph, captured, 640, 360);
+  const changed = resolveSubmittedBarrelMapping(state, hasBarrelPass, captured, 640, 360);
   expect(changed).not.toBe(accepted);
   expect(Object.is(changed?.camera?.projectionMatrix[15], -0)).toBe(true);
   expect(Object.is(accepted?.camera?.projectionMatrix[15], 0)).toBe(true);
@@ -573,9 +590,9 @@ it('does not inspect an unowned previous camera while publishing current facts',
   spawnBarrelTestCamera(world);
   const camera = extractCameraSnapshots(world)[0];
   if (camera === undefined) throw new Error('Camera fixture missing');
-  const graph = { inspect: () => ({ passes: [] }) };
+  const hasBarrelPass = false;
   const state = { lastSuccessfulBarrelDistortion: undefined } as unknown as RenderFrameState;
-  const accepted = resolveSubmittedBarrelMapping(state, graph, camera, 640, 360);
+  const accepted = resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 360);
   if (accepted === undefined) throw new Error('Mapping fixture missing');
   const borrowed = Object.freeze({
     ...accepted,
@@ -584,7 +601,7 @@ it('does not inspect an unowned previous camera while publishing current facts',
     },
   });
   state.lastSuccessfulBarrelDistortion = borrowed;
-  const next = resolveSubmittedBarrelMapping(state, graph, camera, 640, 360);
+  const next = resolveSubmittedBarrelMapping(state, hasBarrelPass, camera, 640, 360);
   expect(next).toEqual(accepted);
   expect(next === borrowed).toBe(false);
 });

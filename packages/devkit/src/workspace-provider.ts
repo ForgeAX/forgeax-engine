@@ -1621,6 +1621,10 @@ export function createDevKitWorkspaceProvider(
                 return result;
               }),
               focus: onTarget((input) => sendPreview('entity.focus', input)),
+              viewportOutput: {
+                get: onTarget(() => sendPreview('viewport.output.get')),
+                set: onTarget((input) => sendPreview('viewport.output.set', input)),
+              },
             },
             getCamera: camera('camera.get'),
             beginCameraInteraction: camera('camera.begin'),

@@ -35,10 +35,15 @@ import {
 } from './ops';
 import { attributeKey } from './planar';
 import { type CornerSource, type FaceRewrite, rewriteFaces } from './rewrite';
+import type { EdgeSelector } from './selectors';
 
 export interface BevelOptions {
-  /** Distance of the new edges from the bevelled edge, measured in each adjacent face. */
-  readonly width: number;
+  /**
+   * Distance of the new edges from the bevelled edge, measured in each adjacent face; or
+   * per-edge widths: each selected edge takes the width of the first entry whose edges
+   * contain it, and selected edges no entry contains stay unbevelled.
+   */
+  readonly width: number | readonly { readonly edges: EdgeSelector; readonly width: number }[];
   /** 1 = flat chamfer; more = a round profile tangent to both faces. */
   readonly segments: number;
 }
@@ -77,6 +82,57 @@ const HIGH_VALENCE = 5;
 const MAX_ROUNDS = 16;
 /** Clamped and degenerate edges listed in diagnostics. */
 const LIST_LIMIT = 16;
+
+/**
+ * @internal Resolve a per-edge `width` list over the selected edges: the first entry whose
+ * edges contain a selected edge gives its width; selected edges no entry contains drop out.
+ */
+export function resolveWidths(
+  mesh: EditMesh,
+  selected: readonly number[],
+  entries: Exclude<BevelOptions['width'], number>,
+): Result<
+  {
+    readonly edges: number[];
+    readonly widest: number;
+    readonly perEdge: Map<number, { width: number }>;
+  },
+  ModelingError
+> {
+  if (entries.length === 0) {
+    return err(
+      modelingError('model-invalid-argument', 'width lists at least one { edges, width } entry', {
+        entries: 0,
+      }),
+    );
+  }
+  const candidates = new Set(selected);
+  const perEdge = new Map<number, { width: number }>();
+  for (const [entry, { edges, width }] of entries.entries()) {
+    const positive = requirePositive(`width[${entry}].width`, width);
+    if (!positive.ok) return positive;
+    const ids = edges.resolve(mesh);
+    if (!ids.ok) return ids;
+    const inside = ids.value.filter((e) => candidates.has(e));
+    if (inside.length === 0) {
+      return err(
+        modelingError(
+          'model-selection-empty',
+          `width[${entry}].edges matches at least one selected edge`,
+          { entry, selector: edges.description, matched: ids.value.length },
+          'the call selection is the candidate set; widen it or fix the entry selector',
+        ),
+      );
+    }
+    for (const e of inside) if (!perEdge.has(e)) perEdge.set(e, { width });
+  }
+  const edges = [...perEdge.keys()].sort((a, b) => a - b);
+  return ok({
+    edges,
+    widest: maxOf(edges.map((e) => (perEdge.get(e) as { width: number }).width)),
+    perEdge,
+  });
+}
 
 /** Position as `base + sum(width[e] * terms[e])` over bevelled edges `e`. */
 interface Linear {
@@ -154,6 +210,26 @@ function evaluate(lin: Linear, widths: ReadonlyMap<number, number>): Tuple3 {
   return p;
 }
 
+/**
+ * Unequal widths at a corner skew a profile's ends along the edge; its tangents then come
+ * from the chord it would have if every width at both ends were this edge's, so each end
+ * leaves its face across the edge and the profile moves inward as any width grows.
+ */
+function evenChord(
+  x: Node,
+  y: Node,
+  e: number,
+  widths: ReadonlyMap<number, number>,
+): Tuple3 | undefined {
+  const w = widths.get(e);
+  if (x.lin === undefined || y.lin === undefined || w === undefined) return undefined;
+  const uneven = (lin: Linear) => [...lin.terms.keys()].some((k) => (widths.get(k) ?? 0) !== w);
+  if (!uneven(x.lin) && !uneven(y.lin)) return undefined;
+  const even = new Map([...widths.keys()].map((k) => [k, w] as const));
+  for (const lin of [x.lin, y.lin]) for (const k of lin.terms.keys()) even.set(k, w);
+  return sub(evaluate(y.lin, even), evaluate(x.lin, even));
+}
+
 function unit(a: Tuple3, b: Tuple3): Tuple3 {
   return normalize(sub(b, a));
 }
@@ -213,7 +289,7 @@ function walkFan(
 export function bevel(
   mesh: EditMesh,
   selected: readonly number[],
-  options: BevelOptions,
+  options: Omit<BevelOptions, 'width'> & { readonly width: number },
   attribution: Attribution,
   material: number | undefined,
   tolerance: number,
@@ -603,7 +679,14 @@ export function bevel(
         nx = add(nx, normal(backup.hFace[h1] as number));
         ny = add(ny, normal(backup.hFace[h1 ^ 1] as number));
       }
-      const { points, center } = roundProfile(x.pos, y.pos, nx, ny, n);
+      const { points, center } = roundProfile(
+        x.pos,
+        y.pos,
+        nx,
+        ny,
+        n,
+        evenChord(x, y, profile.half >> 1, widths),
+      );
       if (center !== undefined) profile.center = center;
       for (let i = 1; i < n; i++) {
         let p = points[i] as Tuple3;
@@ -893,8 +976,8 @@ function buildFan(
   requested: (e: number) => number,
   tolerance: number,
 ): Result<Fan, ModelingError> {
-  const reach = Math.max(
-    ...walked.halves.filter((h) => selected.has(h >> 1)).map((h) => requested(h >> 1)),
+  const reach = maxOf(
+    walked.halves.filter((h) => selected.has(h >> 1)).map((h) => requested(h >> 1)),
   );
   const { halves, groups, flats } = mergeFlat(
     mesh,

@@ -1,17 +1,30 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { pushAll } from './arrays';
 import { mergeFlags } from './crease';
-import { cos, sin } from './dmath';
+import { cos, hypot2, sin } from './dmath';
 import { type ModelingError, modelingError } from './errors';
-import { facesVolume, length, newell, orient2d, type Tuple3 } from './geom';
-import { EDGE_SHARP, type EditMesh, NONE } from './mesh';
+import {
+  facesVolume,
+  length,
+  newell,
+  orient2d,
+  rejectDerived,
+  resolveSegments,
+  type SegmentsOrTolerance,
+  segmentsFor,
+  type Tuple3,
+} from './geom';
+import { EDGE_SEAM, EDGE_SHARP, type EditMesh, NONE } from './mesh';
 import {
   type Attribution,
   addFaces,
+  flagEdge,
+  planarCapUv,
   type RoleCounts,
   requireFinite,
   requirePositive,
   requireSegments,
+  setFaceUv,
 } from './ops';
 import { convexPartition } from './polygon2d';
 
@@ -19,6 +32,23 @@ import { convexPartition } from './polygon2d';
 export type Point2 = readonly [number, number];
 
 type Place = (x: number, y: number, z: number) => Tuple3;
+
+/**
+ * Metric UV of a parametric producer, the convention of `sweep`: `'metric'` writes uv0 in meters of the
+ * unplaced surface (u around the generator, v along it, counter-clockwise on the outward face) with the
+ * seam edges flagged; omitted writes no uv0.
+ */
+export interface MetricUv {
+  readonly uv?: 'metric';
+}
+
+/** `uv` is omitted or `'metric'`; anything else is a refused argument (the type alone does not guard JS callers). */
+function requireMetricUv(uv: unknown): Result<boolean, ModelingError> {
+  if (uv !== undefined && uv !== 'metric') {
+    return err(modelingError('model-invalid-argument', "uv is omitted or 'metric'", { uv }));
+  }
+  return ok(uv === 'metric');
+}
 
 function offsetBy(center: Tuple3 | undefined): Place {
   const [cx, cy, cz] = center ?? [0, 0, 0];
@@ -110,6 +140,8 @@ interface Sweep {
   readonly angle: number;
   /** Degrees; 0 starts at +Z and the sweep turns toward +X (right-handed about +Y). */
   readonly startAngle: number;
+  /** Write the metric uv0 (the seam is the meridian at `startAngle`). */
+  readonly uv?: MetricUv['uv'];
 }
 
 interface SurfaceRoles {
@@ -159,6 +191,9 @@ function revolveSurface(
   const segments = requireSegments(sweep.name, sweep.segments, full ? 3 : 1);
   if (!segments.ok) return segments;
   const n = sweep.segments;
+  const checkedUv = requireMetricUv(sweep.uv);
+  if (!checkedUv.ok) return checkedUv;
+  const metric = checkedUv.value;
   const columns = full ? n : n + 1;
   const ids = profile.map((p) => {
     const count = p[0] === 0 ? 1 : columns;
@@ -175,19 +210,48 @@ function revolveSurface(
     !loop &&
     (profile[axisEnd] as Point2)[0] === 0 &&
     (profile[j] as Point2)[1] === (profile[k] as Point2)[1];
+  const spans = loop ? m : m - 1;
+  const capOf = (j: number): 'start' | 'end' | undefined =>
+    j === 0 && isCap(j, 1, 0)
+      ? 'start'
+      : j + 1 === m - 1 && !loop && isCap(j, j + 1, j + 1)
+        ? 'end'
+        : undefined;
+  // Meters along the profile, measured on the side surface only: an end cap span adds nothing.
+  const profileV: number[] = [0];
+  for (let j = 0; j < spans; j++) {
+    const a = profile[j] as Point2;
+    const b = profile[(j + 1) % m] as Point2;
+    profileV.push(
+      (profileV[j] as number) + (capOf(j) === undefined ? hypot2(b[0] - a[0], b[1] - a[1]) : 0),
+    );
+  }
+  const dPhi = (sweep.angle * Math.PI) / 180 / n;
+  const uAt = (j: number, i: number): number => (profile[j] as Point2)[0] * i * dPhi;
+  const local = new Map<number, Point2>();
+  if (metric) {
+    for (const [j, ring] of ids.entries()) {
+      for (const [i, v] of ring.entries()) {
+        const phi = ((sweep.startAngle + (i * sweep.angle) / n) * Math.PI) / 180;
+        const r = (profile[j] as Point2)[0];
+        local.set(v, [r * sin(phi), r * cos(phi)]);
+      }
+    }
+  }
 
   const sides: number[][] = [];
+  const sideUv: [number, number][][] = [];
   const caps: { role: string; loop: number[]; rim: number }[] = [];
-  const spans = loop ? m : m - 1;
   for (let j = 0; j < spans; j++) {
     const k = (j + 1) % m;
-    if (j === 0 && isCap(j, k, 0)) {
+    const cap = capOf(j);
+    if (cap === 'start') {
       const rim = Array.from({ length: columns }, (_, i) => at(k, columns - 1 - i));
       caps.push({ role: roles.start, loop: full ? rim : [at(j, 0), ...rim], rim: k });
       if (full) mesh.removeVertex(at(j, 0));
       continue;
     }
-    if (k === m - 1 && isCap(j, k, k)) {
+    if (cap === 'end') {
       const rim = Array.from({ length: columns }, (_, i) => at(j, i));
       caps.push({ role: roles.end, loop: full ? rim : [...rim, at(k, 0)], rim: j });
       if (full) mesh.removeVertex(at(k, 0));
@@ -195,12 +259,36 @@ function revolveSurface(
     }
     const jAxis = (profile[j] as Point2)[0] === 0;
     const kAxis = (profile[k] as Point2)[0] === 0;
+    const [vj, vk] = [profileV[j] as number, profileV[j + 1] as number];
     for (let i = 0; i < n; i++) {
       const a = at(j, i);
       const b = at(j, i + 1);
       const c = at(k, i + 1);
       const d = at(k, i);
       sides.push(jAxis ? [a, c, d] : kAxis ? [a, b, c] : [a, b, c, d]);
+      if (metric) {
+        const [ua0, ua1, uk0, uk1] = [uAt(j, i), uAt(j, i + 1), uAt(k, i), uAt(k, i + 1)];
+        sideUv.push(
+          jAxis
+            ? [
+                [(uk0 + uk1) / 2, vj],
+                [uk1, vk],
+                [uk0, vk],
+              ]
+            : kAxis
+              ? [
+                  [ua0, vj],
+                  [ua1, vj],
+                  [(ua0 + ua1) / 2, vk],
+                ]
+              : [
+                  [ua0, vj],
+                  [ua1, vj],
+                  [uk1, vk],
+                  [uk0, vk],
+                ],
+        );
+      }
     }
   }
   const counts: RoleCounts = {};
@@ -208,13 +296,27 @@ function revolveSurface(
   const added = addFaces(mesh, sides, attribution, roles.side, counts);
   if (!added.ok) return added;
   pushAll(faces, added.value);
+  const uvFaces = [...faces];
   for (const cap of caps) {
     const capFace = addFaces(mesh, [cap.loop], attribution, cap.role, counts);
     if (!capFace.ok) return capFace;
     pushAll(faces, capFace.value);
+    if (metric) {
+      pushAll(uvFaces, capFace.value);
+      sideUv.push(planarCapUv(cap.loop.map((v) => local.get(v) as Point2)));
+    }
     for (let i = 0; i < (full ? columns : columns - 1); i++) {
       const h = mesh.findHalf(at(cap.rim, i), at(cap.rim, i + 1));
       if (h !== NONE) mesh.eFlags[h >> 1] = mergeFlags(mesh.eFlags[h >> 1] as number, EDGE_SHARP);
+    }
+  }
+  if (metric) {
+    setFaceUv(mesh, uvFaces, sideUv);
+    if (full) {
+      for (let j = 0; j < spans; j++) {
+        if (capOf(j) === undefined) flagEdge(mesh, at(j, 0), at((j + 1) % m, 0), EDGE_SEAM);
+      }
+      if (loop) for (let i = 0; i < n; i++) flagEdge(mesh, at(0, i), at(0, i + 1), EDGE_SEAM);
     }
   }
   const closed =
@@ -418,7 +520,7 @@ export function appendPolygon(
 
 // ---- revolved primitives ------------------------------------------------------------------
 
-export interface RevolveOptions {
+export interface RevolveOptions extends MetricUv {
   /** `[radius, y]` profile, bottom to top for an outward surface; first == last closes it. */
   readonly points: readonly Point2[];
   readonly segments: number;
@@ -439,7 +541,13 @@ export function appendRevolve(
     revolveSurface(
       mesh,
       options.points,
-      { name: 'segments', segments: options.segments, angle: angle.value, startAngle: 0 },
+      {
+        name: 'segments',
+        segments: options.segments,
+        angle: angle.value,
+        startAngle: 0,
+        uv: options.uv,
+      },
       { side: 'side', start: 'bottom', end: 'top' },
       attribution,
       offsetBy(undefined),
@@ -448,16 +556,16 @@ export function appendRevolve(
   );
 }
 
-export interface CylinderOptions {
+export type CylinderOptions = {
   readonly radiusTop: number;
   readonly radiusBottom: number;
   readonly height: number;
-  readonly radialSegments: number;
   readonly heightSegments?: number;
   /** Omit the caps (default false). */
   readonly openEnded?: boolean;
   readonly center?: Tuple3;
-}
+} & MetricUv &
+  SegmentsOrTolerance<{ readonly radialSegments: number }>;
 
 /**
  * Cylinder along +Y with n-gon caps and sharp cap rims; a zero
@@ -490,6 +598,14 @@ export function appendCylinder(
   const rows = options.heightSegments ?? 1;
   const checkedRows = requireSegments('heightSegments', rows, 1);
   if (!checkedRows.ok) return checkedRows;
+  const radial = resolveSegments(
+    'radialSegments',
+    options.radialSegments,
+    options.tolerance,
+    Math.max(options.radiusTop, options.radiusBottom),
+    3,
+  );
+  if (!radial.ok) return radial;
   const { radiusTop: top, radiusBottom: bottom } = options;
   const half = options.height / 2;
   const profile: Point2[] = [];
@@ -506,7 +622,13 @@ export function appendCylinder(
     revolveSurface(
       mesh,
       profile,
-      { name: 'radialSegments', segments: options.radialSegments, angle: 360, startAngle: 0 },
+      {
+        name: 'radialSegments',
+        segments: radial.value,
+        angle: 360,
+        startAngle: 0,
+        uv: options.uv,
+      },
       { side: 'side', start: 'bottom', end: 'top' },
       attribution,
       offsetBy(options.center),
@@ -515,14 +637,14 @@ export function appendCylinder(
   );
 }
 
-export interface ConeOptions {
+export type ConeOptions = {
   readonly radius: number;
   readonly height: number;
-  readonly radialSegments: number;
   readonly heightSegments?: number;
   readonly openEnded?: boolean;
   readonly center?: Tuple3;
-}
+} & MetricUv &
+  SegmentsOrTolerance<{ readonly radialSegments: number }>;
 
 /** Cone: apex at +height/2. Roles `side` and `bottom`. */
 export function appendCone(
@@ -539,14 +661,16 @@ export function appendCone(
   );
 }
 
-export interface SphereOptions {
+export type SphereOptions = {
   readonly radius: number;
-  /** Segments around +Y (>= 3). */
-  readonly widthSegments: number;
-  /** Segments from pole to pole (>= 2). */
-  readonly heightSegments: number;
   readonly center?: Tuple3;
-}
+} & MetricUv &
+  SegmentsOrTolerance<{
+    /** Segments around +Y (>= 3). */
+    readonly widthSegments: number;
+    /** Segments from pole to pole (>= 2). */
+    readonly heightSegments: number;
+  }>;
 
 /** Sphere: quad bands with triangle fans at the poles; role `face`. */
 export function appendSphere(
@@ -556,10 +680,26 @@ export function appendSphere(
 ): Result<RoleCounts, ModelingError> {
   const radius = requirePositive('radius', options.radius);
   if (!radius.ok) return radius;
-  const rows = requireSegments('heightSegments', options.heightSegments, 2);
+  const width = resolveSegments(
+    'widthSegments',
+    options.widthSegments,
+    options.tolerance,
+    options.radius,
+    3,
+  );
+  if (!width.ok) return width;
+  const follows = rejectDerived(
+    'heightSegments',
+    options.heightSegments,
+    options.tolerance,
+    'half of widthSegments',
+  );
+  if (!follows.ok) return follows;
+  const derived = options.tolerance !== undefined;
+  const h = derived ? Math.max(2, Math.ceil(width.value / 2)) : (options.heightSegments as number);
+  const rows = requireSegments('heightSegments', h, 2);
   if (!rows.ok) return rows;
   const r = options.radius;
-  const h = options.heightSegments;
   const profile: Point2[] = [[0, -r]];
   for (let k = 1; k < h; k++) {
     const theta = (Math.PI * k) / h;
@@ -571,7 +711,13 @@ export function appendSphere(
     revolveSurface(
       mesh,
       profile,
-      { name: 'widthSegments', segments: options.widthSegments, angle: 360, startAngle: 0 },
+      {
+        name: 'widthSegments',
+        segments: width.value,
+        angle: 360,
+        startAngle: 0,
+        uv: options.uv,
+      },
       { side: 'face', start: 'face', end: 'face' },
       attribution,
       offsetBy(options.center),
@@ -580,19 +726,21 @@ export function appendSphere(
   );
 }
 
-export interface TorusOptions {
+export type TorusOptions = {
   /** Distance from the center to the middle of the tube. */
   readonly radius: number;
   /** Tube radius; less than `radius`. */
   readonly tube: number;
-  /** Segments around the tube cross-section (>= 3). */
-  readonly radialSegments: number;
-  /** Segments along the ring. */
-  readonly tubularSegments: number;
   /** Swept ring angle in degrees (default 360), starting at +X toward +Y. */
   readonly angle?: number;
   readonly center?: Tuple3;
-}
+} & MetricUv &
+  SegmentsOrTolerance<{
+    /** Segments around the tube cross-section (>= 3). */
+    readonly radialSegments: number;
+    /** Segments along the ring. */
+    readonly tubularSegments: number;
+  }>;
 
 /** Torus: the ring lies in XY around +Z; role `face`. */
 export function appendTorus(
@@ -612,13 +760,32 @@ export function appendTorus(
       }),
     );
   }
-  const sections = requireSegments('radialSegments', options.radialSegments, 3);
+  const sections = resolveSegments(
+    'radialSegments',
+    options.radialSegments,
+    options.tolerance,
+    options.tube,
+    3,
+  );
   if (!sections.ok) return sections;
   const angle = requireAngle(options.angle);
   if (!angle.ok) return angle;
+  const follows = rejectDerived(
+    'tubularSegments',
+    options.tubularSegments,
+    options.tolerance,
+    'the outer ring radius, scaled by angle',
+  );
+  if (!follows.ok) return follows;
+  const derived = options.tolerance !== undefined;
+  const ring = derived
+    ? segmentsFor(options.radius + options.tube, options.tolerance as number, 3)
+    : ok(options.tubularSegments as number);
+  if (!ring.ok) return ring;
+  const tubular = derived ? Math.max(1, Math.ceil((ring.value * angle.value) / 360)) : ring.value;
   const profile: Point2[] = [];
-  for (let k = 0; k < options.radialSegments; k++) {
-    const v = (2 * Math.PI * k) / options.radialSegments;
+  for (let k = 0; k < sections.value; k++) {
+    const v = (2 * Math.PI * k) / sections.value;
     profile.push([options.radius + options.tube * cos(v), options.tube * sin(v)]);
   }
   profile.push(profile[0] as Point2);
@@ -630,9 +797,10 @@ export function appendTorus(
       profile,
       {
         name: 'tubularSegments',
-        segments: options.tubularSegments,
+        segments: tubular,
         angle: angle.value,
         startAngle: 90,
+        uv: options.uv,
       },
       { side: 'face', start: 'face', end: 'face' },
       attribution,
@@ -645,7 +813,7 @@ export function appendTorus(
 
 // ---- extruded outline ------------------------------------------------------------------------
 
-export interface ExtrudePolygonOptions {
+export interface ExtrudePolygonOptions extends MetricUv {
   /** `[x, y]` outline in the XY plane, either winding; first == last is accepted. */
   readonly points: readonly Point2[];
   /** Outlines of through holes strictly inside `points`, either winding. */
@@ -810,6 +978,9 @@ export function appendExtrudePolygon(
   const steps = options.steps ?? 1;
   const checkedSteps = requireSegments('steps', steps, 1);
   if (!checkedSteps.ok) return checkedSteps;
+  const checkedUv = requireMetricUv(options.uv);
+  if (!checkedUv.ok) return checkedUv;
+  const metric = checkedUv.value;
   const { outline, holes } = domain.value;
   const loops = [outline, ...holes];
   const points = loops.flat();
@@ -837,7 +1008,15 @@ export function appendExtrudePolygon(
   const top = rings[steps] as number[];
   const walls: number[][] = [];
   const holeWalls: number[][] = [];
+  const wallUv: [number, number][][] = [];
+  const holeWallUv: [number, number][][] = [];
   for (const [l, loop] of loops.entries()) {
+    // u: distance along the loop from its first point; v: z. The seam is the first point's vertical edge.
+    const along = [0];
+    for (let i = 0; i < loop.length; i++) {
+      const [p, q] = [loop[i] as Point2, loop[(i + 1) % loop.length] as Point2];
+      along.push((along[i] as number) + hypot2(q[0] - p[0], q[1] - p[1]));
+    }
     const base = starts[l] as number;
     const n = loop.length;
     for (let s = 0; s < steps; s++) {
@@ -852,21 +1031,57 @@ export function appendExtrudePolygon(
           upper[b] as number,
           upper[a] as number,
         ]);
+        if (metric) {
+          const [u0, u1] = [along[i] as number, along[i + 1] as number];
+          const [v0, v1] = [
+            (options.depth * s) / steps,
+            s + 1 === steps ? options.depth : (options.depth * (s + 1)) / steps,
+          ];
+          (l === 0 ? wallUv : holeWallUv).push([
+            [u0, v0],
+            [u1, v0],
+            [u1, v1],
+            [u0, v1],
+          ]);
+        }
       }
     }
   }
   const counts: RoleCounts = {};
   const faces: number[] = [];
-  for (const [role, faceLoops] of [
-    ['side', walls],
-    ['hole', holeWalls],
-    ['top', caps.map((cap) => cap.map((i) => top[i] as number))],
-    ['bottom', caps.map((cap) => cap.map((i) => bottom[i] as number).reverse())],
+  const uvs: [number, number][][] = [];
+  const capUv = (flip: boolean) =>
+    caps.map((cap) =>
+      planarCapUv((flip ? [...cap].reverse() : cap).map((i) => points[i] as Point2)),
+    );
+  for (const [role, faceLoops, faceUv] of [
+    ['side', walls, wallUv],
+    ['hole', holeWalls, holeWallUv],
+    ['top', caps.map((cap) => cap.map((i) => top[i] as number)), metric ? capUv(false) : []],
+    [
+      'bottom',
+      caps.map((cap) => cap.map((i) => bottom[i] as number).reverse()),
+      metric ? capUv(true) : [],
+    ],
   ] as const) {
     if (faceLoops.length === 0) continue;
     const added = addFaces(mesh, faceLoops, attribution, role, counts);
     if (!added.ok) return added;
     pushAll(faces, added.value);
+    pushAll(uvs, faceUv);
+  }
+  if (metric) {
+    setFaceUv(mesh, faces, uvs);
+    for (const first of starts) {
+      for (let s = 0; s < steps; s++) {
+        flagEdge(
+          mesh,
+          (rings[s] as number[])[first] as number,
+          (rings[s + 1] as number[])[first] as number,
+          EDGE_SEAM,
+        );
+      }
+    }
   }
   for (const ring of [bottom, top]) {
     for (const [l, loop] of loops.entries()) {

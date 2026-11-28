@@ -81,8 +81,7 @@ export function prepareStandardOutputResources(
   // unavailable. Do not build a compute graph or fault a downlevel renderer.
   if (
     output?.exposure.kind === 'auto' &&
-    autoExposureCapabilityFailure(internals.device.caps, state.compiledFrameGraphGeneration) ===
-      undefined
+    autoExposureCapabilityFailure(internals.device.caps, state.graphGeneration) === undefined
   ) {
     const pending = state.pendingAutoExposureGpuResources;
     if (pending !== undefined && pending.device !== internals.device) {
@@ -93,10 +92,7 @@ export function prepareStandardOutputResources(
       state.autoExposureGpuResources?.device !== internals.device &&
       state.pendingAutoExposureGpuResources?.device !== internals.device
     ) {
-      const resources = createAutoExposureGpuResources(
-        internals.device,
-        state.compiledFrameGraphGeneration,
-      );
+      const resources = createAutoExposureGpuResources(internals.device, state.graphGeneration);
       if (!resources.ok) {
         return err(
           new RhiError({

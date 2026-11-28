@@ -9,6 +9,7 @@ import {
   Skylight,
   TONEMAP_LINEAR,
 } from '@forgeax/engine-render';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
 import {
   attachRecorder,
   buildFrameModel,
@@ -90,6 +91,8 @@ it.each([
       ambientOcclusion: { enabled: true, method: 'gtao', quality: 100, gtao: { spatialFilter } },
     });
     if (!profile.ok) throw profile.error;
+    const graphBuilds = renderGraphCompileCount();
+    const binds = renderOrderedViewBindCount();
     const actual = await renderWorldResponse(renderer, planeWorld(), 'deferred', async (draw) => {
       const pending = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
@@ -109,6 +112,9 @@ it.each([
         ),
       );
     });
+    const ordered = renderOrderedViewBindCount() - binds;
+    expect(ordered).toBeGreaterThan(0);
+    expect(renderGraphCompileCount() - graphBuilds).toBe(ordered);
     let minimum = 1,
       total = 0,
       count = 0;
@@ -120,7 +126,10 @@ it.each([
         total += visibility;
         count++;
       }
-    writeFileSync(`${directory}/result.json`, JSON.stringify({ minimum, mean: total / count }));
+    writeFileSync(
+      `${directory}/result.json`,
+      JSON.stringify({ minimum, mean: total / count, ordered }),
+    );
     expect(minimum).toBeGreaterThan(0.99);
     expect(total / count).toBeGreaterThan(0.999);
   } finally {

@@ -22,6 +22,7 @@ interface LightingFixtureOptions {
   readonly enableSky?: boolean;
   readonly ordinaryCasesOnly?: boolean;
   readonly mode0Fp32?: boolean;
+  readonly sceneDepthRange?: boolean;
   readonly fogOracle?: 'air' | 'height';
   readonly lowOpticalDepth?: boolean;
 }
@@ -116,12 +117,9 @@ function createUniformLightingPipeline(
     vertex: { module, entryPoint: 'vs_main' },
     fragment: {
       module,
-      entryPoint:
-        options.fogOracle === 'air'
-          ? 'fs_trace_mode_zero_air'
-          : options.mode0Fp32
-            ? 'fs_trace_mode_zero'
-            : 'fs_main',
+      entryPoint: options.mode0Fp32
+        ? `fs_trace_mode_zero${options.fogOracle === 'air' ? '_air' : ''}${options.sceneDepthRange ? '_depth_range' : ''}`
+        : 'fs_main',
       targets: [{ format }, { format }, { format: 'rgba32float' }],
     },
   });
@@ -435,6 +433,7 @@ async function readUniformLighting(options: LightingFixtureOptions = {}) {
     };
     const scene = texture('rgba16float');
     const depth = texture('depth32float');
+    const sceneDepthRange = options.sceneDepthRange ? texture('rg16float') : undefined;
     const map = texture('rgba32float');
     const outputs = [texture(format), texture(format), texture('rgba32float')];
     const buffer = (size: number, usage: GPUBufferUsageFlags) => {
@@ -443,6 +442,7 @@ async function readUniformLighting(options: LightingFixtureOptions = {}) {
       return value;
     };
     const viewBuffer = buffer(VIEW_UNIFORM_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    const distantSkyBuffer = buffer(16, GPUBufferUsage.STORAGE);
     const paramsBuffer = buffer(256, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     const readback = buffer(2048, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
     const depthWriter = await makeDepthWriter(device, options.fogOracle);
@@ -459,11 +459,17 @@ async function readUniformLighting(options: LightingFixtureOptions = {}) {
         { binding: 5, resource: map.createView() },
         { binding: 6, resource: scene.createView() },
         { binding: 7, resource: scene.createView() },
+        ...(sceneDepthRange === undefined
+          ? []
+          : [{ binding: 8, resource: sceneDepthRange.createView() }]),
       ],
     });
     const viewBinding = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: viewBuffer } }],
+      entries: [
+        { binding: 0, resource: { buffer: viewBuffer } },
+        { binding: 25, resource: { buffer: distantSkyBuffer } },
+      ],
     });
     const { params, view } = uniformLightingInputs(options);
     const records: unknown[] = [];
@@ -580,4 +586,8 @@ it('preserves absorption and emissive-only media when incident lighting is skipp
 it('uses distinct production near and far mean positions for air and for no-atmosphere height fog', async () => {
   await readUniformLighting({ mode0Fp32: true, fogOracle: 'air' });
   await readUniformLighting({ mode0Fp32: true, fogOracle: 'height' });
+}, 30000);
+
+it('traces sky through the cooked RG16F depth-range binding', async () => {
+  await readUniformLighting({ mode0Fp32: true, sceneDepthRange: true, ordinaryCasesOnly: true });
 }, 30000);

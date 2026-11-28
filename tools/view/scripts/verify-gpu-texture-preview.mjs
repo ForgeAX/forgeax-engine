@@ -11,7 +11,7 @@ const engine = dirname(fileURLToPath(import.meta.resolve('@forgeax/engine/packag
 const checkout = resolve(engine, '../..');
 const linuxBrowserLaunch = JSON.parse(await readFile(join(checkout, 'scripts/ci/browser-launch.json'), 'utf8'));
 const launchOptions = {
- ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? (process.platform === 'darwin' ? 'chrome' : process.platform === 'linux' ? linuxBrowserLaunch.channel : undefined) }),
+ ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? linuxBrowserLaunch.channel }),
  headless: process.platform === 'darwin',
  args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--disable-features=MacAppCodeSignClone', ...(process.platform === 'linux' ? [...linuxBrowserLaunch.args, '--use-angle=swiftshader'] : [])],
 };

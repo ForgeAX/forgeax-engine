@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
+import { selectBrowserExecutable } from './browser-executable.mjs';
 import browserLaunch from './browser-launch.json' with { type: 'json' };
 
 const root = fileURLToPath(new URL('../../packages/engine/', import.meta.url));
@@ -47,7 +48,11 @@ try {
   await server.listen();
   const address = server.httpServer?.address();
   assert(address && typeof address !== 'string', 'Vite did not expose a local port');
-  browser = await chromium.launch({ ...browserLaunch, headless: true, chromiumSandbox: true });
+  browser = await chromium.launch({
+    ...selectBrowserExecutable(browserLaunch),
+    headless: true,
+    chromiumSandbox: true,
+  });
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

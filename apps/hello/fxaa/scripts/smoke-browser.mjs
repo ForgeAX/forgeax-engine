@@ -321,11 +321,17 @@ try {
   } else if (engine !== 'webkit') {
     launchOptions.args = ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'];
   }
-  if (process.env.FORGEAX_BROWSER_CHANNEL !== undefined) {
-    launchOptions.channel = process.env.FORGEAX_BROWSER_CHANNEL;
-  }
-  if (process.env.FORGEAX_BROWSER_EXECUTABLE_PATH !== undefined) {
-    launchOptions.executablePath = process.env.FORGEAX_BROWSER_EXECUTABLE_PATH;
+  const executablePath =
+    process.env.FORGEAX_BROWSER_EXECUTABLE_PATH || process.env.FORGEAX_BROWSER_EXECUTABLE;
+  if (engine !== 'webkit') {
+    if (executablePath) {
+      launchOptions.executablePath = executablePath;
+    } else {
+      launchOptions.channel =
+        process.env.FORGEAX_BROWSER_CHANNEL || process.env.FORGEAX_CHROME_CHANNEL || 'chrome';
+    }
+  } else if (executablePath) {
+    launchOptions.executablePath = executablePath;
   }
   const browserType = engine === 'webkit' ? webkit : chromium;
   browser = await runStage('browser-launch', () => browserType.launch({ ...(launchOptions), chromiumSandbox: true }));

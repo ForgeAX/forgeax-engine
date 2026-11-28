@@ -151,6 +151,7 @@ it('joins each fixed shadow candidate once and projects only participating rows'
     source(10),
     { ...source(11), shadowCaster: false },
     { ...source(12), authorVisible: false },
+    { ...source(13), renderLayers: 2 },
   ]);
   const fixed = f.scene.drawFrame(new MaterialFrame(undefined).with(material));
   const locate = vi.fn(fixed.locate);
@@ -171,6 +172,7 @@ it('joins each fixed shadow candidate once and projects only participating rows'
     meshes: f.meshes,
     sourceScope,
     shadow: true,
+    cullMask: 1,
     materials: undefined,
     prepareUnbatched: () => [],
     viewDraws: [],
@@ -179,7 +181,7 @@ it('joins each fixed shadow candidate once and projects only participating rows'
   expect([...ordinary.rows].map((row) => row.source.entityKey)).toEqual([10]);
   expect(project.mock.calls.map(([row]) => row.entityKey)).toEqual([10]);
   expect(indexed).not.toHaveBeenCalled();
-  expect(locate).toHaveBeenCalledTimes(3);
+  expect(locate).toHaveBeenCalledTimes(4);
   const seen: number[] = [];
   drawn(new DirectDrawPhase(), {
     ...input,
@@ -193,7 +195,7 @@ it('joins each fixed shadow candidate once and projects only participating rows'
   const borrowed = { ...scene, slotAt: (slot: number) => locate(slot) };
   drawn(new DirectDrawPhase(), { ...input, scene: borrowed });
   expect(project).not.toHaveBeenCalled();
-  expect(indexed).toHaveBeenCalledTimes(3);
+  expect(indexed).toHaveBeenCalledTimes(4);
 });
 
 it.each([1, 10000, 50000])('visits only direct members beside %i GPU instances', (count) => {

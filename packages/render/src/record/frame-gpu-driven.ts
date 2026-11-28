@@ -10,6 +10,7 @@ import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-bl
 import { DirectionalLight } from '../components/directional-light';
 import { directionalShadowFilterRadiusTexels } from '../components/directional-shadow-filter';
 import type { MeshGpuHandles } from '../device/gpu-residency';
+import type { MeshChanges } from '../device/mesh-changes';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import {
   type CollectedMaterialArtifacts,
@@ -496,7 +497,7 @@ export interface DirectShadowInputs {
   readonly prepareSources: PrepareSources;
   readonly viewDraws: FrameList<RenderableSnapshot> | undefined;
   readonly prepareGeometry: PrepareShadowGeometry;
-  readonly geometry: readonly unknown[];
+  readonly meshResidency: MeshChanges;
   /** Native CPU LOD selects ranges or instance windows within each issued physical mesh. */
   readonly lodRows: LodRows;
   readonly retainMeshDomain: boolean;
@@ -523,7 +524,7 @@ function shadowRows(
     prepareUnbatched: inputs.prepareSources,
     viewDraws: inputs.viewDraws ?? [],
     prepareGeometry: inputs.prepareGeometry,
-    geometry: inputs.geometry,
+    meshResidency: inputs.meshResidency,
   });
   const output = phase.emit();
   const rows = inputs.lodRows(output.rows);

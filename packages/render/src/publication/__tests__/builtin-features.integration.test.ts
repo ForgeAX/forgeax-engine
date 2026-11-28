@@ -10,11 +10,14 @@ import { CLOUD_LAYER_FEATURE_IDENTITY } from '../../cloud/contracts';
 import { BarrelDistortion, MotionBlur } from '../../components';
 import { Camera } from '../../components/camera';
 import { CameraView } from '../../components/camera-view';
+import { BARREL_DISTORTION_FEATURE_IDENTITY } from '../../features/barrel-distortion';
 import { withBuiltinRenderFeatures } from '../../features/builtins';
 import { createRenderFeatureHost } from '../../features/host';
+import { MOTION_BLUR_FEATURE_IDENTITY } from '../../features/motion-blur/motion-blur-execution';
 import { resolveStandardRenderFeatureTargets } from '../../features/targets';
 import type { RenderFeature, RenderFeatureExtractContext } from '../../features/types';
 import { renderFeatureViewIdentity } from '../../features/view';
+import { unimplementedPublishedFeature } from '../../render-system-record-attempt';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 import { renderPublicationTransfers } from '../record';
@@ -49,7 +52,7 @@ it.each([
       .unwrap();
   const caps = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap().caps;
   let extracted = 0;
-  const roster = withBuiltinRenderFeatures([], caps);
+  const roster = withBuiltinRenderFeatures([]);
   const sources: RenderFeature<unknown>[] = roster.map((feature) => ({
     ...feature,
     ...(feature.source === undefined
@@ -99,8 +102,37 @@ it.each([
     expect(published).not.toContain(CLOUD_LAYER_FEATURE_IDENTITY);
     for (const feature of roster.filter((feature) => feature.identity.startsWith('water-')))
       expect(published).toContain(feature.identity);
-    expect(published.includes('fullscreen.forgeax.barrel-distortion')).toBe(active);
-    expect(published.includes('forgeax.motion-blur')).toBe(active);
+    expect(published).not.toContain('fullscreen.forgeax.barrel-distortion');
+    expect(published).not.toContain('forgeax.motion-blur');
+    expect(accepted.frame.cameras).toHaveLength(2);
+    for (const camera of accepted.frame.cameras) {
+      expect(camera.barrelDistortion !== undefined).toBe(active);
+      expect(camera.motionBlur !== undefined).toBe(active);
+    }
+    if (active) {
+      const legacy = {
+        ...accepted,
+        packet: {
+          ...accepted.packet,
+          features: [
+            ...accepted.packet.features,
+            { identity: BARREL_DISTORTION_FEATURE_IDENTITY, data: { views: [] } },
+            { identity: MOTION_BLUR_FEATURE_IDENTITY, data: {} },
+          ],
+        },
+      };
+      expect(unimplementedPublishedFeature(legacy, host)).toBeUndefined();
+      const unknown = { identity: 'custom-effect', data: {} };
+      expect(
+        unimplementedPublishedFeature(
+          {
+            ...legacy,
+            packet: { ...legacy.packet, features: [...legacy.packet.features, unknown] },
+          },
+          host,
+        ),
+      ).toBe(unknown.identity);
+    }
     expect(
       accepted.packet.features.find((feature) => feature.identity === 'water-info-producer')?.data,
     ).toMatchObject({ kind: 'forgeax-water-info-input', version: 6 });
@@ -149,7 +181,7 @@ it('omits inactive Water rows while the unchanged roster plans without a receive
     .unwrap();
   world.update(1 / 60).unwrap();
   const caps = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap().caps;
-  const roster = withBuiltinRenderFeatures([], caps);
+  const roster = withBuiltinRenderFeatures([]);
   const identity = { source: 'inactive-water-roster', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity, caps);
   const receiver = new RenderPublicationReceiver(identity);

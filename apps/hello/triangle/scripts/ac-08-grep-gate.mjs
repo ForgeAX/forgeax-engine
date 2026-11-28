@@ -55,8 +55,8 @@
 // (plan-strategy K-6 dual-layer SSOT lint):
 //
 //   (l) workflow SSOT lint via spawnSync on scripts/check-workflow-ssot.mjs.
-//       Asserts install-playwright-chrome-beta composite action is reused in
-//       >= 2 yml files and no yml installs chrome-beta inline (todo-059
+//       Asserts install-playwright-chrome composite action is reused in
+//       >= 2 yml files and no yml installs chrome inline (todo-059
 //       split A). Independent root script lets AI users invoke locally;
 //       gate (l) provides CI-side fail-fast hookup so ac-08 stays the
 //       single grep-gate aggregator (architecture principle #5 Fail Fast).
@@ -894,7 +894,7 @@ const bannedCastRegex = /\bas\s+(?:Rhi|Command|GPU)[A-Z][A-Za-z0-9_]*\b/;
       record(
         'l',
         'PASS',
-        `scripts/check-workflow-ssot.mjs exit=0 (install-playwright-chrome-beta composite action reused; no inline chrome-beta drift)`,
+        `scripts/check-workflow-ssot.mjs exit=0 (install-playwright-chrome composite action reused; no inline chrome drift)`,
       );
     } else {
       record(

@@ -1,0 +1,1 @@
+blade-a x blade-b: branches 1, closed 0, partials 0 (none), max bound 9.29e-9

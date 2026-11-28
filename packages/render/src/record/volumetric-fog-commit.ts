@@ -1,4 +1,3 @@
-import type { Buffer } from '@forgeax/engine-rhi';
 import type { VolumetricFogFrameContext } from '../render-contract';
 import type { ExtractedVolumetricFog } from '../render-system-extract';
 import { inspectVolumetricFog } from '../volume/inspection';
@@ -58,14 +57,14 @@ export function retireVolumetricFogParams(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
 ): void {
-  const buffers = frameState.volumetricFogParams.buffers;
+  const slots = frameState.volumetricFogParams.slots;
   frameState.volumetricFogParams = emptyVolumetricFogParams();
-  const live = buffers.filter((buffer): buffer is Buffer => buffer !== null);
-  if (live.length === 0) return;
+  if (slots[0] === null && slots[1] === null) return;
   const device = internals.device;
   const release = (): void => {
-    for (const buffer of live) {
-      const destroyed = device.destroyBuffer(buffer);
+    for (const slot of slots) {
+      if (slot === null) continue;
+      const destroyed = device.destroyBuffer(slot.buffer);
       if (!destroyed.ok) internals.errorRegistry.fire(destroyed.error);
     }
   };
@@ -140,7 +139,7 @@ const VOLUMETRIC_FOG_PASS_COUNT = 4;
 function volumetricFogResourceFacts(frameState: RenderFrameState) {
   const textures = frameState.compiledFrameGraph?.volumetricFogTextures;
   if (textures === undefined) return undefined;
-  const [first, second] = frameState.volumetricFogParams.buffers;
+  const [first, second] = frameState.volumetricFogParams.slots;
   return withVolumetricFogParameterBuffers(
     textures,
     Number(first !== null) + Number(second !== null),

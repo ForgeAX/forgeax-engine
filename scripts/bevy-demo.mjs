@@ -680,7 +680,11 @@ export async function verifyPreparedSmokeInputs(apps) {
 
 async function commandSmokes(root, dryRun, concurrency, group, groups, preparedInputs) {
   const allApps = bevySmokeApps(root);
-  const apps = allApps.filter((_, index) => index % groups === group);
+  let apps = allApps.filter((_, index) => index % groups === group);
+  if (preparedInputs) {
+    const { SHARD_COUNT, planCiSmokeFleet } = await import('./ci/run-dawn-smoke-roster.mjs');
+    if (groups === SHARD_COUNT) apps = planCiSmokeFleet({ bevyApps: allApps })[group].bevyApps;
+  }
   if (dryRun) {
     for (const { pkg } of apps) {
       if (!preparedInputs) process.stdout.write(`[bevy-smoke] pnpm --filter ${pkg.name} build\n`);
@@ -772,10 +776,8 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try {
-    await main();
-  } catch (error) {
+  main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
-  }
+  });
 }

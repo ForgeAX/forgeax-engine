@@ -5,7 +5,6 @@ import type { DrawRows } from './frame-snapshot';
 
 import type { RhiCommandEncoder, RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
-import type { RenderTargetLayerWrite } from '../assembly/render-target-host';
 import type { PlanarCaptureState } from '../capture/planar-state';
 import type { RendererOperationCause } from '../errors/render';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
@@ -187,7 +186,10 @@ export function capturePassContext(
       : { captureDispatch: cubeCapture.captureDispatch }),
     ...(planarCapture === undefined
       ? {}
-      : { planarReflectionView: planarCapture.physical.resolveView }),
+      : {
+          planarReflectionView: planarCapture.physical.resolveView,
+          planarReflectionPhysical: planarCapture.physical,
+        }),
   };
 }
 
@@ -202,6 +204,7 @@ export function shadowPassContext(
 ): Pick<
   Partial<_InternalRenderPipelineContext>,
   | 'shadowCasterBounds'
+  | 'shadowCasterRecordingBounds'
   | 'directionalShadowCascadeMiss'
   | 'capsuleShadowLight'
   | 'shadowValidatedOrdered'
@@ -209,7 +212,12 @@ export function shadowPassContext(
   | 'shadowDispatch'
 > {
   return {
-    ...(projection === undefined ? {} : { shadowCasterBounds: projection.worldBoundsOf }),
+    ...(projection === undefined
+      ? {}
+      : {
+          shadowCasterBounds: projection.worldBoundsOf,
+          shadowCasterRecordingBounds: projection.recordingWorldBoundsOf,
+        }),
     ...(cascadeCadence?.cascadeMiss === undefined
       ? {}
       : { directionalShadowCascadeMiss: cascadeCadence.cascadeMiss }),
@@ -325,13 +333,11 @@ export function frameSubmissionHooks(
 /** Capture-only frames submit their capture graphs and readbacks, never a display picture. */
 export function encodeCaptureOnlyFrame(
   internals: RenderSystemInternals,
-  _frameState: RenderFrameState,
   attempt: FrameRecordingAttempt,
   encoder: RhiCommandEncoder,
-  readbackLayers: readonly RenderTargetLayerWrite[],
   nativeScene: PersistentGpuDrivenState | undefined,
 ): import('../assembly/frame-recording').RecordedView {
-  recordContext(internals).encodeRenderTargetReadbacks?.(encoder, readbackLayers);
+  recordContext(internals).encodeRenderTargetReadbacks?.(encoder);
   return {
     beforeSubmit: internals.beforeSubmit,
     ...(nativeScene?.retained === undefined
@@ -355,13 +361,12 @@ export function settleCaptureOnlyFrame(
   result: import('../assembly/renderer-frame-transaction').RendererFrameStageResult<void>,
 ): boolean {
   attempt.submitted = result.ok;
-  const captured = attempt.captureFrames.length > 0 || attempt.probeCaptureFrames.length > 0;
+  const batch = attempt.captureBatch;
+  const captured = batch !== undefined && (batch.cube.length > 0 || batch.probes.length > 0);
   frameState.frameOutputs.sceneSubmitted = attempt.submitted && captured;
   if (!attempt.submitted) return false;
   for (const pending of attempt.lightTextureResamples) pending.onSubmitted();
   attempt.lightTextureResamples.length = 0;
-  for (const capture of attempt.captureFrames)
-    internals.markRenderTargetSubmitted?.(capture.work.target, capture.work.physical);
   if (captured)
     attempt.captureCompletion =
       internals.gpuPassTimingSubmittedWork ?? internals.device.queue.onSubmittedWorkDone();

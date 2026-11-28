@@ -155,6 +155,39 @@ export function put<T>(
     : rebuild(root, root.left, right);
 }
 
+/** Replace existing queue-zero keys in order. The old treap shape remains valid,
+ * so rebuild each touched path node once and share every unaffected subtree. */
+export function replaceOrdered<T>(
+  root: Node<T> | undefined,
+  keys: ArrayLike<number>,
+  first: number,
+  end: number,
+  values: Pick<ReadonlyMap<number, T>, 'get'>,
+  weightOf: (value: T) => number,
+): Node<T> | undefined {
+  if (first === end) return root;
+  if (root === undefined) throw new Error('A replacement key must have an existing tree node');
+  let low = first;
+  let high = end;
+  while (low < high) {
+    const middle = low + ((high - low) >>> 1);
+    if ((keys[middle] as number) < root.key) low = middle + 1;
+    else high = middle;
+  }
+  const replaced = low < end && keys[low] === root.key;
+  const left = replaceOrdered(root.left, keys, first, low, values, weightOf);
+  const right = replaceOrdered(root.right, keys, low + Number(replaced), end, values, weightOf);
+  const value = replaced ? values.get(root.key) : root.value;
+  if (value === undefined) throw new Error('A replacement key requires its value');
+  const weight = replaced ? weightOf(value) : root.weight;
+  return value === root.value &&
+    weight === root.weight &&
+    left === root.left &&
+    right === root.right
+    ? root
+    : node(kindOf(root), value, root.queue, root.key, weight, left, right);
+}
+
 function merge<T>(left: Node<T> | undefined, right: Node<T> | undefined): Node<T> | undefined {
   if (left === undefined) return right;
   if (right === undefined) return left;
@@ -219,6 +252,24 @@ class NodeIterator<T> implements IterableIterator<Node<T>> {
 export function nodes<T>(root: Node<T> | undefined): IterableIterator<Node<T>> {
   return new NodeIterator(root);
 }
+
+/** Synchronous ordered consumers can stop without constructing a cursor on ordinary roots. */
+export function visitOrderedValues<T>(
+  root: Node<T> | undefined,
+  visit: (value: T) => boolean | void,
+  depth = 0,
+): boolean {
+  if (depth === 64) {
+    for (const node of nodes(root)) if (visit(node.value)) return true;
+    return false;
+  }
+  while (root !== undefined) {
+    if (visitOrderedValues(root.left, visit, depth + 1) || visit(root.value)) return true;
+    root = root.right;
+  }
+  return false;
+}
+
 /** Membership has no sort order. Visiting the smaller branch recursively bounds
  * the call stack by log2(size), including for a skewed tree, without a heap cursor. */
 export function visitUnorderedValues<T>(

@@ -3,7 +3,6 @@
 import type { World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { RhiCommandEncoder, RhiDevice, RhiError } from '@forgeax/engine-rhi';
-import { err, ok, type Result } from '@forgeax/engine-rhi';
 import {
   drainFramePreparation,
   type FramePreparation,
@@ -21,7 +20,7 @@ import type { RenderFeatureFrameBatch } from '../features/host';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import {
   type CubeCaptureFrameInput,
-  compileDirectPreparedGraph,
+  compilePreparedViewGraph,
   createFrameRecordingAttempt,
   encodePreparedFrameCaptures,
   encodePreparedViewGraph,
@@ -29,6 +28,7 @@ import {
   type GpuDrivenRecordInput,
   type PreparedFrameGraph,
   prepareFrameGraphInputs,
+  prepareOrderedDisplayRecording,
   rejectFeaturePlan,
   releaseFrameRecordingAttempt,
   resolveQueuedFrameTemporal,
@@ -38,6 +38,7 @@ import {
   stageFrameRecordingResources,
   type ViewGraphSealOutcome,
 } from '../record/frame';
+import { compileCaptureGraphBatch, EMPTY_CAPTURE_GRAPH_OUTCOME } from '../record/frame-capture';
 import type {
   BindGroupCounts,
   DispatchCounts,
@@ -46,15 +47,9 @@ import type {
 } from '../record/frame-snapshot';
 import type { RenderableDrawReceipt } from '../record/gpu-draw-receipts';
 import type { GpuTimingCapture } from '../record/gpu-timing';
-import type { ViewGraphCompileOutcome } from '../record/graph-adoption';
 import { MaterialUniformRecording } from '../record/material-uniforms';
 import type { RecordProfileRunner, RenderSystemInternals } from '../record/render-context';
-import {
-  compileViewGraph,
-  type GraphCompileInput,
-  recordCompiledFrameGraph,
-  settleEncodedFrameGraph,
-} from '../record/typed-frame-graph';
+import { recordCompiledFrameGraph, settleEncodedFrameGraph } from '../record/typed-frame-graph';
 import type { CameraSnapshot } from '../render-contract';
 import type {
   DispatchList,
@@ -66,7 +61,6 @@ import type {
 import { recordFailureError } from '../render-system-record-attempt';
 import type { FrameList } from '../scene/frame-list';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
-import { captureGraphOutcome, prepareCaptureGraphs } from '../world/capture-graph-systems';
 import {
   encodeSharedFeatureGraph,
   sharedFeatureGraphEncoded,
@@ -84,13 +78,7 @@ import {
   viewGraphEncodingOutcome,
   viewGraphSealOutcome,
 } from '../world/graph-seal-systems';
-import {
-  awaitsRenderRecord,
-  RENDER_GRAPH_COMPILE_SYSTEM,
-  stageViewGraphCompile,
-  ViewGraphCandidate,
-  type ViewGraphCandidateSlot,
-} from '../world/graph-systems';
+import { awaitsRenderRecord } from '../world/graph-systems';
 import { closeFrameEncoder, frameEncoder, renderFrameEncoder } from '../world/record-systems';
 import type { ViewLights } from '../world/render-lights';
 import {
@@ -100,7 +88,11 @@ import {
   runRenderQueue,
   runRenderRecord,
 } from '../world/render-world';
-import type { ViewGraphCompileRequest } from '../world/view-graph-input';
+import {
+  adoptViewRecordAttempt,
+  ViewRecordAttempt,
+  type ViewRecordAttemptState,
+} from '../world/view-record-attempt';
 
 export interface SharedWorkRequest {
   readonly kind: 'shared-work';
@@ -129,10 +121,9 @@ export interface FrameRecordingQueue {
   readonly world: World;
 }
 /**
- * A view staged its graph compile input on its Render World entity. The shared
- * submission runs that World's RenderRecord once, after every view reached
- * this barrier and before any view encodes; `render-graph-compile` writes the
- * outcome the view then adopts.
+ * A view staged its recording on its Render World entity. The shared
+ * submission runs that World's RenderRecord once after every view is staged.
+ * `render-graph-seal` prepares each view before any view encodes.
  */
 export interface FrameRecordingCompile {
   readonly kind: 'compile';
@@ -840,8 +831,8 @@ type CompiledFrameGraphArgs = Parameters<typeof recordCompiledFrameGraph>;
 export function executeCompiledFrameGraph(
   internals: CompiledFrameGraphArgs[0],
   frameState: CompiledFrameGraphArgs[1],
-  frame: CompiledFrameGraphArgs[2],
-  ...rest: CompiledFrameGraphArgs extends [unknown, unknown, unknown, unknown, ...infer R]
+  frame: CompiledFrameGraphArgs[3],
+  ...rest: CompiledFrameGraphArgs extends [unknown, unknown, unknown, unknown, unknown, ...infer R]
     ? R
     : never
 ): boolean {
@@ -850,6 +841,7 @@ export function executeCompiledFrameGraph(
     const encoded = recordCompiledFrameGraph(
       internals,
       frameState,
+      frameState.compiledFrameGraph ?? null,
       frame,
       frameEncoder(world),
       ...rest,
@@ -868,73 +860,40 @@ export function* prepareViewGraphSeal(
   const world = renderWorldFor(internals);
   const entity = internals.viewEntity;
   if (entity === undefined || !awaitsRenderRecord(world)) {
-    const {
-      frameState,
-      pipelineState,
-      cubeCapture,
-      cubeCaptureWork,
-      graphShadowMapSize,
-      terrainReceivers,
-    } = prepared;
-    const captures = prepareCaptureGraphs({
-      internals,
-      frameState,
-      pipelineState,
-      capture: cubeCapture,
-      work: cubeCaptureWork,
-      shadowMapSize: graphShadowMapSize,
-      terrainReceivers,
-    });
-    prepared.attempt.ownsCaptureGraphs = captures !== undefined;
-    return sealCompiledViewGraph(
-      prepared,
-      prepared.captureOnly ? undefined : compileDirectPreparedGraph(prepared),
-      captures ?? captureGraphOutcome(internals),
-      resolveQueuedFrameTemporal(prepared),
-    );
+    const request = prepared.captureGraph;
+    const captures =
+      request === undefined ? EMPTY_CAPTURE_GRAPH_OUTCOME : compileCaptureGraphBatch(request);
+    prepared.attempt.ownsCaptureGraphs = request !== undefined;
+    if (prepared.captureOnly || !captures.ok)
+      return sealCompiledViewGraph(
+        prepared,
+        undefined,
+        captures,
+        resolveQueuedFrameTemporal(prepared),
+      );
+    const compiled = compilePreparedViewGraph(prepared);
+    const temporal = resolveQueuedFrameTemporal(prepared);
+    return compiled.kind === 'ordered-display'
+      ? prepareOrderedDisplayRecording(
+          prepared,
+          compiled,
+          temporal,
+          request === undefined ? undefined : captures.value,
+        )
+      : sealCompiledViewGraph(prepared, compiled, captures, temporal);
   }
-  stagePreparedViewGraph(prepared);
+  adoptViewRecordAttempt(world, entity);
+  const state = world
+    .resolveUniqueRef<ViewRecordAttemptState>(world.get(entity, ViewRecordAttempt).unwrap().state)
+    .unwrap();
+  state.frame = renderSubmission(world).frame;
+  stagePreparedViewGraph(state, prepared);
   yield { kind: 'compile', world };
   return viewGraphSealOutcome(world, entity);
-}
-
-function compileMissingError(): RendererOperationError<'graph-build-failed'> {
-  return new RendererOperationError('graph-build-failed', {
-    operation: 'draw',
-    cause: {
-      code: 'graph-compile-missing',
-      expected: `${RENDER_GRAPH_COMPILE_SYSTEM} compiles the recorded view in RenderRecord`,
-      hint: 'keep the RenderRecord graph systems registered',
-      detail: { system: RENDER_GRAPH_COMPILE_SYSTEM },
-    },
-  });
 }
 
 export function* awaitRenderRecord(internals: RenderSystemInternals): FrameRecording<void> {
   const world = renderWorldFor(internals);
   if (internals.viewEntity !== undefined && awaitsRenderRecord(world))
     yield { kind: 'compile' as const, world };
-}
-
-export function* compileRecordedViewGraph(
-  internals: RenderSystemInternals,
-  direct: () => GraphCompileInput,
-  request: ViewGraphCompileRequest,
-): FrameRecording<Result<ViewGraphCompileOutcome, RendererOperationError<'graph-build-failed'>>> {
-  const entity = internals.viewEntity;
-  const world = renderWorldFor(internals);
-  if (entity === undefined || !awaitsRenderRecord(world)) return ok(compileViewGraph(direct()));
-  const frame = renderSubmission(world).frame;
-  stageViewGraphCompile(world, entity, request);
-  yield { kind: 'compile' as const, world };
-  // The barrier's RenderRecord may have retired the entity's candidate with the view.
-  const outcome = world.hasComponent(entity, ViewGraphCandidate)
-    ? world
-        .resolveUniqueRef<ViewGraphCandidateSlot>(
-          world.get(entity, ViewGraphCandidate).unwrap().state,
-        )
-        .unwrap()
-        .take(frame)
-    : undefined;
-  return outcome === undefined ? err(compileMissingError()) : ok(outcome);
 }

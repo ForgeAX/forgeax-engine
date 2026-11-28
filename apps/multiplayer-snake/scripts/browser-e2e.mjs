@@ -219,7 +219,7 @@ async function publishReconnectEvidence({ trace, screenshot, invocationId, url, 
     targetId: RECONNECT_TARGET_ID,
     invocationId,
     url,
-    browser: 'chrome-beta',
+    browser: 'chrome',
     viewport: RECONNECT_VIEWPORT,
     tracePath,
     screenshot,
@@ -351,7 +351,7 @@ async function startServices(journey) {
 async function launchBrowser(journey) {
   const browserHeadless = (process.env.FORGEAX_BROWSER_HEADLESS ?? '1').toLowerCase() !== '0';
   const browser = await chromium.launch({
-    channel: 'chrome-beta',
+    channel: 'chrome',
     headless: browserHeadless,
     args: [
       '--disable-features=MacAppCodeSignClone',

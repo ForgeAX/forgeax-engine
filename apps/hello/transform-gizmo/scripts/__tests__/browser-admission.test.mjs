@@ -56,7 +56,7 @@ server.listen(0, '127.0.0.1', () => console.log('Local: http://127.0.0.1:' + ser
 test('the submitted-frame admission uses its declared budget with real Playwright', async () => {
   const browser = await chromium.launch({
     headless: true,
-    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome-beta',
+    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome',
     chromiumSandbox: true,
   });
   try {
@@ -79,7 +79,7 @@ test('the submitted-frame admission uses its declared budget with real Playwrigh
 test('the real frame admission honors an explicit smoke minimum', async () => {
   const browser = await chromium.launch({
     headless: true,
-    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome-beta',
+    channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome',
     chromiumSandbox: true,
   });
   const previous = process.env.SMOKE_MIN_FRAMES;

@@ -29,6 +29,7 @@ export function nativeAtmosphereKernel(): string {
     productionFunction(common, 'view_atmosphere_aerial_enabled'),
     productionFunction(common, 'view_atmosphere_fast_ap'),
     productionFunction(common, 'view_atmosphere_fast_ap_samples'),
+    productionFunction(common, 'view_atmosphere_ue5'),
     'fn atmosphere_scene_visibility(m:AtmosphereMedium,p:vec3<f32>)->f32{return 1.0;}',
     ...[
       'atmosphere-table-access',

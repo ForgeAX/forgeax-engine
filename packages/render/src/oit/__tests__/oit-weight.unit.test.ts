@@ -47,29 +47,28 @@ describe('OIT weight parity', () => {
     const reference: Record<string, number> = {
       OIT_WEIGHT_MIN: weight.OIT_WEIGHT_MIN,
       OIT_WEIGHT_MAX: weight.OIT_WEIGHT_MAX,
-      OIT_WEIGHT_SCALE: weight.OIT_WEIGHT_SCALE,
-      OIT_WEIGHT_NEAR: weight.OIT_WEIGHT_NEAR,
-      OIT_WEIGHT_FAR: weight.OIT_WEIGHT_FAR,
+      OIT_WEIGHT_NUMERATOR: weight.OIT_WEIGHT_NUMERATOR,
+      OIT_WEIGHT_DEPTH_SCALE: weight.OIT_WEIGHT_DEPTH_SCALE,
       OIT_WEIGHT_BIAS: weight.OIT_WEIGHT_BIAS,
-      OIT_MIN_ALPHA: weight.OIT_MIN_ALPHA,
+      OIT_STORAGE_SCALE: weight.OIT_STORAGE_SCALE,
     };
     expect(Object.fromEntries(declared)).toEqual(reference);
   });
 
-  it('clamps the depth weight and decreases it with distance', () => {
-    expect(weight.oitDepthWeight(0)).toBe(weight.OIT_WEIGHT_MAX);
+  it('matches the three.js r187 depth weight and its clamp', () => {
+    expect(weight.oitDepthWeight(0)).toBeCloseTo(weight.OIT_WEIGHT_MAX, 9);
     expect(weight.oitDepthWeight(1e6)).toBe(weight.OIT_WEIGHT_MIN);
-    const near = weight.oitDepthWeight(4);
-    const far = weight.oitDepthWeight(8);
+    const near = weight.oitDepthWeight(40);
+    const far = weight.oitDepthWeight(80);
     expect(near).toBeGreaterThan(far);
-    expect(near).toBeCloseTo(10 / (1e-5 + (4 / 5) ** 2 + (4 / 200) ** 6), 6);
+    expect(near).toBeCloseTo(0.03 / ((40 / 200) ** 4 + 1e-5), 6);
   });
 
   it('accumulates order-independently and composites over the background', () => {
     const fragments: weight.OitFragment[] = [
-      { color: [1, 0, 0], alpha: 0.6, viewDistance: 4.5 },
-      { color: [0, 1, 0], alpha: 0.5, viewDistance: 5 },
-      { color: [0, 0, 1], alpha: 0.4, viewDistance: 5.5 },
+      { color: [1, 0, 0], alpha: 0.6, viewDepth: 4.5 },
+      { color: [0, 1, 0], alpha: 0.5, viewDepth: 5 },
+      { color: [0, 0, 1], alpha: 0.4, viewDepth: 5.5 },
     ];
     const forward = weight.oitAccumulation(fragments);
     const reversed = weight.oitAccumulation([...fragments].reverse());
@@ -86,11 +85,19 @@ describe('OIT weight parity', () => {
     });
   });
 
-  it('ignores fragments below the minimum alpha', () => {
-    const accumulation = weight.oitAccumulation([
-      { color: [1, 1, 1], alpha: weight.OIT_MIN_ALPHA / 2, viewDistance: 1 },
-    ]);
-    expect(accumulation).toEqual({ color: [0, 0, 0], revealage: 1, weight: 0 });
+  it('matches the squared alpha contribution and keeps faint fragments', () => {
+    const layer = { color: [1, 1, 1], alpha: 0.0005, viewDepth: 1 } as const;
+    const accumulation = weight.oitAccumulation([layer]);
+    expect(accumulation.revealage).toBe(1 - layer.alpha);
+    const expectedWeight = (0.03 / ((1 / 200) ** 4 + 1e-5)) * (layer.alpha ** 2 / 8);
+    expect(accumulation.weight).toBeCloseTo(expectedWeight, 12);
+    expect(weight.oitAccumulation([{ ...layer, alpha: 0 }])).toEqual({
+      color: [0, 0, 0],
+      revealage: 1,
+      weight: 0,
+    });
+    const dense = weight.oitAccumulation(Array(64).fill({ ...layer, color: [2, 2, 2], alpha: 1 }));
+    expect(dense.color[0]).toBeLessThan(65504);
   });
 });
 

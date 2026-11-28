@@ -1,0 +1,122 @@
+{
+ "tests": [
+  "src/brep/__tests__/ssi/ssi-corpus.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "e3-seam-not-identified",
+   "file": "src/brep/__tests__/ssi/truth.ts",
+   "old": "const vertU = truth.periodicU ? nu : nu + 1;",
+   "new": "const vertU = nu + 1;"
+  },
+  {
+   "id": "e3-bisect-short",
+   "file": "src/brep/__tests__/ssi/truth.ts",
+   "old": "const BISECT = 60;",
+   "new": "const BISECT = 2;"
+  },
+  {
+   "id": "e3-saddle-join",
+   "file": "src/brep/__tests__/ssi/truth.ts",
+   "old": "const joined = centre !== undefined && positive(centre) === s00;",
+   "new": "const joined = centre !== undefined && positive(centre) !== s00;"
+  },
+  {
+   "id": "e3-open-as-closed",
+   "file": "src/brep/__tests__/ssi/truth.ts",
+   "old": "const closed = first.neighbours.length === 2 &&",
+   "new": "const closed = true ||"
+  },
+  {
+   "id": "e3-length-open",
+   "file": "src/brep/__tests__/ssi/truth.ts",
+   "old": "k < (closed ? m : m - 1)",
+   "new": "k < m - 1"
+  },
+  {
+   "id": "e3-recovery-any",
+   "file": "src/brep/__tests__/ssi/truth.ts",
+   "old": "if (worst <= tolerance) {",
+   "new": "if (true) {"
+  },
+  {
+   "id": "e3-recovery-error",
+   "file": "src/brep/__tests__/ssi/truth.ts",
+   "old": "maxError = Math.max(maxError, worst);",
+   "new": "maxError = 0;"
+  },
+  {
+   "id": "e3-recovery-short",
+   "file": "src/brep/__tests__/ssi/truth.ts",
+   "old": "if (arcLength(b.points, b.closed) < minLength) continue;",
+   "new": "if (arcLength(b.points, b.closed) > minLength) continue;"
+  },
+  {
+   "id": "e3-circle-weight",
+   "file": "src/brep/__tests__/ssi/wrap.ts",
+   "old": "[1, 1, W],\n  [0, 1, 1],",
+   "new": "[1, 1, 1],\n  [0, 1, 1],"
+  },
+  {
+   "id": "e3-cone-profile",
+   "file": "src/brep/__tests__/ssi/wrap.ts",
+   "old": "[s.radius + v[1] * sa, v[1] * ca, 1],",
+   "new": "[s.radius + v[1] * ca, v[1] * sa, 1],"
+  },
+  {
+   "id": "e3-weight-product",
+   "file": "src/brep/__tests__/ssi/wrap.ts",
+   "old": "weights.push(prof.rows.map(([, , wv]) => wu * wv));",
+   "new": "weights.push(prof.rows.map(([, , wv]) => wu + wv - 1));"
+  },
+  {
+   "id": "e3-pose-ignored",
+   "file": "src/brep/__tests__/ssi/wrap.ts",
+   "old": "    x: map(f.x),\n",
+   "new": "    x: f.x,\n"
+  },
+  {
+   "id": "e3-torus-implicit",
+   "file": "src/brep/__tests__/ssi/wrap.ts",
+   "old": "return Math.hypot(Math.hypot(l[0], l[1]) - s.major, l[2]) - s.minor;",
+   "new": "return Math.hypot(Math.hypot(l[0], l[1]) - s.major, l[2]) - s.minor * 0.9;"
+  },
+  {
+   "id": "e3-prng-direction",
+   "file": "src/brep/__tests__/ssi/prng.ts",
+   "old": "if (l > 0.1 && l <= 1) return",
+   "new": "if (l > 0.1) return"
+  },
+  {
+   "id": "e3-prng-constant",
+   "file": "src/brep/__tests__/ssi/prng.ts",
+   "old": "s = (s + 0x6d2b79f5) >>> 0;",
+   "new": "s = (s + 0x6d2b79f4) >>> 0;"
+  },
+  {
+   "id": "e3-shell-offset",
+   "file": "src/brep/__tests__/ssi/corpus.ts",
+   "old": "const skin = innerSkin(hullSkin(), 0.15);",
+   "new": "const skin = innerSkin(hullSkin(), 0);"
+  },
+  {
+   "id": "e3-height-sign",
+   "file": "src/brep/__tests__/ssi/corpus.ts",
+   "old": "return h === undefined ? undefined : q[2] - h;",
+   "new": "return h === undefined ? undefined : h - q[2];",
+   "survives": "equivalent: the zero set of g does not depend on the sign of g, and the saddle centre test compares signs relative to the corner"
+  },
+  {
+   "id": "e3-noise-floor",
+   "file": "src/brep/__tests__/ssi/ssi-corpus.unit.test.ts",
+   "old": "const MIN = 0.01;",
+   "new": "const MIN = 0.1;"
+  },
+  {
+   "id": "e3-g16-station",
+   "file": "src/brep/__tests__/ssi/g16-mesh.ts",
+   "old": "const z = 150 - station;",
+   "new": "const z = 150 - station + 1;"
+  }
+ ]
+}

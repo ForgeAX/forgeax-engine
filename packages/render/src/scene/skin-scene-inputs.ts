@@ -1,6 +1,8 @@
 import { RhiError } from '@forgeax/engine-rhi';
 import type { SkeletonAsset } from '@forgeax/engine-types';
+import { dynamicCapacity, shouldShrinkCapacity } from '../dynamic-capacity';
 import type { GpuInputArena } from '../gpu-input-arena';
+import { slotContent } from './mesh-draw';
 import type { RenderSceneApplyResult, RenderSceneSlot } from './render-scene-types';
 import type { SceneSlotFrame } from './scene-slots';
 import {
@@ -17,12 +19,21 @@ export interface SkinBindingInput {
   readonly affinePoint?: boolean;
 }
 
+/** An affected winding keeps the accepted binding even without an authored edit. */
+function priorUpdatedBinding(
+  delta: RenderSceneApplyResult,
+  row: RenderSceneSlot,
+): SkinBindingInput | undefined {
+  return slotContent(delta.previous.get(row) ?? row).skinBinding;
+}
+
 /** Borrowed by one recording until discard or its actual GPU completion.
  * Both numeric roots and the Scene slot root describe the same accepted frame.
  */
 export interface SkinSceneFrame {
   readonly slots: SceneSlotFrame;
-  readonly previousSlots?: SceneSlotFrame;
+  /** Previous accepted uniform-backend affine input. Borrow only during CPU recording. */
+  readonly previousTranslation?: SkinTranslationReader;
   readonly current: SkinInputFrame;
   readonly previous: SkinInputFrame | undefined;
 }
@@ -222,45 +233,44 @@ export class SkinSceneInputs {
     this.healthy();
     try {
       for (const removed of delta.removedSlots)
-        if (removed.snapshot.skinBinding !== undefined) this.inputs.unbind(removed.slot);
+        if (slotContent(removed).skinBinding !== undefined) this.inputs.unbind(removed.slot);
       for (const recreated of delta.recreatedSlots) {
         const previous = this.previousRecord(delta, recreated);
-        if (previous.snapshot.skinBinding !== undefined) this.inputs.unbind(previous.slot);
+        if (slotContent(previous).skinBinding !== undefined) this.inputs.unbind(previous.slot);
       }
       for (const updated of delta.contentUpdatedSlots)
         if (
-          this.previousRecord(delta, updated).snapshot.skinBinding !== undefined &&
-          updated.snapshot.skinBinding === undefined
+          slotContent(updated).skinBinding === undefined &&
+          priorUpdatedBinding(delta, updated) !== undefined
         )
           this.inputs.unbind(updated.slot);
 
-      for (const created of delta.createdSlots)
-        if (created.snapshot.skinBinding !== undefined)
-          this.acquireBinding(created.slot, created.snapshot.skinBinding);
-      for (const recreated of delta.recreatedSlots)
-        if (recreated.snapshot.skinBinding !== undefined)
-          this.acquireBinding(recreated.slot, recreated.snapshot.skinBinding);
+      for (const created of delta.createdSlots) {
+        const after = slotContent(created).skinBinding;
+        if (after !== undefined) this.acquireBinding(created.slot, after);
+      }
+      for (const recreated of delta.recreatedSlots) {
+        const after = slotContent(recreated).skinBinding;
+        if (after !== undefined) this.acquireBinding(recreated.slot, after);
+      }
       for (const updated of delta.contentUpdatedSlots) {
-        const after = updated.snapshot.skinBinding;
-        if (
-          after !== undefined &&
-          this.previousRecord(delta, updated).snapshot.skinBinding !== after
-        )
+        const after = slotContent(updated).skinBinding;
+        if (after !== undefined && priorUpdatedBinding(delta, updated) !== after)
           this.acquireBinding(updated.slot, after);
       }
 
       for (const removed of delta.removedSlots) {
-        const previous = removed.snapshot.skinBinding;
+        const previous = slotContent(removed).skinBinding;
         if (previous !== undefined) this.releaseBinding(previous);
       }
       for (const recreated of delta.recreatedSlots) {
-        const previous = this.previousRecord(delta, recreated).snapshot.skinBinding;
+        const previous = slotContent(this.previousRecord(delta, recreated)).skinBinding;
         if (previous !== undefined) this.releaseBinding(previous);
       }
       for (const updated of delta.contentUpdatedSlots) {
-        const previous = this.previousRecord(delta, updated).snapshot.skinBinding;
-        if (previous !== undefined && previous !== updated.snapshot.skinBinding)
-          this.releaseBinding(previous);
+        const binding = priorUpdatedBinding(delta, updated);
+        if (binding !== undefined && binding !== slotContent(updated).skinBinding)
+          this.releaseBinding(binding);
       }
     } catch (cause) {
       this.failed = true;
@@ -318,6 +328,32 @@ export class SkinSceneInputs {
       throw cause;
     }
   };
+
+  /** Consume only the selected joint rows before the receiver can recycle the packet. */
+  publishedJoints(rows: Iterable<number>, entities: Uint32Array, transforms: Float32Array): void {
+    this.healthy();
+    const source = this.sourceValue;
+    if (source === undefined) return;
+    // Shared buffers use checked scalar capture. Ordinary packets borrow one word view.
+    const buffer = transforms.buffer;
+    let words: Int32Array<ArrayBuffer> | undefined;
+    try {
+      for (const row of rows) {
+        const entity = entities[row] as number;
+        if (!source.joints.has(entity)) continue;
+        const start = row * 16;
+        if (buffer instanceof ArrayBuffer) {
+          words ??= new Int32Array(buffer, transforms.byteOffset, transforms.length);
+          this.inputs.setPublishedJoint(source.slot, entity, words, start);
+        } else this.inputs.setJoint(source.slot, entity, transforms, start);
+        source.first.delete(entity);
+      }
+    } catch (cause) {
+      this.failed = true;
+      throw cause;
+    }
+  }
+
   capture() {
     this.healthy();
     return this.inputs.capture();
@@ -328,6 +364,90 @@ export class SkinSceneInputs {
     this.resolve = undefined;
     this.sourceValue = undefined;
     this.inputs.dispose();
+  }
+}
+
+type SkinTranslationReader = (slot: number, entity: number, out: Float32Array) => boolean;
+
+const TRANSLATION_ROW = 5;
+const EMPTY_TRANSLATIONS = new Float64Array(0);
+
+/**
+ * Submitted uniform Skin reads three historical floats and the address owner.
+ * Use two view-owned banks so a failed recording cannot modify accepted history.
+ * Sorted physical addresses support sparse Scene slots without reserving gaps.
+ */
+class SkinTranslations {
+  private rows = EMPTY_TRANSLATIONS;
+  private length = 0;
+  private version = 0;
+
+  capture(slots: SceneSlotFrame): void {
+    this.length = 0;
+    this.version++;
+    const members = slots.indexedSlots('skin');
+    if (members !== undefined) {
+      if (shouldShrinkCapacity(members.size, this.rows.length / TRANSLATION_ROW))
+        this.rows = EMPTY_TRANSLATIONS;
+      this.reserve(members.size);
+      for (const slot of members.borrowKeys()) {
+        const entity = slots.entityAt(slot);
+        if (entity === undefined) throw invalid('a live Scene address for each Skin row');
+        this.append(slots, slot, entity);
+      }
+    } else {
+      slots.findContent((content, entity, slot) => {
+        if (content.skinBinding !== undefined) this.append(slots, slot, entity);
+        return undefined;
+      });
+    }
+    if (this.length === 0) this.rows = EMPTY_TRANSLATIONS;
+  }
+
+  private reserve(count: number): void {
+    if (count <= this.rows.length / TRANSLATION_ROW) return;
+    const rows = new Float64Array(dynamicCapacity(count) * TRANSLATION_ROW);
+    if (this.length > 0) rows.set(this.rows);
+    this.rows = rows;
+  }
+
+  private append(slots: SceneSlotFrame, slot: number, entity: number): void {
+    const at = this.length * TRANSLATION_ROW;
+    this.reserve(this.length + 1);
+    this.rows[at] = slot;
+    this.rows[at + 1] = entity;
+    if (slots.writeTranslation(slot, this.rows, at + 2) === undefined)
+      throw invalid('the captured Scene translation of a Skin row');
+    this.length++;
+  }
+
+  borrow(): SkinTranslationReader | undefined {
+    if (this.length === 0) return undefined;
+    const version = this.version;
+    return (slot, entity, out) => this.version === version && this.write(slot, entity, out);
+  }
+
+  private write(slot: number, entity: number, out: Float32Array): boolean {
+    const rows = this.rows;
+    let low = 0;
+    let high = this.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if ((rows[middle * TRANSLATION_ROW] as number) < slot) low = middle + 1;
+      else high = middle;
+    }
+    const at = low * TRANSLATION_ROW;
+    if (low === this.length || rows[at] !== slot || rows[at + 1] !== entity) return false;
+    out[0] = rows[at + 2] as number;
+    out[1] = rows[at + 3] as number;
+    out[2] = rows[at + 4] as number;
+    return true;
+  }
+
+  reset(): void {
+    this.rows = EMPTY_TRANSLATIONS;
+    this.length = 0;
+    this.version++;
   }
 }
 
@@ -343,13 +463,14 @@ export class SkinFrames {
   /** Physical reads transfer before any post-submit observer can retire the Scene. */
   private pendingRelease: Promise<void> | undefined;
   private submitted: SkinInputFrame | undefined;
-  private submittedSlots: SceneSlotFrame | undefined;
+  private submittedTranslations = new SkinTranslations();
+  private pendingTranslations = new SkinTranslations();
   constructor(readonly inputs: SkinSceneInputs) {}
 
   /** Capture once before visibility/recording, independently of TAA demand.
    * Preparing or abandoning a newer frame never advances submitted history.
    */
-  prepareFrame(slots: SceneSlotFrame): SkinSceneFrame | undefined {
+  prepareFrame(slots: SceneSlotFrame, uniformHistory = true): SkinSceneFrame | undefined {
     if (this.pending !== undefined) throw invalid('submit or discard the current Skin recording');
     if (this.inputs.empty && this.submitted === undefined) return undefined;
     const current = this.inputs.capture();
@@ -358,11 +479,14 @@ export class SkinFrames {
     try {
       previous = this.submitted?.retain();
       history = current.jointCapacity === 0 ? undefined : current.retain();
+      if (uniformHistory && history !== undefined) this.pendingTranslations.capture(slots);
+      else this.pendingTranslations.reset();
+      const previousTranslation = uniformHistory ? this.submittedTranslations.borrow() : undefined;
       const frame = Object.freeze({
         slots,
         current,
         previous,
-        ...(this.submittedSlots === undefined ? {} : { previousSlots: this.submittedSlots }),
+        ...(previousTranslation === undefined ? {} : { previousTranslation }),
       });
       this.pending = frame;
       this.pendingHistory = history;
@@ -421,7 +545,10 @@ export class SkinFrames {
     const retiredHistory = acceptHistory ? this.submitted : this.pendingHistory;
     if (acceptHistory) {
       this.submitted = this.pendingHistory;
-      this.submittedSlots = this.submitted === undefined ? undefined : frame.slots;
+      const retired = this.submittedTranslations;
+      this.submittedTranslations = this.pendingTranslations;
+      this.pendingTranslations = retired;
+      if (this.submitted === undefined) this.pendingTranslations.reset();
     }
     this.pendingHistory = undefined;
     this.pending = undefined;
@@ -461,7 +588,8 @@ export class SkinFrames {
     this.pending = undefined;
     this.pendingHistory = undefined;
     this.submitted = undefined;
-    this.submittedSlots = undefined;
+    this.submittedTranslations.reset();
+    this.pendingTranslations.reset();
     this.pendingRelease = undefined;
     releaseRoots(pending?.current, pending?.previous, history, submitted);
   }

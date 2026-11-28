@@ -2,7 +2,7 @@ import {
   renderProfileForQuality,
   renderProfileForRequirements,
   textureMipSkipForQuality,
-} from '@forgeax/engine-render';
+} from '@forgeax/engine-render/internal/host-data';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   freezeConfiguration,

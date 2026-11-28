@@ -1,9 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import {
-  createStandardClusterLayout,
-  DEFAULT_CLUSTER_GRID,
-  type StandardClusterLayout,
-} from './layout';
+import type { StandardClusterLayout } from './layout';
 import { standardLightBoundsBytes } from './membership';
 import type { PreparedStandardLighting } from './prepare';
 import type { StandardClusterTransport } from './transport';
@@ -30,79 +26,78 @@ type StandardTopologyInput = StandardNoLocalTopologyInput | StandardClusteredTop
 
 export type StandardTopologyInputValue = StandardTopologyInput;
 
-/**
- * Stable identity for the graph-facing Standard lighting declaration.
- *
- * The prepared light payload itself is frame-local and must never be retained
- * by a compiled graph. These are the only facts that affect the Cluster graph
- * shape and persistent buffer contract, so the record owner can reject an old
- * graph before uploading a payload derived from a different declaration.
- */
-export function standardLightingTopologySignature(
+/** Physical layout of a graph-owned Cluster binding. The light payload stays frame-local. */
+export type StandardLightingDeclaration =
+  | 'missing'
+  | 'no-local-lights'
+  | {
+      readonly kind: StandardClusterTransport['kind'];
+      readonly producer: StandardClusterTransport['producer'];
+      readonly layout: StandardClusterLayout;
+      readonly slotBytes: number;
+      readonly uniformBytes: number;
+    };
+
+export function standardLightingDeclaration(
   input: StandardTopologyInputValue | undefined,
-  viewLayout?: StandardLightGraphLayout,
-): string {
-  if (input === undefined) return 'missing';
-  if (input.kind === 'no-local-lights') return 'no-local-lights';
-  return viewLayout?.signature(input) ?? describeClusterGraph(input);
+): StandardLightingDeclaration {
+  if (input?.kind !== 'clustered') return input?.kind ?? 'missing';
+  return {
+    kind: input.transport.kind,
+    producer: input.transport.producer,
+    layout: input.prepared.layout,
+    slotBytes: input.transport.lightDataSlotBytes,
+    uniformBytes: input.transport.clusterUniformBytes,
+  };
 }
 
-function describeClusterGraph(input: StandardClusteredTopologyInput): string {
+export function matchesStandardLightingDeclaration(
+  declaration: StandardLightingDeclaration,
+  input: StandardTopologyInputValue | undefined,
+): boolean {
+  if (input?.kind !== 'clustered') return declaration === (input?.kind ?? 'missing');
+  if (typeof declaration === 'string') return false;
+  const transport = input.transport;
+  return (
+    declaration.kind === transport.kind &&
+    declaration.producer === transport.producer &&
+    declaration.slotBytes === transport.lightDataSlotBytes &&
+    declaration.uniformBytes === transport.clusterUniformBytes &&
+    matchesClusterLayout(declaration.layout, input.prepared.layout)
+  );
+}
+
+function matchesClusterLayout(a: StandardClusterLayout, b: StandardClusterLayout): boolean {
+  return (
+    a === b ||
+    (a.grid.x === b.grid.x &&
+      a.grid.y === b.grid.y &&
+      a.grid.z === b.grid.z &&
+      a.clusterGridU32Length === b.clusterGridU32Length &&
+      a.lightIndexListCapacity === b.lightIndexListCapacity &&
+      a.lightDataSlotCount === b.lightDataSlotCount &&
+      a.lightBoundsInt32Length === b.lightBoundsInt32Length)
+  );
+}
+
+/** The authored graph topology still exposes the established diagnostic identity. */
+export function standardLightingTopologySignature(
+  input: StandardTopologyInputValue | undefined,
+): string {
+  if (input?.kind !== 'clustered') return input?.kind ?? 'missing';
+  const { layout } = input.prepared;
   return JSON.stringify({
     kind: input.kind,
     transport: input.transport.kind,
     producer: input.transport.producer,
-    grid: input.prepared.layout.grid,
-    clusterGridU32Length: input.prepared.layout.clusterGridU32Length,
-    lightIndexListCapacity: input.prepared.layout.lightIndexListCapacity,
-    lightDataSlotCount: input.prepared.layout.lightDataSlotCount,
+    grid: layout.grid,
+    clusterGridU32Length: layout.clusterGridU32Length,
+    lightIndexListCapacity: layout.lightIndexListCapacity,
+    lightDataSlotCount: layout.lightDataSlotCount,
     lightDataSlotBytes: input.transport.lightDataSlotBytes,
     clusterUniformBytes: input.transport.clusterUniformBytes,
-    lightBoundsInt32Length: input.prepared.layout.lightBoundsInt32Length,
+    lightBoundsInt32Length: layout.lightBoundsInt32Length,
   });
-}
-
-/** Physical declaration of the current stock light grid. It owns only layout facts;
- * the current light corpus, membership counts and frame upload never enter the declaration. */
-export class StandardLightGraphLayout {
-  private current: StandardClusterLayout | undefined;
-  private kind: StandardClusterTransport['kind'] | undefined;
-  private producer: StandardClusterTransport['producer'] | undefined;
-  private slotBytes = 0;
-  private uniformBytes = 0;
-  private description: string | undefined;
-
-  layout(slots: number, grid: StandardClusterLayout['grid']): StandardClusterLayout {
-    if (grid !== DEFAULT_CLUSTER_GRID) return createStandardClusterLayout(slots, grid);
-    if (this.current?.lightDataSlotCount !== slots) {
-      this.current = createStandardClusterLayout(slots, grid);
-      this.description = undefined;
-    }
-    return this.current;
-  }
-
-  signature(input: StandardClusteredTopologyInput): string | undefined {
-    if (input.prepared.layout !== this.current) return undefined;
-    const transport = input.transport;
-    if (
-      this.description === undefined ||
-      this.kind !== transport.kind ||
-      this.producer !== transport.producer ||
-      this.slotBytes !== transport.lightDataSlotBytes ||
-      this.uniformBytes !== transport.clusterUniformBytes
-    ) {
-      this.description = describeClusterGraph(input);
-      this.kind = transport.kind;
-      this.producer = transport.producer;
-      this.slotBytes = transport.lightDataSlotBytes;
-      this.uniformBytes = transport.clusterUniformBytes;
-    }
-    return this.description;
-  }
-
-  clear(): void {
-    this.current = this.description = undefined;
-  }
 }
 
 interface StandardTopologyInputError {

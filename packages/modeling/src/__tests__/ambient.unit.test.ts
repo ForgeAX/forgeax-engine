@@ -58,10 +58,14 @@ const EXACT_MATH = new Set([
 ]);
 /** The journal's durationMs is the one ambient read; it never reaches an output. */
 // Uses per file: the guarded `performance.now()` read of the journal clock names it twice;
-// the capture registry is one realm-wide slot (a bundler may load the kernel twice).
+// the capture registry is one realm-wide slot (a bundler may load the kernel twice);
+// `process` in bom.ts is the manufacturing-process field of a BOM item and row, not the host object.
 const ALLOWED: Readonly<Record<string, number>> = {
   'model.ts:performance': 2,
   'capture.ts:globalThis': 1,
+  'brep/intersect.ts:window': 2,
+  'brep/boolean.ts:window': 1,
+  'bom.ts:process': 3,
 };
 
 /**

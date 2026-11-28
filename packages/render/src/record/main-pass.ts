@@ -62,15 +62,18 @@ import {
 } from './geometry-pipeline-requests';
 import type { GraphBindingViews } from './graph-binding-views';
 import { IblBindingObservation } from './ibl-binding-observation';
-import { recordGeometryDraws, recordIblPipelineBinding } from './main-pass-geometry';
 import {
-  buildPerSubmeshMaterialBg as buildPerSubmeshMaterialBgImpl,
+  recordGeometryDraws,
+  recordIblPipelineBinding,
+  requestVisibleMeshPipelines,
+} from './main-pass-geometry';
+import {
+  buildPerSubmeshMaterialBg,
   type MainPassMaterialBinding,
   type MainPassMaterialBindingResolver,
+  type MaterialBindingAddress,
   type PerSubmeshMaterialBgDeps,
   prepareMaterialSkylight,
-  type RasterMaterialAddress,
-  resolveMaterialReflection,
 } from './main-pass-material';
 import { recordSpritePass } from './main-pass-sprite-draws';
 import type {
@@ -745,6 +748,48 @@ export function encodeMainPass(
       selectedDispatch,
     );
   return gpuDrivenStandardPbrFrameResources;
+}
+
+/** Start the stock opaque raster requests while capture or shadows prepare their own programs. */
+export function requestVisibleForwardPipelines(
+  c: _InternalRenderPipelineContext,
+  selector: PassSelector | undefined,
+  options: Pick<
+    MainPassOptions,
+    | 'recordMode'
+    | 'excludeSelector'
+    | 'seededDepth'
+    | 'opaqueDepthPrimed'
+    | 'coverageOnly'
+    | 'fragmentEntryPoint'
+  > & {
+    readonly formats: readonly GPUTextureFormat[];
+    readonly sampleCount: number;
+  },
+): void {
+  if (c.validatedOrdered.length === 0 || c.gpuDrivenSelection !== undefined) return;
+  requestVisibleMeshPipelines(
+    c,
+    selectMainPassMaterials(c, selector, options.recordMode, options.excludeSelector),
+    c.dispatch.length === 0
+      ? undefined
+      : selectMainPassDispatch(c, mainPassSelector(selector, 'forward')),
+    {
+      passKind: 'forward',
+      sampleCount: options.sampleCount,
+      colorFormats: options.formats,
+      coverageOnly: options.coverageOnly ?? false,
+      tonemapActive: c.tonemapActive,
+      msaaActive: options.sampleCount === 4,
+      viewBindGroupDynamicOffset: c.viewBindGroupDynamicOffset ?? 0,
+      transparentDepthWrite: false,
+      seededDepth: options.seededDepth === true,
+      depthPrepass: options.recordMode === 'opaque-depth',
+      opaqueDepthPrimed: options.opaqueDepthPrimed ?? false,
+      fragmentEntryPoint: options.fragmentEntryPoint,
+      oit: undefined,
+    },
+  );
 }
 
 /** Backdrop-consuming record modes sample the graph-paired color view. */
@@ -1584,20 +1629,13 @@ function createMaterialBindGroupResolver(
     material: MaterialSnapshot,
     entityKey: number | undefined,
     materialWorld: RenderResourceScope = world,
-    address: RasterMaterialAddress,
+    address: MaterialBindingAddress,
     materialShaderId: string | undefined = material.materialShaderId,
     standardMaterialLayoutIndex = 0,
     selectedLayout,
   ) => {
     const resourceClass = materialBindings[materialSlot]?.resourceClass;
-    const reflection = resolveMaterialReflection(
-      deps,
-      material,
-      materialWorld,
-      entityKey,
-      resourceClass,
-    );
-    const group = buildPerSubmeshMaterialBgImpl(
+    return buildPerSubmeshMaterialBg(
       deps,
       material,
       entityKey,
@@ -1606,12 +1644,10 @@ function createMaterialBindGroupResolver(
       materialSlot,
       resourceClass,
       standardMaterialLayoutIndex,
-      reflection ?? null,
+      undefined,
       address,
       selectedLayout,
     );
-    address.reflection = reflection?.resources ?? skylightResources;
-    return group;
   };
 }
 
@@ -1805,7 +1841,11 @@ export function publishMaterialBindingPreparer(
 ): void {
   const { world, materialSlots, materialBindings } = c;
   // Only consumers retaining indirect material selections need independently owned results.
-  const address: RasterMaterialAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
+  const address: MaterialBindingAddress = {
+    byteOffset: 0,
+    dynamicOffsetCount: 1,
+    reflection: undefined,
+  };
   let preparedBindings: Map<number, MainPassMaterialBinding> | undefined;
   resources.prepareMaterialBinding = (slot, standardMaterialLayoutIndex, program) => {
     const material = materialSlots[slot];

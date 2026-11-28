@@ -3,6 +3,7 @@ import {
   type Domain,
   type JournalEntry,
   type Model,
+  type ModelOptions,
   model,
   Selector,
 } from '@forgeax/engine-modeling';
@@ -34,7 +35,7 @@ function isSelector(value: unknown): value is Selector<Domain> {
  * entry records that entry and a snapshot of its session. Sessions are real
  * `model()` instances behind a Proxy, so the build code runs unchanged.
  */
-export function recordingSessions(): {
+export function recordingSessions(options: ModelOptions = {}): {
   readonly session: SessionFactory;
   readonly steps: RecordedStep[];
   readonly sessions: Map<string, Model>;
@@ -45,7 +46,7 @@ export function recordingSessions(): {
     new Proxy(holder, {
       get(object, property, receiver) {
         const value = Reflect.get(object, property, receiver);
-        if ((property === 'uv' || property === 'cleanup' || property === 'voxel') && holder === target) {
+        if ((property === 'uv' || property === 'cleanup' || property === 'voxel' || property === 'brep') && holder === target) {
           return observe(name, target, value as object);
         }
         if (typeof value !== 'function') return value;
@@ -84,7 +85,7 @@ export function recordingSessions(): {
     });
   const unwrap = new WeakMap<object, Model>();
   const session: SessionFactory = (name) => {
-    const target = model();
+    const target = model(options);
     sessions.set(name, target);
     const proxy = observe(name, target, target) as Model;
     unwrap.set(proxy, target);
@@ -98,12 +99,15 @@ export interface SourceCall {
   readonly session: string;
   readonly op: string;
   readonly line: number;
+  /** The join helper also records role operations before its boolean operation. */
+  readonly helper?: boolean;
   readonly loop?: { readonly first: number; readonly last: number };
 }
 
 /**
  * Operation calls of a build source, in order, with their 1-based lines. The source is
  * straight-line code, except that a braced `for` loop (one level) may repeat its body.
+ * The case `join(session, 'union' | 'difference', ...)` helper preserves that call site.
  */
 export function sourceCalls(file: string): SourceCall[] {
   const text = readFileSync(file, 'utf8');
@@ -124,12 +128,13 @@ export function sourceCalls(file: string): SourceCall[] {
       }
     }
   }
-  const calls: { session: string; op: string; line: number }[] = [];
+  const calls: { session: string; op: string; line: number; helper?: boolean }[] = [];
   for (const [index, line] of lines.entries()) {
-    for (const match of line.matchAll(/\b(\w+)\.(uv\.\w+|cleanup\.\w+|voxel\.\w+|smooth\.implicit|\w+)\(/g)) {
-      const session = names.get(match[1] as string);
-      if (session === undefined || match[2] === 'toMesh' || match[2] === 'checkpoint') continue;
-      calls.push({ session, op: match[2] as string, line: index + 1 });
+    for (const match of line.matchAll(/\b(?:(\w+)\.(uv\.\w+|cleanup\.\w+|voxel\.\w+|brep\.\w+|smooth\.implicit|\w+)\(|join\(\s*(\w+),\s*'(union|difference)')/g)) {
+      const session = names.get((match[1] ?? match[3]) as string);
+      const op = (match[2] ?? match[4]) as string;
+      if (session === undefined || op === 'toMesh' || op === 'checkpoint') continue;
+      calls.push({ session, op, line: index + 1, ...(match[3] === undefined ? {} : { helper: true }) });
     }
   }
   return calls.map((call) => {
@@ -159,6 +164,9 @@ export function attachSourceLines(
     }
     while (!matches(c, step) && calls[c]?.loop?.first === c) c = (calls[c]?.loop?.last as number) + 1;
     const call = calls[c];
+    if (step.entry.op === 'markRole' && call?.helper === true) {
+      return { ...step, line: call.line };
+    }
     if (call === undefined || !matches(c, step)) {
       throw new Error(
         `step ${i + 1}: the journal recorded ${step.session}.${step.entry.op}, the source has ${call === undefined ? 'no further call' : `${call.session}.${call.op} on line ${call.line}`}`,

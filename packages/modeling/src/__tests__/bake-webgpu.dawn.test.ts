@@ -28,7 +28,7 @@ it('bakes AO and chart-filtered textures on WebGPU with the CPU sampling and aud
     } satisfies BakeOptions;
     const cpu = bakeMaps(options).unwrap();
     const gpu = (await bakeMapsWithGpu(options, device)).unwrap();
-    expect(gpu.report.backendIdentity).toContain('/webgpu-ao/1/webgpu-uv-filter/1');
+    expect(gpu.report.backendIdentity).toContain('/webgpu-correspond-jfa/1');
     expect(gpu.provenance.rayHits).toBe(cpu.provenance.rayHits);
     expect(gpu.provenance.bleed).toEqual(cpu.provenance.bleed);
     expect(cpu.textures.ao?.data.some((value, i) => i % 4 === 0 && value < 245)).toBe(true);

@@ -213,6 +213,8 @@ it('reprojects only geometrically supported Screen Probe history taps', async ()
       'young-tap',
       'weighted-young-tap',
       'weighted-depth-reject',
+      'jitter-control',
+      'jitter',
       'shared-budget',
       'pixel-owned-confidence',
       'pixel-owned-weak-footprint',
@@ -290,14 +292,17 @@ it('reprojects only geometrically supported Screen Probe history taps', async ()
       // For receiver 0, this shift makes the only valid (bottom-right) tap
       // contribute 0.005 or 0.02 before history-weight normalization.
       const previousX =
-        mode === 'pixel-owned-weak-footprint'
-          ? 0.01
-          : mode === 'pixel-owned-valid-footprint'
-            ? 0.04
-            : mode === 'edge'
-              ? -0.5
-              : 0.5;
+        mode === 'jitter' || mode === 'jitter-control'
+          ? 0.4
+          : mode === 'pixel-owned-weak-footprint'
+            ? 0.01
+            : mode === 'pixel-owned-valid-footprint'
+              ? 0.04
+              : mode === 'edge'
+                ? -0.5
+                : 0.5;
       new Float32Array(frameData.buffer)[36] = previousX;
+      new Float32Array(frameData.buffer)[48] = mode === 'jitter' ? 0.05 : 0;
       device.queue.writeBuffer(frame, 0, frameData);
       device.queue.writeBuffer(integrated, 0, current);
       device.queue.writeBuffer(historyIn, 0, history);
@@ -326,6 +331,10 @@ it('reprojects only geometrically supported Screen Probe history taps', async ()
     expect(controls['weighted-young-tap']?.[0]?.meta[2]).toBe(4);
     expect(red('weighted-depth-reject')).toBeCloseTo(3.5, 5);
     expect(controls['weighted-depth-reject']?.[0]?.meta[2]).toBe(4);
+    // A previous jitter of 0.05 uv equals shifting the reprojection by 0.1 clip units
+    // (UE GetHistoryScreenPositionIncludingTAAJitter, LumenPosition.ush:88-93).
+    expect(red('jitter-control')).not.toBeCloseTo(5.2, 2);
+    expect(red('jitter')).toBeCloseTo(5.2, 4);
     expect(red('shared-budget')).toBeCloseTo(5.2, 5);
     expect(controls['shared-budget']?.[0]?.meta[2]).toBe(5);
     expect(red('pixel-owned-confidence')).toBeCloseTo(5.2, 5);

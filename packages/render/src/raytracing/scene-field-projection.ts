@@ -39,6 +39,7 @@ import { type ProjectedRows, type ReadAsset, RowProjection } from '../scene/row-
 import { standardDisplacementRadius } from '../standard-displacement-bounds';
 import type { FieldEditInput } from './field-edit';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
+import { type SceneFieldBudget, validateSceneFieldBudget } from './scene-field-budget';
 import type { SdfMeshInstance } from './sdf-query';
 import { deriveSdfSurfaceCoverage, type SdfSurfaceCoverage } from './sdf-surface-coverage';
 
@@ -168,24 +169,6 @@ function fieldTransform(source: ArrayLike<number>): Result<Float32Array, RayRefe
   return ok(t);
 }
 
-export function validateSceneFieldBudget(budget: {
-  readonly maxInstances: number;
-  readonly maxFieldBytes: number;
-}) {
-  if (
-    !Number.isSafeInteger(budget.maxInstances) ||
-    budget.maxInstances < 1 ||
-    budget.maxInstances > 1024 ||
-    !Number.isSafeInteger(budget.maxFieldBytes) ||
-    budget.maxFieldBytes < 1
-  )
-    return rayReferenceFailure(
-      'retained field requires explicit 1..1024 instance and positive byte budgets',
-      true,
-    );
-  return ok(undefined);
-}
-
 /**
  * A deforming (skinned or morphed) source never enters the retained field: it has no
  * cooked rest-pose SDF or Card that stays valid while it animates, so it neither
@@ -196,7 +179,6 @@ export interface SceneFieldDeformingSource {
   readonly slot: number;
 }
 
-type FieldBudget = { readonly maxInstances: number; readonly maxFieldBytes: number };
 type FieldSceneSource = RenderSceneSlot['snapshot'];
 type FieldDraw = NonNullable<FieldSceneSource['gpuDrivenDraws']>[number];
 type FieldSection = MeshAsset['submeshes'][number];
@@ -250,7 +232,7 @@ type FieldRowEntry =
 
 interface FieldContext {
   readonly sourceScope: RenderResourceScope;
-  readonly budget: FieldBudget;
+  readonly budget: SceneFieldBudget;
   readonly assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>;
 }
 
@@ -339,7 +321,7 @@ export class SceneFieldRows {
   update(
     rows: ProjectedRows,
     sourceScope: RenderResourceScope,
-    budget: FieldBudget,
+    budget: SceneFieldBudget,
     assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   ): Result<SceneFieldProjection, RayReferenceError> {
     const synced = this.#sync(rows, sourceScope, budget, assets);
@@ -355,7 +337,7 @@ export class SceneFieldRows {
   changes(
     rows: ProjectedRows,
     sourceScope: RenderResourceScope,
-    budget: FieldBudget,
+    budget: SceneFieldBudget,
     assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   ): Result<FieldEditInput, RayReferenceError> {
     const synced = this.#sync(rows, sourceScope, budget, assets);
@@ -391,7 +373,7 @@ export class SceneFieldRows {
   #sync(
     rows: ProjectedRows,
     sourceScope: RenderResourceScope,
-    budget: FieldBudget,
+    budget: SceneFieldBudget,
     assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   ): Result<void, RayReferenceError> {
     const admittedBudget = validateSceneFieldBudget(budget);
@@ -495,7 +477,7 @@ export class SceneFieldRows {
   }
 
   /** O(admitted rows): unique geometry, field snapshots and owner indices in slot order. */
-  #assemble(budget: FieldBudget): Result<SceneFieldProjection, RayReferenceError> {
+  #assemble(budget: SceneFieldBudget): Result<SceneFieldProjection, RayReferenceError> {
     const entries = [...this.#rows.entries()].sort(([a], [b]) => a - b);
     const instances: SdfMeshInstance[] = [];
     const sources: SceneFieldSource[] = [];
@@ -712,7 +694,7 @@ function qualifyFieldPlacement(
 export function projectSceneFields(
   slots: FrameList<RenderSceneSlot>,
   sourceScope: RenderResourceScope,
-  budget: FieldBudget,
+  budget: SceneFieldBudget,
   assets: Pick<AssetRegistry, 'getMaterialProjectionForPayload'>,
   frame?: { readonly materials: MaterialFrame; readonly meshes: MeshFrame },
 ): Result<SceneFieldProjection, RayReferenceError> {

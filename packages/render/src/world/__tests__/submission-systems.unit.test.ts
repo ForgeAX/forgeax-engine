@@ -19,7 +19,6 @@ import { RENDER_DISPLAY_DISCARD_SYSTEM } from '../display-submission-systems';
 import { RENDER_FEATURE_GRAPH_RETIRE_SYSTEM } from '../feature-graph-systems';
 import { RENDER_GRAPH_SEAL_RELEASE_SYSTEM } from '../graph-seal-systems';
 import { RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM } from '../graph-submission-systems';
-import { RENDER_GRAPH_COMPILE_RELEASE_SYSTEM } from '../graph-systems';
 import { RENDER_POST_CLEANUP_SYSTEM } from '../post-systems';
 import { renderSchedulePhaseCatalog } from '../profiled-schedule-runs';
 import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
@@ -164,7 +163,7 @@ function recordedView(
     readonly sceneSubmitted?: boolean;
     readonly accepted: boolean;
     readonly submitted?: boolean;
-    readonly cameraCount?: number;
+    readonly hasCamera?: boolean;
     readonly profile?: string;
     readonly profileSession?: RecorderSession;
     readonly ownsProfileFrame?: boolean;
@@ -184,11 +183,10 @@ function recordedView(
       sceneSubmitted: input.sceneSubmitted ?? submitted,
       outcome: submitted
         ? {
-            frame: {},
+            frame: { renderables: [], dispatch: [] },
             lights,
-            cameraCount: input.cameraCount ?? 0,
+            camera: input.hasCamera === true ? {} : undefined,
             presentation: { presentation: 'ready', reason: undefined },
-            presentationRenderables: [],
             draws: {
               presentedDraws: {},
               drawObservation: { commit: () => ({ status: 'complete', draws: [] }) },
@@ -597,7 +595,6 @@ describe('Render submission lifecycle', () => {
       RENDER_POST_CLEANUP_SYSTEM,
       RENDER_TEMPORAL_DISCARD_SYSTEM,
       ...RENDER_SETTLEMENT_CLEANUP_SYSTEMS,
-      RENDER_GRAPH_COMPILE_RELEASE_SYSTEM,
       RENDER_CAPTURE_GRAPH_RETIRE_SYSTEM,
       RENDER_GRAPH_SEAL_RELEASE_SYSTEM,
       RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM,
@@ -656,7 +653,7 @@ describe('Render submission lifecycle', () => {
   it('verifies the submitted presentation in RenderCommit, not at record time', () => {
     const { world, history, stage } = recordedView({ pipeline: false });
     beginRenderFrame(world, 1);
-    const attempt = stage({ frame: 1, accepted: true, cameraCount: 1 });
+    const attempt = stage({ frame: 1, accepted: true, hasCamera: true });
     // The recording leaves its candidate unverified.
     expect(attempt.outcome?.presentation.presentation).toBe('ready');
     accept(world, true);
@@ -669,7 +666,7 @@ describe('Render submission lifecycle', () => {
     const { world, owner, history, stage } = recordedView();
     owner.frameState.compiledFrameGraph = null as never;
     beginRenderFrame(world, 1);
-    const attempt = stage({ frame: 1, accepted: true, cameraCount: 1 });
+    const attempt = stage({ frame: 1, accepted: true, hasCamera: true });
     Object.assign(attempt, { mode: 'capture', sceneSubmitted: true });
     accept(world, true);
     endRenderFrame(world);
@@ -681,7 +678,7 @@ describe('Render submission lifecycle', () => {
     const { world, owner, history, stage } = recordedView();
     owner.frameState.compiledFrameGraph = null as never;
     beginRenderFrame(world, 1);
-    const attempt = stage({ frame: 1, accepted: true, cameraCount: 1 });
+    const attempt = stage({ frame: 1, accepted: true, hasCamera: true });
     Object.assign(attempt, { mode: 'capture', sceneSubmitted: false });
     accept(world, true);
     endRenderFrame(world);

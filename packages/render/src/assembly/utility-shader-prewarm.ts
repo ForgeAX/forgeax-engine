@@ -1,4 +1,4 @@
-import { RhiError, type ShaderModule } from '@forgeax/engine-rhi';
+import { type RhiDevice, RhiError, type ShaderModule } from '@forgeax/engine-rhi';
 import { isShaderTemplateManifestRow, manifestShaderSource } from '@forgeax/engine-shader';
 import type { ManifestEntry, ShaderSource } from '@forgeax/engine-types';
 import type {
@@ -8,6 +8,17 @@ import type {
   VolumetricFogShaderSources,
 } from '../render-contract';
 import type { SeedShaderModule } from './material-shader-policy';
+
+/** Native record owns first-use creation for these manifest programs. */
+export function stockUtilityShaderFactory<Factory>(runtime: {
+  readonly device: RhiDevice;
+  readonly shaderModuleFactory?: Factory | undefined;
+  readonly immediateShaderModuleFactory?: Factory | undefined;
+}): Factory | undefined {
+  return runtime.device.caps.backendKind === 'webgpu'
+    ? (runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory)
+    : runtime.shaderModuleFactory;
+}
 
 /** `[source key, pipeline label, WGSL entry point]`; the label equals the manifest stage. */
 type UtilityShaderStage<Key extends string> = readonly [Key, string, string, string];
@@ -78,16 +89,29 @@ export const VOLUMETRIC_FOG_SHADER_STAGES = [
   ['composite', 'volume_composite', 'volume_fs', 'forgeax_view::volume_composite'],
 ] as const satisfies readonly UtilityShaderStage<keyof VolumetricFogShaderSources>[];
 
+/** Publish a manifest member without composing it until its pass reads it. */
+export function declareUtilityShader<Key extends string, Sources extends object>(
+  sources: Sources,
+  key: Key,
+  read: () => ShaderSource,
+): Sources & Record<Key, ShaderSource> {
+  let source: ShaderSource | undefined;
+  return Object.defineProperty(sources, key, {
+    enumerable: true,
+    get: () => (source ??= read()),
+  }) as Sources & Record<Key, ShaderSource>;
+}
+
 /**
- * Admit and compile one utility bundle before exposing any of its modules.
- * A manifest carrying none of the bundle is a valid structural build; a
- * partial bundle is a build defect.
+ * Admit one whole manifest bundle. Backends that supply a compiler seed all
+ * modules together. Native first-use creation needs only the published sources.
+ * A missing bundle is valid; a partial bundle is a build defect.
  */
-export async function prewarmUtilityShaders<Key extends string>(
+export async function prepareUtilityShaders<Key extends string>(
   bundle: string,
   stages: readonly UtilityShaderStage<Key>[],
   entries: readonly ManifestEntry[],
-  compile: (label: string, source: string | ShaderSource) => Promise<ShaderModule>,
+  compile: ((label: string, source: string | ShaderSource) => Promise<ShaderModule>) | undefined,
   seed: SeedShaderModule,
 ): Promise<Record<Key, ShaderSource> | undefined> {
   const resolved = stages.map(([stage, label, entryPoint, identifier]) => ({
@@ -108,47 +132,48 @@ export async function prewarmUtilityShaders<Key extends string>(
   const sources = {} as Record<Key, ShaderSource>;
   for (const { stage, label, entry } of resolved) {
     if (entry === undefined) throw new Error(`missing ${bundle} shader ${label}`);
-    const source = manifestShaderSource(entry);
-    compiled.push({ label, module: await compile(label, source), source });
-    sources[stage] = manifestShaderSource(entry);
+    if (compile === undefined) {
+      declareUtilityShader(sources, stage, () => manifestShaderSource(entry));
+    } else {
+      const source = manifestShaderSource(entry);
+      compiled.push({ label, module: await compile(label, source), source });
+      sources[stage] = source;
+    }
   }
   for (const { label, module, source } of compiled) seed(label, module, source);
   return sources;
 }
 
-/**
- * Prewarm SSR together with the depth pyramid it traces against. The two
- * bundles compile independently. AO can install the pyramid by itself.
- */
-export async function prewarmSsrWithDepthPyramid(
+/** Publish SSR alongside the depth pyramid it reads. Older backends can seed both bundles. */
+export async function prepareSsrWithDepthPyramid(
   entries: readonly ManifestEntry[],
-  compile: (label: string, source: string | ShaderSource, bundle: string) => Promise<ShaderModule>,
+  compile:
+    | ((label: string, source: string | ShaderSource, bundle: string) => Promise<ShaderModule>)
+    | undefined,
   seed: SeedShaderModule,
   execution: 'compute' | 'fragment' = 'compute',
 ): Promise<{ ssr?: SsrShaderSources; pyramid: DepthPyramidShaderSources } | undefined> {
-  const pyramid = await prewarmUtilityShaders(
+  const pyramid = await prepareUtilityShaders(
     'depth pyramid',
     execution === 'fragment' ? DEPTH_PYRAMID_FRAGMENT_STAGES : DEPTH_PYRAMID_SHADER_STAGES,
     entries,
-    (label, source) => compile(label, source, 'depth pyramid'),
+    compile === undefined ? undefined : (label, source) => compile(label, source, 'depth pyramid'),
     seed,
   );
-  const ssr = await prewarmUtilityShaders(
+  const ssr = await prepareUtilityShaders(
     'SSR',
     execution === 'fragment' ? SSR_FRAGMENT_STAGES : SSR_SHADER_STAGES,
     entries,
-    (label, source) => compile(label, source, 'SSR'),
+    compile === undefined ? undefined : (label, source) => compile(label, source, 'SSR'),
     seed,
   );
-  if (ssr === undefined) {
-    if (pyramid === undefined) return undefined;
-    return {
-      pyramid:
-        execution === 'compute'
-          ? pyramid
-          : { ...pyramid, seedFragment: pyramid.seed, reduceFragment: pyramid.reduce },
-    };
+  if (pyramid !== undefined && execution === 'fragment') {
+    Object.defineProperties(pyramid, {
+      seedFragment: { enumerable: true, get: () => pyramid.seed },
+      reduceFragment: { enumerable: true, get: () => pyramid.reduce },
+    });
   }
+  if (ssr === undefined) return pyramid === undefined ? undefined : { pyramid };
   const required = execution === 'fragment' ? SSR_FRAGMENT_STAGES : SSR_SHADER_STAGES;
   const compatible = required.every(
     ([, , entryPoint, id]) =>
@@ -161,11 +186,11 @@ export async function prewarmSsrWithDepthPyramid(
         utilityEntry(entries, entryPoint, id)?.programContract?.compactGbuffer ===
         'standard-gbuffer/4',
     );
-  const admittedSsr = {
-    ...ssr,
-    ...(compatible ? { gbuffer: 'standard-gbuffer/2' as const } : {}),
-    ...(compactCompatible ? { compactGbuffer: 'standard-gbuffer/4' as const } : {}),
-  };
+  const admittedSsr: SsrShaderSources = Object.assign(
+    ssr,
+    compatible ? { gbuffer: 'standard-gbuffer/2' as const } : undefined,
+    compactCompatible ? { compactGbuffer: 'standard-gbuffer/4' as const } : undefined,
+  );
 
   if (pyramid === undefined) {
     throw new RhiError({
@@ -177,11 +202,10 @@ export async function prewarmSsrWithDepthPyramid(
   return execution === 'compute'
     ? { ssr: admittedSsr, pyramid }
     : {
-        ssr: {
-          ...admittedSsr,
-          traceFragment: ssr.trace,
-          composeFragment: ssr.compose,
-        },
-        pyramid: { ...pyramid, seedFragment: pyramid.seed, reduceFragment: pyramid.reduce },
+        ssr: Object.defineProperties(admittedSsr, {
+          traceFragment: { enumerable: true, get: () => ssr.trace },
+          composeFragment: { enumerable: true, get: () => ssr.compose },
+        }),
+        pyramid,
       };
 }

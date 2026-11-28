@@ -6,6 +6,7 @@ import {
   type CommandBuffer,
   err,
   ok,
+  type PipelineLayout,
   type RenderPipeline,
   type Result,
   type RhiCommandEncoder,
@@ -36,24 +37,60 @@ export type MipmapShaderModuleFactory = (
   desc: { code: string; label?: string },
 ) => Promise<Result<ShaderModule, RhiError>>;
 
+export type NativeMipmapShaderCompiler = (
+  device: RhiDevice,
+  desc: { code: string; label?: string },
+) => Result<ShaderModule, RhiError>;
+
 type MipmapPipelineKey = `${GPUTextureFormat}/${string}`;
 
 /**
  * Per-device pipeline cache structure (research F-2 SSOT).
- * Held under a module-private `WeakMap<RhiDevice, MipmapPipelineCache>`.
+ * The device owns the one module and layout shared by all admitted formats.
  */
 interface MipmapPipelineCache {
   readonly sampler: Sampler;
   readonly module: ShaderModule;
   readonly layout: BindGroupLayout;
+  pipelineLayout?: PipelineLayout;
   readonly pipelines: Map<MipmapPipelineKey, RenderPipeline>;
   normalRoughness?: NormalRoughnessMipmapPipelines;
   normalRoughnessPreparation?: Promise<Result<NormalRoughnessMipmapPipelines, RhiError>>;
 }
 
-// Module-private cache (greggman 36-44 SSOT). WeakMap so that destroying a
-// device naturally clears its cache (no manual cleanup hook needed).
-const deviceCache: WeakMap<RhiDevice, MipmapPipelineCache> = new WeakMap();
+interface MipmapDevice {
+  immediate?: NativeMipmapShaderCompiler;
+  cache?: MipmapPipelineCache;
+  preparation?: Promise<Result<MipmapPipelineCache, RhiError>>;
+}
+
+const mipmapDevices = new WeakMap<RhiDevice, MipmapDevice>();
+
+function mipmapDevice(device: RhiDevice): MipmapDevice {
+  let state = mipmapDevices.get(device);
+  if (state === undefined) {
+    state = {};
+    mipmapDevices.set(device, state);
+  }
+  return state;
+}
+
+/** Bind the native compiler without preparing any shader or pipeline. */
+export function configureNativeMipmapCompiler(
+  device: RhiDevice,
+  compile: NativeMipmapShaderCompiler,
+): void {
+  if (device.caps.backendKind === 'webgpu') mipmapDevice(device).immediate = compile;
+}
+
+/** Whether a single box-filter level can resolve a pipeline while recording. */
+export function canEncodeMipmapLevel(device: RhiDevice, format: GPUTextureFormat): boolean {
+  const state = mipmapDevices.get(device);
+  return (
+    state?.immediate !== undefined ||
+    (state?.cache?.pipelines.has(mipmapPipelineKey(format)) ?? false)
+  );
+}
 
 /**
  * Oversized-triangle WGSL (toji + greggman convergent template).
@@ -143,7 +180,7 @@ fn fs_sharpen(in: VsOut) -> @location(0) vec4<f32> {
  * pre-condition rather than a swept-under hint).
  */
 export function mipmapCacheSize(device: RhiDevice): number {
-  const cache = deviceCache.get(device);
+  const cache = mipmapDevices.get(device)?.cache;
   return (cache?.pipelines.size ?? 0) + (cache?.normalRoughness === undefined ? 0 : 2);
 }
 
@@ -168,7 +205,7 @@ export async function getOrCreateMipmapPipeline(
   asyncCreateShaderModule: MipmapShaderModuleFactory,
   filter: GpuTextureMipFilter = 'box',
 ): Promise<Result<RenderPipeline, RhiError>> {
-  const cache = await ensureDeviceCache(device, asyncCreateShaderModule);
+  const cache = await ensureDeviceCache(device, mipmapDevice(device), asyncCreateShaderModule);
   if (!cache.ok) return cache;
   if (filter === 'normal-roughness') {
     if (format !== 'rgba8unorm')
@@ -211,22 +248,32 @@ export async function getOrCreateMipmapPipeline(
     const stage = await getOrCreateMipmapPipeline(device, format, asyncCreateShaderModule);
     if (!stage.ok) return stage;
   }
+  return mipmapPipeline(device, cache.value, format, filter);
+}
+
+function mipmapPipeline(
+  device: RhiDevice,
+  cache: MipmapPipelineCache,
+  format: GPUTextureFormat,
+  filter: GpuTextureMipFilter,
+): Result<RenderPipeline, RhiError> {
   const key = mipmapPipelineKey(format, filter);
-  const existing = cache.value.pipelines.get(key);
-  if (existing !== undefined) {
-    return ok(existing);
+  const existing = cache.pipelines.get(key);
+  if (existing !== undefined) return ok(existing);
+  if (cache.pipelineLayout === undefined) {
+    const layout = device.createPipelineLayout({
+      label: 'mipmap-pl',
+      bindGroupLayouts: [cache.layout],
+    });
+    if (!layout.ok) return layout;
+    cache.pipelineLayout = layout.value;
   }
-  const layoutRes = device.createPipelineLayout({
-    label: 'mipmap-pl',
-    bindGroupLayouts: [cache.value.layout],
-  });
-  if (!layoutRes.ok) return layoutRes;
   const pipelineRes = device.createRenderPipeline({
     label: `mipmap-pipeline-${key}`,
-    layout: layoutRes.value,
-    vertex: { module: cache.value.module, entryPoint: 'vs_main', buffers: [] },
+    layout: cache.pipelineLayout,
+    vertex: { module: cache.module, entryPoint: 'vs_main', buffers: [] },
     fragment: {
-      module: cache.value.module,
+      module: cache.module,
       ...(typeof filter === 'object' && filter.strength > 0
         ? { entryPoint: 'fs_sharpen', constants: { sharpenStrength: filter.strength / 10 } }
         : { entryPoint: filter === 'box' ? 'fs_main' : 'fs_gaussian' }),
@@ -235,37 +282,58 @@ export async function getOrCreateMipmapPipeline(
     primitive: { topology: 'triangle-list' },
   });
   if (!pipelineRes.ok) return pipelineRes;
-  cache.value.pipelines.set(key, pipelineRes.value);
+  cache.pipelines.set(key, pipelineRes.value);
   return pipelineRes;
 }
 
-const devicePreparations = new WeakMap<RhiDevice, Promise<Result<MipmapPipelineCache, RhiError>>>();
+const MIPMAP_MODULE = { code: MIPMAP_WGSL, label: 'mipmap-wgsl' } as const;
 
 async function ensureDeviceCache(
   device: RhiDevice,
+  state: MipmapDevice,
   asyncCreateShaderModule: MipmapShaderModuleFactory,
 ): Promise<Result<MipmapPipelineCache, RhiError>> {
-  const existing = deviceCache.get(device);
-  if (existing !== undefined) return ok(existing);
-  const preparing = devicePreparations.get(device);
-  if (preparing !== undefined) return preparing;
-  const pending = buildDeviceCache(device, asyncCreateShaderModule).finally(() =>
-    devicePreparations.delete(device),
-  );
-  devicePreparations.set(device, pending);
-  return pending;
+  if (state.cache !== undefined) return ok(state.cache);
+  if (state.immediate !== undefined) return buildNativeDeviceCache(device, state, state.immediate);
+  state.preparation ??= Promise.resolve()
+    .then(() => asyncCreateShaderModule(device, MIPMAP_MODULE))
+    .then((result) => {
+      if (state.cache !== undefined) return ok(state.cache);
+      return result.ok ? installDeviceCache(device, state, result.value) : result;
+    })
+    .finally(() => {
+      delete state.preparation;
+    });
+  return state.preparation;
 }
 
-async function buildDeviceCache(
+function buildNativeDeviceCache(
   device: RhiDevice,
-  asyncCreateShaderModule: MipmapShaderModuleFactory,
-): Promise<Result<MipmapPipelineCache, RhiError>> {
-  const moduleRes = await asyncCreateShaderModule(device, {
-    code: MIPMAP_WGSL,
-    label: 'mipmap-wgsl',
-  });
-  if (!moduleRes.ok) return moduleRes;
+  state: MipmapDevice,
+  compile: NativeMipmapShaderCompiler,
+): Result<MipmapPipelineCache, RhiError> {
+  const result = compile(device, MIPMAP_MODULE);
+  return result.ok ? installDeviceCache(device, state, result.value) : result;
+}
 
+function prepareNativeBoxPipeline(
+  device: RhiDevice,
+  state: MipmapDevice | undefined,
+  format: GPUTextureFormat,
+): Result<RenderPipeline, RhiError> | undefined {
+  const compile = state?.immediate;
+  if (state === undefined || compile === undefined) return undefined;
+  if (state.cache !== undefined) return mipmapPipeline(device, state.cache, format, 'box');
+  const result = buildNativeDeviceCache(device, state, compile);
+  return result.ok ? mipmapPipeline(device, result.value, format, 'box') : result;
+}
+
+function installDeviceCache(
+  device: RhiDevice,
+  state: MipmapDevice,
+  module: ShaderModule,
+): Result<MipmapPipelineCache, RhiError> {
+  if (state.cache !== undefined) return ok(state.cache);
   const samplerRes = device.createSampler({
     magFilter: 'linear',
     minFilter: 'linear',
@@ -290,14 +358,13 @@ async function buildDeviceCache(
   });
   if (!layoutRes.ok) return layoutRes;
 
-  const cache: MipmapPipelineCache = {
+  state.cache = {
     sampler: samplerRes.value,
-    module: moduleRes.value,
+    module,
     layout: layoutRes.value,
     pipelines: new Map(),
   };
-  deviceCache.set(device, cache);
-  return ok(cache);
+  return ok(state.cache);
 }
 
 // COPY_SRC | RENDER_ATTACHMENT.
@@ -543,9 +610,10 @@ export function encodeMipmaps(
     capture?.(release);
     return ok(release);
   }
-  const cache = deviceCache.get(device);
+  const state = mipmapDevices.get(device);
+  let cache = state?.cache;
   const normal = descriptor.filter === 'normal-roughness';
-  const pipeline = normal
+  let pipeline = normal
     ? cache?.normalRoughness?.base
     : cache?.pipelines.get(mipmapPipelineKey(descriptor.format, descriptor.filter));
   if (normal && descriptor.format !== 'rgba8unorm')
@@ -556,14 +624,39 @@ export function encodeMipmaps(
         hint: 'use rgba8unorm for normal-roughness output',
       }),
     );
+  if (pipeline === undefined && (descriptor.filter === undefined || descriptor.filter === 'box')) {
+    const prepared = prepareNativeBoxPipeline(device, state, descriptor.format);
+    if (prepared !== undefined) {
+      if (!prepared.ok) return prepared;
+      pipeline = prepared.value;
+      cache = state?.cache;
+    }
+  }
   if (cache === undefined || pipeline === undefined)
-    return err(
-      new RhiError({
-        code: 'rhi-not-available',
-        expected: `prewarmed mipmap pipeline for ${descriptor.format}`,
-        hint: 'prewarm the texture format before recording its mip chain',
-      }),
-    );
+    return missingMipmapPipeline(descriptor.format);
+  return encodePreparedMipmaps(
+    device,
+    encoder,
+    texture,
+    descriptor,
+    levels,
+    pipeline,
+    cache,
+    capture,
+  );
+}
+
+/** Encoder work owns any transient textures until its submit or abort. */
+function encodePreparedMipmaps(
+  device: RhiDevice,
+  encoder: RhiCommandEncoder,
+  texture: Texture,
+  descriptor: MipmapTextureDescriptor,
+  levels: number,
+  pipeline: RenderPipeline,
+  cache: MipmapPipelineCache,
+  capture: ((release: () => void) => void) | undefined,
+): Result<() => void, RhiError> {
   const transient: Texture[] = [];
   let encoding = true,
     cancelled = false,
@@ -603,7 +696,7 @@ export function encodeMipmaps(
     capture?.(release);
     if (!cancelled)
       encoded =
-        normal && cache.normalRoughness !== undefined
+        descriptor.filter === 'normal-roughness' && cache.normalRoughness !== undefined
           ? encodeNormalRoughnessMipmaps(
               device,
               encoder,
@@ -658,7 +751,7 @@ function unavailableMipmapWork(): RhiError {
 }
 
 /**
- * Prepare a prewarmed mip chain without creating a hidden submission.
+ * Prepare a mip chain without creating a hidden submission.
  * `finish()` is the explicit transaction boundary and is intentionally
  * separate from `queue.submit()` so recovery can guard candidate ownership.
  */
@@ -769,18 +862,8 @@ export async function generateMipmaps(
   return blitMipmapsSync(device, texture, descriptor);
 }
 
-/**
- * Synchronous sibling of `generateMipmaps` (feat-20260601-gpu-resource-store
- * -extraction D-9). Identical per-mip blit loop, but reads the per-format
- * pipeline + shared sampler / layout from the prewarmed device cache instead
- * of building them. The pipeline MUST already be present (via a prior
- * `getOrCreateMipmapPipeline` / `prewarmMipmapPipeline` async call) -- an
- * un-prewarmed device or format returns a structured `RhiError` rather than
- * awaiting a build, so the synchronous `draw(world)` frame contract is never
- * broken. The async build itself does not affect the written bytes (same
- * shader, same encoder sequence), so prewarm + sync blit reproduces the
- * pre-extraction async `generateMipmaps` byte-for-byte (D-9 sub-contract 5).
- */
+/** Encode and submit a mip chain synchronously. Native box filters can create
+ * their pipeline on first use. Other configurations prepare the format first. */
 export function blitMipmapsSync(
   device: RhiDevice,
   texture: Texture,
@@ -798,33 +881,34 @@ export function blitMipmapsSync(
   return submitted.ok ? ok(undefined) : submitted;
 }
 
-/** Encode one prewarmed mip level into a caller-owned graph render pass. */
+function missingMipmapPipeline(format: GPUTextureFormat): Result<never, RhiError> {
+  return err(
+    new RhiError({
+      code: 'rhi-not-available',
+      expected: `mipmap pipeline for format ${format} available`,
+      hint: 'prepare the texture format before encoding or configure the native mipmap compiler',
+    }),
+  );
+}
+
+/** Encode one box-filter mip level into a caller-owned graph render pass. */
 export function encodeMipmapLevel(
   device: RhiDevice,
   pass: RhiRenderPassEncoder,
   sourceView: TextureView,
   format: GPUTextureFormat,
 ): Result<void, RhiError> {
-  const cache = deviceCache.get(device);
-  if (cache === undefined) {
-    return err(
-      new RhiError({
-        code: 'rhi-not-available',
-        expected: 'mipmap pipeline cache prewarmed for the graph device before encoding',
-        hint: 'call prewarmMipmapPipeline(device, formats) at renderer.ready',
-      }),
-    );
-  }
-  const pipeline = cache.pipelines.get(mipmapPipelineKey(format));
+  const state = mipmapDevices.get(device);
+  let cache = state?.cache;
+  let pipeline = cache?.pipelines.get(mipmapPipelineKey(format));
   if (pipeline === undefined) {
-    return err(
-      new RhiError({
-        code: 'rhi-not-available',
-        expected: `mipmap pipeline for format ${format} prewarmed`,
-        hint: `format ${format} was not prewarmed; add it to the renderer prewarm list`,
-      }),
-    );
+    const prepared = prepareNativeBoxPipeline(device, state, format);
+    if (prepared === undefined) return missingMipmapPipeline(format);
+    if (!prepared.ok) return prepared;
+    pipeline = prepared.value;
+    cache = state?.cache;
   }
+  if (cache === undefined) return missingMipmapPipeline(format);
   const bindGroup = device.createBindGroup({
     label: 'mipmap-graph-bind-group',
     layout: cache.layout,

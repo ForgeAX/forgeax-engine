@@ -1,5 +1,4 @@
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
-import { compiledRenderGraphGeneration } from '@forgeax/engine-render-graph';
 import type {
   LodOcclusionInspection,
   LodOcclusionReceiptObservation,
@@ -32,9 +31,8 @@ export interface LodObservationViewCapture {
   readonly attachmentId: string;
   readonly viewGeneration: number;
   readonly graphGeneration: number;
-  readonly graphIncarnation: object | undefined;
   readonly state: 'rendered' | 'held';
-  /** The view's owner bag: its LOD cell, compiled graph and GPU-driven production. */
+  /** The view owns the LOD cell and GPU-driven production. */
   readonly owner: ViewSettlementOwner;
   readonly viewRef: object | undefined;
   readonly primary: boolean;
@@ -120,7 +118,7 @@ export async function observeLodOcclusionCapture(
     const currentInspection = view.state === 'rendered' ? view.owner.lod.cell?.value() : undefined;
     projected.push(projectView(view, currentInspection));
     if (view.state !== 'rendered') unavailableReason ??= 'held-view';
-    if (!graphMatchesGeneration(view)) unavailableReason ??= 'graph-generation-mismatch';
+    if (!graphMatchesCapture(view)) unavailableReason ??= 'graph-generation-mismatch';
     if (view.state === 'held') continue;
     if (currentInspection === undefined) {
       unavailableReason ??= 'lod-readback-unavailable';
@@ -297,27 +295,13 @@ function currentCaptureFailure(
   return undefined;
 }
 
-/** The compiled-graph generation and incarnation a view's owner currently holds. */
-export function graphFacts({ frameState }: ViewSettlementOwner) {
-  const graph = frameState.compiledFrameGraph?.graph;
-  return {
-    generation: graph === undefined ? 0 : compiledRenderGraphGeneration(graph),
-    incarnation: graph as object | undefined,
-  };
-}
-
-function graphMatchesGeneration(view: LodObservationViewCapture): boolean {
-  const graph = view.owner.frameState.compiledFrameGraph?.graph;
-  return graph !== undefined && compiledRenderGraphGeneration(graph) === view.graphGeneration;
+/** Physical view bindings mint a unique generation on the renderer's realm. */
+export function viewBindingGeneration({ frameState }: ViewSettlementOwner): number | undefined {
+  return frameState.compiledFrameGraph?.targets.graphGeneration;
 }
 
 function graphMatchesCapture(view: LodObservationViewCapture): boolean {
-  const graph = view.owner.frameState.compiledFrameGraph?.graph;
-  return (
-    view.graphIncarnation !== undefined &&
-    graph === view.graphIncarnation &&
-    compiledRenderGraphGeneration(graph) === view.graphGeneration
-  );
+  return viewBindingGeneration(view.owner) === view.graphGeneration;
 }
 
 function roster(

@@ -10,13 +10,23 @@
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.mjs" },
     "./authoring": { "types": "./dist/authoring.d.ts", "import": "./dist/authoring.mjs" },
+    "./debug-view": { "types": "./dist/debug-view/index.d.ts", "import": "./dist/debug-view/index.mjs" },
     "./internal": { "types": "./dist/internal.d.ts", "import": "./dist/internal.mjs" },
     "./internal/temporal": { "types": "./dist/temporal/index.d.ts", "import": "./dist/temporal/index.mjs" },
     "./tasks": { "types": "./dist/tasks.d.ts", "import": "./dist/tasks.mjs" },
+    "./internal/host-data": { "types": "./dist/host-data.d.ts", "import": "./dist/host-data.mjs" },
     "./package.json": "./package.json",
+    "./internal/backend-contract": {
+      "types": "./dist/assembly/backend-contract.d.ts",
+      "import": "./dist/assembly/backend-contract.mjs"
+    },
     "./internal/construct-renderer": {
       "types": "./dist/construct-renderer.d.ts",
       "import": "./dist/construct-renderer.mjs"
+    },
+    "./kernel": {
+      "types": "./dist/kernel/index.d.ts",
+      "import": "./dist/kernel/index.mjs"
     }
   },
   "files": [
@@ -50,6 +60,7 @@
     "@forgeax/engine-physics": "workspace:*",
     "@forgeax/engine-plugin": "workspace:*",
     "@forgeax/engine-render-graph": "workspace:*",
+    "@forgeax/engine-render-kernel": "workspace:*",
     "@forgeax/engine-rhi": "workspace:*",
     "@forgeax/engine-scene": "workspace:*",
     "@forgeax/engine-shader": "workspace:*",

@@ -160,9 +160,10 @@ describe('opacity: transparent texels take their maps from the hits around them 
       }
     }
     expect(dilated.length).toBeGreaterThan(1000);
-    // Measured: 3.5 degrees from the nearest wire texel, 49 with fallbacks.
+    // Measured: 3.5 degrees from the nearest wire texel, 28.6 with fallbacks (a mix of flat
+    // and nearest normals since the facing-normal decision). The gap is a factor of about 8.
     expect(mean(dilated)).toBeLessThan(6);
-    expect(mean(fallback)).toBeGreaterThan(30);
+    expect(mean(fallback)).toBeGreaterThan(20);
   });
 });
 

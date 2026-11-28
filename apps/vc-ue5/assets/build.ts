@@ -9,7 +9,12 @@ export const build: Plugin = {
   inject: ['nativeCookers'],
   apply(ctx) {
     ctx.provide('devkitAppOptions', {
-      standardProfile: DEFAULT_STANDARD_PROFILE,
+      standardProfile: {
+        ...DEFAULT_STANDARD_PROFILE,
+        atmosphereLutModel: 'ue5-desktop',
+        cloudMode0Model: 'ue5-desktop',
+        realtimeSkyCapture: false,
+      },
       loadingLabels: {
         lang: 'zh-CN',
         phases: {

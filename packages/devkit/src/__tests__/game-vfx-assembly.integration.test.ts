@@ -271,8 +271,8 @@ it.each([
     expect(diagnosticsEnd).toBeGreaterThan(diagnosticsStart);
     expect(animationSelection).toBeDefined();
     expect(workersSelection).toBeDefined();
-    const executionDiagnostics = runInNewContext(
-      `const query = new URLSearchParams(location.search); ${animationSelection}\n${workersSelection}\n${page.slice(diagnosticsStart, diagnosticsEnd)}\n(${diagnostics})`.replaceAll(
+    const executionDiagnostics = await runInNewContext(
+      `(async () => { const query = new URLSearchParams(location.search); ${animationSelection}\n${workersSelection}\n${page.slice(diagnosticsStart, diagnosticsEnd)}\nreturn (${diagnostics}); })()`.replaceAll(
         'import.meta.env.DEV',
         'false',
       ),
@@ -317,10 +317,8 @@ it.each([
       expect(options.retainedResources).toBe(retainedResources);
       expect(options.isolateViewGraph).toBe(isolateViewGraph ? true : undefined);
     }
-    const singleThreadCall = page.match(
-      /\? (createGameVfx\(\{ isolateViewGraph: isolateVfxViewGraph, instanceArenas: vfxInstanceArenas, nativePlanning: vfxNativePlanning, retainedResources: vfxRetainedResources,[^\n]*?\}\)) : undefined;/,
-    )?.[1];
-    const previewFactory = page.match(/function makeVfxRuntimeHost\(\) \{[\s\S]*?\n\}/)?.[0];
+    const singleThreadCall = page.match(/^[ \t]*const gameVfx = (localGameModules[^\n]+);$/m)?.[1];
+    const previewFactory = page.match(/^async function makeVfxRuntimeHost\(\) \{[\s\S]*?^\}/m)?.[0];
     expect(singleThreadCall).toBeDefined();
     expect(singleThreadCall).toContain('providers: gameFeatures.vfxProviders');
     expect(singleThreadCall).toContain('providersForWorld: gameFeatures.vfxProvidersForWorld');
@@ -328,8 +326,7 @@ it.each([
     const pageContext = {
       location: { search },
       URLSearchParams,
-      createGameVfx,
-      createVfxRuntimeHost: captureRuntimeHost,
+      localGameModules: [undefined, { createGameVfx }],
       gameFeatures: createGameRenderFeatures(),
     };
     const singleThread = runInNewContext(`${selection}\n${singleThreadCall}`, { ...pageContext });
@@ -337,9 +334,23 @@ it.each([
     expect(capturedOptions.at(-1)?.nativePlanning).toBe(nativePlanning);
     expect(capturedOptions.at(-1)?.retainedResources).toBe(retainedResources);
     expect(singleThread.feature.viewGraph).toBe(source.features[0].viewGraph);
-    const preview = runInNewContext(`${selection}\n${previewFactory}\nmakeVfxRuntimeHost()`, {
-      ...pageContext,
-    });
+    const previewModules = new Map<string, object>([
+      ['vfx-render', { createVfxRuntimeHost: captureRuntimeHost }],
+      ['render', {}],
+      ['scene', {}],
+      ['math', {}],
+    ]);
+    const preview = await runInNewContext(
+      `${selection}\n${previewFactory?.replaceAll(/\bimport\('@forgeax\/engine\/([a-z-]+)'\)/g, "importEngineModule('$1')")}\nmakeVfxRuntimeHost()`,
+      {
+        ...pageContext,
+        async importEngineModule(name: string) {
+          const module = previewModules.get(name);
+          if (module === undefined) throw new Error(`Unexpected VFX preview module: ${name}`);
+          return module;
+        },
+      },
+    );
     expect(capturedOptions.at(-1)?.instanceArenas).toBe(instanceArenas);
     expect(capturedOptions.at(-1)?.nativePlanning).toBe(nativePlanning);
     expect(capturedOptions.at(-1)?.retainedResources).toBe(retainedResources);

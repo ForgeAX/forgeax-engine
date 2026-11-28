@@ -1,13 +1,49 @@
+import type { ShaderModule } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { createPostProcessParamsOwner } from '../assembly/post-process-params';
 import {
   collectRequiredFullscreenPostProcesses,
+  isStandardPostProcessSource,
   registerStandardPostProcessBuiltins,
 } from '../assembly/render-feature-post-processes';
+import {
+  type CompileShaderModule,
+  prewarmFullscreenPostProcesses,
+} from '../assembly/webgpu-ready-shaders';
 import { withBuiltinRenderFeatures } from '../features/builtins';
+import { createFullscreenRenderFeature } from '../features/fullscreen';
 import { entryHasDepthRead, type PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import { RhiErrorListenerRegistry } from '../lifecycle';
+
+it('prepares standard programs at the native pass and honors explicit feature requirements', async () => {
+  const programs = collectRequiredFullscreenPostProcesses([]);
+  const [aliased, unused] = programs;
+  if (aliased === undefined || unused === undefined) throw new Error('Expected Standard programs');
+  const custom = { identity: 'custom-effect', source: 'custom WGSL' };
+  const requirements = collectRequiredFullscreenPostProcesses([
+    createFullscreenRenderFeature(aliased),
+    createFullscreenRenderFeature(custom),
+  ]);
+  expect(isStandardPostProcessSource(aliased.source)).toBe(true);
+  expect(isStandardPostProcessSource(custom.source)).toBe(false);
+  expect(() =>
+    collectRequiredFullscreenPostProcesses([
+      createFullscreenRenderFeature({ ...custom, identity: aliased.identity }),
+    ]),
+  ).toThrow();
+
+  const module = {} as ShaderModule;
+  const compile = vi.fn<CompileShaderModule>().mockResolvedValue(module);
+  const seed = vi.fn();
+  await prewarmFullscreenPostProcesses(requirements, compile, seed, true);
+  expect(compile.mock.calls.map(([source]) => source)).toEqual([aliased.source, custom.source]);
+  expect(seed).toHaveBeenCalledTimes(2);
+  compile.mockClear();
+  await prewarmFullscreenPostProcesses(requirements, compile, seed, false);
+  expect(compile.mock.calls.map(([source]) => source)).toContain(unused.source);
+  expect(compile).toHaveBeenCalledTimes(requirements.length);
+});
 
 it('retains Standard shader parameters across empty Feature frames and device recovery', async () => {
   const adapter = (await rhi.requestAdapter()).unwrap();

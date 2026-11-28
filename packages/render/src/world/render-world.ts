@@ -100,7 +100,7 @@ export const RenderPrepare = defineSchedule('RenderPrepare');
 export const RenderQueue = defineSchedule('RenderQueue');
 /**
  * Open the submission's one command encoder (`RenderFrameEncoder`) and compile
- * every staged view graph (`render-graph-compile`) after Queue, at the
+ * every staged view recording (`render-graph-seal`) after Queue, at the
  * submission's compile barrier, before any view records GPU work. It is the
  * only phase that owns an encoder. A submission outside an open frame (a
  * UI-only frame or a direct recording) has no Queue phase or compile barrier:

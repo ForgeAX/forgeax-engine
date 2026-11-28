@@ -1,8 +1,8 @@
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, FrameProjection } from './frame-list';
+import type { IdentityMap } from './identity-map';
 import type { ProbeBlendBufferProjection, ProbeBlendSceneProjection } from './probe-blend';
 import type { ProbeBlendRecord } from './probe-blend-record';
-import type { SceneSlotFrame } from './scene-slots';
 
 /**
  * Probe attachment memo: a candidate keeps its attached snapshot while its
@@ -17,7 +17,7 @@ export interface ProbeAttachMemo {
   previous:
     | {
         readonly candidates: FrameList<RenderableSnapshot>;
-        readonly slots: SceneSlotFrame;
+        readonly identities: IdentityMap;
         readonly records: ProbeBlendBufferProjection;
         readonly value: FrameList<RenderableSnapshot>;
       }
@@ -40,7 +40,7 @@ export function attachProbeRecord(
 export function attachProbeRecords(
   frame: ExtractedFrame,
   candidates: FrameList<RenderableSnapshot>,
-  slots: SceneSlotFrame,
+  identities: IdentityMap,
   projection: ProbeBlendSceneProjection,
   memo: ProbeAttachMemo,
 ): ExtractedFrame {
@@ -52,20 +52,20 @@ export function attachProbeRecords(
   const previous = memo.previous;
   if (
     previous?.candidates === candidates &&
-    previous.slots === slots &&
+    previous.identities === identities &&
     previous.records === records
   )
     return { ...frame, renderables: previous.value };
   const probeAt = projection.captureRecordLookup();
   const attachments = memo.bySnapshot;
   const value = new FrameProjection(candidates, (candidate) => {
-    const slot = slots.lookup(candidate.entityKey);
+    const slot = identities.get(candidate.entityKey);
     return attachProbeRecord(
       candidate,
-      slot === undefined ? undefined : probeAt(slot.slot),
+      slot === undefined ? undefined : probeAt(slot),
       attachments,
     );
   });
-  memo.previous = { candidates, slots, records, value };
+  memo.previous = { candidates, identities, records, value };
   return { ...frame, renderables: value };
 }

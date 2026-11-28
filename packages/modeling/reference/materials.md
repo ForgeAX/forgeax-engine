@@ -15,7 +15,10 @@ several meshes. `highlight` and `xray` are render-owned slot names; do not use t
 `runCapture` (and so `model.render`) returns the build's own outputs in the optional report field
 `materials` for `render` and `replay` captures: `{ materials: { [slotName]: MaterialAsset },
 textures: { [guid]: TextureAsset } }`, taken from the same build as the captured mesh and absent when
-the build has no `material/*` output.
+the build has no `material/*` output. Deferred `PackCookSource` entries stay in
+`cookSources` with their derived GUID and source key; they are authoring data, not
+TextureAssets. The render host resolves them through the project's registered
+NativeCookers before binding the material, preserving the same build provenance.
 
 Surfaces get their finish without image files. `proceduralMaterials` returns options for
 the Engine's `Materials.standard`; every texture it needs is generated in TypeScript and

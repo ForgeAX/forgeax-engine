@@ -227,8 +227,21 @@ export const SCREEN_PROBE_TRACE_STAGES = {
     slots: [...SCREEN_PROBE_STAGES.temporalScreenProbes.slots, 'shortRangeAoIn', 'motionWithDepth'],
     field: false,
   },
+  integrateScreenSpaceScreenProbesBent: {
+    slots: [...SCREEN_PROBE_STAGES.integrateScreenProbes.slots, 'shortRangeAoIn'],
+    field: false,
+  },
   integrateScreenSpaceScreenProbesWithMotion: {
     slots: [...SCREEN_PROBE_STAGES.integrateScreenProbes.slots, 'probeMovingIn', 'pixelMovingOut'],
+    field: false,
+  },
+  integrateScreenSpaceScreenProbesBentWithMotion: {
+    slots: [
+      ...SCREEN_PROBE_STAGES.integrateScreenProbes.slots,
+      'shortRangeAoIn',
+      'probeMovingIn',
+      'pixelMovingOut',
+    ],
     field: false,
   },
   temporalScreenProbesWithMotion: {
@@ -550,7 +563,15 @@ export async function createScreenProbeKernels(
     stage === 'temporalScreenProbesWithAo' ||
     stage === 'applyScreenProbeAoHistory' ||
     stage === 'applyScreenProbeAoHistoryCompact';
+  const isBentIntegrateStage = (stage: ScreenProbeTraceStage) =>
+    stage === 'integrateScreenSpaceScreenProbesBent' ||
+    stage === 'integrateScreenSpaceScreenProbesBentWithMotion';
+  const bentStageEnabled = (stage: ScreenProbeTraceStage) =>
+    shortRangeAoMode === 'full-bent' &&
+    screenSpace &&
+    (stage === 'integrateScreenSpaceScreenProbesBent' || compacted);
   const traceStageEnabled = (stage: ScreenProbeTraceStage) => {
+    if (isBentIntegrateStage(stage)) return bentStageEnabled(stage);
     if (stage === 'temporalScreenProbesWithVelocity') return screenSpace;
     if (stage === 'temporalScreenProbesWithAoAndVelocity') return screenSpace && shortRangeAo;
     if (

@@ -134,7 +134,8 @@ function directSplitOracleSource(
   projected: boolean,
 ): string {
   return `
-#import forgeax_standard::cluster::{clusterLookupCount, cluster_uniform}
+#import forgeax_standard::cluster::{clusterLookupCount}
+#import forgeax_standard::cluster_layout::{cluster_uniform}
 #import test::direct_split::{evaluateStandardDirectSplit, evaluateStandardDirect}
 #import forgeax_pbr::brdf::{standardOpaqueBrdfFromView, prepareDirectMultiScatterView, halfVectorTerms, directLightingAlpha}
 #import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation}
@@ -275,6 +276,7 @@ fn view_apply_direct_solar(v: View, radiance: vec3<f32>, position: vec3<f32>) ->
             'forgeax_pbr::lighting_directional': source('lighting-directional.wgsl'),
             'forgeax_standard::cluster_texture_data': source('cluster-texture-data.wgsl'),
             'forgeax_standard::cluster': countedCluster(),
+            'forgeax_standard::cluster_layout': source('standard-cluster-layout.wgsl'),
             'forgeax_pbr::lighting_punctual': source('lighting-punctual.wgsl'),
             'forgeax_pbr::lighting_spot_modifiers': source('lighting-spot-modifiers.wgsl'),
             'forgeax_pbr::lighting_spot_projector': source('lighting-spot-projector.wgsl'),

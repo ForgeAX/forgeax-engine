@@ -14,6 +14,7 @@ import {
   Skylight,
   TONEMAP_LINEAR,
 } from '@forgeax/engine-render';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as wgpu from '@forgeax/engine-rhi-wgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -55,6 +56,21 @@ async function save(name: string, bytes: Uint8Array) {
   for (let offset = 0; offset < bytes.length; offset += 8192)
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
   await commands.writeFile(`${EVIDENCE}/${name}`, btoa(binary), 'base64');
+}
+
+async function completeEffectFrames(
+  world: World,
+  camera: EntityHandle,
+  effect: 'exposure' | 'ssr' | 'combined',
+  draw: () => Promise<unknown>,
+) {
+  const steadyBind = renderOrderedViewBindCount();
+  for (let frame = 1; frame < 60; frame++) {
+    if (effect !== 'exposure')
+      world.set(camera, ScreenSpaceReflection, { thickness: 0.2 + frame * 0.001 }).unwrap();
+    await draw();
+  }
+  if (effect !== 'exposure') expect(renderOrderedViewBindCount()).toBe(steadyBind);
 }
 
 function pixels(observation: {
@@ -204,6 +220,8 @@ it.each([
       };
       try {
         const baseline = await sample('off');
+        const compile = renderGraphCompileCount();
+        const bind = renderOrderedViewBindCount();
         enableEffects(world, camera, effect);
         const startup = recorder.captureFrame();
         (await recorder.frameBoundary()).unwrap();
@@ -213,7 +231,7 @@ it.each([
           (await recorder.frameBoundary()).unwrap();
           await save(`${effectCase}-startup.rhitape`, compactTape((await startup).unwrap()).bytes);
         }
-        for (let frame = 1; frame < 60; frame++) await draw();
+        await completeEffectFrames(world, camera, effect, draw);
         const capture = recorder.captureFrame();
         (await recorder.frameBoundary()).unwrap();
         const enabled = await sample('on');
@@ -241,6 +259,9 @@ it.each([
           expect(inspection.ssr.status).toBe('admitted');
           expect(entryPoints).toContain('ssr_trace_fragment');
           expect(entryPoints).toContain('fs_ssr_compose_fragment');
+          const bindings = renderOrderedViewBindCount() - bind;
+          expect(bindings).toBeGreaterThan(0);
+          expect(renderGraphCompileCount() - compile).toBe(bindings);
         }
         if (effect === 'combined') {
           expect(entryPoints).toContain('fs_ssao_full_depth');

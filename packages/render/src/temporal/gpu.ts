@@ -1,3 +1,4 @@
+import { type Mat4, mat4 } from '@forgeax/engine-math';
 import type {
   BindGroupLayout,
   Buffer,
@@ -9,9 +10,10 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import type { CloudTransportFormat } from '../cloud/reconstruction/history';
-import { cloudHistoryExtent } from '../cloud/reconstruction/history';
+import { cloudHistoryExtent, cloudMode0DepthFormat } from '../cloud/reconstruction/history';
 import type { DeviceScope } from '../device/device-scope';
 import {
+  GPU_TEXTURE_USAGE_COPY_DST,
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
   GPU_TEXTURE_USAGE_STORAGE_BINDING,
@@ -23,7 +25,13 @@ import type { RenderFrameState } from '../record/frame-snapshot';
 import type { CameraSnapshot } from '../render-contract';
 import { ssrColorExtent } from '../ssr/scene-color-input';
 import { requireTsrCapabilities, usesTsrCompute } from '../tsr/capabilities';
-import { TSR_ANALYSIS_FORMATS } from '../tsr/layout';
+import { TSR_ANALYSIS_FORMATS, TSR_PARAMS_BYTES } from '../tsr/layout';
+import {
+  abortResurrection,
+  commitResurrection,
+  type TsrResurrection,
+  type TsrResurrectionSlot,
+} from '../tsr/resurrection';
 
 export const TEMPORAL_HISTORY_FORMATS = Object.freeze({
   color: 'rgba16float',
@@ -42,6 +50,24 @@ export const TAA_FLICKER_MAX_PARALLAX_VELOCITY = 10;
 /** UE `MinBlendFinal` in TSRShadingAnalysis.ush ComputeMoireError. */
 export const TAA_FLICKER_MIN_BLEND = 0.05;
 
+/**
+ * Frame-rate dependent flickering terms (TemporalSuperResolution.cpp ~1929-1942, 3012-3014,
+ * 2528-2529). `deltaSeconds` is zero when the frame time is unknown.
+ */
+export function flickerTerms(
+  deltaSeconds: number,
+  width: number,
+): { invThreshold: number; invMaxParallax: number } {
+  // AdjustToFrameRate: below FrameRateCap (60 Hz) the period shrinks so that a
+  // slower frame rate does not stretch the tolerated flicker window.
+  const refreshToCap = deltaSeconds > 0 ? deltaSeconds * TAA_FLICKER_FRAME_RATE_CAP : 1;
+  const period = TAA_FLICKER_PERIOD / Math.max(refreshToCap, 1);
+  return {
+    invThreshold: 1 - (1 - TAA_FLICKER_MIN_BLEND) ** period,
+    invMaxParallax: 1 / (refreshToCap * TAA_FLICKER_MAX_PARALLAX_VELOCITY * (width / 1920)),
+  };
+}
+
 /** Uniform bytes of `TaaResolveParams` in taa-resolve.wgsl. */
 export const TEMPORAL_PARAMS_BYTES = 48;
 
@@ -57,11 +83,27 @@ export interface TemporalSurface {
   readonly view: TextureView;
 }
 
+export interface TsrParamsScratch {
+  readonly bytes: ArrayBuffer;
+  readonly floats: Float32Array;
+  readonly words: Uint32Array;
+  readonly u8: Uint8Array;
+  readonly matA: Mat4;
+  readonly matB: Mat4;
+  readonly matC: Mat4;
+  readonly matD: Mat4;
+  uploadedFrame: object | undefined;
+  uploadedWidth: number;
+  uploadedHeight: number;
+}
+
 export interface TsrGpuAnalysis {
   readonly width: number;
   readonly height: number;
   readonly guide: [TemporalSurface, TemporalSurface];
   readonly moire: [TemporalSurface, TemporalSurface];
+  readonly resurrection: TsrResurrection;
+  readonly paramsScratch: TsrParamsScratch;
   inputWidth: number;
   inputHeight: number;
   pendingInput: readonly [number, number] | undefined;
@@ -84,6 +126,7 @@ interface TemporalGpuStateBase {
   /** Whether this candidate owns the optional cloud transport history MRT. */
   readonly cloudHistoryEnabled: boolean;
   readonly cloudHistoryFormat: CloudTransportFormat;
+  readonly cloudHistoryDepthFormat: CloudTransportFormat;
   /** Previous/current cloud radiance, transmittance and representative depth. */
   readonly cloudRadiance: [TemporalSurface, TemporalSurface] | undefined;
   readonly cloudTransmittance: [TemporalSurface, TemporalSurface] | undefined;
@@ -116,6 +159,7 @@ function createSurface(
   format: TextureFormat = TEMPORAL_HISTORY_FORMATS.color,
   storage = false,
   mipLevelCount = 1,
+  copyDestination = false,
 ): TemporalSurface {
   const texture = device.createTexture({
     label,
@@ -127,6 +171,7 @@ function createSurface(
       GPU_TEXTURE_USAGE_COPY_SRC |
       GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
       GPU_TEXTURE_USAGE_TEXTURE_BINDING |
+      (copyDestination ? GPU_TEXTURE_USAGE_COPY_DST : 0) |
       (storage ? GPU_TEXTURE_USAGE_STORAGE_BINDING : 0),
   });
   if (!texture.ok) throw texture.error;
@@ -152,6 +197,7 @@ function createState(
   height: number,
   cloudHistoryEnabled: boolean,
   cloudHistoryFormat: CloudTransportFormat,
+  cloudHistoryDepthFormat: CloudTransportFormat,
   algorithm: TemporalGpuMode,
   guideWidth: number,
   guideHeight: number,
@@ -195,18 +241,63 @@ function createState(
         storage,
       ),
     ];
+    // Persistent snapshots only receive copies and are sampled; they never need storage usage.
+    const resurrectionSlot = (slot: string): TsrResurrectionSlot => {
+      const copy = (label: string, w: number, h: number, format: TextureFormat) =>
+        createSurface(
+          device,
+          childScope,
+          `tsr-resurrection-${label}-${slot}`,
+          w,
+          h,
+          format,
+          false,
+          1,
+          true,
+        );
+      return {
+        guide: copy('guide', guideWidth, guideHeight, TSR_ANALYSIS_FORMATS.guide),
+        color: copy('color', width, height, TEMPORAL_HISTORY_FORMATS.color),
+        stability: copy('stability', width, height, 'rgba8unorm'),
+        viewProjection: new Float32Array(16),
+        storedAt: undefined,
+        inputWidth: 0,
+        inputHeight: 0,
+      };
+    };
     return {
       algorithm,
       tsr: isTsr
-        ? {
-            width: guideWidth,
-            height: guideHeight,
-            guide: analysisPair('guide'),
-            moire: analysisPair('moire'),
-            inputWidth: 0,
-            inputHeight: 0,
-            pendingInput: undefined,
-          }
+        ? (() => {
+            const bytes = new ArrayBuffer(TSR_PARAMS_BYTES);
+            return {
+              width: guideWidth,
+              height: guideHeight,
+              guide: analysisPair('guide'),
+              moire: analysisPair('moire'),
+              resurrection: {
+                slots: [resurrectionSlot('a'), resurrectionSlot('b')],
+                frame: 0,
+                pending: undefined,
+              },
+              paramsScratch: {
+                bytes,
+                floats: new Float32Array(bytes),
+                words: new Uint32Array(bytes),
+                u8: new Uint8Array(bytes),
+                matA: mat4.create(),
+                matB: mat4.create(),
+                matC: mat4.create(),
+                matD: mat4.create(),
+                uploadedFrame: undefined,
+                uploadedWidth: 0,
+                uploadedHeight: 0,
+              },
+              inputWidth: 0,
+              inputHeight: 0,
+              pendingInput: undefined,
+            };
+          })()
         : undefined,
       device,
       scope,
@@ -245,6 +336,7 @@ function createState(
             ],
       cloudHistoryEnabled,
       cloudHistoryFormat,
+      cloudHistoryDepthFormat,
       cloudRadiance: cloudHistoryEnabled
         ? [
             createSurface(
@@ -293,7 +385,7 @@ function createState(
               'cloud-history-depth-a',
               cloudExtent.width,
               cloudExtent.height,
-              CLOUD_HISTORY_FORMATS.depth,
+              cloudHistoryDepthFormat,
             ),
             createSurface(
               device,
@@ -301,7 +393,7 @@ function createState(
               'cloud-history-depth-b',
               cloudExtent.width,
               cloudExtent.height,
-              CLOUD_HISTORY_FORMATS.depth,
+              cloudHistoryDepthFormat,
             ),
           ]
         : undefined,
@@ -321,7 +413,7 @@ export function getTemporalParamsBuffer(state: TemporalGpuState): Buffer {
   if (state.paramsBuffer !== undefined) return state.paramsBuffer;
   const created = state.device.createBuffer({
     label: `${state.algorithm}-resolve-params`,
-    size: state.algorithm === 'tsr' ? 64 : TEMPORAL_PARAMS_BYTES,
+    size: state.algorithm === 'tsr' ? TSR_PARAMS_BYTES : TEMPORAL_PARAMS_BYTES,
     usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     mappedAtCreation: false,
   });
@@ -335,7 +427,7 @@ export function getTemporalParamsBuffer(state: TemporalGpuState): Buffer {
   const written = state.device.queue.writeBuffer(
     created.value,
     0,
-    new Uint8Array(state.algorithm === 'tsr' ? 64 : TEMPORAL_PARAMS_BYTES),
+    new Uint8Array(state.algorithm === 'tsr' ? TSR_PARAMS_BYTES : TEMPORAL_PARAMS_BYTES),
   );
   if (!written.ok) {
     if (!state.committed) state.childScope.abandon();
@@ -369,6 +461,7 @@ export function getTemporalGpuState(
     frameState.pendingCloudHistoryActive === true
       ? (frameState.pendingCloudHistoryFormat ?? CLOUD_HISTORY_FORMATS.radiance)
       : (frameState.cloudHistoryFormat ?? CLOUD_HISTORY_FORMATS.radiance);
+  const cloudHistoryDepthFormat = cloudMode0DepthFormat(frameState.cameraStandardProfile);
   const matches = (state: TemporalGpuState | undefined): state is TemporalGpuState =>
     state !== undefined &&
     state.scope === scope &&
@@ -382,7 +475,9 @@ export function getTemporalGpuState(
     // the two shapes distinct so turning CloudLayer off retires its six HDR
     // surfaces instead of retaining them on an otherwise TAA-only frame.
     state.cloudHistoryEnabled === wantsCloudHistory &&
-    (!wantsCloudHistory || state.cloudHistoryFormat === cloudHistoryFormat);
+    (!wantsCloudHistory ||
+      (state.cloudHistoryFormat === cloudHistoryFormat &&
+        state.cloudHistoryDepthFormat === cloudHistoryDepthFormat));
   const staged = frameState.temporalGpuState;
   if (matches(staged)) return staged;
   const existing = frameState.activeTemporalGpuState;
@@ -394,6 +489,7 @@ export function getTemporalGpuState(
     height,
     wantsCloudHistory,
     cloudHistoryFormat,
+    cloudHistoryDepthFormat,
     algorithm,
     upper.width,
     upper.height,
@@ -536,6 +632,7 @@ export function commitTemporalGpuSubmit(state: TemporalGpuState): boolean {
     [state.tsr.inputWidth, state.tsr.inputHeight] = state.tsr.pendingInput;
     state.tsr.pendingInput = undefined;
   }
+  if (state.tsr !== undefined) commitResurrection(state.tsr.resurrection);
   state.readIndex = state.pendingIndex;
   state.pendingIndex = undefined;
   state.valid = true;
@@ -544,7 +641,10 @@ export function commitTemporalGpuSubmit(state: TemporalGpuState): boolean {
 }
 
 function abortTemporalGpuSubmit(state: TemporalGpuState): void {
-  if (state.tsr !== undefined) state.tsr.pendingInput = undefined;
+  if (state.tsr !== undefined) {
+    state.tsr.pendingInput = undefined;
+    abortResurrection(state.tsr.resurrection);
+  }
   state.pendingIndex = undefined;
 }
 

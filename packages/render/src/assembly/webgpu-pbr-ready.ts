@@ -7,10 +7,18 @@ import type {
 } from '@forgeax/engine-rhi';
 import { ok, type RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderManifestEntry, ShaderRegistry } from '@forgeax/engine-shader';
-import { isShaderTemplateManifestRow, materialShaderSource } from '@forgeax/engine-shader';
+import {
+  isShaderTemplateManifestRow,
+  type MaterialShaderManifestVariant,
+  materialShaderSource,
+} from '@forgeax/engine-shader';
 import type { ManifestEntry, ShaderSource } from '@forgeax/engine-types';
 import { atmosphereAvailable } from '../environment/capability';
-import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
+import {
+  type GpuDrivenPbrProgram,
+  type GpuDrivenPbrPrograms,
+  standardPbrProgramKey,
+} from '../gpu-driven/pbr-program';
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import {
   buildGpuDrivenPbrInstancesBindGroupLayout,
@@ -47,7 +55,7 @@ export type AsyncCreateShaderModule = (
 ) => Promise<Result<ShaderModule, RhiError>>;
 
 interface GpuDrivenPbrReadyModules {
-  readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
+  readonly gpuDrivenPbrPrograms: GpuDrivenPbrPrograms;
 }
 
 interface GpuDrivenPbrReadyLayouts {
@@ -94,26 +102,43 @@ function createShader(
     : Promise.resolve(invokeDeviceCreateShaderModule(input.device, descriptor));
 }
 
+async function prewarmSkinnedPbrBase(input: GpuDrivenPbrModuleInput): Promise<ShaderModule | null> {
+  const source = input.pbrSkinEntry?.wgsl;
+  if (source === undefined || source.length === 0) return null;
+  const result = await runShimStep(
+    () => createShader(input, source, 'pbr-skin'),
+    'shader-compile-failed',
+    'skinned PBR shader module compiled',
+    'inspect manifest pbr-skin entry composed wgsl; check device.features',
+  );
+  if (!result.ok) throw result.error;
+  input.seedShaderModule(`module-${SKIN_MATERIAL_SHADER_ID}`, result.value, source);
+  return result.value;
+}
+
+function assembleSceneIndexProgram(
+  registry: GpuDrivenPbrModuleInput['registry'],
+  materialId: string,
+  color: boolean,
+  variant: MaterialShaderManifestVariant,
+) {
+  return assembleStandardPbrArtifact(
+    materialId,
+    registry.materialProgram(
+      materialShaderSource(variant),
+      variant.entryPoints ?? variant.receipt?.entryPoints,
+    ),
+    color,
+  );
+}
+
 export async function buildGpuDrivenPbrReadyModules(
   input: GpuDrivenPbrModuleInput,
 ): Promise<GpuDrivenPbrReadyModules> {
-  let pbrSkinModule: ShaderModule | null = null;
-  const gpuDrivenPbrPrograms = new Map<string, GpuDrivenPbrProgram>();
-  if (input.pbrSkinEntry !== undefined && input.pbrSkinEntry.wgsl.length > 0) {
-    const result = await runShimStep(
-      () => createShader(input, input.pbrSkinEntry?.wgsl ?? '', 'pbr-skin'),
-      'shader-compile-failed',
-      'skinned PBR shader module compiled',
-      'inspect manifest pbr-skin entry composed wgsl; check device.features',
-    );
-    if (!result.ok) throw result.error;
-    pbrSkinModule = result.value;
-    input.seedShaderModule(
-      `module-${SKIN_MATERIAL_SHADER_ID}`,
-      pbrSkinModule,
-      input.pbrSkinEntry.wgsl,
-    );
-  }
+  const nativeMaterialFactory =
+    input.device.caps.backendKind === 'webgpu' && input.immediateCreateShaderModule !== undefined;
+  const pbrSkinModule = nativeMaterialFactory ? null : await prewarmSkinnedPbrBase(input);
+  const programs = new Map<string, GpuDrivenPbrProgram | (() => GpuDrivenPbrProgram | undefined)>();
   if (
     input.storageBufferCapable &&
     input.device.caps.compute &&
@@ -147,15 +172,18 @@ export async function buildGpuDrivenPbrReadyModules(
         );
         if (variant === undefined || entry === undefined) continue;
         const key = standardPbrProgramKey(materialId, color);
-        const artifact = assembleStandardPbrArtifact(
-          materialId,
-          input.registry.materialProgram(
-            materialShaderSource(variant),
-            variant.entryPoints ?? variant.receipt?.entryPoints,
-          ),
-          color,
-        );
-        if (key === undefined || artifact === undefined) continue;
+        if (key === undefined) continue;
+        if (nativeMaterialFactory) {
+          // Resolve the source and ABI only if this generation needs the compatibility receipt.
+          const registry = input.registry;
+          programs.set(key, () => {
+            const artifact = assembleSceneIndexProgram(registry, materialId, color, variant);
+            return artifact === undefined ? undefined : { artifact };
+          });
+          continue;
+        }
+        const artifact = assembleSceneIndexProgram(input.registry, materialId, color, variant);
+        if (artifact === undefined) continue;
         const result = await runShimStep(
           () => createShader(input, artifact.program.sourceReference, `gpu-driven-${key}`),
           'shader-compile-failed',
@@ -163,7 +191,7 @@ export async function buildGpuDrivenPbrReadyModules(
           'inspect the selected scene-index and vertex-color variant with its slot-3 ABI',
         );
         if (!result.ok) throw result.error;
-        gpuDrivenPbrPrograms.set(key, { module: result.value, artifact });
+        programs.set(key, { module: result.value, artifact });
         input.seedShaderModule(`gpu-driven-${key}`, result.value, artifact.program.sourceReference);
         // The raster adapter resolves this same variant through the lazy
         // material label. Seed it so the first GPU-driven frame never waits on
@@ -183,7 +211,18 @@ export async function buildGpuDrivenPbrReadyModules(
     }
   }
   await prewarmLegacySkinModules(input, pbrSkinModule);
-  return { gpuDrivenPbrPrograms };
+  return {
+    gpuDrivenPbrPrograms: {
+      get(key) {
+        const entry = programs.get(key);
+        if (typeof entry !== 'function') return entry;
+        const program = entry();
+        if (program === undefined) programs.delete(key);
+        else programs.set(key, program);
+        return program;
+      },
+    },
+  };
 }
 
 async function prewarmLegacySkinModules(

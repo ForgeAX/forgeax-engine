@@ -35,6 +35,7 @@ import {
   selectMainPassMaterials,
   waterMaterialRecordContext,
 } from '../main-pass';
+import { buildFoldDispatchPlan } from '../mesh-ssbo';
 import {
   CaptureScenePasses,
   installScenePasses,
@@ -952,7 +953,8 @@ it('retains separate live fold buffers across cleanup and retires absent graph w
     prepareUnbatched: () => [],
     viewDraws: [],
     prepareGeometry: (mesh) => mesh,
-    fold: (dispatch, sources) => computeFoldBuckets(f.world, {} as never, dispatch, sources),
+    fold: (dispatch, read, materials) =>
+      computeFoldBuckets(f.world, {} as never, dispatch, read, materials),
     lod: (rows) => rows,
     world: f.world,
     camera: undefined,
@@ -1000,6 +1002,30 @@ it('retains separate live fold buffers across cleanup and retires absent graph w
     frameState,
   } as never;
   const work = prepared.finish(plan);
+  const interleavedRows = [0, 2, 1, 3].map((index) => {
+    const row = plan.validatedOrdered.at(index);
+    assert(row);
+    return row;
+  });
+  const interleaved = prepared.finish({
+    ...plan,
+    validatedOrdered: interleavedRows,
+    foldDispatchPlan: buildFoldDispatchPlan(
+      prepared.buckets,
+      new Map(interleavedRows.map((row, position) => [row.renderableIndex, position])),
+    ),
+  });
+  for (const request of [first, second]) {
+    const projected = interleaved.get(request);
+    const original = work.get(request);
+    assert(projected?.foldDispatchPlan);
+    assert(original);
+    const draw = projected.foldDispatchPlan.headBuckets.get(0);
+    expect(draw?.memberPositions).toEqual([0, 1]);
+    expect(
+      draw?.memberPositions.map((position) => projected.validatedOrdered.at(position)),
+    ).toEqual([...original.validatedOrdered]);
+  }
   const resolve = (request: ScenePassRequest) => {
     const draws = work.get(request);
     assert(draws);
@@ -1009,6 +1035,11 @@ it('retains separate live fold buffers across cleanup and retires absent graph w
     assert(head);
     const row = draws.validatedOrdered.at(head[0]);
     assert(row);
+    expect(head[1].memberPositions).toEqual([0, 1]);
+    expect(head[1].memberPositions.map((position) => draws.validatedOrdered.at(position))).toEqual([
+      draws.validatedOrdered.at(0),
+      draws.validatedOrdered.at(1),
+    ]);
     return resolveFoldInstanceBuffer(context, head[1], row.renderableIndex);
   };
   try {
@@ -1362,7 +1393,9 @@ it('refreshes Sprite fold admission on parameter-only adoption with retained Pas
       ...resource.snapshot,
       immutableValues: true,
     });
-  const fold = vi.fn((dispatch, rows) => computeFoldBuckets(f.world, {} as never, dispatch, rows));
+  const fold = vi.fn((dispatch, read, materials) =>
+    computeFoldBuckets(f.world, {} as never, dispatch, read, materials),
+  );
   const inputs = {
     phases: new ViewDrawPhases(),
     scene: {

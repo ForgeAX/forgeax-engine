@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { maxOf, minOf } from '../arrays';
 import { cos, sin } from '../dmath';
 import type { ModelingError } from '../errors';
 import { cross, dot, length, normalize, sub, type Tuple3 } from '../geom';
@@ -25,6 +26,11 @@ export interface SlimResult {
 }
 
 const MAX_ITERATIONS = 24;
+
+export interface SlimOptions {
+  readonly fixed?: Uint8Array;
+  readonly iterations?: number;
+}
 /** Relative energy decrease below which SLIM stops. */
 const CONVERGED = 1e-5;
 /** Fraction of the largest flip-free step a line search starts from. */
@@ -143,7 +149,13 @@ export function slimEnergy(island: SlimIsland, uv: Float64Array): number {
 }
 
 /** Largest step along `dir` before some triangle's Jacobian determinant reaches zero. */
-function flipFreeStep(rest: Rest, tris: readonly number[], x: Float64Array, dir: Float64Array) {
+/** @internal */
+export function flipFreeStep(
+  rest: Rest,
+  tris: readonly number[],
+  x: Float64Array,
+  dir: Float64Array,
+) {
   let step = Infinity;
   for (let t = 0; t < rest.area.length; t++) {
     const [a, b, c, d] = jacobian(rest, tris, x, t);
@@ -299,20 +311,28 @@ function weight(s: number): number {
  * that keeps every triangle positive. The start must be flip-free; a folding start of
  * a disk island restarts from its Tutte embedding. Undefined when neither applies or
  * the island has a degenerate triangle.
+ *
+ * With `options.fixed` (one byte per element, 1 = held) the held elements keep their start
+ * positions and only the others move; the layout is then used as given (no rescale to the 3D
+ * area, no Tutte restart: a folded start is undefined), so the caller scales it first.
+ * `options.iterations` lowers the iteration cap.
  */
 export function slim(
   island: SlimIsland,
   start: Float64Array,
   work: WorkMeter,
+  options: SlimOptions = {},
 ): Result<SlimResult | undefined, ModelingError> {
   const rest = restOf(island);
   if (rest === undefined) return ok(undefined);
+  const { fixed } = options;
+  const cap = Math.min(MAX_ITERATIONS, options.iterations ?? MAX_ITERATIONS);
   const tris = island.triangles;
   const n = island.points.length;
   let x: Float64Array = start.slice();
   let usedTutte = false;
   if (energyOf(rest, tris, x) === Infinity) {
-    if (island.disk === undefined) return ok(undefined);
+    if (island.disk === undefined || fixed !== undefined) return ok(undefined);
     const embedded = tutte(island, island.disk, rest, work);
     if (!embedded.ok) return embedded;
     if (embedded.value === undefined) return ok(undefined);
@@ -324,14 +344,14 @@ export function slim(
   for (const a of rest.area) area3d += a;
   const k = areaScale(rest, tris, x);
   if (k === undefined) return ok(undefined);
-  for (let i = 0; i < x.length; i++) x[i] = (x[i] as number) * k;
-  const pin = tris[0] as number;
+  if (fixed === undefined) for (let i = 0; i < x.length; i++) x[i] = (x[i] as number) * k;
+  const pin = fixed === undefined ? (tris[0] as number) : -1;
   const column = new Int32Array(n).fill(-1);
   let free = 0;
-  for (let e = 0; e < n; e++) if (e !== pin) column[e] = free++;
+  for (let e = 0; e < n; e++) if (e !== pin && fixed?.[e] !== 1) column[e] = free++;
   let energy = energyOf(rest, tris, x);
   let iterations = 0;
-  while (iterations < MAX_ITERATIONS) {
+  while (free > 0 && iterations < cap) {
     if (!work.spend(rest.area.length * 48)) return err(work.failure as ModelingError);
     iterations++;
     const system = new TripletList(4 * rest.area.length, 2 * free);
@@ -405,6 +425,9 @@ export function slim(
     energy = next.energy;
     if (gain < CONVERGED) break;
   }
+  if (fixed !== undefined) {
+    return ok({ uv: x, iterations, energy: energy / area3d, tutte: false });
+  }
   const final = areaScale(rest, tris, x);
   if (final === undefined) return ok(undefined);
   const uv = x.map((v) => v * final);
@@ -437,10 +460,10 @@ export function overlapPairs(triangles: readonly number[], uv: Float64Array): nu
     const xs = ccw.map((q) => q[0] as number);
     const ys = ccw.map((q) => q[1] as number);
     boxes.push({
-      lo: Math.min(...xs),
-      hi: Math.max(...xs),
-      ylo: Math.min(...ys),
-      yhi: Math.max(...ys),
+      lo: minOf(xs),
+      hi: maxOf(xs),
+      ylo: minOf(ys),
+      yhi: maxOf(ys),
       p: ccw,
     });
   }

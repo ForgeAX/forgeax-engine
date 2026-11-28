@@ -17,7 +17,7 @@ test('software callback cadence does not provision a second browser or claim Eng
   }
   assert.ok(
     workflow.jobs['metrics-validate-browser'].steps.some(
-      (step) => step.uses === './.github/actions/install-playwright-chrome-beta',
+      (step) => step.uses === './.github/actions/install-playwright-chrome',
     ),
   );
   assert.ok(

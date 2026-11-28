@@ -727,7 +727,7 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
   let input = SurfaceInput(
     positionOS, standardPositionWS, geometricNormal, vertexNormal, surfaceTangent, viewDirectionWS,
     surfaceUvs[0], surfaceUvs[1], surfaceUvs[2], surfaceUvs[3], surfaceUvs[4], surfaceUvs[5], surfaceUvs[6], surfaceUvs[7], materialVertexColor(in), frontFacing, vec4<f32>(0.0), vec4<f32>(0.0),
-    standardObjectToWorld(in), view.fogHeightOpacity.w,
+    standardObjectToWorld(in), view.fogHeightOpacity.w, view.surfaceMipBias.x,
   );
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
 #if TRANSMISSION_AVAILABLE == false

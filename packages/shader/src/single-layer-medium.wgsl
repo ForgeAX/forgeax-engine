@@ -516,18 +516,13 @@ fn validateSurfaceBackgroundEndpoint(
   return sample;
 }
 
-fn sampleNearestCoverage(pixelPosition: vec4<f32>, rawDepth: f32) -> f32 {
+fn sampleNearestLayer(pixelPosition: vec4<f32>, rawDepth: f32) -> vec2<f32> {
   let dimensions = textureDimensions(surfaceNearestLayerTexture);
   let pixel = surfacePixel(pixelPosition, dimensions);
   let nearestDepth = textureLoad(surfaceNearestDepthTexture, pixel, 0).x;
-  let nearestCoverage = textureSampleLevel(
-    surfaceNearestLayerTexture,
-    surfaceNearestLayerSampler,
-    surfaceUv(pixel, dimensions),
-    0.0,
-  ).a;
-  let nearestValid = nearestCoverage > 0.0 && nearestDepth > 0.0 && nearestDepth > rawDepth - nearestDepth * SURFACE_NEAREST_DEPTH_EPSILON;
-  return select(0.0, nearestCoverage, nearestValid);
+  let layer = textureLoad(surfaceNearestLayerTexture, pixel, 0);
+  let valid = layer.a > 0.0 && nearestDepth > 0.0 && nearestDepth > rawDepth - nearestDepth * SURFACE_NEAREST_DEPTH_EPSILON;
+  return vec2<f32>(layer.x, select(0.0, layer.a, valid));
 }
 
 fn sampleSkyReflection(normal: vec3<f32>, viewDirection: vec3<f32>, roughness: f32, worldPosition: vec3<f32>) -> vec3<f32> {
@@ -648,13 +643,6 @@ fn mediumSingleScatterIntegral(sigmaS: f32, sigmaT: f32, distance: f32) -> f32 {
   return safeScattering * mediumOneMinusExpNeg(extinction * safeDistance) / extinction;
 }
 
-fn composeNearestLayer(surface: SingleLayerMediumSurfaceData) -> vec4<f32> {
-  // The first pass is an occlusion/coverage fact for the color pass. It must
-  // not publish a diagnostic or constant water color that can replace the
-  // opaque riverbed backdrop.
-  return vec4<f32>(0.0, 0.0, 0.0, clamp(surface.coverage, 0.0, 1.0));
-}
-
 fn clipDepth(input: VsOut) -> f32 {
   // Fragment @builtin(position).z is already framebuffer/window depth in the
   // WebGPU depth space used by the raw-depth and nearest-layer producers.
@@ -667,16 +655,10 @@ fn mediumColorVisible(input: VsOut, surface: SingleLayerMediumSurfaceData, frame
   }
   let rawDepth = sampleRawDepth(input.clipPosition);
   let rawDepthForNearest = select(0.0, rawDepth, rawDepth > 0.0 && rawDepth <= 1.0);
-  let nearestCoverage = sampleNearestCoverage(input.clipPosition, rawDepthForNearest);
-  let nearestDepth = textureLoad(
-    surfaceNearestDepthTexture,
-    surfacePixel(input.clipPosition, textureDimensions(surfaceNearestDepthTexture)),
-    0,
-  ).x;
-  // The nearest pass has already admitted the closest water surface. Reject
-  // farther layers while keeping the opaque background as the transmission
-  // source for the admitted layer.
-  return !(nearestCoverage > 0.0 && clipDepth(input) < nearestDepth - nearestDepth * SURFACE_NEAREST_DEPTH_EPSILON);
+  let nearestLayer = sampleNearestLayer(input.clipPosition, rawDepthForNearest);
+  // Compare center depths from both raster passes. The paired MSAA depth is
+  // a hardware sample depth and is only used for coverage/opaque endpoints.
+  return !(nearestLayer.y > 0.0 && clipDepth(input) < nearestLayer.x * (1.0 - SURFACE_NEAREST_DEPTH_EPSILON));
 }
 
 fn composeColor(input: SingleLayerMediumSurfaceInput, surface: SingleLayerMediumSurfaceData, frame: SurfaceFrameFacts, frontFacing: bool, pixelPosition: vec4<f32>, probeIdentity: vec2<u32>) -> vec4<f32> {
@@ -824,7 +806,7 @@ fn fs_nearest_layer(input: VsOut, @builtin(front_facing) frontFacing: bool) -> @
   if (surface.coverage <= 0.0) {
     discard;
   }
-  return composeNearestLayer(surface);
+  return vec4<f32>(clipDepth(input), 0.0, 0.0, clamp(surface.coverage, 0.0, 1.0));
 }
 
 @fragment

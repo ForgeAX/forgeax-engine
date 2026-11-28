@@ -1,0 +1,76 @@
+{
+  "name": "@forgeax/engine-render-kernel",
+  "version": "0.0.0",
+  "description": "Switchable TypeScript and Rust (WASM/native) rendering kernel with binary SceneDelta, fixed 4-BGL PSO table, FrameRecorder bytecode, transient RT pooling, and RHI/RHI-Debug execution.",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./hot-path": {
+      "types": "./dist/hot-path.d.ts",
+      "import": "./dist/hot-path.mjs"
+    },
+    "./native": {
+      "types": "./dist/desktop/index.d.ts",
+      "import": "./dist/desktop/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/__tests__/**",
+    "wasm",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/ensure-wasm.mjs && tsup",
+    "build:wasm": "bash ./build-wasm.sh",
+    "build:native": "node scripts/build-native-addon.mjs",
+    "test": "vitest run",
+    "test:rust": "cargo test --manifest-path rust/Cargo.toml"
+  },
+  "dependencies": {
+    "@forgeax/engine-rhi": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@forgeax/engine-dawn-node": "workspace:*",
+    "@forgeax/engine-rhi-debug": "workspace:*",
+    "@forgeax/engine-rhi-null": "workspace:*",
+    "@forgeax/engine-rhi-webgpu": "workspace:*",
+    "@webgpu/types": "^0.1.74"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "library package, no runtime canvas; fps reported by hello-triangle / hello-cube apps"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "render-kernel benchmarks run through the desktop native and render bench scripts"
+      },
+      "gate": {
+        "enabled": false,
+        "reason": "no package-level binary gate; GPU rendering verified by dawn and browser suites"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "production library package, not a spike"
+      }
+    }
+  }
+}

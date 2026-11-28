@@ -15,6 +15,8 @@ license = "Apache-2.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+forgeax-render-kernel-core = { path = "../render-kernel/rust/crates/kernel-core" }
+forgeax-render-kernel-wgpu = { path = "../render-kernel/rust/crates/kernel-wgpu" }
 wgpu = { version = "=30.0.1", path = "../../third_party/wgpu/wgpu", default-features = false, features = ["webgl", "wgsl", "serde"] }
 naga = { version = "=30.0.1", path = "../../third_party/wgpu/naga", features = ["wgsl-in", "wgsl-out", "serialize"] }
 # Disable GLSL inputs and test-shader defaults in the merged WASM payload.

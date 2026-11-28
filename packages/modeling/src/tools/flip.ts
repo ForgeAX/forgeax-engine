@@ -85,6 +85,19 @@ function huntLab(r: number, g: number, b: number): [number, number, number] {
   return [L, 0.01 * L * 500 * (fx - fy), 0.01 * L * 200 * (fy - fz)];
 }
 
+function huntLabInto(out: Float64Array, at: number, r: number, g: number, b: number): void {
+  const x = RGB_TO_XYZ[0] * r + RGB_TO_XYZ[1] * g + RGB_TO_XYZ[2] * b;
+  const y = RGB_TO_XYZ[3] * r + RGB_TO_XYZ[4] * g + RGB_TO_XYZ[5] * b;
+  const z = RGB_TO_XYZ[6] * r + RGB_TO_XYZ[7] * g + RGB_TO_XYZ[8] * b;
+  const fx = labF(x / WHITE[0]);
+  const fy = labF(y / WHITE[1]);
+  const fz = labF(z / WHITE[2]);
+  const L = 116 * fy - 16;
+  out[at] = L;
+  out[at + 1] = 0.01 * L * 500 * (fx - fy);
+  out[at + 2] = 0.01 * L * 200 * (fy - fz);
+}
+
 const hyab = (p: ArrayLike<number>, q: ArrayLike<number>) =>
   Math.abs((p[0] as number) - (q[0] as number)) +
   Math.hypot((p[1] as number) - (q[1] as number), (p[2] as number) - (q[2] as number));
@@ -100,26 +113,33 @@ function convolve(
   const rx = (kx.length - 1) / 2;
   const ry = (ky.length - 1) / 2;
   const tmp = new Float64Array(width * height);
+  const inner0 = Math.min(rx, width);
+  const inner1 = Math.max(inner0, width - rx);
   for (let y = 0; y < height; y++) {
     const row = y * width;
     for (let x = 0; x < width; x++) {
       let acc = 0;
-      for (let i = -rx; i <= rx; i++) {
-        const xx = x + i < 0 ? 0 : x + i >= width ? width - 1 : x + i;
-        acc += (kx[i + rx] as number) * (src[row + xx] as number);
+      if (x >= inner0 && x < inner1) {
+        const base = row + x - rx;
+        for (let i = 0; i < kx.length; i++) acc += (kx[i] as number) * (src[base + i] as number);
+      } else {
+        for (let i = -rx; i <= rx; i++) {
+          const xx = x + i < 0 ? 0 : x + i >= width ? width - 1 : x + i;
+          acc += (kx[i + rx] as number) * (src[row + xx] as number);
+        }
       }
       tmp[row + x] = acc;
     }
   }
   const out = new Float64Array(width * height);
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let acc = 0;
-      for (let i = -ry; i <= ry; i++) {
-        const yy = y + i < 0 ? 0 : y + i >= height ? height - 1 : y + i;
-        acc += (ky[i + ry] as number) * (tmp[yy * width + x] as number);
-      }
-      out[y * width + x] = acc;
+    const dst = y * width;
+    for (let i = -ry; i <= ry; i++) {
+      const yy = y + i < 0 ? 0 : y + i >= height ? height - 1 : y + i;
+      const k = ky[i + ry] as number;
+      const from = yy * width;
+      for (let x = 0; x < width; x++)
+        out[dst + x] = (out[dst + x] as number) + k * (tmp[from + x] as number);
     }
   }
   return out;
@@ -232,14 +252,20 @@ export function flip(
       return acc;
     });
     const lab = new Float64Array(n * 3);
+    const o0 = out[0] as Float64Array;
+    const o1 = out[1] as Float64Array;
+    const o2 = out[2] as Float64Array;
     for (let i = 0; i < n; i++) {
-      const yn = ((out[0]?.[i] as number) + 16) / 116;
-      const xn = (out[1]?.[i] as number) / 500 + yn;
-      const zn = yn - (out[2]?.[i] as number) / 200;
-      const rgb = mul3(XYZ_TO_RGB, xn * WHITE[0], yn * WHITE[1], zn * WHITE[2]).map((v) =>
-        Math.min(1, Math.max(0, v)),
-      ) as [number, number, number];
-      lab.set(huntLab(...rgb), i * 3);
+      const yn = ((o0[i] as number) + 16) / 116;
+      const xn = (o1[i] as number) / 500 + yn;
+      const zn = yn - (o2[i] as number) / 200;
+      const x = xn * WHITE[0];
+      const y = yn * WHITE[1];
+      const z = zn * WHITE[2];
+      const r = Math.min(1, Math.max(0, XYZ_TO_RGB[0] * x + XYZ_TO_RGB[1] * y + XYZ_TO_RGB[2] * z));
+      const g = Math.min(1, Math.max(0, XYZ_TO_RGB[3] * x + XYZ_TO_RGB[4] * y + XYZ_TO_RGB[5] * z));
+      const b = Math.min(1, Math.max(0, XYZ_TO_RGB[6] * x + XYZ_TO_RGB[7] * y + XYZ_TO_RGB[8] * z));
+      huntLabInto(lab, i * 3, r, g, b);
     }
     return { lab, luma: planes[0].map((v) => (v + 16) / 116) };
   });
@@ -263,7 +289,14 @@ export function flip(
   const map = new Float32Array(n);
   let sum = 0;
   for (let i = 0; i < n; i++) {
-    const dc = hyab(ref.lab.subarray(i * 3, i * 3 + 3), tst.lab.subarray(i * 3, i * 3 + 3)) ** QC;
+    const j = i * 3;
+    const dc =
+      (Math.abs((ref.lab[j] as number) - (tst.lab[j] as number)) +
+        Math.hypot(
+          (ref.lab[j + 1] as number) - (tst.lab[j + 1] as number),
+          (ref.lab[j + 2] as number) - (tst.lab[j + 2] as number),
+        )) **
+      QC;
     const color =
       dc < PC * cmax
         ? (PT / (PC * cmax)) * dc

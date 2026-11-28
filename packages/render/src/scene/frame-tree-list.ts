@@ -1,5 +1,5 @@
 import { FrameListBase } from './frame-list';
-import { changes, type Node, nodes, put, remove } from './frame-tree';
+import { changes, type Node, nodes, put, remove, visitOrderedValues } from './frame-tree';
 
 /** Value order and execution weight share the same immutable root. */
 export class TreeFrame<T> extends FrameListBase<T> {
@@ -51,6 +51,18 @@ export class TreeFrame<T> extends FrameListBase<T> {
   }
   /** Immutable roots are read many times per frame; flatten each at most once. */
   #values: readonly T[] | undefined;
+  /** Synchronous consumers can walk the captured tree without materializing a roster. */
+  override forEach(consume: (value: T, index: number) => void): void {
+    const values = this.#values;
+    if (values !== undefined) {
+      values.forEach(consume);
+      return;
+    }
+    let index = 0;
+    visitOrderedValues(this.root, (value) => {
+      consume(value, index++);
+    });
+  }
   [Symbol.iterator](): IterableIterator<T> {
     this.#values ??= Array.from(nodes(this.root), (node) => node.value);
     return this.#values[Symbol.iterator]();

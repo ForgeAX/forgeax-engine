@@ -5,6 +5,8 @@ import { createSceneDataCatalog } from '../../temporal/scene-data-catalog';
 import { createAnalyticCloudFeature, encodeProgram, encodeSampled } from '../analytic-feature';
 import { CLOUD_REFERENCE_TEXTURE_ROLES } from '../contracts';
 import type { ExtractedSampledCloudLayer } from '../extract';
+import { createMode0CloudFeature } from '../reconstruction/feature';
+import { CLOUD_MODE0_BLUE_NOISE } from '../tracing/blue-noise';
 
 const layer: ExtractedSampledCloudLayer = {
   status: 'sampled',
@@ -51,6 +53,8 @@ function fixture(getFeatureShaderSource: RenderFeaturePlanContext['getFeatureSha
         targets: [
           { name: 'motion-output', kind: 'color', format: 'rgba16float', sampleCount: 1 },
           { name: 'depth', kind: 'depth', format: 'depth32float-stencil8', sampleCount: 1 },
+          { name: 'cloud-shadow-raw', kind: 'color', format: 'rg11b10ufloat', sampleCount: 1 },
+          { name: 'cloud-shadow', kind: 'color', format: 'rg11b10ufloat', sampleCount: 1 },
         ],
         sceneData: createSceneDataCatalog({
           featureIdentity: feature.identity,
@@ -144,7 +148,13 @@ it('produces BSM before opaque without reading scene targets and keeps it for in
     values: { input: false, depthFallback: true },
   });
   expect(bindings).not.toHaveProperty('logicalTargets');
+  expect(work?.resources.find((resource) => resource.name === 'cloud-bsm-pipeline')).toMatchObject({
+    program: { colorFormats: ['rg11b10ufloat'] },
+  });
   const filter = result.value.work?.[1];
+  expect(filter?.resources.find((resource) => resource.kind === 'graphics-program')).toMatchObject({
+    program: { colorFormats: ['rg11b10ufloat'] },
+  });
   expect(filter?.passes[0]).toMatchObject({
     name: 'cloud-layer-shadow-filter',
     sampledTargets: ['cloud-shadow-raw'],
@@ -189,6 +199,89 @@ it.each([
   expect(plan.work.flatMap((work) => work.passes.map((pass) => pass.name))).not.toContain(
     'cloud-layer-shadow',
   );
+});
+
+it.each([
+  'sampled',
+  'program',
+] as const)('switches the %s UE trace between a stable blue noise slice and midpoint sampling', (status) => {
+  const { context: base } = fixture(() => '// cooked shader');
+  const feature = createMode0CloudFeature();
+  const cloud =
+    status === 'sampled'
+      ? layer
+      : {
+          ...layer,
+          status: 'program' as const,
+          rendererSource: '// cooked shader',
+          materialParameters: new Float32Array(4),
+        };
+  for (const [frameNumber, viewBlueNoise] of [
+    [1, true],
+    [2, true],
+    [6, false],
+    [8, false],
+    [31, true],
+  ] as const) {
+    const context: RenderFeaturePlanContext = {
+      ...base,
+      frame: { frameNumber },
+      views: base.views.map((view) => ({
+        ...view,
+        frame: { frameNumber, width: 1280, height: 720 },
+        targets: [
+          ...view.targets,
+          {
+            name: 'cloud-mode0-trace-depth',
+            kind: 'color',
+            format: 'rgba16float',
+            sampleCount: 1,
+          },
+        ],
+      })),
+    };
+    const frame = {
+      layers: { camera: { ...cloud, viewBlueNoise } },
+      inspection: {},
+      views: [{ identity: 'camera', render: true }],
+    };
+    const plan = feature.plan(frame, context).unwrap();
+    const reconstruction = plan.work
+      .flatMap((work) => work.resources)
+      .find((resource) => resource.name === 'cloud-layer-transport');
+    if (reconstruction?.kind !== 'fullscreen-program' || reconstruction.params === undefined)
+      throw new Error('Missing reconstruction params');
+    const historyValid = new Float32Array(reconstruction.params.defaultValue.buffer)[20];
+    expect(historyValid).toBe(frameNumber === 2 || frameNumber === 8 ? 1 : 0);
+    const trace = plan.work.find((work) =>
+      work.passes.some((pass) => pass.name === 'cloud-sampled-trace'),
+    );
+    const program = trace?.resources.find((resource) => resource.kind === 'fullscreen-program');
+    expect(program).toMatchObject({
+      kind: 'fullscreen-program',
+      fragmentEntryPoint: 'fs_trace_mode_zero_ue',
+    });
+    if (program?.kind !== 'fullscreen-program' || program.params === undefined)
+      throw new Error('Missing trace params');
+    expect(program.reads).toContain(CLOUD_MODE0_BLUE_NOISE);
+    expect(
+      trace?.resources.find((resource) => resource.name === 'analytic-cloud-inputs'),
+    ).toMatchObject({
+      values: { additionalTextures: expect.arrayContaining([CLOUD_MODE0_BLUE_NOISE]) },
+    });
+    const params = new Float32Array(program.params.defaultValue.buffer);
+    expect(params[status === 'sampled' ? 27 : 59]).toBe(viewBlueNoise ? 1 : -1);
+    feature.onFrameSubmitted?.(frame, {
+      works: [
+        {
+          scope: { view: 'camera' },
+          passes: ['cloud-sampled-trace', 'cloud-layer-transport', 'cloud-layer-resolve'].map(
+            (name) => ({ name, graphics: { draws: [{ kind: 'draw' }] } }),
+          ),
+        },
+      ],
+    });
+  }
 });
 
 it('packs explicit generic extinction adoption and the authored inheritance sentinel', () => {

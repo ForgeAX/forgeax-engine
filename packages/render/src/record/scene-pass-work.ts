@@ -6,6 +6,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import type { PassKind, PassSelector } from '@forgeax/engine-types';
 import { isTemporalAntialias } from '../components/camera';
 import type { MeshGpuHandles } from '../device/gpu-residency';
+import type { MeshChanges } from '../device/mesh-changes';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { MaterialResource } from '../material-resource';
@@ -48,7 +49,7 @@ import type {
   NativeMeshRowSpan,
   ViewDrawPhases,
 } from './direct-draw-phase';
-import { JoinedDrawRows, visitSubmittedDrawRows } from './draw-row-pages';
+import { drawSourceAt, JoinedDrawRows, visitDrawPositions } from './draw-row-pages';
 import type { buildDispatchPlan } from './fold-buckets';
 import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import { createMainPassMaterialSelectionOwner } from './main-pass';
@@ -59,12 +60,7 @@ import {
   type MaterialRecordMode,
   materialMatchesPass,
 } from './material-pass-selection';
-import {
-  type FoldBucket,
-  type FoldDispatchPlan,
-  type FoldRenderableLike,
-  foldRenderableSnapshot,
-} from './mesh-ssbo';
+import type { FoldBucket, FoldDispatchPlan, FoldDraw, FoldRowReader } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
 
 /** One actual graph node shares this request between preparation and recording. */
@@ -346,6 +342,31 @@ class PassPositions extends FrameListBase<number> {
     return this.sparse === undefined ? this.first + local : (this.sparse[local] as number);
   }
 
+  /** Resolve a submitted position into this pass's contiguous or interleaved rows. */
+  private localPosition(position: number): number | undefined {
+    const end = this.first + this.length;
+    if (position < this.first) return undefined;
+    const sparse = this.sparse;
+    if (sparse === undefined) return position < end ? position - this.first : undefined;
+    let low = 0;
+    let high = sparse.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if ((sparse[middle] as number) < position) low = middle + 1;
+      else high = middle;
+    }
+    return sparse[low] === position ? low : undefined;
+  }
+
+  projectFold(draw: FoldDraw): FoldDraw {
+    const memberPositions: number[] = [];
+    for (const position of draw.memberPositions) {
+      const local = this.localPosition(position);
+      if (local !== undefined) memberPositions.push(local);
+    }
+    return { ...draw, memberPositions };
+  }
+
   at(index: number): number | undefined {
     index = Math.trunc(index) || 0;
     if (index < 0) index += this.length;
@@ -371,8 +392,7 @@ function indexSubmittedPositions(
 ): void {
   let current = ranges[0];
   let cursor = 0;
-  visitSubmittedDrawRows(submitted, (row, position) => {
-    const index = row.renderableIndex;
+  visitDrawPositions(submitted, (index, position) => {
     if (!Number.isInteger(index) || index < 0 || index >= sourceLength) return;
     if (current === undefined || index < current.start || index >= current.end) {
       const next = ranges[cursor + 1];
@@ -467,7 +487,8 @@ export interface ScenePassInputs {
   ) => MeshGpuHandles;
   readonly fold: (
     dispatch: DispatchList,
-    rows: () => readonly FoldRenderableLike[],
+    read: FoldRowReader,
+    materials: MaterialFrame,
   ) => readonly FoldBucket[];
   readonly lod:
     | 'cpu'
@@ -482,17 +503,10 @@ export interface ScenePassInputs {
     | undefined;
   readonly cameraVisible?: ((source: RenderableSnapshot) => boolean) | undefined;
   readonly cameraAdmission?: CameraAdmission | undefined;
-  /** Resident geometry versions validation reads; see {@link DirectDrawInput.geometry}. */
-  readonly geometry?: readonly unknown[] | undefined;
+  /** Physical Mesh owner used to validate unbatched and view-owned geometry. */
+  readonly meshResidency?: MeshChanges | undefined;
   /** The retained phases of the view this preparation records. */
   readonly phases: ViewDrawPhases;
-}
-
-/** The facts a fold reads from one row. */
-function foldSource(row: ValidatedRenderable, materials: MaterialFrame): FoldRenderableLike {
-  const accepted = materials.get(row.source.material);
-  if (accepted === undefined) throw new Error('Draw folding requires its accepted material');
-  return foldRenderableSnapshot(row.source, accepted.snapshot);
 }
 
 /** Camera facts CPU LOD selection reads. */
@@ -562,18 +576,6 @@ function transmissionSlice(
     boundary++;
   }
   return before ? output.dispatch.slice(0, boundary) : output.dispatch.slice(boundary);
-}
-
-/** Fold sources addressed by combined `renderableIndex`, without copying earlier requests. */
-function foldRows(
-  rows: DrawRows,
-  offset: number,
-  materials: MaterialFrame,
-): readonly FoldRenderableLike[] {
-  const sources: FoldRenderableLike[] = [];
-  sources.length = offset;
-  for (const row of rows) sources.push(foldSource(row, materials));
-  return sources;
 }
 
 function scenePassVisibility(
@@ -658,7 +660,7 @@ function queueScenePass(
     admission,
     lod: typeof lod === 'function' ? (rows) => lod(rows, request) : lod === 'cpu' ? eye : undefined,
     lodCamera: lodCameraTokens(eye),
-    geometry: inputs.geometry,
+    meshResidency: inputs.meshResidency,
     entries: { selector: request.selector, temporal: request.passKind === 'temporal' },
     sort: {
       sourceOrder:
@@ -718,7 +720,11 @@ function projectScenePassWork(
       : output.dispatch;
     const buckets =
       folding && output.rows.length > 0
-        ? inputs.fold(dispatch, () => foldRows(output.rows, offset, materials))
+        ? inputs.fold(
+            dispatch,
+            (index) => (index < offset ? undefined : drawSourceAt(output.rows, index - offset)),
+            materials,
+          )
         : [];
     work = { materials, output, dispatch, buckets };
   }
@@ -956,22 +962,24 @@ function createScenePassPreparation(
 function projectPassFoldDispatch(
   fold: FoldDispatchPlan | null,
   positions: PassPositions,
+  entirePlan: boolean,
 ): FoldDispatchPlan | null {
-  let headBuckets: Map<number, FoldBucket> | undefined;
+  if (fold === null || fold.headBuckets.size === 0) return null;
+  if (entirePlan) return fold;
+  let headBuckets: Map<number, FoldDraw> | undefined;
   let skipIndices: Set<number> | undefined;
-  if (fold != null)
-    for (let local = 0; local < positions.length; local++) {
-      const global = positions.position(local);
-      const head = fold.headBuckets.get(global);
-      if (head !== undefined) {
-        headBuckets ??= new Map();
-        headBuckets.set(local, head);
-      }
-      if (fold.skipIndices.has(global)) {
-        skipIndices ??= new Set();
-        skipIndices.add(local);
-      }
+  for (let local = 0; local < positions.length; local++) {
+    const global = positions.position(local);
+    const head = fold.headBuckets.get(global);
+    if (head !== undefined) {
+      headBuckets ??= new Map();
+      headBuckets.set(local, positions.projectFold(head));
     }
+    if (fold.skipIndices.has(global)) {
+      skipIndices ??= new Set();
+      skipIndices.add(local);
+    }
+  }
   return headBuckets === undefined
     ? null
     : {
@@ -1005,7 +1013,7 @@ function finishScenePassRequest(
       ? submitted.exactRange(positions.first, positions.length)
       : undefined;
   const validatedOrdered = phaseRows ?? positions.select(submitted);
-  const foldDispatchPlan = projectPassFoldDispatch(plan.foldDispatchPlan, positions);
+  const foldDispatchPlan = projectPassFoldDispatch(plan.foldDispatchPlan, positions, entirePlan);
   const roster = {
     validatedOrdered,
     dispatch: candidate.dispatch,

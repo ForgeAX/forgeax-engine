@@ -7,7 +7,7 @@ import { build, transform } from 'esbuild';
 // Native layout regression, not a GPU or full workspace substitute. Exercise
 // normal Scene placement with Engine-like canvas size observation and restore.
 const browser = await chromium.launch({
-  executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE ?? '/opt/google/chrome-beta/chrome',
+  ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
   headless: true, args: ['--disable-gpu'],
   chromiumSandbox: true,
 });

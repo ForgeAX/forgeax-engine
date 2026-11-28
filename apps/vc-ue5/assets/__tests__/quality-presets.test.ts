@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { BSM_REFERENCE_PRESET } from '../bsm-reference-preset.ts';
 import { validateCloudEdit } from '../cloud-controls.ts';
 import { QUALITY_PRESETS, QUALITY_PRESET_IDS, QUALITY_PARAMETER_KEYS, readQualityPreset, matchQualityPreset } from '../quality-presets.ts';
 import { WEATHER_PRESETS, WEATHER_PRESET_IDS, WEATHER_PARAMETER_KEYS, weatherAtmosphereParameters } from '../weather-presets.ts';
@@ -26,20 +27,20 @@ test('quality tiers contain only valid rendering settings without changing the s
 
 test('quality budgets match the low, medium and high configurations agreed with the user', () => {
   const fields = ['viewSampleCountScale', 'stopTransmittance', 'shadowMode', 'shadowResolution',
-    'shadowMapSamples', 'multiScatteringOctaves', 'atmosphereShadowEnabled', 'atmosphereTransmittanceMode'] as const;
+    'shadowMapSamples', 'multiScatteringOctaves', 'atmosphereShadowEnabled', 'atmosphereTransmittanceMode',
+    'shadowSamples', 'shadowMapSpatialPasses', 'entryLimitMeters', 'traceLimitMeters'] as const;
   const budgets = QUALITY_PRESET_IDS.map(id => fields.map(key => QUALITY_PRESETS[id].parameters[key]));
   assert.deepEqual(budgets, [
-    [0.5, 0.02, 1, 64, 16, 1, false, 0],
-    [1, 0.01, 1, 128, 128, 2, true, 0],
-    [2, 0.005, 0, 256, 64, 2, true, 1],
+    [1, 0.02, 1, 64, 16, 1, false, 0, 8, 1, 50_000, 50_000],
+    [1, 0.01, 1, 128, 32, 2, true, 0, 8, 1, 50_000, 50_000],
+    [1, 0.005, 0, 256, 64, 2, true, 1, 8, 2, 50_000, 50_000],
   ]);
-  assert.equal(QUALITY_PRESETS['quality-high'].parameters.shadowSamples, 12);
   assert.equal(QUALITY_PRESETS['quality-high'].parameters.shadowDistanceMeters, 15000);
 });
 
 test('all nine quality/weather combinations commute and never overwrite the other axis', () => {
   assert.deepEqual(QUALITY_PARAMETER_KEYS.filter(key => (WEATHER_PARAMETER_KEYS as readonly string[]).includes(key)), []);
-  assert.deepEqual([...QUALITY_PARAMETER_KEYS, ...WEATHER_PARAMETER_KEYS, 'referenceTimeSeconds'].sort(), Object.keys(cloudParameterLabels).sort());
+  assert.deepEqual([...QUALITY_PARAMETER_KEYS, ...WEATHER_PARAMETER_KEYS, 'referenceTimeSeconds', 'viewBlueNoise'].sort(), Object.keys(cloudParameterLabels).sort());
   for (const qualityId of QUALITY_PRESET_IDS) {
     const quality = QUALITY_PRESETS[qualityId].parameters;
     for (const weatherId of WEATHER_PRESET_IDS) {
@@ -55,4 +56,21 @@ test('all nine quality/weather combinations commute and never overwrite the othe
     }
   }
   assert.equal(matchQualityPreset({}), null);
+});
+
+
+test('the UE BSM comparison locks material, sun, clock and raw map settings', () => {
+  const { materialMode, clock, parameters } = BSM_REFERENCE_PRESET;
+  assert.equal(materialMode, 'sample-ue');
+  assert.equal(clock.paused, true);
+  assert.deepEqual([parameters.windX, parameters.windY, parameters.windZ], [0, 0, 0]);
+  assert.deepEqual(validateCloudEdit(parameters), { edit: parameters });
+  assert.deepEqual([parameters.shadowResolution, parameters.shadowMapSamples], [512, 16]);
+  assert.equal(parameters.shadowMode, 1);
+  assert.equal(parameters.shadowMapUe5Reference, true);
+  assert.equal(parameters.shadowExtentMeters, 160_000);
+  assert.deepEqual(
+    [parameters.bottomMeters, parameters.thicknessMeters, parameters.entryLimitMeters, parameters.traceLimitMeters],
+    [5_000, 10_000, 350_000, 50_000],
+  );
 });

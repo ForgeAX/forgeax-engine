@@ -339,7 +339,7 @@ afterEach(() => vi.restoreAllMocks());
       expect(hdrTextureCalls.map((record) => record.label)).toEqual([]);
     });
 
-    it('row 4: engine modules prewarm at boot while the tonemap pipeline waits for its first frame', async () => {
+    it('row 4: scene modules prewarm at boot while the native tonemap program waits for a frame', async () => {
       const log: DeviceCallLog = { records: [] };
       const device = makeMockDevice(log);
       vi.stubGlobal('navigator', { ...baseNavigator, gpu: makeMockGPU(device) });
@@ -361,9 +361,8 @@ afterEach(() => vi.restoreAllMocks());
         .map((r) => r.code);
       expect(moduleSources).toContain(pbrSource);
       expect(moduleSources).toContain(unlitSource);
-      // The unified channel prewarms its module so the first synchronous frame
-      // does not wait for compilation; pipeline admission still belongs to draw.
-      expect(moduleSources).toContain(tonemapSource);
+      // Native WebGPU creates the selected output module and pipeline on demand.
+      expect(moduleSources).not.toContain(tonemapSource);
       expect(
         log.records.filter(
           (record) =>

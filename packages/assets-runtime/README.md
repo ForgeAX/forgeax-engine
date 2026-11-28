@@ -315,6 +315,10 @@ reads and prevents late cache refill. `invalidate`, `invalidateAll` and Catalog
 reconciliation affect source reads; accepted runtime content changes through
 explicit reload. `trimReadCache` drops disposable completed reads.
 
+Rendering scene loads can overlap reads of the scene's direct references under
+the existing read limit. Catalog admission and complete-closure promotion still
+fence the decoded work.
+
 Publication reference checks index each shared output table once per check,
 including deferred references. The index is discarded when the check returns;
 subsequent reads still validate current dependency digests and generations.

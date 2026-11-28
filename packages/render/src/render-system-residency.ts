@@ -14,8 +14,10 @@ import {
   publishMeshMaterialBindingResidency,
 } from './mesh-material-bindings';
 import type { RenderResourceScope } from './publication/resource-scope';
+import type { DrawRows } from './record/frame-snapshot';
 import type { RenderSystemInternals } from './record/render-context';
 import type { MaterialSnapshot } from './render-system-extract';
+import type { MaterialFrame } from './scene/material-dispatch';
 
 /**
  * Keep the missing-texture sentinel out of residency preparation. A zero
@@ -86,6 +88,43 @@ export function materialTextureHandles(
     material.emissiveTexture,
     material.occlusionTexture,
   ]);
+}
+
+/** Start independent generated textures for the already selected draw rows. */
+export function prepareGeneratedDrawTextures(
+  draws: DrawRows,
+  materials: MaterialFrame,
+  source: RenderResourceScope,
+  store: RenderSystemInternals['gpuStore'],
+): void {
+  const seen = new Map<RenderResourceScope, Set<MaterialSnapshot>>();
+  for (const { mesh, source: row, submeshIndices, world } of draws) {
+    const count = submeshIndices?.length ?? mesh.submeshes.length;
+    for (let ordinal = 0; ordinal < count; ordinal++) {
+      const submesh = mesh.submeshes[submeshIndices?.[ordinal] ?? ordinal];
+      if (submesh === undefined) continue;
+      const accepted = materials.get(row.materials[submesh.materialSlot] ?? row.material);
+      if (accepted === undefined) continue;
+      const material = accepted.snapshot;
+      const scope = materialSourceScope(world ?? source, material.sourceAssets);
+      let prepared = seen.get(scope);
+      if (prepared === undefined) {
+        prepared = new Set();
+        seen.set(scope, prepared);
+      }
+      if (prepared.has(material)) continue;
+      prepared.add(material);
+      for (const handle of materialTextureHandles(material)) {
+        if (store.getTextureGpuView(handle, scope) !== undefined) continue;
+        const resolved = scope.resolveAsset<TextureAsset>(handle);
+        if (resolved.ok && resolved.value.kind === 'gpu-texture') {
+          // Submission, error reporting, and accepted output stay in the usual
+          // residency owner. Do not wait for generation in this recording.
+          store.ensureResident(handle, resolved.value, scope);
+        }
+      }
+    }
+  }
 }
 
 export function materialSamplerHandles(

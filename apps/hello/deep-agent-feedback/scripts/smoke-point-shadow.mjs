@@ -230,7 +230,11 @@ try {
   await recipeContext.plugin(app.rendererPlugin(renderer));
   await recipeContext.plugin(app.pointShadowPlugin());
   validAdmission = recipeContext.pointShadow?.admit(1);
-  assert.equal(validAdmission?.ok, true, 'focused recipe must admit one caster before spawn');
+  assert.equal(
+    validAdmission?.ok,
+    true,
+    `focused recipe must admit one caster before spawn: ${JSON.stringify(serializeResult(validAdmission))}`,
+  );
   overBudgetAdmission = app.admitPointShadowBudget(atlasCapacity + 1);
   assert.equal(overBudgetAdmission?.ok, false, 'over-budget admission must be structured');
   missingCapabilityAdmission = app.admitPointShadowBudget(1, 'storageBuffer');

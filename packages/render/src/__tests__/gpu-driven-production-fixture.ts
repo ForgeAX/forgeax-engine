@@ -10,7 +10,7 @@ import {
   collectGpuDrivenMaterialArtifacts,
   GpuDrivenMaterialProgramProjection,
 } from '../gpu-driven/material-artifacts';
-import { standardPbrProgramKey } from '../gpu-driven/pbr-program';
+import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
 import type { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { GpuBuffer } from '../gpu-resource';
 import {
@@ -107,10 +107,11 @@ export function standardPbrInputs(
   shader: ShaderModule,
   viewLayout: BindGroupLayout,
   materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap(),
-): Pick<
-  Parameters<GpuDrivenProduction['prepare']>[0],
-  'materialArtifact' | 'materialPipelineState'
-> {
+): Pick<Parameters<GpuDrivenProduction['prepare']>[0], 'materialArtifact'> & {
+  readonly materialPipelineState: PipelineState & {
+    readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
+  };
+} {
   const meshLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const instancesLayout = device
     .createBindGroupLayout({
@@ -149,7 +150,9 @@ export function standardPbrInputs(
       gpuDrivenPbrPipelineLayout: pbrPipelineLayout,
       gpuDrivenPbrPrograms: new Map([[programKey, { module: shader, artifact }]]),
       standardPbrShaderUvSetCount: 1,
-    } as unknown as PipelineState,
+    } as unknown as PipelineState & {
+      readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
+    },
   };
 }
 

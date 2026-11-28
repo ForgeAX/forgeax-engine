@@ -48,10 +48,12 @@ export type PackProgramHostFactory = (
 export function createStaticPackProgramHost(
   entries: readonly {
     readonly modules: Readonly<Record<string, string>>;
+    readonly entry?: string;
     readonly load: (entry: string) => Promise<Readonly<Record<string, unknown>>>;
     readonly taskUrl?: (entry: string) => string;
   }[],
   imports: Readonly<Record<string, PackProgramImport>>,
+  browserFallback?: Pick<PackProgramHost, 'publish'>,
 ): PackProgramHost {
   const published = new Map<string, () => Promise<Readonly<Record<string, unknown>>>>();
   const select = (program: PackProgram, bindings: Readonly<Record<string, PackProgramImport>>) => {
@@ -60,29 +62,40 @@ export function createStaticPackProgramHost(
       if (
         bindings[name]?.identity !== imports[name]?.identity ||
         bindings[name]?.url !== imports[name]?.url
-      )
+      ) {
+        if (browserFallback) return { kind: 'browser' as const, host: browserFallback };
         throw new TypeError(`Static program import differs from its published package: ${name}`);
+      }
     }
     const entry = entries.find((candidate) => {
       const names = Object.keys(program.modules);
       return (
+        (candidate.entry === undefined || candidate.entry === program.entry) &&
         names.length === Object.keys(candidate.modules).length &&
         names.every((name) => candidate.modules[name] === program.modules[name])
       );
     });
-    if (!entry) throw new TypeError('Program modules are not in the published code package');
-    return { identity, entry };
+    if (entry) return { kind: 'shipped' as const, identity, entry };
+    if (browserFallback) return { kind: 'browser' as const, host: browserFallback };
+    throw new TypeError('Program modules are not in the published code package');
   };
   return {
     async publish(program, bindings) {
-      const { identity, entry } = select(program, bindings);
+      const route = select(program, bindings);
+      if (route.kind === 'browser') {
+        const url = await route.host.publish(program, bindings);
+        published.set(url, () => import(/* @vite-ignore */ url));
+        return url;
+      }
+      const { identity, entry } = route;
       const url = `https://forgeax.package/programs/${identity}/${program.entry}`;
       published.set(url, () => entry.load(program.entry));
       return url;
     },
     async publishForTask(program, bindings) {
-      const { entry } = select(program, bindings);
-      const url = entry.taskUrl?.(program.entry);
+      const route = select(program, bindings);
+      if (route.kind === 'browser') return route.host.publish(program, bindings);
+      const url = route.entry.taskUrl?.(program.entry);
       if (url === undefined || !MODULE_URL.test(url))
         throw new TypeError(
           'Program module has no Task Worker locator in the published code package',

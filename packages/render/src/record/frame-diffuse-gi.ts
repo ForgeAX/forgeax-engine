@@ -493,7 +493,11 @@ export function consumeViewDiffuseGi(
     return { ...prepared.value, gi: { ...prepared.value.gi, probePlacement: undefined } };
   }
   const profile = internals.standardProfile;
-  if (profile?.diffuseGi !== undefined || profile?.probePlacement !== undefined)
+  if (
+    internals.viewEntity !== undefined ||
+    profile?.diffuseGi !== undefined ||
+    profile?.probePlacement !== undefined
+  )
     throw new RhiError({
       code: 'rhi-not-available',
       expected: 'the view GI the view-diffuse-gi RenderPrepare system prepared',
@@ -523,9 +527,14 @@ export function reprojectDiffuseGiHistory(
   const previousCameraPosition = previousTemporalView?.currentCameraPosition;
   gi.screenProbe?.reproject(
     continuousGeometry &&
+      previousTemporalView !== undefined &&
       previousViewProjection !== undefined &&
       previousCameraPosition !== undefined
-      ? { viewProjection: previousViewProjection, cameraPosition: previousCameraPosition }
+      ? {
+          viewProjection: previousViewProjection,
+          cameraPosition: previousCameraPosition,
+          jitterUv: previousTemporalView.currentJitterUv,
+        }
       : undefined,
   );
   gi.rayDiffuse?.reconstruction?.prepare(temporalView, previousTemporalView, camera);

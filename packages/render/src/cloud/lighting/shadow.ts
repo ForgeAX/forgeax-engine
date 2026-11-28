@@ -1,5 +1,7 @@
 import type { CloudRgb } from '../contracts';
 import { sphereInterval } from '../tracing/geometry';
+import { ue5CloudShadowTraceSamples } from '../tracing/policy';
+import { cloudShadowSpatialLayout } from './shadow-spatial-layout';
 
 /** UE shadow near-plane rules, independent of camera clipping and planet visibility. */
 export function cloudBsmTraceInterval(
@@ -78,20 +80,26 @@ export function createCloudShadowProjection(input: {
   readonly sunDirection: readonly [number, number, number];
   readonly range: number;
   readonly resolution?: number;
+  readonly verticalBasisThreshold?: number;
+  readonly snapTexelSize?: number;
 }): CloudShadowProjection {
   const sunDirection = normalize(input.sunDirection);
   const resolution = Math.max(1, Math.floor(input.resolution ?? 1024));
   const range = Math.max(1, input.range);
   const texelSize = range / resolution;
-  const reference = Math.abs(sunDirection[1]) < 0.95 ? ([0, 1, 0] as const) : ([1, 0, 0] as const);
+  const reference =
+    Math.abs(sunDirection[1]) < (input.verticalBasisThreshold ?? 0.95)
+      ? ([0, 1, 0] as const)
+      : ([1, 0, 0] as const);
+  const snapTexelSize = input.snapTexelSize ?? texelSize;
   const right = normalize(cross(reference, sunDirection));
   const up = normalize(cross(sunDirection, right));
   const center = input.center;
   const lightX = dot(center, right);
   const lightY = dot(center, up);
   const lightZ = dot(center, sunDirection);
-  const snappedX = Math.floor(lightX / texelSize + 0.5) * texelSize;
-  const snappedY = Math.floor(lightY / texelSize + 0.5) * texelSize;
+  const snappedX = Math.floor(lightX / snapTexelSize + 0.5) * snapTexelSize;
+  const snappedY = Math.floor(lightY / snapTexelSize + 0.5) * snapTexelSize;
   const origin: [number, number, number] = [
     right[0] * snappedX + up[0] * snappedY + sunDirection[0] * lightZ,
     right[1] * snappedX + up[1] * snappedY + sunDirection[1] * lightZ,
@@ -296,6 +304,10 @@ export interface CookedCloudShadow {
   readonly depthMeters: number;
   readonly resolution: number;
   readonly mapSamples: number;
+  readonly ue5Reference?: boolean;
+  readonly spatialPasses?: number;
+  /** Resolved floating-point midpoint budget for this view. */
+  readonly traceSamples?: number;
   readonly mode: number;
   readonly cast: boolean;
   readonly biasMeters: number;
@@ -304,7 +316,10 @@ export interface CookedCloudShadow {
   readonly atmosphereStrength?: number;
 }
 
-export type CloudShadowSettings = Omit<CookedCloudShadow, 'origin' | 'right' | 'up'>;
+export type CloudShadowSettings = Omit<
+  CookedCloudShadow,
+  'origin' | 'right' | 'up' | 'traceSamples'
+>;
 export const CLOUD_BSM_LIGHT_DISTANCE_METERS = 300_000;
 
 /** View-owned UE projection: ground anchor, independent light distance and finite depth. */
@@ -319,16 +334,34 @@ export function viewCloudShadowProjection(
     (cameraPosition[1] ?? 0) + radius,
     cameraPosition[2] ?? 0,
   ]);
-  const anchor: CloudRgb = [radial[0] * radius, radial[1] * radius - radius, radial[2] * radius];
+  const ground: CloudRgb = [radial[0] * radius, radial[1] * radius - radius, radial[2] * radius];
+  const snapWorld = (meters: number) => Math.floor(meters / 20_000 + 0.5) * 20_000;
+  const anchor: CloudRgb = input.ue5Reference
+    ? [snapWorld(ground[0]), snapWorld(ground[1]), snapWorld(ground[2])]
+    : ground;
   const projection = createCloudShadowProjection({
     center: anchor,
+    ...(input.ue5Reference
+      ? {
+          verticalBasisThreshold: 0.99,
+          snapTexelSize: (2 * input.extentMeters) / input.resolution,
+        }
+      : {}),
     sunDirection: input.directionToLight,
     range: input.extentMeters,
-    // The final filtered texel spans two raw texels.
-    resolution: Math.ceil(input.resolution / 2),
+    resolution: cloudShadowSpatialLayout(input.resolution, input.spatialPasses, input.ue5Reference)
+      .filteredResolution,
   });
   return {
     ...input,
+    ...(input.ue5Reference
+      ? {
+          traceSamples: ue5CloudShadowTraceSamples(
+            input.mapSamples,
+            dot(radial, projection.sunDirection),
+          ),
+        }
+      : {}),
     directionToLight: projection.sunDirection,
     right: projection.right,
     up: projection.up,
@@ -342,7 +375,7 @@ export function viewCloudShadowProjection(
 
 /** One detached projection feeds map production, cloud queries and ground queries. */
 export function cookedCloudShadowProjection(
-  input: Omit<CookedCloudShadow, 'origin' | 'right' | 'up'>,
+  input: Omit<CookedCloudShadow, 'origin' | 'right' | 'up' | 'traceSamples'>,
   bottomMeters: number,
   thicknessMeters: number,
 ): CookedCloudShadow {

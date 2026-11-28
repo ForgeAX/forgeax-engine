@@ -362,12 +362,12 @@ struct ForeignInput {
   positionOS: vec3f, positionWS: vec3f, geometricNormalWS: vec3f, vertexNormalWS: vec3f,
   tangentWS: vec4f, viewDirectionWS: vec3f, uv0: vec2f, uv1: vec2f, uv2: vec2f, uv3: vec2f,
   uv4: vec2f, uv5: vec2f, uv6: vec2f, uv7: vec2f, vertexColor: vec4f, frontFacing: bool,
-  uvFootprint0: vec4f, uvFootprint1: vec4f, objectToWorld: mat3x3f, frameTime: f32,
+  uvFootprint0: vec4f, uvFootprint1: vec4f, objectToWorld: mat3x3f, frameTime: f32, materialTextureMipBias: f32,
 }
 fn makeForeign(input: SurfaceInput) -> ForeignInput {
   return ForeignInput(input.positionOS,input.positionWS,input.geometricNormalWS,input.vertexNormalWS,
     input.tangentWS,vec3f(0,0,1),input.uv0,input.uv1,input.uv2,input.uv3,input.uv4,input.uv5,input.uv6,input.uv7,
-    input.vertexColor,input.frontFacing,input.uvFootprint0,input.uvFootprint1,input.objectToWorld,0.0);
+    input.vertexColor,input.frontFacing,input.uvFootprint0,input.uvFootprint1,input.objectToWorld,0.0,0.0);
 }
 fn foreignColor(input: ForeignInput) -> vec3f { return vec3f(input.frameTime); }
 `;

@@ -15,6 +15,7 @@ import { ok } from '@forgeax/engine-types';
 import { ParticleEffectPlayer } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadBackendPack } from '../backend-selection';
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -323,8 +324,7 @@ export async function verifyMaterialPublication(options: {
           if (!before.ok) throw before.error;
         }
         world.update(1 / 60).unwrap();
-        const result = renderer.draw({ source: lease });
-        if (!result.ok) throw result.error;
+        await drawReadyFrame(renderer, { source: lease });
         if (capture !== undefined) {
           const after = await recorder.frameBoundary();
           if (!after.ok) throw after.error;
@@ -339,7 +339,6 @@ export async function verifyMaterialPublication(options: {
             ),
           ).toBe(true);
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
       if (device === undefined || target === undefined) throw new Error('missing real GPU target');
       const buffer = device.createBuffer({ size: 256, usage: 0x08 | 0x01 });

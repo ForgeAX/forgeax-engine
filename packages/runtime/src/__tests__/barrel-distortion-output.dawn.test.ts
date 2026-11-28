@@ -7,6 +7,9 @@ import {
   ANTIALIAS_TAA,
   Atmosphere,
   BarrelDistortion,
+  CAMERA_EXPOSURE_MODE_AUTO,
+  CAMERA_EXPOSURE_MODE_AUTO_UE,
+  CAMERA_EXPOSURE_MODE_MANUAL,
   Camera,
   createBarrelDistortionMapping,
   DepthOfField,
@@ -20,9 +23,11 @@ import {
   TONEMAP_NONE,
   VolumetricFog,
 } from '@forgeax/engine-render';
+import { renderGraphCompileCount, renderOrderedViewBindCount } from '@forgeax/engine-render-graph';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import {
   BARREL_GPU_HEIGHT,
   BARREL_GPU_WIDTH,
@@ -498,6 +503,8 @@ describe('barrel distortion real output on Dawn', () => {
       const attached = fixture.renderer.attach(world);
       expect(attached.ok).toBe(true);
       if (!attached.ok) throw attached.error;
+      const initialBuilds = renderGraphCompileCount();
+      const initialBindings = renderOrderedViewBindCount();
 
       const drawFrame = async () => {
         expect(world.update(1 / 60).ok).toBe(true);
@@ -525,6 +532,10 @@ describe('barrel distortion real output on Dawn', () => {
       const retired = await readBarrelPixels(fixture.device, fixture.renderTarget);
       expect(retiredReceipt.barrelDistortion?.strength).toBe(0);
       expect(countRgbDifferences(baseline, retired)).toBe(0);
+      expect(renderOrderedViewBindCount() - initialBindings).toBeGreaterThan(0);
+      expect(renderGraphCompileCount() - initialBuilds).toBe(
+        renderOrderedViewBindCount() - initialBindings,
+      );
     } finally {
       await fixture.renderer.dispose();
     }
@@ -686,102 +697,140 @@ describe('barrel distortion real output on Dawn', () => {
     }
   }, 60_000);
 
-  it('composes active Barrel with VolumetricFog through a real Dawn readback', async () => {
-    const fixture = await createBarrelRendererFixture();
-    try {
-      const world = new World({ assets: fixture.assets });
-      spawnBarrelScene(world, fixture.assets, {
-        clearColor: [0.015, 0.02, 0.035, 1],
-        barrel: { strength: 0.2, centerX: 0.5, centerY: 0.5 },
-        geometry: true,
-        geometryColor: [0.85, 0.25, 0.08, 1],
-        tonemap: TONEMAP_LINEAR,
-        depthOfField: true,
-      });
-      const light = world
-        .spawn({
-          component: DirectionalLight,
-          data: { direction: [-0.4, -0.8, -0.3], castShadow: false },
-        })
-        .unwrap();
-      world
-        .spawn({
-          component: Atmosphere,
-          data: {
-            sunAngularRadius: 0.004675,
-          },
-        })
-        .unwrap();
-      const densityAsset = createConstantVolumeDensity();
-      const density = fixture.assets.create(densityAsset).unwrap();
-      const releaseTransforms = registerPropagateTransforms(world);
-      const attached = fixture.renderer.attach(world);
-      expect(attached.ok).toBe(true);
-      if (!attached.ok) throw attached.error;
-      const drawFrame = async () => {
-        expect(world.update(1 / 60).ok).toBe(true);
-        const receipt = await drawReady(fixture.renderer, { source: attached.value });
-        expect(receipt.ok).toBe(true);
-        if (!receipt.ok) throw receipt.error;
-        return receipt.value;
-      };
+  it.each([
+    ['forward', true],
+    ['forward', false],
+    ['deferred', false],
+  ] as const)(
+    'composes active Barrel with VolumetricFog through a real Dawn readback (%s, atmosphere=%s)',
+    async (renderPath, atmosphere) => {
+      const fixture = await createBarrelRendererFixture();
+      try {
+        const { renderer } = fixture;
+        renderer.setProfile({ ...renderer.inspect().profile, renderPath }).unwrap();
+        const graphBuilds = renderGraphCompileCount();
+        const initialBinds = renderOrderedViewBindCount();
+        const world = new World({ assets: fixture.assets });
+        spawnBarrelScene(world, fixture.assets, {
+          clearColor: [0.015, 0.02, 0.035, 1],
+          barrel: { strength: 0.2, centerX: 0.5, centerY: 0.5 },
+          geometry: true,
+          geometryColor: [0.85, 0.25, 0.08, 1],
+          tonemap: TONEMAP_LINEAR,
+          depthOfField: true,
+        });
+        const light = world
+          .spawn({
+            component: DirectionalLight,
+            data: { direction: [-0.4, -0.8, -0.3], castShadow: false },
+          })
+          .unwrap();
+        if (atmosphere) {
+          world
+            .spawn({
+              component: Atmosphere,
+              data: {
+                sunAngularRadius: 0.004675,
+              },
+            })
+            .unwrap();
+        }
+        const densityAsset = createConstantVolumeDensity();
+        const density = fixture.assets.create(densityAsset).unwrap();
+        const releaseTransforms = registerPropagateTransforms(world);
+        const attached = fixture.renderer.attach(world);
+        expect(attached.ok).toBe(true);
+        if (!attached.ok) throw attached.error;
+        const drawFrame = async () => {
+          expect(world.update(1 / 60).ok).toBe(true);
+          const receipt = await drawReady(fixture.renderer, { source: attached.value });
+          expect(receipt.ok).toBe(true);
+          if (!receipt.ok) throw receipt.error;
+          return receipt.value;
+        };
 
-      const baselineReceipt = await drawFrame();
-      await fixture.device.queue.onSubmittedWorkDone();
-      const baseline = await readBarrelPixels(fixture.device, fixture.renderTarget);
-      const fog = world
-        .spawn({
-          component: VolumetricFog,
-          data: {
-            light,
-            density,
-            boundsMin: [-8, -4, -2],
-            boundsMax: [8, 4, 3],
-            extinction: [0.8, 0.8, 0.8],
-            albedo: [0.75, 0.75, 0.75],
-            emission: [0.2, 0.1, 0.05],
-            anisotropy: 0,
-            maxDistance: 30,
-          },
-        })
-        .unwrap();
-      // The volume graph is an accepted candidate with a renderer-owned
-      // resource lease. The first draw admits it; the second submitted frame
-      // is the observable picture that proves the retained graph was used.
-      const fogCandidateReceipt = await drawFrame();
-      await fixture.device.queue.onSubmittedWorkDone();
-      const fogReceipt = await drawFrame();
-      await fixture.device.queue.onSubmittedWorkDone();
-      const fogPixels = await readBarrelPixels(fixture.device, fixture.renderTarget);
-      const inspection = fixture.renderer.inspect();
-      expect(baselineReceipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
-      expect(fogReceipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
-      expect(inspection.depthOfField).toMatchObject({ enabled: true, status: 'active' });
-      expect(inspection.volumetricFog?.status).toBe('available');
-      expect(inspection.volumetricFog?.passCount).toBe(4);
-      expect(inspection.volumetricFog?.resourceFacts?.currentBytes).toBeGreaterThan(0);
-      expect(inspection.perFramePassNames).toContain('volume-composite');
-      expect(countRgbDifferences(baseline, fogPixels)).toBeGreaterThan(0);
-      // biome-ignore lint/suspicious/noConsole: bounded Dawn readback evidence is intentional.
-      console.info(
-        '[barrel-dawn] volume-composition',
-        JSON.stringify({
-          baselineFrame: baselineReceipt.frameId,
-          fogCandidateFrame: fogCandidateReceipt.frameId,
-          fogFrame: fogReceipt.frameId,
-          changedPixels: countRgbDifferences(baseline, fogPixels),
-          maxRgbDelta: maxRgbDelta(baseline, fogPixels),
-          depthOfField: inspection.depthOfField,
-          volumetricFog: inspection.volumetricFog,
-        }),
-      );
-      world.despawn(fog).unwrap();
-      fixture.assets.release(density).unwrap();
-      releaseTransforms();
-    } finally {
-      await fixture.renderer.dispose();
-    }
-  }, 60_000);
+        const baselineReceipt = await drawFrame();
+        await fixture.device.queue.onSubmittedWorkDone();
+        const baseline = await readBarrelPixels(fixture.device, fixture.renderTarget);
+        const fog = world
+          .spawn({
+            component: VolumetricFog,
+            data: {
+              light,
+              density,
+              boundsMin: [-8, -4, -2],
+              boundsMax: [8, 4, 3],
+              extinction: [0.8, 0.8, 0.8],
+              albedo: [0.75, 0.75, 0.75],
+              emission: [0.2, 0.1, 0.05],
+              anisotropy: 0,
+              maxDistance: 30,
+            },
+          })
+          .unwrap();
+        // The volume graph is an accepted candidate with a renderer-owned
+        // resource lease. The first draw admits it; the second submitted frame
+        // is the observable picture that proves the retained graph was used.
+        const fogCandidateReceipt = await drawFrame();
+        await fixture.device.queue.onSubmittedWorkDone();
+        const fogReceipt = await drawFrame();
+        await fixture.device.queue.onSubmittedWorkDone();
+        const fogPixels = await readBarrelPixels(fixture.device, fixture.renderTarget);
+        const inspection = fixture.renderer.inspect();
+        expect(baselineReceipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
+        expect(fogReceipt.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
+        expect(inspection.depthOfField).toMatchObject({ enabled: true, status: 'active' });
+        expect(inspection.volumetricFog?.status).toBe('available');
+        expect(inspection.volumetricFog?.passCount).toBe(4);
+        expect(inspection.volumetricFog?.resourceFacts?.currentBytes).toBeGreaterThan(0);
+        expect(inspection.perFramePassNames).toContain('volume-composite');
+        expect(countRgbDifferences(baseline, fogPixels)).toBeGreaterThan(0);
+        // biome-ignore lint/suspicious/noConsole: bounded Dawn readback evidence is intentional.
+        console.info(
+          '[barrel-dawn] volume-composition',
+          JSON.stringify({
+            baselineFrame: baselineReceipt.frameId,
+            fogCandidateFrame: fogCandidateReceipt.frameId,
+            fogFrame: fogReceipt.frameId,
+            changedPixels: countRgbDifferences(baseline, fogPixels),
+            maxRgbDelta: maxRgbDelta(baseline, fogPixels),
+            depthOfField: inspection.depthOfField,
+            volumetricFog: inspection.volumetricFog,
+          }),
+        );
+        if (!atmosphere) {
+          const passes = inspection.perFramePassNames;
+          expect(passes.indexOf('volume-inject')).toBeLessThan(passes.indexOf('volume-integrate'));
+          expect(passes.indexOf('volume-composite')).toBeGreaterThan(
+            passes.indexOf('volume-temporal'),
+          );
+          expect(passes.indexOf('volume-composite')).toBeLessThan(passes.indexOf('standard-grade'));
+          const bindings = renderOrderedViewBindCount();
+          world.set(fog, VolumetricFog, { emission: [0.04, 0.65, 0.3] }).unwrap();
+          const updated = await drawFrame();
+          const edited = await readBarrelPixels(fixture.device, fixture.renderTarget);
+          expect(countRgbDifferences(edited, fogPixels)).toBeGreaterThan(0);
+          expect(updated.graphGeneration).toBe(fogReceipt.graphGeneration);
+          expect(renderOrderedViewBindCount()).toBe(bindings);
+          world.despawn(fog).unwrap();
+          await drawFrame();
+          const removed = await readBarrelPixels(fixture.device, fixture.renderTarget);
+          expect(equalBytes(removed, baseline)).toBe(true);
+          expect(fixture.renderer.inspect().perFramePassNames).not.toContain('volume-composite');
+          const ordered = renderOrderedViewBindCount() - initialBinds;
+          expect(ordered).toBeGreaterThanOrEqual(3);
+          expect(renderGraphCompileCount() - graphBuilds).toBe(ordered);
+        } else {
+          world.despawn(fog).unwrap();
+        }
+        fixture.assets.release(density).unwrap();
+        releaseTransforms();
+      } finally {
+        await fixture.renderer.dispose();
+      }
+    },
+    60_000,
+  );
 
   it('keeps HDR, non-identity LUT, alpha, and one final encoding in order', async () => {
     const fixture = await createBarrelRendererFixture();
@@ -884,6 +933,8 @@ describe('barrel distortion real output on Dawn', () => {
 
       world.set(camera, BarrelDistortion, { strength: 0 }).unwrap();
       world.set(camera, Camera, { antialias: ANTIALIAS_NONE }).unwrap();
+      const total = renderGraphCompileCount();
+      const direct = renderOrderedViewBindCount();
       const fused = await drawFrame();
       const fusedInspection = fixture.renderer.inspect();
       expect(
@@ -900,10 +951,61 @@ describe('barrel distortion real output on Dawn', () => {
       expect(fixture.renderer.inspect().recoveryEvidence.graph.generation).toBe(fusedGeneration);
       fixture.assets.update(lutHandle, { data: lut.data }).unwrap();
       expect(maxRgbDelta((await drawFrame()).pixels, fused.pixels)).toBeLessThanOrEqual(1);
+      expect(renderOrderedViewBindCount() - direct).toBe(1);
+      expect(renderGraphCompileCount() - total).toBe(1);
     } finally {
       await fixture.renderer.dispose();
     }
   });
+
+  it('binds exposure metering and the current LUT directly on Standard Forward', async () => {
+    const fixture = await createBarrelRendererFixture();
+    const { renderer, assets } = fixture;
+    try {
+      const profile = renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward' });
+      if (!profile.ok) throw profile.error;
+      const world = new World({ assets });
+      const lutHandle = assets.create(createChannelSwapLut()).unwrap();
+      const camera = spawnBarrelScene(world, assets, {
+        clearColor: [0.04, 0.08, 0.18, 1],
+        geometry: true,
+        geometryColor: [1.5, 0.5, 0.25, 1],
+        antialias: ANTIALIAS_NONE,
+        tonemap: TONEMAP_LINEAR,
+      });
+      world.set(camera, Camera, { colorLut: lutHandle, colorLutStrength: 1 }).unwrap();
+      const draw = async () => {
+        const receipt = await drawPublished(renderer, world);
+        if (!receipt.ok) throw receipt.error;
+        return readBarrelPixels(fixture.device, fixture.renderTarget);
+      };
+      const total = renderGraphCompileCount();
+      const direct = renderOrderedViewBindCount();
+      const baseline = await draw();
+      expect(renderer.inspect().output.standardLut?.sourceKey).toBeTruthy();
+      for (const mode of [CAMERA_EXPOSURE_MODE_AUTO, CAMERA_EXPOSURE_MODE_AUTO_UE]) {
+        const bindings = renderOrderedViewBindCount();
+        world.set(camera, Camera, { exposureMode: mode }).unwrap();
+        const metered = await draw();
+        expect(maxRgbDelta(baseline, metered)).toBeGreaterThan(1);
+        const inspection = renderer.inspect();
+        expect(inspection.perFramePassNames).toContain('auto-exposure-meter');
+        expect(inspection.perFramePassNames.includes('post-scene-color-half')).toBe(
+          mode === CAMERA_EXPOSURE_MODE_AUTO_UE,
+        );
+        expect(inspection.output.autoExposure?.actualState).toBe('gpu-resident');
+        expect(renderOrderedViewBindCount() - bindings).toBeGreaterThan(0);
+        const current = renderOrderedViewBindCount();
+        await draw();
+        expect(renderOrderedViewBindCount()).toBe(current);
+      }
+      world.set(camera, Camera, { exposureMode: CAMERA_EXPOSURE_MODE_MANUAL }).unwrap();
+      expect(maxRgbDelta(await draw(), baseline)).toBeLessThanOrEqual(1);
+      expect(renderGraphCompileCount() - total).toBe(renderOrderedViewBindCount() - direct);
+    } finally {
+      await renderer.dispose();
+    }
+  }, 60_000);
 
   it('proves FXAA enters its edge branch while preserving a half-alpha edge', async () => {
     const fixture = await createBarrelRendererFixture();

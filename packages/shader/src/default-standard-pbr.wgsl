@@ -1113,7 +1113,7 @@ fn standardSurfaceInput(in : VsOut, frontFacing : bool, geometricNormal : vec3<f
   return SurfaceInput(
     positionOS, standardPositionWS, geometricNormal, vertexNormal, surfaceTangent, viewDirectionWS,
     surfaceUvs[0], surfaceUvs[1], surfaceUvs[2], surfaceUvs[3], surfaceUvs[4], surfaceUvs[5], surfaceUvs[6], surfaceUvs[7], materialVertexColor(in), frontFacing, vec4<f32>(0.0), vec4<f32>(0.0),
-    standardObjectToWorld(in), view.fogHeightOpacity.w,
+    standardObjectToWorld(in), view.fogHeightOpacity.w, view.surfaceMipBias.x,
   );
 }
 
@@ -1945,7 +1945,7 @@ fn fs_oit(in : VsOut, @builtin(front_facing) frontFacing : bool) -> OitOutput {
 #if WATER_WAVES_AVAILABLE == true
   if (!standardWaterCovered) { discard; }
 #endif
-  return oitAccumulate(color.rgb * color.a, color.a, distance(standardPositionWS, view.cameraPos));
+  return oitAccumulate(color.rgb * color.a, color.a, in.clip.z, view.temporalProjection);
 }
 
 // Weighted blended OIT accumulation for premultiplied blend states.
@@ -1973,7 +1973,7 @@ fn fs_oit_premultiplied(in : VsOut, @builtin(front_facing) frontFacing : bool) -
 #if WATER_WAVES_AVAILABLE == true
   if (!standardWaterCovered) { discard; }
 #endif
-  return oitAccumulate(color.rgb, color.a, distance(standardPositionWS, view.cameraPos));
+  return oitAccumulate(color.rgb, color.a, in.clip.z, view.temporalProjection);
 }
 
 #ifndef DIRECTIONAL_SHADOW_SIMPLE

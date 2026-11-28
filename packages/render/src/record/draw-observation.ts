@@ -17,6 +17,9 @@ export function createDrawObservation(
   let bytes = 2;
   let reason: Extract<DrawObservation, { status: 'unavailable' }>['reason'] | undefined;
   return {
+    get collecting(): boolean {
+      return reason === undefined;
+    },
     /** A GPU-lane draw without a per-row receipt; its lineage is never observable. */
     recordGpuLane(): void {
       reason ??= 'unsupported-lane';

@@ -1,10 +1,10 @@
 #define_import_path forgeax_ray::screen_probe
 #import forgeax_view::common::{View}
 #import forgeax_pbr::gbuffer::{loadStandardGBufferNormalRoughness, loadStandardGBufferValid, decodeStandardGBufferNormal, standardGBufferValid, STANDARD_GBUFFER_SCREEN_TRACE_CLASSIFIED_BIT, STANDARD_GBUFFER_SCREEN_TRACE_BACKFACE_DIFFUSE_BIT, STANDARD_GBUFFER_SCREEN_TRACE_MASK, decodeStandardReflectance, decodeCompactBaseColor}
-#import forgeax_depth_pyramid::sample::{depthPyramidCell, depthPyramidDepthOrEmpty, depthPyramidLevelSize, projectViewDepth}
+#import forgeax_depth_pyramid::sample::{depthPyramidCell, depthPyramidDepthOrEmpty, depthPyramidLevelSize, depthPyramidViewportCell, projectViewDepth}
 #import forgeax_ray::irradiance_field_sample::{sampleIrradianceField, sampleRadianceCacheAt, irradianceFieldOctWrap, prepareIrradianceFieldProbeVisibility}
 #ifdef IRRADIANCE_FIELD_RADIANCE_ATLAS
-#import forgeax_ray::irradiance_field_sample::{ScreenRadianceCoverage, screenRadianceCoverage, screenRadianceCoverageFromTrace, sampleScreenRadianceCache}
+#import forgeax_ray::irradiance_field_sample::{ScreenRadianceCoverage, screenRadianceCoverage, screenRadianceCoverageFromTrace, sampleScreenRadianceCache, irradianceField, irradianceFieldMeta, irradianceFieldProbeIndex, irradianceFieldProbeOffset, irradianceFieldLevelScale, irradianceFieldCone, irradianceFieldDepth, IRRADIANCE_FIELD_PROBE_ACTIVE}
 #endif
 #import forgeax_ray::screen_candidate::{RAY_SCREEN_CANDIDATE, screenCandidatePack}
 #import forgeax_ray::screen_reconstruction::{spCurrentSupport, spReconstructionConfidence, spReconstructionSignal, spReconstructionSource, spReconstructionTemporalAlpha}
@@ -38,6 +38,8 @@ struct ScreenProbeFrame {
   previousCameraPos: vec4f,
   // Independent accepted source tuple.
   expectedSource: vec4u,
+  // xy: jitter (uv) of the view that rendered the retained history.
+  previousJitter: vec4f,
 }
 // pixel == SCREEN_PROBE_NONE marks an empty probe slot.
 struct ScreenProbe {
@@ -508,6 +510,10 @@ fn probeAgreement(probe: ScreenProbe, position: vec3f, normal: vec3f, distance: 
 // from normal-biased endpoints, preserving unavailable coverage as rejection.
 fn probeVisibility(probe: ScreenProbe, position: vec3f, normal: vec3f) -> f32 {
 #ifdef IRRADIANCE_FIELD_VISIBILITY
+  // On the hardware screen-space scatter path (pixelOwnedHistory, query.w bit 9),
+  // plane agreement, view-depth weighting, and 10-degree hit-cone parallax gate
+  // neighbor sharing without per-pair software Global SDF / canonical BVH marches.
+  if ((probeFrame.query.w & 512u) != 0u) { return 1.0; }
   return fieldSegmentVisibility(position + normal * probeFrame.tuning.z,
     probe.position + probe.normal * probeFrame.tuning.z);
 #else
@@ -665,6 +671,7 @@ fn adaptiveEligible(i: u32) -> bool {
   return dot(taps.weights, vec4f(1.0)) < 0.25;
 }
 var<workgroup> adaptivePrefix: array<u32, 64>;
+var<workgroup> adaptiveSumScratch: array<u32, 64>;
 var<workgroup> adaptiveBase: u32;
 
 #ifndef IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE
@@ -698,12 +705,21 @@ var<workgroup> adaptiveBase: u32;
   if (i < candidateCount) { eligible = tileAdaptive[adaptiveTileSlot(i)]; }
   adaptivePrefix[lane] = eligible;
   workgroupBarrier();
-  if (lane == 0u) {
-    var base = 0u;
-    for (var g = 0u; g < min(group, (candidateCount + 63u) / 64u); g++) {
-      base += atomicLoad(&adaptiveCount[g + 1u]);
+  let groupLimit = min(group, (candidateCount + 63u) / 64u);
+  var partialBase = 0u;
+  for (var g = lane; g < groupLimit; g += 64u) {
+    partialBase += atomicLoad(&adaptiveCount[g + 1u]);
+  }
+  adaptiveSumScratch[lane] = partialBase;
+  workgroupBarrier();
+  for (var stride = 32u; stride > 0u; stride >>= 1u) {
+    if (lane < stride) {
+      adaptiveSumScratch[lane] += adaptiveSumScratch[lane + stride];
     }
-    adaptiveBase = base;
+    workgroupBarrier();
+  }
+  if (lane == 0u) {
+    adaptiveBase = adaptiveSumScratch[0];
     var prefix = 0u;
     for (var j = 0u; j < 64u; j++) {
       let flag = adaptivePrefix[j];
@@ -1399,6 +1415,86 @@ fn lightTraceFallbacks(@builtin(global_invocation_id) gid: vec3u, @builtin(num_w
   lightProbeFallback(spLinearId(gid, groups));
 }
 
+#ifdef IRRADIANCE_FIELD_RADIANCE_ATLAS
+fn sampleHardwareFallbackLevel(level: u32, position: vec3f, normal: vec3f, direction: vec3f) -> vec4f {
+  let scale = irradianceFieldLevelScale(level);
+  let spacing = irradianceField.originSpacing.w * scale;
+  let lo = irradianceField.validMin[level].xyz;
+  let hi = irradianceField.validMax[level].xyz - vec3i(1);
+  if (any(hi < lo)) { return vec4f(0.0); }
+  let biased = position + normal * irradianceField.bias.x * scale;
+  let q = clamp((position - irradianceField.originSpacing.xyz) / spacing, vec3f(lo), vec3f(hi));
+  let base = vec3i(min(floor(q), vec3f(max(hi - vec3i(1), lo))));
+  let f = q - vec3f(base);
+  var sum = vec3f(0.0);
+  var weightSum = 0.0;
+  for (var corner = 0u; corner < 8u; corner++) {
+    let offset = vec3u(corner & 1u, (corner >> 1u) & 1u, corner >> 2u);
+    let cell = base + vec3i(offset);
+    if (any(cell > hi)) { continue; }
+    let probe = irradianceFieldProbeIndex(level, cell);
+    let state = irradianceFieldMeta[probe];
+    if (state.y != IRRADIANCE_FIELD_PROBE_ACTIVE) { continue; }
+    let probePosition = irradianceField.originSpacing.xyz + vec3f(cell) * spacing
+      + irradianceFieldProbeOffset(state, spacing);
+    if (dot(probePosition - position, normal) <= 0.0) { continue; }
+    let axis = select(vec3f(1.0) - f, f, offset > vec3u(0u));
+    let trilinear = axis.x * axis.y * axis.z;
+    if (!(trilinear > 0.0)) { continue; }
+    let value = irradianceFieldCone(probe, direction, 0.25);
+    if (!(value.w > 0.0)) { continue; }
+    let fromProbe = biased - probePosition;
+    let dist = length(fromProbe);
+    let momentDir = select(normal, fromProbe / dist, dist > 1e-6);
+    let moments = irradianceFieldDepth(probe, momentDir);
+    let mean = moments.x;
+    let variance = abs(mean * mean - moments.y);
+    var visibility = 1.0;
+    if (dist > mean) {
+      let delta = dist - mean;
+      let chebyshev = variance / (variance + delta * delta);
+      visibility = chebyshev * chebyshev * chebyshev;
+    }
+    let weight = trilinear * visibility;
+    if (weight > 0.0) {
+      sum += value.xyz * weight;
+      weightSum += weight;
+    }
+  }
+  if (!(weightSum > 0.0)) { return vec4f(0.0); }
+  return vec4f(max(sum / weightSum, vec3f(0.0)), 1.0);
+}
+
+fn sampleHardwareFallbackRadiance(position: vec3f, normal: vec3f, direction: vec3f) -> vec4f {
+  if (irradianceField.levels.z != 0u) { return vec4f(0.0); }
+  let count = max(irradianceField.levels.x, 1u);
+  var level = count - 1u;
+  var alpha = 1.0;
+  for (var l = 0u; l + 1u < count; l++) {
+    let q = (position - irradianceField.originSpacing.xyz) /
+      (irradianceField.originSpacing.w * irradianceFieldLevelScale(l));
+    let lo = vec3f(irradianceField.validMin[l].xyz);
+    let hi = vec3f(irradianceField.validMax[l].xyz - vec3i(1));
+    let edge = min(q - lo, hi - q);
+    let t = min(edge.x, min(edge.y, edge.z));
+    if (!(t > 0.0)) { continue; }
+    level = l;
+    alpha = select(1.0, saturate(t / irradianceField.bias.w), irradianceField.bias.w > 0.0);
+    break;
+  }
+  let fine = sampleHardwareFallbackLevel(level, position, normal, direction);
+  var coarse = vec4f(0.0);
+  if (level + 1u < count && (alpha < 1.0 || fine.w == 0.0)) {
+    coarse = sampleHardwareFallbackLevel(level + 1u, position, normal, direction);
+  }
+  let wFine = select(0.0, alpha, fine.w > 0.0);
+  let wCoarse = select(0.0, select(1.0 - alpha, 1.0, fine.w == 0.0), coarse.w > 0.0);
+  let total = wFine + wCoarse;
+  if (!(total > 0.0)) { return vec4f(0.0); }
+  return vec4f(max((fine.xyz * wFine + coarse.xyz * wCoarse) / total, vec3f(0.0)), 1.0);
+}
+#endif
+
 fn lightProbeFallback(i: u32) {
   if (i >= fallbackListIn[0]) { return; }
   let slot = fallbackListIn[i + 1u];
@@ -1412,13 +1508,19 @@ fn lightProbeFallback(i: u32) {
       let coverage = screenRadianceCoverageFromTrace(receiver.position, levelTag - 1u, ray.hitDistance);
       cached = sampleScreenRadianceCache(coverage, receiver.position, ray.direction);
     }
-  } else
-#endif
+  } else {
+    // Hardware screen-space scatter: evaluate the clipmap irradiance field via
+    // Chebyshev depth moments and the hardware radiance atlas without software
+    // Global SDF / canonical BVH segment marching.
+    cached = sampleHardwareFallbackRadiance(receiver.position, receiver.normal, ray.direction);
+  }
+#else
   {
     // A real near-field hit with no Card radiance still needs the existing
     // qualified reconstruction. It did not reach the cache boundary.
     cached = sampleRadianceCacheAt(receiver.position, receiver.normal, vec3f(0.0), ray.direction, 0.25);
   }
+#endif
   if (cached.w > 0.0) {
     ray.radiance = cached.xyz;
     if (rayStatus(ray.info) == STATUS_CACHE_BOUNDARY) { ray.hitDistance = -1.0; }
@@ -1817,12 +1919,19 @@ fn spatialProbeHitWeight(delta: vec3f, texel: u32, center: f32, neighbor: f32) -
   if (texel < 4u) {
     filterProbeIndices[texel] = SCREEN_PROBE_NONE;
     filterProbeWeights[texel] = 0.0;
-    if (probe < probeFrame.probes.x && probeLive(probe)) {
+    if (probeLive(probe)) {
       let record = probesIn[probe];
       let tiles = tileCount();
-      let tile = vec2i(vec2u(probe % tiles.x, probe / tiles.x));
-      let offsets = array<vec2i, 4>(vec2i(1, 0), vec2i(-1, 0), vec2i(0, 1), vec2i(0, -1));
-      let other = tile + offsets[texel];
+      var other = vec2i(-1);
+      if (probe < probeFrame.probes.x) {
+        let tile = vec2i(vec2u(probe % tiles.x, probe / tiles.x));
+        let offsets = array<vec2i, 4>(vec2i(1, 0), vec2i(-1, 0), vec2i(0, 1), vec2i(0, -1));
+        other = tile + offsets[texel];
+      } else {
+        let g = uniformProbeGrid(vec2f(unpackPixel(record.pixel)) + vec2f(0.5), probeFrame.probes.w);
+        let base = vec2u(min(floor(g), vec2f(max(tiles, vec2u(2u)) - vec2u(2u))));
+        other = vec2i(min(base + vec2u(texel & 1u, texel >> 1u), tiles - vec2u(1u)));
+      }
       if (all(other >= vec2i(0)) && all(other < vec2i(tiles))) {
         let neighbor = u32(other.y) * tiles.x + u32(other.x);
         if (probeLive(neighbor)) {
@@ -1840,7 +1949,7 @@ fn spatialProbeHitWeight(delta: vec3f, texel: u32, center: f32, neighbor: f32) -
   let centerRecord = radianceIn[index];
   let center = probeRadianceValue(centerRecord);
   let empty = centerRecord.support == SUPPORT_SCATTER_EMPTY || centerRecord.support == SUPPORT_SPATIAL_ESTIMATE;
-  if (probe >= probeFrame.probes.x || !probeLive(probe) ||
+  if (!probeLive(probe) ||
       (!empty && (center.w != 1.0 || !(probeRadianceMeasure(centerRecord) > 0.0)))) {
     radianceOut[index] = centerRecord;
     return;
@@ -2217,9 +2326,10 @@ fn spAoPixel(cell: vec2u) -> vec2u {
   return min(cell * spAoFactor() + vec2u(spAoFactor() / 2u), extentSize() - vec2u(1u));
 }
 fn spAoDepth(pixel: vec2u) -> f32 {
+  if (spAoFactor() == 1u) { return textureLoad(gbufferDepth, vec2i(pixel), 0); }
   let size = textureDimensions(gbufferDepth);
   let uv = (vec2f(pixel) + 0.5) / vec2f(size);
-  let cell = depthPyramidCell(uv, textureDimensions(depthPyramid, 0));
+  let cell = depthPyramidViewportCell(uv, depthPyramid, 0u, size);
   return projectViewDepth(textureLoad(depthPyramid, vec2i(cell), 0).x, view.temporalProjection);
 }
 
@@ -2227,7 +2337,17 @@ fn spAoSlicePrimitive(h: f32, normalAngle: f32) -> f32 {
   return (cos(normalAngle) + 2.0 * h * sin(normalAngle) - cos(2.0 * h - normalAngle)) * 0.25;
 }
 
-// Two azimuthal slices and three steps on each side. Integrate the visible
+// Analytical cosine-weighted bent-normal slice primitives (UE GTAO Algorithm 2):
+// d/dh [spAoBentCosPrimitive] = cos(h) * cos(h - normalAngle)
+// d/dh [spAoBentSinPrimitive] = sin(h) * cos(h - normalAngle)
+fn spAoBentCosPrimitive(h: f32, normalAngle: f32) -> f32 {
+  return 0.5 * h * cos(normalAngle) + 0.25 * sin(2.0 * h - normalAngle);
+}
+fn spAoBentSinPrimitive(h: f32, normalAngle: f32) -> f32 {
+  return 0.5 * h * sin(normalAngle) - 0.25 * cos(2.0 * h - normalAngle);
+}
+
+// Two azimuthal slices and three jittered steps on each side. Integrate the visible
 // cosine arcs against their open-surface references to avoid grazing darkening.
 @compute @workgroup_size(64)
 fn computeScreenProbeShortRangeAo(@builtin(global_invocation_id) gid: vec3u,
@@ -2252,8 +2372,9 @@ fn computeScreenProbeShortRangeAo(@builtin(global_invocation_id) gid: vec3u,
   let radius = probeFrame.tuning.y;
   let blueNoisePixel = pixel & vec2u(127u);
   let blueNoiseRow = blueNoisePixel.y + (probeFrame.probes.w & 7u) * 128u;
-  let aoBlueNoiseAzimuth = textureLoad(scatterNoise, vec2i(i32(blueNoisePixel.x), i32(blueNoiseRow)), 0).x;
-  let rotation = aoBlueNoiseAzimuth * 1.57079632679;
+  let aoBlueNoise = textureLoad(scatterNoise, vec2i(i32(blueNoisePixel.x), i32(blueNoiseRow)), 0).xy;
+  let rotation = aoBlueNoise.x * 1.57079632679;
+  let radialJitter = aoBlueNoise.y;
   let projection = view.worldViewProj;
   let eyeAxis = vec3f(projection[0].w, projection[1].w, projection[2].w);
   let perspective = any(eyeAxis != vec3f(0.0));
@@ -2283,8 +2404,9 @@ fn computeScreenProbeShortRangeAo(@builtin(global_invocation_id) gid: vec3u,
     var horizon = low;
     for (var side = 0u; side < 2u; side++) {
       let direction = t * select(-1.0, 1.0, side == 1u);
+      let sideJitter = fract(radialJitter + f32(slice) * 0.5 + f32(side) * 0.25);
       for (var step = 1u; step <= 3u; step++) {
-        let fraction = f32(step) / 3.0;
+        let fraction = (f32(step) - 0.5 + sideJitter * 0.5) / 3.0;
         let samplePoint = p + direction * (radius * fraction * fraction);
         let clip = view.worldViewProj * vec4f(samplePoint, 1.0);
         if (!(clip.w > 0.0)) { continue; }
@@ -2309,8 +2431,9 @@ fn computeScreenProbeShortRangeAo(@builtin(global_invocation_id) gid: vec3u,
     let contribution = projected * (spAoSlicePrimitive(h.x, normalAngle) + spAoSlicePrimitive(h.y, normalAngle));
     visible += contribution;
     open += projected * (cos(normalAngle) + normalAngle * sin(normalAngle));
-    let mid = (h.x + h.y) * 0.5;
-    bent += (v * cos(mid) + t * sin(mid)) * max(contribution, 0.0);
+    let bentCos = spAoBentCosPrimitive(h.y, normalAngle) - spAoBentCosPrimitive(h.x, normalAngle);
+    let bentSin = spAoBentSinPrimitive(h.y, normalAngle) - spAoBentSinPrimitive(h.x, normalAngle);
+    bent += projected * (v * bentCos + t * bentSin);
   }
   let ao = select(1.0, clamp(visible / max(open, 1e-5), 0.03, 1.0), open > 1e-5);
   let direction = normalize(n * 1e-4 + bent);
@@ -2624,7 +2747,17 @@ fn stochasticScreenSpaceProbe(pixel: vec2u, base: vec2u, f: vec2f, position: vec
 @compute @workgroup_size(64)
 fn integrateScreenSpaceScreenProbes(@builtin(global_invocation_id) gid: vec3u,
     @builtin(num_workgroups) groups: vec3u) {
-  _ = integrateScreenSpaceProbeAt(spLinearId(gid, groups), false);
+  _ = integrateScreenSpaceProbeAt(spLinearId(gid, groups), false, vec3f(0.0), false);
+}
+
+@compute @workgroup_size(64)
+fn integrateScreenSpaceScreenProbesBent(@builtin(global_invocation_id) gid: vec3u,
+    @builtin(num_workgroups) groups: vec3u) {
+  let i = spLinearId(gid, groups);
+  let extent = extentSize();
+  if (i >= extent.x * extent.y) { return; }
+  let aoRecord = shortRangeAoIn[i];
+  _ = integrateScreenSpaceProbeAt(i, false, aoRecord.xyz, aoRecord.w >= 0.0);
 }
 
 @compute @workgroup_size(64)
@@ -2633,7 +2766,7 @@ fn integrateScreenSpaceScreenProbesWithMotion(@builtin(global_invocation_id) gid
   let i = spLinearId(gid, groups);
   let extent = extentSize();
   if (i >= extent.x * extent.y) { return; }
-  let inputs = integrateScreenSpaceProbeAt(i, true);
+  let inputs = integrateScreenSpaceProbeAt(i, true, vec3f(0.0), false);
   var moving = 0.0;
   for (var tap = 0u; tap < 4u; tap++) {
     let weight = inputs.weights[tap];
@@ -2644,12 +2777,28 @@ fn integrateScreenSpaceScreenProbesWithMotion(@builtin(global_invocation_id) gid
   pixelMovingOut[i] = u32(round(clamp(moving, 0.0, 1.0) * 255.0));
 }
 
+@compute @workgroup_size(64)
+fn integrateScreenSpaceScreenProbesBentWithMotion(@builtin(global_invocation_id) gid: vec3u,
+    @builtin(num_workgroups) groups: vec3u) {
+  let i = spLinearId(gid, groups);
+  let extent = extentSize();
+  if (i >= extent.x * extent.y) { return; }
+  let aoRecord = shortRangeAoIn[i];
+  let inputs = integrateScreenSpaceProbeAt(i, true, aoRecord.xyz, aoRecord.w >= 0.0);
+  var moving = 0.0;
+  for (var tap = 0u; tap < 4u; tap++) {
+    let weight = inputs.weights[tap];
+    if (weight > 0.0) { moving += weight * probeMovingIn[inputs.probes[tap]]; }
+  }
+  pixelMovingOut[i] = u32(round(clamp(moving, 0.0, 1.0) * 255.0));
+}
+
 struct ScreenSpaceMotionInputs {
   probes: vec4u,
   weights: vec4f,
 }
 
-fn integrateScreenSpaceProbeAt(i: u32, gatherMoving: bool) -> ScreenSpaceMotionInputs {
+fn integrateScreenSpaceProbeAt(i: u32, gatherMoving: bool, bentOverride: vec3f, hasBentOverride: bool) -> ScreenSpaceMotionInputs {
   let extent = extentSize();
   if (i >= extent.x * extent.y) { return ScreenSpaceMotionInputs(); }
   integratedOut[i] = vec4f(0.0);
@@ -2660,7 +2809,10 @@ fn integrateScreenSpaceProbeAt(i: u32, gatherMoving: bool) -> ScreenSpaceMotionI
   let position = worldPosition(pixel, z);
   let normal = loadStandardGBufferNormalRoughness(gbufferNormal, vec2i(pixel)).xyz;
   let distance = traceViewDistance(view.worldViewProj * vec4f(position, 1.0));
-  let near = shortRange(pixel, position, normal);
+  var near = shortRange(pixel, position, normal);
+  if (hasBentOverride && spAoFactor() == 1u && dot(bentOverride, normal) > 0.0) {
+    near.bent = normalize(bentOverride);
+  }
   let tiles = tileCount();
   let grid = uniformProbeGrid(vec2f(pixel) + vec2f(0.5), probeFrame.probes.w);
   let base = vec2u(floor(grid));
@@ -2924,6 +3076,10 @@ fn temporalScreenProbeAt(i: u32, currentAo: vec3f, velocity: vec2u, pixelMoving:
         expected = screenProbeDepthFromPreviousDeviceZ(sceneVelocityPreviousDepth(velocity.y));
       }
     }
+    // The retained history sits on the previous jittered raster; the unjittered reprojection
+    // above lands the surface off that lattice (UE GetHistoryScreenPositionIncludingTAAJitter,
+    // LumenPosition.ush:88-93). The world position already excludes the current jitter.
+    uv += probeFrame.previousJitter.xy;
     if (clip.w > 0.0 && expected > 0.0 && expected < 1e30 &&
         all(uv >= vec2f(0.0)) && all(uv < vec2f(1.0))) {
       let texel = uv * vec2f(extent) - vec2f(0.5);

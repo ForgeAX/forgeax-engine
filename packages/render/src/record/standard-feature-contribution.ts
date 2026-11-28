@@ -1,7 +1,7 @@
 import type { GraphAccess, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
-import { atmosphereTextures } from '../environment/luts';
+import { atmosphereAccesses } from '../environment/luts';
 import { type RenderError, RenderFeatureStageFailedError } from '../errors/render';
 import {
   type FeatureGraphConformanceEvent,
@@ -17,6 +17,7 @@ import type {
   RenderPipelineFrame,
   RenderPipelineTarget,
 } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 import type { RenderFrameState } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 import {
@@ -187,12 +188,7 @@ function resolveFeatureTargets(
       ? context.sceneInputs?.get(target as import('../features/targets').RenderFeatureTargetHandle)
       : undefined) ?? resolveDisplayTarget(target);
   const viewAccesses: GraphAccess[] =
-    request.atmosphere === undefined
-      ? []
-      : atmosphereTextures(request.atmosphere).map((resource) => ({
-          resource,
-          usage: 'sampled-read' as const,
-        }));
+    request.atmosphere === undefined ? [] : atmosphereAccesses(request.atmosphere);
   for (const target of request.waterInfoTargets?.values() ?? [])
     viewAccesses.push({ resource: target.view, usage: 'sampled-read' });
   return { ok: true, resolveTarget, viewAccesses };
@@ -221,7 +217,11 @@ function projectSelectedExecutions(
       viewAccesses: targets.viewAccesses,
       resolveBindings: (input) =>
         resolveTargetBindings(
-          input,
+          {
+            ...input,
+            resolveCloudBlueNoise: recordContext(context.internals).featureSceneInputs
+              ?.cloudBlueNoise,
+          },
           context.featurePostProcessEntries,
           request.atmosphere,
           request.waterInfoTargets,

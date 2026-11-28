@@ -10,13 +10,17 @@ import {
   createComputeStatePreparation,
 } from '../../compute-graph-state';
 import { createRasterState, type RasterState } from '../../raster-graph-state';
-import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import { registerScenePipelinePreparation } from '../../record/scene-pipeline-preparation';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
 import type { SceneVelocityInputs } from '../../temporal/default-gbuffer-velocity';
-import { recordContext } from '../../world/view-record-context';
-import { MOTION_BLUR_COMPUTE_WGSL, MOTION_BLUR_FEATURE_IDENTITY } from './motion-blur-feature';
+import { recordMotionBlurDispatch } from './motion-blur-execution';
+import {
+  addMotionBlurPass,
+  MOTION_BLUR_COMPUTE_WGSL,
+  MOTION_BLUR_FEATURE_IDENTITY,
+} from './motion-blur-feature';
+import { MOTION_BLUR_PARAMS_BYTE_SIZE } from './motion-blur-params';
 
 export const sceneVelocityComputeSource = () =>
   [
@@ -41,17 +45,18 @@ export const sceneVelocityComputeSource = () =>
       ),
   ].join('\n');
 
-/** Use the stock blur kernels with the desktop scene-depth/velocity input. */
-export function addSceneVelocityMotionBlur(
+/** Own the stock blur kernels with either resolved temporal metadata or packed velocity. */
+export function addNativeMotionBlur(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: RenderPipelineTarget,
-  velocity: RenderPipelineTarget,
-  source: SceneVelocityInputs,
+  temporal: RenderPipelineTarget,
+  source: SceneVelocityInputs | undefined,
   output: RenderPipelineTarget,
   width: number,
   height: number,
   compute: boolean,
 ): Result<void, RenderGraphError> {
+  if (source === undefined && !compute) return addMotionBlurPass(graph, input, temporal, output);
   const summaryGroups = [Math.ceil(width / 16), Math.ceil(height / 16), 1] as const;
   const reconstructGroups = [Math.ceil(width / 8), Math.ceil(height / 8), 1] as const;
   const tiles = compute
@@ -60,16 +65,18 @@ export function addSceneVelocityMotionBlur(
       })
     : ok(undefined);
   if (!tiles.ok) return tiles;
-  const params = graph.createBuffer('motion-blur-params', { size: 48 });
+  const bytes = new Uint8Array(source === undefined ? MOTION_BLUR_PARAMS_BYTE_SIZE : 48);
+  const jitterValues = source === undefined ? undefined : new Float32Array(bytes.buffer, 32, 2);
+  const params = graph.createBuffer('motion-blur-params', { size: bytes.byteLength });
   if (!params.ok) return params;
   const upload = graph.addCopyPass('motion-blur-params', {
     accesses: [{ resource: params.value, usage: 'copy-dst' }],
     encodeDirect(_encoder, frame, resources) {
-      const bytes = new Uint8Array(48);
+      bytes.fill(0);
       const parameters = frame.postProcessParams.get(MOTION_BLUR_FEATURE_IDENTITY);
       if (parameters !== undefined) bytes.set(parameters);
       const jitter = frame.camera.temporal?.currentJitterUv;
-      if (jitter !== undefined) new Float32Array(bytes.buffer, 32, 2).set(jitter);
+      if (jitter !== undefined) jitterValues?.set(jitter);
       frame.runtime.device.queue
         .writeBuffer(resources.buffer(params.value).unwrap(), 0, bytes)
         .unwrap();
@@ -78,9 +85,13 @@ export function addSceneVelocityMotionBlur(
   if (!upload.ok) return upload;
   const reads = [
     { resource: input.view, usage: 'sampled-read' },
-    { resource: velocity.view, usage: 'sampled-read' },
-    { resource: source.depth, usage: 'sampled-read' },
-    { resource: source.view, usage: 'uniform-read' },
+    { resource: temporal.view, usage: 'sampled-read' },
+    ...(source === undefined
+      ? []
+      : [
+          { resource: source.depth, usage: 'sampled-read' as const },
+          { resource: source.view, usage: 'uniform-read' as const },
+        ]),
     { resource: params.value, usage: 'uniform-read' },
   ] as const;
   const sampled = (
@@ -106,7 +117,7 @@ export function addSceneVelocityMotionBlur(
   });
 
   const tileBuffer = tiles.value;
-  if (tileBuffer === undefined) {
+  if (tileBuffer === undefined && source !== undefined) {
     let program: RasterState | undefined;
     let sampler: import('@forgeax/engine-rhi').Sampler | undefined;
     return graph.addRasterPass('motion-blur', {
@@ -139,7 +150,7 @@ export function addSceneVelocityMotionBlur(
             texture(0, resources.textureView(input.view).unwrap()),
             { binding: 1, resource: { kind: 'sampler', value: sampler } },
             buffer(2, resources.buffer(params.value).unwrap()),
-            texture(3, resources.textureView(velocity.view).unwrap()),
+            texture(3, resources.textureView(temporal.view).unwrap()),
             texture(4, resources.textureView(source.depth).unwrap()),
             buffer(5, resources.buffer(source.view).unwrap(), VIEW_UNIFORM_BYTES),
           ]),
@@ -148,7 +159,8 @@ export function addSceneVelocityMotionBlur(
       },
     });
   }
-  const sourceWgsl = sceneVelocityComputeSource();
+  if (tileBuffer === undefined) return ok(undefined);
+  const sourceWgsl = source === undefined ? MOTION_BLUR_COMPUTE_WGSL : sceneVelocityComputeSource();
   for (const [entryPoint, name, workgroups] of [
     ['tile_summary', 'motion-blur-tile-summary', summaryGroups],
     ['reconstruct', 'motion-blur', reconstructGroups],
@@ -158,7 +170,7 @@ export function addSceneVelocityMotionBlur(
       name,
       [
         sampled(0, 4, 'float'),
-        sampled(1, 4, 'uint'),
+        sampled(1, 4, source === undefined ? 'float' : 'uint'),
         { binding: 2, visibility: 4, buffer: { type: 'storage' } },
         {
           binding: 3,
@@ -170,8 +182,7 @@ export function addSceneVelocityMotionBlur(
           },
         },
         uniform(4, 4),
-        sampled(5, 4, 'depth'),
-        uniform(6, 4),
+        ...(source === undefined ? [] : [sampled(5, 4, 'depth'), uniform(6, 4)]),
       ],
       entryPoint,
     );
@@ -201,37 +212,20 @@ export function addSceneVelocityMotionBlur(
           0,
           computeBindGroup(frame, program, [
             texture(0, resources.textureView(input.view).unwrap()),
-            texture(1, resources.textureView(velocity.view).unwrap()),
+            texture(1, resources.textureView(temporal.view).unwrap()),
             buffer(2, resources.buffer(tileBuffer).unwrap()),
             texture(3, resources.textureView(output.view).unwrap()),
             buffer(4, resources.buffer(params.value).unwrap()),
-            texture(5, resources.textureView(source.depth).unwrap()),
-            buffer(6, resources.buffer(source.view).unwrap(), VIEW_UNIFORM_BYTES),
+            ...(source === undefined
+              ? []
+              : [
+                  texture(5, resources.textureView(source.depth).unwrap()),
+                  buffer(6, resources.buffer(source.view).unwrap(), VIEW_UNIFORM_BYTES),
+                ]),
           ]),
         );
         pass.dispatchWorkgroups(...workgroups);
-        if (entryPoint === 'reconstruct') {
-          const internal = frame as _InternalRenderPipelineContext;
-          const { frameState } = internal;
-          frameState.stagedMotionBlurExecution = {
-            receipt: {
-              frameId: frameState.frameNumber,
-              deviceGeneration: recordContext(internal.runtime).deviceScope.generation,
-              graphGeneration: frameState.graphGeneration,
-              program: 'motion-blur-compute',
-              outputFormat: 'rgba16float',
-              passes: [
-                {
-                  name: 'motion-blur-tile-summary',
-                  kind: 'compute',
-                  entryPoint: 'tile_summary',
-                  workgroups: summaryGroups,
-                },
-                { name, kind: 'compute', entryPoint, workgroups },
-              ],
-            },
-          };
-        }
+        recordMotionBlurDispatch(frame, entryPoint, workgroups);
       },
     });
     if (!added.ok) return added;

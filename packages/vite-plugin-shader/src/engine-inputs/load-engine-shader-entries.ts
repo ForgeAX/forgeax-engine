@@ -286,6 +286,9 @@ const CLOUD_DETAIL: bool = ${detail};
       },
     })),
     unlit: readEntry('unlit.wgsl', 'forgeax::default-unlit'),
+    standardClusterLayoutProbe: readEntry('standard-cluster-layout-probe.wgsl', undefined, {
+      STORAGE_BUFFER_AVAILABLE: true,
+    }),
     pointsLines: readEntry('points-lines.wgsl', 'forgeax::points-lines'),
     tonemap: readEntry('tonemap.wgsl'),
     standardOutputV2: readEntry('standard-output-v2.wgsl', 'forgeax::standard-output-v2'),
@@ -471,6 +474,7 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_cloud::layer': entries.cloudLayer.then((file) => file.source),
     'forgeax_pbr::contact_shadow': readSource('contact-shadow.wgsl'),
     'forgeax_standard::cluster': readSource('standard-cluster.wgsl'),
+    'forgeax_standard::cluster_layout': readSource('standard-cluster-layout.wgsl'),
     'forgeax_pbr::ibl_shared': readSource('ibl-shared.wgsl'),
     'forgeax_pbr::ibl_equirect_to_cube': readSource('ibl-equirect-to-cube.wgsl'),
     'forgeax_pbr::sky_sh_polynomial': readSource('sky-sh-polynomial.wgsl'),

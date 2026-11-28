@@ -54,7 +54,7 @@ import {
   stageSharedFeatureGraph,
 } from '../feature-graph-systems';
 import { stageRecordedFeatureGraph } from '../feature-systems';
-import { RENDER_GRAPH_COMPILE_SYSTEM } from '../graph-systems';
+import { RENDER_GRAPH_SEAL_SYSTEM } from '../graph-seal-systems';
 import { frameEncoder } from '../record-systems';
 import { ViewSubmission } from '../render-views';
 import {
@@ -912,11 +912,14 @@ describe('shared Feature graph systems', () => {
 
   it('publishes shared exports before any view graph compiles', async () => {
     const f = await fixture();
-    const compile = f.world
-      .scheduleData()
-      .find((schedule) => schedule.name === 'RenderRecord')
-      ?.systems.find((system) => system.name === RENDER_FEATURE_GRAPH_COMPILE_SYSTEM);
-    expect(compile?.before).toContain(RENDER_GRAPH_COMPILE_SYSTEM);
+    const record = f.world.scheduleData().find((schedule) => schedule.name === 'RenderRecord');
+    const compile = record?.systems.find(
+      (system) => system.name === RENDER_FEATURE_GRAPH_COMPILE_SYSTEM,
+    );
+    expect(compile).toBeDefined();
+    expect(
+      record?.systems.find((system) => system.name === RENDER_GRAPH_SEAL_SYSTEM)?.after,
+    ).toContain(compile?.name);
     f.finish(false);
     f.dispose();
   });

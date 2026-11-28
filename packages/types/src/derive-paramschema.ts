@@ -320,7 +320,8 @@ function exactSchemaJson(schema: readonly ParamSchemaEntry[]): {
       exact = false;
     else if (value !== null && typeof value === 'object') {
       const prototype = Object.getPrototypeOf(value);
-      if (prototype !== Object.prototype && prototype !== Array.prototype) exact = false;
+      if (prototype !== null && prototype !== Object.prototype && prototype !== Array.prototype)
+        exact = false;
     }
     return value;
   });

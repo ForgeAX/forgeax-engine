@@ -1,0 +1,224 @@
+{
+ "tests": [
+  "src/__tests__/part-role.unit.test.ts",
+  "src/__tests__/export-sidecar.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "457-role-shift",
+   "file": "src/mesh.ts",
+   "old": "export const FACE_ROLE_SHIFT = 2;",
+   "new": "export const FACE_ROLE_SHIFT = 3;"
+  },
+  {
+   "id": "457-setrole-noclear",
+   "file": "src/mesh.ts",
+   "old": "const flags = (mesh.fFlags[f] as number) & ~FACE_ROLE_MASK;",
+   "new": "const flags = mesh.fFlags[f] as number;"
+  },
+  {
+   "id": "457-setrole-clearall",
+   "file": "src/mesh.ts",
+   "old": "const flags = (mesh.fFlags[f] as number) & ~FACE_ROLE_MASK;",
+   "new": "const flags = 0;"
+  },
+  {
+   "id": "457-floater-nofloat",
+   "file": "src/compute/bake-cage.ts",
+   "old": "if (floating || (t >= 0 && mesh.hasTag(f, t))) out[f] = 1;",
+   "new": "if (t >= 0 && mesh.hasTag(f, t)) out[f] = 1;"
+  },
+  {
+   "id": "457-floater-notag",
+   "file": "src/compute/bake-cage.ts",
+   "old": "if (floating || (t >= 0 && mesh.hasTag(f, t))) out[f] = 1;",
+   "new": "if (floating) out[f] = 1;"
+  },
+  {
+   "id": "457-alldetail-some",
+   "file": "src/boolean.ts",
+   "old": "return faces.length > 0 && faces.every((f) => partRole(mesh, f) === 'detail');",
+   "new": "return faces.length > 0 && faces.some((f) => partRole(mesh, f) === 'detail');"
+  },
+  {
+   "id": "457-alldetail-tool",
+   "file": "src/boolean.ts",
+   "old": "return faces.length > 0 && faces.every((f) => partRole(mesh, f) === 'detail');",
+   "new": "return faces.length > 0 && faces.every((f) => partRole(mesh, f) !== 'form');"
+  },
+  {
+   "id": "457-host-notdetail",
+   "file": "src/boolean.ts",
+   "old": "if (details !== 'weld' && allDetail(b) && !allDetail(a)) {",
+   "new": "if (details !== 'weld' && allDetail(b)) {"
+  },
+  {
+   "id": "457-omit-nodiag",
+   "file": "src/boolean.ts",
+   "old": "      return ok({ omitted: b.faceCount });",
+   "new": "      return ok({ omitted: 0 });"
+  },
+  {
+   "id": "457-float-diff",
+   "file": "src/boolean.ts",
+   "old": "if (operation === 'union') return floatOperand(mesh, b, options, attribution);",
+   "new": "return floatOperand(mesh, b, options, attribution);"
+  },
+  {
+   "id": "457-passengerA-off",
+   "file": "src/boolean.ts",
+   "old": "  if (floatsA.length > 0) {\n    passengers.push(extractFaces(a, floatsA));",
+   "new": "  if (floatsA.length > 0 && false) {\n    passengers.push(extractFaces(a, floatsA));"
+  },
+  {
+   "id": "457-passengerB-off",
+   "file": "src/boolean.ts",
+   "old": "    if (operation === 'union') passengers.push(extractFaces(b, floatsB));",
+   "new": ""
+  },
+  {
+   "id": "457-passengerB-anyop",
+   "file": "src/boolean.ts",
+   "old": "    if (operation === 'union') passengers.push(extractFaces(b, floatsB));",
+   "new": "    passengers.push(extractFaces(b, floatsB));"
+  },
+  {
+   "id": "457-onlyfloats-branch",
+   "file": "src/boolean.ts",
+   "old": "if (operation === 'union' && floatsB.length === b.faceCount) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "457-b-notstripped",
+   "file": "src/boolean.ts",
+   "old": "    b = extractFaces(b, withoutFaces(b, floatsB));",
+   "new": ""
+  },
+  {
+   "id": "457-a-notstripped",
+   "file": "src/boolean.ts",
+   "old": "    a = extractFaces(a, withoutFaces(a, floatsA));",
+   "new": ""
+  },
+  {
+   "id": "457-details-validate",
+   "file": "src/boolean.ts",
+   "old": "if (details !== 'weld' && details !== 'float' && details !== 'omit') {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "457-details-intersection",
+   "file": "src/boolean.ts",
+   "old": "if (details !== 'weld' && (operation === 'intersection' || operation === 'split')) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "457-details-faces",
+   "file": "src/boolean.ts",
+   "old": "if (details !== 'weld' && 'faces' in operand) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "457-float-flag",
+   "file": "src/boolean.ts",
+   "old": "    mesh.fFlags[f] = (mesh.fFlags[f] as number) | FACE_FLOAT;",
+   "new": "    mesh.fFlags[f] = mesh.fFlags[f] as number;"
+  },
+  {
+   "id": "457-float-material",
+   "file": "src/boolean.ts",
+   "old": "    if (material !== undefined) mesh.fMaterial[f] = material;",
+   "new": ""
+  },
+  {
+   "id": "457-lowpoly-some-every",
+   "file": "src/lowpoly.ts",
+   "old": "if (part.some((f) => partRole(mesh, f) === 'form')) {",
+   "new": "if (part.every((f) => partRole(mesh, f) === 'form')) {"
+  },
+  {
+   "id": "457-lowpoly-empty",
+   "file": "src/lowpoly.ts",
+   "old": "  if (kept.length === 0) {\n    return err(",
+   "new": "  if (false) {\n    return err("
+  },
+  {
+   "id": "457-lowpoly-roles-validate",
+   "file": "src/lowpoly.ts",
+   "old": "if (options.roles !== undefined && options.roles !== 'form') {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "457-inspect-float",
+   "file": "src/model.ts",
+   "old": "if (((this.mesh.fFlags[f] as number) & FACE_FLOAT) !== 0) roles.float++;",
+   "new": ""
+  },
+  {
+   "id": "457-markrole-validate",
+   "file": "src/model.ts",
+   "old": "if (!PART_ROLES.includes(role)) {",
+   "new": "if (false) {"
+  },
+  {
+   "id": "457-selrole",
+   "file": "src/selectors.ts",
+   "old": "(mesh, f) => partRole(mesh, f) === role);",
+   "new": "(mesh, f) => partRole(mesh, f) !== role);"
+  },
+  {
+   "id": "457-edge-always",
+   "file": "src/finish.ts",
+   "old": "triangleEdge.push((a + 1) % n === b ? (halves[a] as number) >> 1 : NONE);",
+   "new": "triangleEdge.push((halves[a] as number) >> 1);"
+  },
+  {
+   "id": "457-edge-none",
+   "file": "src/finish.ts",
+   "old": "triangleEdge.push((a + 1) % n === b ? (halves[a] as number) >> 1 : NONE);",
+   "new": "triangleEdge.push(NONE);"
+  },
+  {
+   "id": "457-edge-prev",
+   "file": "src/finish.ts",
+   "old": "triangleEdge.push((a + 1) % n === b ? (halves[a] as number) >> 1 : NONE);",
+   "new": "triangleEdge.push((a + 1) % n === b ? (halves[(a + n - 1) % n] as number) >> 1 : NONE);"
+  },
+  {
+   "id": "457-sliver-edges",
+   "file": "src/finish.ts",
+   "old": "        keptEdges.push(\n          triangleEdge[t * 3] as number,\n          triangleEdge[t * 3 + 1] as number,\n          triangleEdge[t * 3 + 2] as number,\n        );",
+   "new": "        keptEdges.push(NONE, NONE, NONE);"
+  },
+  {
+   "id": "457-flags-copy",
+   "file": "src/finish.ts",
+   "old": "faceFlags: mesh.fFlags.slice(0, faces),",
+   "new": "faceFlags: new Uint8Array(faces),"
+  },
+  {
+   "id": "457-edgeflags-copy",
+   "file": "src/finish.ts",
+   "old": "edgeFlags: mesh.eFlags.slice(0, mesh.halfHighWater >> 1),",
+   "new": "edgeFlags: new Uint8Array(mesh.halfHighWater >> 1),"
+  },
+  {
+   "id": "457-tags-copy",
+   "file": "src/finish.ts",
+   "old": "faceTags: mesh.fTags.slice(0, faces * mesh.tagWords),",
+   "new": "faceTags: new Uint32Array(faces * mesh.tagWords),"
+  },
+  {
+   "id": "457-role-copy",
+   "file": "src/finish.ts",
+   "old": "faceRole: mesh.fRole.slice(0, faces),",
+   "new": "faceRole: new Int32Array(faces),"
+  },
+  {
+   "id": "457-bake-sidecar-vc",
+   "file": "src/compute/bake-ts.ts",
+   "old": "vertexCorner: exported.value.sidecar.vertexCorner,",
+   "new": "vertexCorner: exported.value.sidecar.vertexCorner.slice().reverse(),"
+  }
+ ]
+}

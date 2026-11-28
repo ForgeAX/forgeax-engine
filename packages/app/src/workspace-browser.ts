@@ -7,6 +7,11 @@ import {
 import { decodePackData } from '@forgeax/engine-pack/runtime';
 import { type Context, type Fiber, joinPluginFiber, type Plugin } from '@forgeax/engine-plugin';
 import {
+  defaultViewportOutputInspection,
+  isViewportOutputMode,
+  type ViewportOutputMode,
+} from '@forgeax/engine-render';
+import {
   type BrowserFrameCompleted,
   FORGEAX_FRAME_COMPLETED_EVENT,
   subscribeBrowserFrameSubmitted,
@@ -82,7 +87,7 @@ type CommandInput = EngineWorkspaceCameraInput & {
   readonly guid?: string;
   readonly worldId?: string;
   readonly request?: EngineWorkspaceRuntimePackRequest;
-  readonly mode?: 'player' | 'observer';
+  readonly mode?: 'player' | 'observer' | ViewportOutputMode;
   readonly x?: number;
   readonly y?: number;
   readonly granularity?: EngineWorkspacePickGranularity;
@@ -120,7 +125,8 @@ function isReadOnlyWorkspaceOperation(operation: string): boolean {
     operation === 'preview.material.get' ||
     operation === 'camera.get' ||
     operation === 'preview.display.get' ||
-    operation === 'target.pick'
+    operation === 'target.pick' ||
+    operation === 'viewport.output.get'
   );
 }
 
@@ -857,6 +863,23 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         case 'entity.focus': {
           const entityId = requireEntityId(input);
           return requireTools(input).focus({ entityId });
+        }
+        case 'viewport.output.get': {
+          const vp = requireTools(input).viewportOutput;
+          return vp ? vp.get() : defaultViewportOutputInspection();
+        }
+        case 'viewport.output.set': {
+          if (!isViewportOutputMode(input.mode))
+            throw new TypeError(`Unsupported viewport output mode: ${String(input.mode)}`);
+          const vp = requireTools(input).viewportOutput;
+          if (!vp)
+            throw new EngineWorkspaceError(
+              'engine-workspace-capability-unavailable',
+              'Viewport output visualization tools',
+            );
+          const result = vp.set({ mode: input.mode });
+          frameFloor = submittedFrame;
+          return result;
         }
         default:
           throw new EngineWorkspaceError(

@@ -28,10 +28,12 @@ use wasm_bindgen::prelude::*;
 
 mod compose;
 mod errors;
+mod kernel;
 mod naga;
 mod rhi;
 
 pub use crate::compose::*;
+pub use crate::kernel::*;
 pub use crate::naga::*;
 pub use crate::rhi::*;
 

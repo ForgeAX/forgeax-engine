@@ -1,4 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { maxOf, pushAll } from './arrays';
 import { alphaCoverage, type BakeResult, type BakeSettings } from './bake';
 import type { BakeMapKind } from './compute/job';
 import { type ModelingError, modelingError } from './errors';
@@ -228,7 +229,7 @@ export function thinHoleCheck(
   const texture = result.textures[opacity ? 'opacity' : 'height'];
   const measured: number[] = [];
   if (texture !== undefined) {
-    if (opacity) measured.push(...alphaCoverage(texture, plan.cutoff));
+    if (opacity) pushAll(measured, alphaCoverage(texture, plan.cutoff));
     else {
       const { width, height } = texture.shape.extent as { width: number; height: number };
       let floor = 0;
@@ -239,6 +240,6 @@ export function thinHoleCheck(
   const maxError =
     measured.length === 0
       ? Number.POSITIVE_INFINITY
-      : Math.max(...measured.map((c) => Math.abs(c - expected)));
+      : maxOf(measured.map((c) => Math.abs(c - expected)));
   return { pass: maxError <= tolerance, mode: plan.mode, expected, measured, maxError, tolerance };
 }

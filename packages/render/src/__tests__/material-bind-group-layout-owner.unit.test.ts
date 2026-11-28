@@ -572,6 +572,49 @@ it('records the physical draw without a legacy Standard material IBL receipt', (
   expect(frame.iblBindings.inspect()).toBe(valid);
 });
 
+it('inspects the admitted shader layout after recording, independently of authored fields', () => {
+  const f = fixture();
+  Object.assign(f.deps.pipelineState, { defaultNormalTextureView: {}, fallbackTextureView: {} });
+  const shader = 'forgeax::default-standard-pbr';
+  f.material.materialShaderId = shader;
+  const { schema } = new ParamSchemaProjectionOwner().admit({
+    ownerId: 'selected-clearcoat',
+    revision: 1,
+    schema: [{ name: 'clearcoatTexture', type: 'texture2d' }],
+  });
+  const group = f.draw();
+  const observation = new IblBindingObservation(iblReceipt(f.deps, 7));
+  f.deps.frameState.iblBindings = observation;
+  const pipeline = {} as Parameters<typeof recordIblPipelineBinding>[2];
+  recordIblPipelineBinding(
+    f.deps as unknown as Parameters<typeof recordIblPipelineBinding>[0],
+    f.material,
+    pipeline,
+    group,
+    0,
+    { shader, schema, layout: f.layout, perShaderLayout: f.layout, index: 0, lit: true },
+  );
+  const first = observation.inspect();
+  expect(first.pipeline?.materialBglIdentity).toBe(getOpaqueResourceIdentity(f.layout));
+  expect(first.pipeline?.effectiveMaterialLayoutIdentity).toContain('clearcoatTexture');
+
+  const field = { name: 'clearcoatTexture', type: 'texture2d' as const };
+  const live = [field];
+  observation.draw(
+    2,
+    getOpaqueResourceIdentity(f.layout),
+    getOpaqueResourceIdentity(group),
+    shader,
+    live,
+    7,
+  );
+  field.name = 'sheenColorTexture';
+  expect(observation.inspect().pipeline?.effectiveMaterialLayoutIdentity).toContain(
+    'clearcoatTexture',
+  );
+  expect(first.pipeline?.effectiveMaterialLayoutIdentity).toContain('clearcoatTexture');
+});
+
 it('keeps current IBL errors observable and replaces proofs with changed bindings', () => {
   const f = fixture();
   const oldGroup = f.draw(); // No inspection was requested at first assembly.

@@ -1,0 +1,4 @@
+plane-sphere: status ok, branches 1, closed 1, issues 0, max bound 7.80e-8
+plane-cylinder-oblique: status ok, branches 1, closed 1, issues 0, max bound 2.94e-8
+sphere-cylinder-through: status ok, branches 2, closed 2, issues 0, max bound 6.52e-8
+plane-torus-equator: status ok, branches 2, closed 2, issues 0, max bound 4.39e-8

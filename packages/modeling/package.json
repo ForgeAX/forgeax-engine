@@ -11,6 +11,14 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
     },
+    "./brep": {
+      "types": "./dist/brep/index.d.ts",
+      "import": "./dist/brep/index.mjs"
+    },
+    "./quad": {
+      "types": "./dist/quad/index.d.ts",
+      "import": "./dist/quad/index.mjs"
+    },
     "./tools": {
       "types": "./dist/tools/index.d.ts",
       "node": "./dist/tools/index.mjs",
@@ -30,7 +38,11 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:falsifiers": "vitest run src/__tests__/falsifiers",
+    "mutation": "node scripts/mutation/run.ts",
+    "bench:assets": "tsup && node --experimental-strip-types scripts/asset-bench/run.ts",
+    "eval:quad": "node --experimental-strip-types scripts/quad-eval/run.ts --all --producer identity --out dist/quad-eval"
   },
   "dependencies": {
     "@forgeax/engine-animation": "workspace:*",
@@ -40,7 +52,8 @@
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-render": "workspace:*",
     "@forgeax/engine-tool-runtime": "workspace:*",
-    "@forgeax/engine-types": "workspace:*"
+    "@forgeax/engine-types": "workspace:*",
+    "@forgeax/modeling-kernel": "workspace:*"
   },
   "forgeax": {
     "metrics": {

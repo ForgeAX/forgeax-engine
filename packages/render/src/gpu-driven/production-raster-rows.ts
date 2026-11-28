@@ -164,20 +164,22 @@ export function admitDirectResources(
 ): Result<boolean, GpuDrivenPreparationError> {
   let missing: GpuDrivenPreparationError | undefined;
   let usesSceneTable = false;
-  for (const batch of scene.plan.batches) {
+  scene.plan.batches.forEach((batch) => {
     const binding = batch.binding;
     if (binding === undefined) throw missingBatchExecution();
     const execution = executions.get(binding)?.forward;
     if (execution === undefined) throw missingBatchExecution();
-    if (execution.route === 'none') continue;
+    if (execution.route === 'none') return;
     missing ??= missingArtifactFor(execution, batch);
     materialAddressFor(materials, binding, execution);
-    if (execution.route !== 'gpu') continue;
+    if (execution.route !== 'gpu') return;
     geometryAddressFor(materials, binding, execution, scene.meshes?.get(binding.assetHandle));
+    // Every admitted task still joins its captured resource versions. The
+    // direct plan only needs to know whether any task consumes the scene table.
+    if (usesSceneTable || execution.artifact === undefined) return;
     const mesh = meshes.get(binding);
-    if (mesh !== undefined && execution.artifact !== undefined && meshSupportsBatch(mesh, batch))
-      usesSceneTable = true;
-  }
+    usesSceneTable = mesh !== undefined && meshSupportsBatch(mesh, batch);
+  });
   return missing === undefined ? ok(usesSceneTable) : err(missing);
 }
 

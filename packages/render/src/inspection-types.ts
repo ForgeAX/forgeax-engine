@@ -440,12 +440,25 @@ export interface GpuSceneTableInspection {
 
 type GpuSceneTableName = 'primitive' | 'instance' | 'transform' | 'material';
 
+export interface GpuScenePinWorkspaceInspection {
+  /** Roster objects acquired when no retired workspace was available. */
+  readonly created: number;
+  /** New typed index backing allocations, including the first reservation. */
+  readonly growths: number;
+  /** Empty slots the Scene can reuse without creating a new backing. */
+  readonly idleCapacity: number;
+}
+
 export interface GpuSceneInspection {
   readonly capacity: number;
   readonly tables: Readonly<Record<GpuSceneTableName, GpuSceneTableInspection>>;
   readonly uploadRanges: number;
   readonly uploadBytes: number;
   readonly capacityGrows: number;
+  readonly pinWorkspaces?: {
+    readonly materials: GpuScenePinWorkspaceInspection;
+    readonly meshes: GpuScenePinWorkspaceInspection;
+  };
   /** Successful reductions, failed private copies and bytes in the current staging copy. */
   readonly tableReclamation?: {
     readonly reductions: number;
@@ -457,6 +470,8 @@ export interface GpuSceneInspection {
   readonly noChangeFrames: number;
   /** Instance transform rows visited by instance-only updates; O(dirty rows) on the range path. */
   readonly instanceRowsVisited: number;
+  /** Reusable physical address journal for the latest instance upload. */
+  readonly instanceUploadBackingBytes?: number;
 }
 
 /**
@@ -1102,6 +1117,8 @@ export type RenderSceneResyncReason =
   | 'explicit-invalidate';
 
 export interface PersistentRenderSceneInspection {
+  /** Numeric backing of this Scene's retained row and GPU content history. */
+  readonly changeJournalBackingBytes?: number;
   /** Numeric backing of active culling bounds pages in this Scene. */
   readonly cullingBoundsBackingBytes?: number;
   readonly worldEntitiesScanned: number;

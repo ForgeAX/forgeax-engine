@@ -6,13 +6,48 @@ import {
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { type BakeOptions, bakeMaps, bakeSources, createBakeCooker } from '../bake';
-import { type BakeSurface, bakeSurface, MATERIAL_ID_PALETTE } from '../compute/bake-ts';
+import {
+  type BakeExecutor,
+  type BakeOptions,
+  bakeMaps,
+  bakeSources,
+  createBakeCooker,
+} from '../bake';
+import { type BakeSurface, bakePhases, bakeSurface, MATERIAL_ID_PALETTE } from '../compute/bake-ts';
+import { WorkMeter } from '../compute/job';
 import { decodeSnapshot } from '../fxem';
 import { type Model, model } from '../model';
 import { sel } from '../selectors';
 
 type V3 = [number, number, number];
+
+it('cooks source maps through the admitted row executor once with serial-identical payloads', async () => {
+  const sources = bakeSources({
+    base: flatBase(),
+    detail: bumped(),
+    maps: ['normal', 'height'],
+    resolution: 32,
+    key: 'parallel',
+  });
+  if (!sources.ok) throw sources.error;
+  let executions = 0;
+  const executor: BakeExecutor = async (request, rows, { budget }) => {
+    executions++;
+    const prepared = bakePhases.prepare(request, new WorkMeter(Number.POSITIVE_INFINITY));
+    if (!prepared.ok) throw prepared.error;
+    const work = new WorkMeter(budget);
+    const part = bakePhases.rows(prepared.value, rows, work);
+    if (!part.ok) throw part.error;
+    return { ok: true, parts: [part.value], work: work.units };
+  };
+  const parallel = createBakeCooker({ executor });
+  const serial = createBakeCooker();
+  for (const entry of Object.values(sources.value)) {
+    const input = { guid: '01900000-0000-7000-8000-00000000b4ce', source: entry.source };
+    expect(await parallel.cook(input)).toEqual(await serial.cook(input));
+  }
+  expect(executions).toBe(1);
+});
 const norm = (v: V3): V3 => {
   const l = Math.hypot(...v);
   return [v[0] / l, v[1] / l, v[2] / l];
@@ -199,7 +234,8 @@ describe('bake: tangent-space normals match computeTangentVec4 (gate)', () => {
     const wrong = frames.map((f) =>
       degrees(shade(r.textures.normal as TextureAsset, f, 64, false), bumpNormal(f.p)),
     );
-    expect(wrong.reduce((a, b) => a + b, 0) / wrong.length).toBeGreaterThan(5);
+    // The straightened atlas lays the chart along the turned x axis, so the world-axis frame is off by the 30 degree turn only: measured mean 4.3 degrees against 0.28.
+    expect(wrong.reduce((a, b) => a + b, 0) / wrong.length).toBeGreaterThan(3);
   });
 });
 
@@ -232,7 +268,13 @@ describe('bake evaluators', () => {
       {
         code: 'ray-miss',
         severity: 'warn',
-        detail: { subject: '', samples: expect.any(Number), rayHits: 0 },
+        detail: {
+          subject: '',
+          samples: expect.any(Number),
+          rayHits: 0,
+          nearest: expect.any(Number),
+          clusters: expect.any(Array),
+        },
       },
     ]);
     expect(texel(missed.textures.height as TextureAsset, 64, f.x, f.y)[0]).toBe(255);
@@ -507,6 +549,35 @@ describe('bake job contract', () => {
 });
 
 describe('bake through PackCookSource + NativeCooker', () => {
+  it('exports legal Pack identities for multiword map names', () => {
+    const sources = bakeSources({
+      base: flatBase(),
+      detail: bumped(),
+      maps: ['baseColor', 'edgeWear', 'normalObject', 'materialId'],
+      resolution: 8,
+      key: 'robot',
+    });
+    if (!sources.ok) throw sources.error;
+    expect(Object.keys(sources.value)).toEqual([
+      'texture/robot-base-color',
+      'texture/robot-edge-wear',
+      'texture/robot-normal-object',
+      'texture/robot-material-id',
+    ]);
+    for (const entry of Object.values(sources.value)) expect(entry.kind).toBe('modeling-bake');
+    expect((sources.value['texture/robot-base-color']?.source as { map: string }).map).toBe(
+      'baseColor',
+    );
+    expect(
+      bakeSources({
+        base: flatBase(),
+        detail: bumped(),
+        maps: ['normal'],
+        resolution: 8,
+        key: 'Robot',
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'model-invalid-argument' } });
+  });
   it('bakeSources encodes each snapshot byte-exactly across encoding chunks', () => {
     const base = flatBase();
     const detail = bumped();

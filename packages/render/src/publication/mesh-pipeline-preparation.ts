@@ -5,6 +5,7 @@ import { type AssetHandle, err, type MeshAsset, ok, type Result } from '@forgeax
 import { Instances } from '../components/instances';
 import { DynamicGeometryError } from '../dynamic-geometry';
 import { renderMaterialContext } from '../extract/material-context';
+import type { SourceMaterialProgramDemand } from '../material-program-selection';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { extractSource } from '../render-system-extract-tail';
 import { candidateSkinBindingValid, readCandidateSkinBinding } from './candidate-skin-binding';
@@ -44,6 +45,7 @@ export function captureMeshPipelinePreparation(input: {
   readonly assets: AssetRegistry;
   readonly capabilities: RhiCaps;
   readonly limits?: Parameters<typeof renderMaterialContext>[1];
+  readonly materialProgramDemand?: SourceMaterialProgramDemand | undefined;
 }): Result<MeshPipelinePreparation, DynamicGeometryError> {
   const invalid = (actual: unknown) =>
     err(
@@ -62,6 +64,7 @@ export function captureMeshPipelinePreparation(input: {
       return invalid('Skin and expanded instance geometry require distinct owners');
     const frame = extractSource(input.world, input.assets, undefined, {
       ...renderMaterialContext(input.capabilities, input.limits),
+      materialProgramDemand: input.materialProgramDemand,
       cull: 'none',
       retainHidden: true,
       renderables: { kind: 'partial', entities: new Set([input.entity]) },

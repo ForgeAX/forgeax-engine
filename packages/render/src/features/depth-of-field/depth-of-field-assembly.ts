@@ -88,10 +88,10 @@ export function registerDepthOfFieldBuiltins(
   }
 }
 
-/** Prewarm both DoF shader variants before publishing renderer readiness. */
-export async function prewarmDepthOfField(
+/** Publish both attachment variants, optionally prewarming backends that require it. */
+export async function prepareDepthOfFieldBuiltins(
   manifestEntries: readonly ManifestEntry[],
-  prewarm: (entry: ManifestEntry | undefined, id: string) => Promise<void>,
+  prewarm: ((entry: ManifestEntry | undefined, id: string) => Promise<void>) | undefined,
   register: (entries: DepthOfFieldShaderSources) => void,
 ): Promise<void> {
   let singleSample: ManifestEntry | undefined;
@@ -110,8 +110,10 @@ export async function prewarmDepthOfField(
     }
   }
   // Each attachment topology shares one shader module across all DoF passes.
-  await prewarm(singleSample, 'forgeax.dof');
-  await prewarm(multisampled, 'forgeax.dof.msaa');
+  if (prewarm !== undefined) {
+    await prewarm(singleSample, 'forgeax.dof');
+    await prewarm(multisampled, 'forgeax.dof.msaa');
+  }
   const single = singleSample,
     multi = multisampled;
   register({

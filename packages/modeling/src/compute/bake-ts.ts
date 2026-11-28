@@ -5,13 +5,27 @@ import {
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { maxOf, minOf } from '../arrays';
 import { fromBase64 } from '../base64';
-import { atan2, cos, sin } from '../dmath';
+import { atan2, cos, hypot3, sin } from '../dmath';
 import { type ModelingError, modelingError } from '../errors';
 import { exportMesh, type NormalMode } from '../finish';
 import { decodeSnapshot } from '../fxem';
-import { cross, dot, length, newell, normalize, sub, type Tuple3 } from '../geom';
+import { add, cross, dot, length, newell, normalize, sub, type Tuple3 } from '../geom';
 import { type EditMesh, NONE } from '../mesh';
 import { decodeSrgb } from '../texture';
+import { atlasNeighbor, dilate, MIXED, mipBleed, UNOWNED } from './atlas-ts';
+import {
+  type AnalyticPlan,
+  type AnalyticRules,
+  angleBetween,
+  Deviations,
+  limitOf,
+  normalStep,
+  type PatchSolve,
+  planAnalytic,
+  type Steps,
+  solveSample,
+  stratifiedSamples,
+} from './bake-analytic';
 import {
   averagedNormals,
   averagedPart,
@@ -24,24 +38,28 @@ import {
   FACING_MIN,
   type FaceGroups,
   faceGroups,
+  floaterFaces,
   HardEdges,
   rayDirection,
   resolveCage,
   steepFraction,
-  taggedFaces,
 } from './bake-cage';
 import {
   clipClusters,
   FINDING_KIND,
   FindingLog,
   mergeFindings,
+  missClusters,
   type StrayPart,
   strayClusters,
 } from './bake-findings';
 import { TS_BACKEND_IDENTITY } from './boolean-ts';
 import { TriangleBvh } from './bvh';
 import type {
+  AnalyticMap,
+  AnalyticPatch,
   BackendOutput,
+  BakeAnalyticReport,
   BakeCage,
   BakeDirection,
   BakeHandedness,
@@ -50,6 +68,7 @@ import type {
   BakeMapKind,
   BakeSlot,
   BakeStack,
+  BranchCounts,
   ComputeBackend,
   ComputeJobKind,
   ComputeJobRequest,
@@ -83,6 +102,15 @@ export const BAKE_TILE = 32;
  * cylinder cap seen from the side texels) rather than a bevel, which turns at most 45.
  */
 const OWN_SIDE_COS = 0.5;
+/**
+ * Cosine above which a turned hit that no facing alternative replaces still faces the base
+ * side: a bolt flank (about 70 degrees off its cap) stays a surface, while a wall that drops
+ * behind its cap (about 90 degrees) sits at zero and is flattened.
+ */
+const FACES_BASE_MIN = 0;
+/** Inward reach of the bounded base-normal search, as a fraction of the group diagonal. */
+const EXTENDED_REACH = 2;
+type BranchKind = keyof BranchCounts;
 /** Default occlusion reach: this fraction of the group diagonal, at most `AO_MAX` meters. */
 const AO_DIAGONAL = 0.1;
 const AO_MAX = 0.5;
@@ -171,7 +199,7 @@ export function bakeSurface(
   }
   const slots = exported.value.report.materialSlots;
   const slotIndex = new Map(slots.map((name, i) => [name, i]));
-  const triangleSlot = Int32Array.from(exported.value.triangleFace, (f) => {
+  const triangleSlot = Int32Array.from(exported.value.sidecar.triangleFace, (f) => {
     const name = mesh.materialNames[mesh.fMaterial[f] as number] as string;
     return slotIndex.get(name) as number;
   });
@@ -181,9 +209,9 @@ export function bakeSurface(
     tangent: attributes.tangent,
     uv: attributes.uv,
     indices: Uint32Array.from(asset.indices),
-    vertexCorner: exported.value.vertexCorner,
+    vertexCorner: exported.value.sidecar.vertexCorner,
     triangleSlot,
-    triangleFace: Int32Array.from(exported.value.triangleFace),
+    triangleFace: Int32Array.from(exported.value.sidecar.triangleFace),
     slots,
   });
 }
@@ -321,11 +349,13 @@ export interface GroupBake {
   readonly maxRay: number;
   readonly direction: BakeDirection;
   /** Every detail triangle of the group (correspondence); `map` turns local into detail triangles. */
-  readonly bvh: TriangleBvh;
+  bvh: TriangleBvh;
   readonly map: Int32Array;
   /** Non-floater triangles (height under floaters, occluders). */
-  readonly solid: TriangleBvh;
+  solid: TriangleBvh;
   readonly solidMap: Int32Array;
+  /** @internal True when JS TriangleBvh construction was deferred for the Rust/GPU baker. */
+  deferredBvh?: boolean;
   readonly triangles: number;
   /** Occlusion and thickness reach in meters. */
   readonly aoDistance: number;
@@ -350,21 +380,40 @@ export interface GroupBake {
   clipped: number;
   /** Samples whose correspondence landed on a hovering part (audit A3). */
   strayHits: number;
+  /** Analytic bake (BK63): samples answered by the exact patch and samples ray-baked beside them. */
+  analyticSamples: number;
+  raySamples: number;
+  /** Inward reach of the bounded base-normal search that rescues a wall hit (group diagonal). */
+  readonly extendedReach: number;
+  /** Samples per correspondence outcome of the normal decision (see `Baker.find`). */
+  branches: BranchCounts;
 }
 
-/** Per-group counters in sampling order (BakeRows.counts holds GROUP_COUNTERS per group). */
-const GROUP_COUNTERS = 5;
+const BRANCHES = ['cage', 'base', 'extended', 'flat'] as const;
 
-function counters(g: GroupBake): number[] {
-  return [g.samples, g.rayHits, g.nearest, g.clipped, g.strayHits];
+/** Per-group counters in sampling order (BakeRows.counts holds GROUP_COUNTERS per group). */
+export const GROUP_COUNTERS = 7 + BRANCHES.length;
+
+export function counters(g: GroupBake): number[] {
+  return [
+    g.samples,
+    g.rayHits,
+    g.nearest,
+    g.clipped,
+    g.strayHits,
+    g.analyticSamples,
+    g.raySamples,
+    ...BRANCHES.map((b) => g.branches[b]),
+  ];
 }
 
 function subsetBvh(
   surface: { readonly position: ArrayLike<number>; readonly indices: ArrayLike<number> },
-  triangles: readonly number[],
+  triangles: ArrayLike<number>,
 ): { bvh: TriangleBvh; map: Int32Array } {
   const local = new Uint32Array(triangles.length * 3);
-  for (const [i, t] of triangles.entries()) {
+  for (let i = 0; i < triangles.length; i++) {
+    const t = triangles[i] as number;
     for (let k = 0; k < 3; k++) local[i * 3 + k] = surface.indices[t * 3 + k] as number;
   }
   return { bvh: new TriangleBvh(surface.position, local), map: Int32Array.from(triangles) };
@@ -372,9 +421,9 @@ function subsetBvh(
 
 /** The correspondence and evaluators shared by the texture and vertex targets. */
 /** Fraction of the encoded height range above which two stacked samples' heights conflict (V5). */
-const STACK_HEIGHT = 0.02;
+export const STACK_HEIGHT = 0.02;
 /** Angle (degrees) above which two stacked samples' tangent-space normals conflict (V5). */
-const STACK_ANGLE = 5;
+export const STACK_ANGLE = 5;
 
 /** Inverse of the shaders' applyTBN: n0 = N, t0 = T orthogonalized, b0 = cross(n0, t0) * w. */
 function tangentNormal(nd: Tuple3, n: Tuple3, frame: readonly [Tuple3, number]): Tuple3 {
@@ -413,6 +462,8 @@ export class Baker {
   private readonly faceNormal: Float64Array;
   private readonly eps: number;
   private reported = 0;
+  /** Facet normal per detail triangle, filled on demand by the analytic verifier. */
+  private readonly facets = new Map<number, { readonly normal: Tuple3 | undefined }>();
 
   readonly detail: BakeSurface;
   readonly params: BakeJobParams;
@@ -455,11 +506,15 @@ export class Baker {
       }) as [Tuple3, Tuple3, Tuple3];
       this.faceNormal.set(normalize(cross(sub(b, a), sub(c, a))), t * 3);
     }
-    const perVertex = vertexCurvature(detailMesh);
-    this.curvature = Float64Array.from(
-      { length: detail.position.length / 3 },
-      (_, r) => perVertex[detailMesh.hVert[detail.vertexCorner[r] as number] as number] as number,
-    );
+    const perVertex = params.target === 'vertex' ? vertexCurvature(detailMesh) : undefined;
+    this.curvature =
+      perVertex === undefined
+        ? new Float64Array(0)
+        : Float64Array.from(
+            { length: detail.position.length / 3 },
+            (_, r) =>
+              perVertex[detailMesh.hVert[detail.vertexCorner[r] as number] as number] as number,
+          );
     this.maps = params.maps;
     this.rays = coneRays(params.ao.rays, cos((params.ao.bias / 180) * Math.PI));
     this.inward = coneRays(params.thickness.rays, 1);
@@ -563,6 +618,41 @@ export class Baker {
   }
 
   /**
+   * A facing detail hit along -c within `reach` of P, or undefined. Unlike `correspond`, a
+   * miss is not replaced by the nearest point: the caller decides what a miss means.
+   */
+  private correspondWithin(
+    p: Tuple3,
+    c: Tuple3,
+    group: GroupBake,
+    reach: number,
+  ): { tri: number; u: number; v: number; q: Tuple3; hit: boolean } | undefined {
+    const origin: Tuple3 = [
+      p[0] + c[0] * group.offset,
+      p[1] + c[1] * group.offset,
+      p[2] + c[2] * group.offset,
+    ];
+    const facing = (local: number) => {
+      const t = group.map[local] as number;
+      return (
+        (this.faceNormal[t * 3] as number) * c[0] +
+          (this.faceNormal[t * 3 + 1] as number) * c[1] +
+          (this.faceNormal[t * 3 + 2] as number) * c[2] >
+        FACING_MIN
+      );
+    };
+    const hit = group.bvh.raycast(origin, [-c[0], -c[1], -c[2]], reach, false, facing);
+    if (hit === undefined) return undefined;
+    return {
+      tri: group.map[hit.triangle] as number,
+      u: hit.u,
+      v: hit.v,
+      q: [origin[0] - c[0] * hit.t, origin[1] - c[1] * hit.t, origin[2] - c[2] * hit.t],
+      hit: true,
+    };
+  }
+
+  /**
    * Audit A1: whether facing detail lies outside the cage span along the cage ray at P: within
    * `maxRay` beyond the ray's start (the start sits inside a feature, so the ray found a
    * surface under it or nothing), or, when the ray found nothing, within `maxRay` past its
@@ -638,8 +728,11 @@ export class Baker {
   }
 
   /**
-   * The detail point for base point P (normal N) along the ray C: the cage ray, or under an
-   * averaged direction the base-normal ray when the cage ray reaches a neighbouring face.
+   * The detail point for base point P (normal N) along the ray C, and which branch of the
+   * normal decision produced it. A hit whose surface turns more than OWN_SIDE_COS away from
+   * N is never kept as is: the base-normal ray within `maxRay` is tried, then a bounded
+   * inward search (`extendedReach`) accepting only facing hits; otherwise the caller writes
+   * the flat base normal (`flat`), so a detail wall beyond a cap gap cannot tilt the map.
    */
   private find(
     p: Tuple3,
@@ -647,22 +740,34 @@ export class Baker {
     cage: Tuple3,
     group: GroupBake,
     averaged: boolean,
-  ): { found: NonNullable<ReturnType<Baker['correspond']>>; c: Tuple3 } {
+  ): { found: NonNullable<ReturnType<Baker['correspond']>>; c: Tuple3; branch: BranchKind } {
     let c = cage;
     let found = this.correspond(p, c, group, false) as NonNullable<ReturnType<Baker['correspond']>>;
-    // An averaged cage ray at a hard rim can reach a neighbouring face of the detail first;
-    // past OWN_SIDE_COS the base-normal ray decides if it finds a surface closer to it.
-    if (averaged && found.hit && this.params.rawCage !== true) {
+    let branch: BranchKind = 'cage';
+    // A cage ray that misses returns the nearest detail point, and a hit may be a neighbouring wall at
+    // a hard rim: either way the normal decides, so a turned result enters the rescue chain.
+    if (averaged && this.params.rawCage !== true) {
       const turned = dot(this.normalAt(found), n);
       if (turned < OWN_SIDE_COS) {
+        branch = 'base';
         const own = this.correspond(p, n, group, false);
-        if (own?.hit === true && dot(this.normalAt(own), n) > turned) {
+        if (own?.hit && dot(this.normalAt(own), n) > turned) {
           found = own;
           c = n;
         }
+        if (dot(this.normalAt(found), n) < OWN_SIDE_COS) {
+          const near = this.correspondWithin(p, n, group, group.extendedReach);
+          if (near !== undefined && dot(this.normalAt(near), n) >= OWN_SIDE_COS) {
+            found = near;
+            c = n;
+            branch = 'extended';
+          } else if (!(found.hit && dot(this.normalAt(found), n) > FACES_BASE_MIN)) {
+            branch = 'flat';
+          }
+        }
       }
     }
-    return { found, c };
+    return { found, c, branch };
   }
 
   /**
@@ -678,36 +783,145 @@ export class Baker {
     g: number,
     averaged: boolean,
   ): { readonly normal: Tuple3; readonly height: number } {
-    const { found, c } = this.find(p, n, cage, this.groups[g] as GroupBake, averaged);
-    const nd = normalize(
-      this.interpolate(this.detail.normal, 3, found.tri, found.u, found.v) as Tuple3,
-    );
+    const { found, c, branch } = this.find(p, n, cage, this.groups[g] as GroupBake, averaged);
+    const nd =
+      branch === 'flat'
+        ? n
+        : normalize(this.interpolate(this.detail.normal, 3, found.tri, found.u, found.v) as Tuple3);
     return { normal: tangentNormal(nd, n, frame), height: dot(sub(found.q, p), c) };
   }
 
   /**
-   * Evaluate every map at a base point P with unit shading normal N and unit ray
-   * direction C in group `g`; `frame` is the base tangent (xyz) and handedness for the
-   * tangent-space normal, absent for object space. Writes four channels per map into
-   * `out` (normal: unit vector; height and curvature: raw values in channel 0).
+   * The point, shading normal and height the ray bake finds at P, without counters, findings or
+   * other maps: the analytic verifier (BK63) compares the exact patch against it.
    */
-  evaluate(
+  probe(
     p: Tuple3,
     n: Tuple3,
     cage: Tuple3,
-    frame: readonly [Tuple3, number] | undefined,
     g: number,
-    sampleIndex: number,
-    out: Float64Array,
     averaged: boolean,
-    deferOcclusion = false,
+  ): {
+    readonly point: Tuple3;
+    readonly normal: Tuple3;
+    readonly height: number;
+    readonly hit: boolean;
+    /** The hit triangle's facet normal (undefined for a zero-area triangle). */
+    readonly facet: Tuple3 | undefined;
+  } {
+    const { found, c, branch } = this.find(p, n, cage, this.groups[g] as GroupBake, averaged);
+    return {
+      point: found.q,
+      normal: branch === 'flat' ? n : this.normalAt(found),
+      height: dot(sub(found.q, p), c),
+      hit: found.hit,
+      facet: this.facetNormal(found.tri),
+    };
+  }
+
+  /**
+   * The geometric normal of one detail triangle, oriented as its shading normals (the verifier
+   * compares it with the exact patch normal). It is the detail's own facet, so a wrong patch
+   * cannot move it and the shading lean of an autoSmooth crease never enters the comparison;
+   * undefined for a zero-area triangle, which has no facet normal.
+   */
+  private facetNormal(tri: number): Tuple3 | undefined {
+    const cached = this.facets.get(tri);
+    if (cached !== undefined) return cached.normal;
+    const { indices, position, normal } = this.detail;
+    const corner = [0, 1, 2].map((k) => indices[tri * 3 + k] as number);
+    const at = (i: number) => [position[i * 3], position[i * 3 + 1], position[i * 3 + 2]] as Tuple3;
+    const [a, b, d] = corner.map(at) as [Tuple3, Tuple3, Tuple3];
+    const g = cross(sub(b, a), sub(d, a));
+    const area = length(g);
+    let out: Tuple3 | undefined;
+    if (area > 0) {
+      const shading = corner.map(
+        (i) => [normal[i * 3], normal[i * 3 + 1], normal[i * 3 + 2]] as Tuple3,
+      );
+      const side = dot(g, shading.reduce(add, [0, 0, 0] as Tuple3)) < 0 ? -1 : 1;
+      out = [(g[0] * side) / area, (g[1] * side) / area, (g[2] * side) / area];
+    }
+    this.facets.set(tri, { normal: out });
+    return out;
+  }
+
+  /**
+   * Write the analytic maps (position, normals, height) of an accepted exact solve into `out`,
+   * as `evaluate` writes the ray bake's; every other map keeps its value in `out`.
+   */
+  writeExact(
+    n: Tuple3,
+    frame: readonly [Tuple3, number] | undefined,
+    exact: PatchSolve,
+    out: Float64Array,
+    ray: boolean,
   ): void {
+    for (const [m, kind] of this.maps.entries()) {
+      const o = m * 4;
+      switch (kind) {
+        case 'normal': {
+          const tn = frame === undefined ? exact.normal : tangentNormal(exact.normal, n, frame);
+          out.set([tn[0], tn[1], tn[2], 1], o);
+          break;
+        }
+        case 'normalObject':
+          out.set([exact.normal[0], exact.normal[1], exact.normal[2], 1], o);
+          break;
+        case 'height':
+          out.set([exact.height, 0, 0, 1], o);
+          break;
+        case 'position':
+          out.set([exact.point[0], exact.point[1], exact.point[2], 1], o);
+          break;
+        default:
+          break;
+      }
+    }
+    // A ray evaluation of the same sample already set the point and normal the curvature
+    // family sums; only an exact-only sample publishes the patch's.
+    if (!ray) {
+      this.lastPoint = exact.point;
+      this.lastNormal = exact.normal;
+    }
+  }
+
+  /**
+   * Resolve primary correspondence for one sample `(p, n, cage)` in group `g`: updates group
+   * counters and location findings, returning hit triangle, barycentrics, resolved detail normal,
+   * solid height, and hit flag without evaluating surface/AO maps.
+   */
+  resolveSample(
+    p: Tuple3,
+    n: Tuple3,
+    cage: Tuple3,
+    g: number,
+    averaged: boolean,
+  ): {
+    readonly tri: number;
+    readonly u: number;
+    readonly v: number;
+    readonly q: Tuple3;
+    readonly nd: Tuple3;
+    readonly height: number;
+    readonly hit: boolean;
+  } {
     const group = this.groups[g] as GroupBake;
     group.samples++;
-    const { found, c } = this.find(p, n, cage, group, averaged);
+    const { found, c, branch } = this.find(p, n, cage, group, averaged);
+    group.branches[branch]++;
     if (found.hit) group.rayHits++;
     else group.nearest++;
     const clip = this.clippedAt(p, cage, group, found.hit);
+    // A miss on a clipped sample is reported by cage-clip with its cause.
+    if (clip === undefined && !found.hit)
+      this.findings.miss(
+        g,
+        p,
+        this.face,
+        this.detail.triangleFace[found.tri] as number,
+        length(sub(found.q, p)),
+      );
     if (clip !== undefined) {
       group.clipped++;
       this.findings.clip(
@@ -724,24 +938,41 @@ export class Baker {
       this.findings.stray(g, group.strayIndex[found.tri] as number, this.face);
     }
     const { tri, u, v, q } = found;
-    const nd = normalize(this.interpolate(this.detail.normal, 3, tri, u, v) as Tuple3);
-    this.lastPoint = q;
-    this.lastNormal = nd;
-    this.lastHit = found.hit;
+    const nd =
+      branch === 'flat'
+        ? n
+        : normalize(this.interpolate(this.detail.normal, 3, tri, u, v) as Tuple3);
+    // Floaters stand off the surface: the height is the solid detail under them.
+    const solid = this.floater[tri] === 1 ? this.correspond(p, c, group, true) : found;
+    const height = solid === undefined ? 0 : dot(sub(solid.q, p), c);
+    return { tri, u, v, q, nd, height, hit: found.hit };
+  }
+
+  /**
+   * Evaluate requested maps from a pre-resolved correspondence sample without re-running
+   * primary raycasting or solid-height queries.
+   */
+  evaluateHit(
+    tri: number,
+    u: number,
+    v: number,
+    q: Tuple3,
+    nd: Tuple3,
+    height: number,
+    hit: boolean,
+    n: Tuple3,
+    frame: readonly [Tuple3, number] | undefined,
+    g: number,
+    sampleIndex: number,
+    out: Float64Array,
+    deferOcclusion = false,
+  ): void {
+    const group = this.groups[g] as GroupBake;
     let ao: number | undefined;
-    let height: number | undefined;
     const occlusion = () => {
       if (deferOcclusion) return 1;
       ao ??= this.occlusion(q, nd, sampleIndex, group);
       return ao;
-    };
-    const heightOf = () => {
-      if (height === undefined) {
-        // Floaters stand off the surface: the height is the solid detail under them.
-        const solid = this.floater[tri] === 1 ? this.correspond(p, c, group, true) : found;
-        height = solid === undefined ? 0 : dot(sub(solid.q, p), c);
-      }
-      return height;
     };
     for (const [m, kind] of this.maps.entries()) {
       const o = m * 4;
@@ -755,7 +986,7 @@ export class Baker {
           out.set([nd[0], nd[1], nd[2], 1], o);
           break;
         case 'height':
-          out.set([heightOf(), 0, 0, 1], o);
+          out.set([height, 0, 0, 1], o);
           break;
         case 'position':
           out.set([q[0], q[1], q[2], 1], o);
@@ -780,12 +1011,12 @@ export class Baker {
           break;
         case 'opacity': {
           const alpha = this.slotOf(tri).baseColor[3] as number;
-          out.set([found.hit ? alpha : 0, 0, 0, 1], o);
+          out.set([hit ? alpha : 0, 0, 0, 1], o);
           break;
         }
         case 'ormh': {
           const surface = this.slotOf(tri);
-          out.set([occlusion(), surface.roughness, surface.metallic, heightOf()], o);
+          out.set([occlusion(), surface.roughness, surface.metallic, height], o);
           break;
         }
         case 'baseColor':
@@ -813,8 +1044,97 @@ export class Baker {
     }
   }
 
+  /** Create a lightweight evaluator view reusing BVHs and detail geometry with updated map settings. */
+  withEvalParams(
+    params: BakeJobParams,
+    texture?: { readonly width: number; readonly height: number; readonly data: Uint8Array },
+  ): Baker {
+    const view = Object.create(Baker.prototype) as Record<string, unknown>;
+    view.curvature = this.curvature;
+    view.maps = params.maps;
+    view.shared = this.shared;
+    view.bvhs = this.bvhs;
+    view.rays =
+      params.ao.rays === this.params.ao.rays && params.ao.bias === this.params.ao.bias
+        ? this.rays
+        : coneRays(params.ao.rays, cos((params.ao.bias / 180) * Math.PI));
+    view.inward =
+      params.thickness.rays === this.params.thickness.rays
+        ? this.inward
+        : coneRays(params.thickness.rays, 1);
+    const scale = emissiveScale(params.slots);
+    view.slotSurface = this.detail.slots.map((slot) => resolveSlot(params.slots, slot, scale));
+    view.slotIds = this.detail.slots.map((slot, i) => resolveMaterialId(params.slots, slot, i));
+    view.lastPoint = [0, 0, 0];
+    view.lastNormal = [0, 0, 1];
+    view.lastHit = false;
+    view.face = -1;
+    view.findings = this.findings;
+    view.faceNormal = this.faceNormal;
+    view.eps = this.eps;
+    view.reported = this.reported;
+    view.facets = this.facets;
+    view.detail = this.detail;
+    view.params = params;
+    view.texture = texture ?? this.texture;
+    view.groups = this.groups;
+    view.floater = this.floater;
+    return view as unknown as Baker;
+  }
+
+  /**
+   * Evaluate every map at a base point P with unit shading normal N and unit ray
+   * direction C in group `g`; `frame` is the base tangent (xyz) and handedness for the
+   * tangent-space normal, absent for object space. Writes four channels per map into
+   * `out` (normal: unit vector; height and curvature: raw values in channel 0).
+   */
+  evaluate(
+    p: Tuple3,
+    n: Tuple3,
+    cage: Tuple3,
+    frame: readonly [Tuple3, number] | undefined,
+    g: number,
+    sampleIndex: number,
+    out: Float64Array,
+    averaged: boolean,
+    deferOcclusion = false,
+  ): void {
+    const resolved = this.resolveSample(p, n, cage, g, averaged);
+    this.lastPoint = resolved.q;
+    this.lastNormal = resolved.nd;
+    this.lastHit = resolved.hit;
+    this.evaluateHit(
+      resolved.tri,
+      resolved.u,
+      resolved.v,
+      resolved.q,
+      resolved.nd,
+      resolved.height,
+      resolved.hit,
+      n,
+      frame,
+      g,
+      sampleIndex,
+      out,
+      deferOcclusion,
+    );
+  }
+
   occlusionInputs() {
     return { offset: this.eps, rays: this.rays };
+  }
+
+  /** @internal Read-only inputs for GPU correspondence + AO raycasting. */
+  _gpuInputs() {
+    return {
+      detail: this.detail,
+      faceNormal: this.faceNormal,
+      slotSurface: this.slotSurface,
+      slotIds: this.slotIds,
+      floater: this.floater,
+      eps: this.eps,
+      rays: this.rays,
+    };
   }
 
   private slotOf(tri: number): ResolvedSlot {
@@ -1011,7 +1331,7 @@ export function emissiveScale(slots: Readonly<Record<string, BakeSlot>>): number
     const b = slotEntry(slots, '*');
     const emissive = a?.emissive ?? b?.emissive ?? [0, 0, 0];
     const intensity = a?.emissiveIntensity ?? b?.emissiveIntensity ?? 1;
-    peak = Math.max(peak, ...emissive.map((e) => e * intensity));
+    peak = Math.max(peak, maxOf(emissive.map((e) => e * intensity)));
   }
   return peak;
 }
@@ -1029,7 +1349,7 @@ const smoothstep = (lo: number, hi: number, x: number) => {
 };
 
 /** Stored value of a texel no sample reached, per map. */
-function background(kind: BakeMapKind, params: BakeJobParams): readonly number[] {
+export function mapBackground(kind: BakeMapKind, params: BakeJobParams): readonly number[] {
   switch (kind) {
     case 'normal':
     case 'normalObject':
@@ -1066,7 +1386,7 @@ function background(kind: BakeMapKind, params: BakeJobParams): readonly number[]
  */
 type TextureChannels = Float64Array | Float32Array;
 
-function encodeMaps(
+export function encodeMaps(
   maps: readonly BakeMapKind[],
   values: readonly TextureChannels[],
   weight: Float64Array,
@@ -1075,74 +1395,126 @@ function encodeMaps(
   let range = 0;
   const m = maps.findIndex((kind) => CURVATURE_MAPS.includes(kind));
   if (m >= 0) {
-    const mags: number[] = [];
-    for (let i = 0; i < weight.length; i++) {
-      if ((weight[i] as number) > 0)
-        mags.push(Math.abs((values[m] as Float64Array)[i * 4] as number));
+    const src = values[m] as TextureChannels;
+    let count = 0;
+    for (let i = 0; i < weight.length; i++) if ((weight[i] as number) > 0) count++;
+    if (count > 0) {
+      const mags = new Float64Array(count);
+      let k = 0;
+      for (let i = 0; i < weight.length; i++) {
+        if ((weight[i] as number) > 0) mags[k++] = Math.abs(src[i * 4] as number);
+      }
+      mags.sort();
+      range = mags[Math.floor((count - 1) * 0.95)] as number;
     }
-    mags.sort((a, b) => a - b);
-    range = mags.length > 0 ? (mags[Math.floor((mags.length - 1) * 0.95)] as number) : 0;
     if (!(range > 0)) range = 1;
   }
   const [inner, outer] = encoding.heightRange;
-  const toHeight = (h: number) => Math.max(0, Math.min(1, (h - inner) / (outer - inner)));
+  const invHeightSpan = 1 / (outer - inner);
   const { min, max } = encoding.positionBounds;
+  const min0 = min[0] as number,
+    min1 = min[1] as number,
+    min2 = min[2] as number;
+  const ext0 = (max[0] as number) - min0;
+  const ext1 = (max[1] as number) - min1;
+  const ext2 = (max[2] as number) - min2;
   const { edgeWear, cavity } = encoding.params;
+  const ew0 = edgeWear.range[0] as number,
+    ew1 = edgeWear.range[1] as number,
+    ewNoise = edgeWear.noise.amount;
+  const cav0 = cavity.range[0] as number,
+    cav1 = cavity.range[1] as number;
+  const invRange = range > 0 ? 1 / range : 1;
+
   for (const [k, kind] of maps.entries()) {
     const v = values[k] as TextureChannels;
-    const empty = background(kind, encoding.params);
+    const empty = mapBackground(kind, encoding.params);
+    const e0 = empty[0] as number,
+      e1 = empty[1] as number,
+      e2 = empty[2] as number,
+      e3 = empty[3] as number;
     for (let i = 0; i < weight.length; i++) {
       const o = i * 4;
       if (!((weight[i] as number) > 0)) {
-        v.set(empty, o);
+        v[o] = e0;
+        v[o + 1] = e1;
+        v[o + 2] = e2;
+        v[o + 3] = e3;
         continue;
       }
       switch (kind) {
         case 'normal':
         case 'normalObject': {
-          const n = normalize([v[o] as number, v[o + 1] as number, v[o + 2] as number]);
-          v.set([n[0] * 0.5 + 0.5, n[1] * 0.5 + 0.5, n[2] * 0.5 + 0.5, 1], o);
-          break;
-        }
-        case 'height': {
-          const h = toHeight(v[o] as number);
-          v.set([h, h, h, 1], o);
-          break;
-        }
-        case 'position': {
-          for (let c = 0; c < 3; c++) {
-            const extent = (max[c] as number) - (min[c] as number);
-            v[o + c] = extent > 0 ? ((v[o + c] as number) - (min[c] as number)) / extent : 0.5;
+          const nx = v[o] as number,
+            ny = v[o + 1] as number,
+            nz = v[o + 2] as number;
+          const len = hypot3(nx, ny, nz);
+          if (len > 0) {
+            const inv = 0.5 / len;
+            v[o] = nx * inv + 0.5;
+            v[o + 1] = ny * inv + 0.5;
+            v[o + 2] = nz * inv + 0.5;
+          } else {
+            v[o] = 0.5;
+            v[o + 1] = 0.5;
+            v[o + 2] = 0.5;
           }
           v[o + 3] = 1;
           break;
         }
+        case 'height': {
+          const h = Math.max(0, Math.min(1, ((v[o] as number) - inner) * invHeightSpan));
+          v[o] = h;
+          v[o + 1] = h;
+          v[o + 2] = h;
+          v[o + 3] = 1;
+          break;
+        }
+        case 'position': {
+          v[o] = ext0 > 0 ? ((v[o] as number) - min0) / ext0 : 0.5;
+          v[o + 1] = ext1 > 0 ? ((v[o + 1] as number) - min1) / ext1 : 0.5;
+          v[o + 2] = ext2 > 0 ? ((v[o + 2] as number) - min2) / ext2 : 0.5;
+          v[o + 3] = 1;
+          break;
+        }
         case 'curvature': {
-          const c = Math.max(0, Math.min(1, 0.5 + (0.5 * (v[o] as number)) / range));
-          v.set([c, c, c, 1], o);
+          const c = Math.max(0, Math.min(1, 0.5 + 0.5 * (v[o] as number) * invRange));
+          v[o] = c;
+          v[o + 1] = c;
+          v[o + 2] = c;
+          v[o + 3] = 1;
           break;
         }
         case 'edgeWear': {
           const wear =
-            smoothstep(edgeWear.range[0], edgeWear.range[1], (v[o] as number) / range) *
-            (1 - edgeWear.noise.amount * (v[o + 1] as number));
-          v.set([wear, wear, wear, 1], o);
+            smoothstep(ew0, ew1, (v[o] as number) * invRange) *
+            (1 - ewNoise * (v[o + 1] as number));
+          v[o] = wear;
+          v[o + 1] = wear;
+          v[o + 2] = wear;
+          v[o + 3] = 1;
           break;
         }
         case 'cavity': {
-          const c = smoothstep(cavity.range[0], cavity.range[1], -(v[o] as number) / range);
-          v.set([c, c, c, 1], o);
+          const c = smoothstep(cav0, cav1, -(v[o] as number) * invRange);
+          v[o] = c;
+          v[o + 1] = c;
+          v[o + 2] = c;
+          v[o + 3] = 1;
           break;
         }
         case 'ao':
         case 'thickness':
         case 'opacity': {
           const a = v[o] as number;
-          v.set([a, a, a, kind === 'opacity' ? a : 1], o);
+          v[o] = a;
+          v[o + 1] = a;
+          v[o + 2] = a;
+          v[o + 3] = kind === 'opacity' ? a : 1;
           break;
         }
         case 'ormh':
-          v[o + 3] = toHeight(v[o + 3] as number);
+          v[o + 3] = Math.max(0, Math.min(1, ((v[o + 3] as number) - inner) * invHeightSpan));
           break;
         case 'materialId':
         case 'baseColor':
@@ -1231,15 +1603,10 @@ export function gridOf(params: BakeJobParams): Grid {
 }
 
 /** Texel index of (x, y), wrapped across joined borders, else -1 outside the atlas. */
-function neighbor(x: number, y: number, grid: Grid): number {
-  const { w, h } = grid;
-  const xx = grid.u ? (x + w) % w : x;
-  const yy = grid.v ? (y + h) % h : y;
-  return xx < 0 || yy < 0 || xx >= w || yy >= h ? -1 : yy * w + xx;
-}
+const neighbor = atlasNeighbor;
 
 /** Whether sampling sums detail points and normals: curvature maps, or AO denoise guidance. */
-function guided(params: BakeJobParams): boolean {
+export function guided(params: BakeJobParams): boolean {
   if (params.filter === 'bspline') return true;
   return params.maps.some(
     (kind) =>
@@ -1348,131 +1715,50 @@ function filterBspline(
   }
 }
 
-/** Owner of a texel no chart reaches (background). */
-const UNOWNED = -1;
-/** Owner of a gutter texel that averages two or more charts. */
-const MIXED = -2;
+export type { AtlasGrid } from './atlas-ts';
+export { dilate, MIXED, mipBleed, UNOWNED };
 
 /**
- * Grow every map `gutter` texels (or until the atlas is full) past its charts: each new
- * texel averages its covered 8-neighbors, except material IDs copy the first covered
- * neighbor in row order. Chart ownership stays MIXED when neighbors disagree. Each
- * ring is found from the previous one, so a fill costs one visit per texel.
+ * Frame islands of the base atlas: render triangles joined through shared render vertices. A
+ * crease split cuts one UV chart into several frames, each with its own normal set.
  */
-function dilate(
-  kinds: readonly BakeMapKind[],
-  values: TextureChannels[],
-  covered: Uint8Array,
-  owner: Int32Array,
-  grid: Grid,
-  gutter: number,
-): void {
-  const texels = grid.w * grid.h;
-  const seen = new Int32Array(texels).fill(-1);
-  let frontier: number[] = [];
-  for (let i = 0; i < texels; i++) if (covered[i] === 1) frontier.push(i);
-  for (let pass = 0; pass < gutter && frontier.length > 0; pass++) {
-    const fresh: number[] = [];
-    for (const i of frontier) {
-      const x = i % grid.w;
-      const y = (i - x) / grid.w;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const j = neighbor(x + dx, y + dy, grid);
-          if (j < 0 || covered[j] === 1 || seen[j] === pass) continue;
-          seen[j] = pass;
-          fresh.push(j);
-        }
-      }
-    }
-    fresh.sort((a, b) => a - b);
-    for (const i of fresh) {
-      const x = i % grid.w;
-      const y = (i - x) / grid.w;
-      let chart = UNOWNED;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const j = neighbor(x + dx, y + dy, grid);
-          if (j < 0 || covered[j] !== 1) continue;
-          const o = owner[j] as number;
-          chart = chart === UNOWNED ? o : chart === o ? chart : MIXED;
-        }
-      }
-      owner[i] = chart;
-    }
-    for (const [k, v] of values.entries()) {
-      const categorical = kinds[k] === 'materialId';
-      for (const i of fresh) {
-        const x = i % grid.w;
-        const y = (i - x) / grid.w;
-        const acc = [0, 0, 0, 0];
-        let n = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const j = neighbor(x + dx, y + dy, grid);
-            if (j < 0 || covered[j] !== 1 || (categorical && n > 0)) continue;
-            n++;
-            for (let c = 0; c < 4; c++) acc[c] = (acc[c] as number) + (v[j * 4 + c] as number);
-          }
-        }
-        for (let c = 0; c < 4; c++) v[i * 4 + c] = (acc[c] as number) / n;
-      }
-    }
-    for (const i of fresh) covered[i] = 1;
-    frontier = fresh;
-  }
-}
-
-/**
- * Mip bleed (V4): per level 1.., the 2^level blocks of the box mip chain that hold a
- * chart texel and also a texel of another chart, a mixed gutter texel or background.
- */
-export function mipBleed(owner: Int32Array, chart: Uint8Array, grid: Grid): number[] {
-  const out: number[] = [];
-  let w = grid.w;
-  let h = grid.h;
-  let own = Int32Array.from(owner);
-  let has = Uint8Array.from(chart);
-  while (w > 1 || h > 1) {
-    const lw = Math.max(1, w >> 1);
-    const lh = Math.max(1, h >> 1);
-    const next = new Int32Array(lw * lh);
-    const nextHas = new Uint8Array(lw * lh);
-    let bleeding = 0;
-    for (let y = 0; y < lh; y++) {
-      for (let x = 0; x < lw; x++) {
-        let o: number | undefined;
-        let any = 0;
-        for (const [dx, dy] of [
-          [0, 0],
-          [1, 0],
-          [0, 1],
-          [1, 1],
-        ] as const) {
-          const sx = Math.min(w - 1, x * 2 + dx);
-          const sy = Math.min(h - 1, y * 2 + dy);
-          const value = own[sy * w + sx] as number;
-          o = o === undefined || o === value ? value : MIXED;
-          any |= has[sy * w + sx] as number;
-        }
-        const merged = (o as number) === UNOWNED && any === 1 ? MIXED : (o as number);
-        next[y * lw + x] = merged;
-        nextHas[y * lw + x] = any;
-        if (any === 1 && merged < 0) bleeding++;
-      }
-    }
-    out.push(bleeding);
-    own = next;
-    has = nextHas;
-    w = lw;
-    h = lh;
-  }
-  return out;
-}
-
-/** Charts of the base atlas: render triangles joined through shared render vertices. */
 function triangleIslands(surface: BakeSurface): Int32Array {
-  const vertices = surface.position.length / 3;
+  const roots = joinedRoots(
+    surface,
+    Int32Array.from({ length: surface.position.length / 3 }, (_, v) => v),
+  );
+  return Int32Array.from(
+    { length: surface.indices.length / 3 },
+    (_, t) => roots[surface.indices[t * 3] as number] as number,
+  );
+}
+
+/**
+ * UV charts of the base atlas: render vertices with equal position and uv are one corner, so
+ * triangles joined through equal corners form the chart the packer padded. Returns each render
+ * vertex's chart root; a frame island lies inside one chart and reads it at its root vertex.
+ */
+function uvChartRoots(surface: BakeSurface): Int32Array {
+  const canonical = new Map<string, number>();
+  const corner = Int32Array.from({ length: surface.position.length / 3 }, (_, v) => {
+    const id = [
+      surface.position[v * 3],
+      surface.position[v * 3 + 1],
+      surface.position[v * 3 + 2],
+      surface.uv[v * 2],
+      surface.uv[v * 2 + 1],
+    ].join(',');
+    const first = canonical.get(id);
+    if (first !== undefined) return first;
+    canonical.set(id, v);
+    return v;
+  });
+  return joinedRoots(surface, corner);
+}
+
+/** Root of each render vertex when triangles join the corners `key` names. */
+function joinedRoots(surface: BakeSurface, key: Int32Array): Int32Array {
+  const vertices = key.length;
   const parent = Int32Array.from({ length: vertices }, (_, i) => i);
   const find = (i: number): number => {
     let r = i;
@@ -1486,13 +1772,13 @@ function triangleIslands(surface: BakeSurface): Int32Array {
   };
   const triangles = surface.indices.length / 3;
   for (let t = 0; t < triangles; t++) {
-    const a = find(surface.indices[t * 3] as number);
+    const a = find(key[surface.indices[t * 3] as number] as number);
     for (let k = 1; k < 3; k++) {
-      const b = find(surface.indices[t * 3 + k] as number);
+      const b = find(key[surface.indices[t * 3 + k] as number] as number);
       if (a !== b) parent[Math.max(a, b)] = Math.min(a, b);
     }
   }
-  return Int32Array.from({ length: triangles }, (_, t) => find(surface.indices[t * 3] as number));
+  return Int32Array.from({ length: vertices }, (_, v) => find(key[v] as number));
 }
 
 function invalidDirection(direction: BakeDirection, target: string): string | undefined {
@@ -1532,6 +1818,30 @@ function invalidParams(params: BakeJobParams, inputs: number): ModelingError | u
   }
   if (new Set(params.maps).size !== params.maps.length) {
     return bad('maps has no duplicates', { maps: params.maps });
+  }
+  const analytic = params.analytic;
+  if (analytic !== undefined) {
+    if (params.target !== 'texture') {
+      return bad("an analytic bake has the 'texture' target", { target: params.target });
+    }
+    if (
+      !['off', 'sample', 'all'].includes(analytic.verify) ||
+      !/^uv[0-7]$/.test(analytic.domain) ||
+      !/^uv[0-7]$/.test(analytic.detailDomain) ||
+      !Array.isArray(analytic.patches) ||
+      analytic.patches.some(
+        (p) =>
+          p.kind !== 'nurbs' ||
+          typeof p.name !== 'string' ||
+          !(p.chord >= 0 && Number.isFinite(p.chord)) ||
+          !(p.angle >= 0 && Number.isFinite(p.angle)),
+      )
+    ) {
+      return bad(
+        "analytic is { verify: 'off' | 'sample' | 'all', domain and detailDomain: uv channels, patches: nurbs patches with name, chord and angle }",
+        { verify: analytic.verify, domain: analytic.domain, detailDomain: analytic.detailDomain },
+      );
+    }
   }
   if (params.target !== 'texture' && params.target !== 'vertex') {
     return bad("target is 'texture' or 'vertex'", { target: params.target });
@@ -1779,7 +2089,7 @@ function tiledSurface(
 }
 
 /** Bounds the position map normalizes by: the box, or the cube around the bounding sphere. */
-function positionBounds(
+export function positionBounds(
   positions: ArrayLike<number>,
   bounds: 'box' | 'sphere',
 ): { min: Tuple3; max: Tuple3 } {
@@ -1849,6 +2159,208 @@ function renderSource(mesh: EditMesh, surface: BakeSurface): CornerSource {
   };
 }
 
+/** Interpolated component `c` of a per-vertex attribute at barycentrics `w` in render triangle `t`. */
+function attributeAt(
+  b: BakeSurface,
+  a: ArrayLike<number>,
+  width: number,
+  t: number,
+  w: readonly number[],
+  c: number,
+): number {
+  let s = 0;
+  for (let k = 0; k < 3; k++)
+    s += (w[k] as number) * (a[(b.indices[t * 3 + k] as number) * width + c] as number);
+  return s;
+}
+
+/** The base sample (position, shading normal, tangent frame, ray) at barycentrics `w` of triangle `t`. */
+export function baseSurfaceAt(
+  b: BakeSurface,
+  triangles: BaseTriangles,
+  directions: readonly BakeDirection[],
+  hard: HardEdges | undefined,
+) {
+  return (t: number, w: readonly number[]) => {
+    const g = triangles.group[t] as number;
+    const direction = directions[g] as BakeDirection;
+    const pos = [0, 1, 2].map((c) => attributeAt(b, b.position, 3, t, w, c)) as Tuple3;
+    const nrm = normalize([0, 1, 2].map((c) => attributeAt(b, b.normal, 3, t, w, c)) as Tuple3);
+    const tan = [0, 1, 2].map((c) => attributeAt(b, b.tangent, 4, t, w, c)) as Tuple3;
+    const hand = attributeAt(b, b.tangent, 4, t, w, 3);
+    const ray = direction === 'shading' ? nrm : rayDirection(triangles, t, w, direction, pos, hard);
+    return {
+      g,
+      pos,
+      nrm,
+      tan,
+      hand,
+      ray,
+      averaged: averagedPart(triangles, t, direction, pos, hard),
+    };
+  };
+}
+
+/** Analytic maps of the bake job (BK63): the ones an exact patch determines. */
+const ANALYTIC_KINDS: Readonly<Partial<Record<BakeMapKind, AnalyticMap>>> = {
+  position: 'position',
+  normal: 'normal',
+  normalObject: 'normal',
+  height: 'height',
+};
+/** Largest sampled texels the `'sample'` verifier compares per group. */
+const VERIFY_SAMPLES = 256;
+
+/** The base triangle's unit geometric normal, the side the exact patch normal is turned to. */
+export function triangleSide(triangles: BaseTriangles, t: number): Tuple3 {
+  return [
+    triangles.face[t * 3] as number,
+    triangles.face[t * 3 + 1] as number,
+    triangles.face[t * 3 + 2] as number,
+  ];
+}
+
+/**
+ * The analytic verifier (BK63): before sampling, compare the exact patch with the ray bake at a
+ * deterministic set of base samples per analytic group (area-stratified, at most VERIFY_SAMPLES,
+ * or every sub-sample of the grid with `all`). A patch that disagrees with the ray bake beyond
+ * its tolerance in any map sends its whole group to the ray bake, so a wrong exact result never
+ * reaches the output.
+ */
+function verifyAnalytic(
+  run: AnalyticRun,
+  prepared: {
+    readonly params: BakeJobParams;
+    readonly baker: Baker;
+    readonly triangles: BaseTriangles;
+    readonly surface: BakeSurface;
+    readonly surfaceAt: ReturnType<typeof baseSurfaceAt>;
+  },
+  groups: readonly GroupBake[],
+  work: WorkMeter,
+): ModelingError | undefined {
+  const { plan, kinds } = run;
+  const { baker, triangles, surface: b, surfaceAt, params } = prepared;
+  const { w: width, h: height } = gridOf(params);
+  const grid = Math.round(Math.sqrt(params.samples));
+  const worst = new Map<
+    string,
+    { group: number; patch: number; map: AnalyticMap; worst: number; count: number }
+  >();
+  const note = (g: number, patch: number, map: AnalyticMap, x: number, limit: number) => {
+    if (!(x > limit)) return;
+    const key = `${g}/${patch}/${map}`;
+    const entry = worst.get(key) ?? { group: g, patch, map, worst: 0, count: 0 };
+    entry.worst = Math.max(entry.worst, x);
+    entry.count++;
+    worst.set(key, entry);
+  };
+  let done = 0;
+  for (const [g] of groups.entries()) {
+    if (plan.active[g] !== 1) continue;
+    const covered: number[] = [];
+    for (let t = 0; t < triangles.group.length; t++) {
+      if (triangles.group[t] === g && (plan.start[t + 1] as number) > (plan.start[t] as number))
+        covered.push(t);
+    }
+    let samples: { index: number; w: readonly number[] }[] = [];
+    if (run.verify === 'all') {
+      for (const [index, t] of covered.entries()) {
+        const uv = [0, 1, 2].map((k) => {
+          const i = b.indices[t * 3 + k] as number;
+          return [(b.uv[i * 2] as number) * width, (b.uv[i * 2 + 1] as number) * height];
+        }) as [number, number][];
+        const [p0, p1, p2] = uv as [[number, number], [number, number], [number, number]];
+        const area = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]);
+        if (area === 0) continue;
+        const xs = uv.map((q) => q[0]);
+        const ys = uv.map((q) => q[1]);
+        for (
+          let y = Math.max(0, Math.floor(minOf(ys)));
+          y <= Math.min(height - 1, Math.floor(maxOf(ys)));
+          y++
+        ) {
+          for (
+            let x = Math.max(0, Math.floor(minOf(xs)));
+            x <= Math.min(width - 1, Math.floor(maxOf(xs)));
+            x++
+          ) {
+            for (let k = 0; k < grid * grid; k++) {
+              const px = x + ((k % grid) + 0.5) / grid;
+              const py = y + (Math.floor(k / grid) + 0.5) / grid;
+              const w1 = ((px - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (py - p0[1])) / area;
+              const w2 = ((p1[0] - p0[0]) * (py - p0[1]) - (px - p0[0]) * (p1[1] - p0[1])) / area;
+              if (w1 < 0 || w2 < 0 || 1 - w1 - w2 < 0) continue;
+              samples.push({ index, w: [1 - w1 - w2, w1, w2] });
+            }
+          }
+        }
+      }
+    } else {
+      const areas = covered.map((t) => {
+        const q = [0, 1, 2].map((k) => {
+          const i = b.indices[t * 3 + k] as number;
+          return [0, 1, 2].map((c) => b.position[i * 3 + c] as number) as Tuple3;
+        }) as [Tuple3, Tuple3, Tuple3];
+        return length(cross(sub(q[1], q[0]), sub(q[2], q[0])));
+      });
+      samples = stratifiedSamples(areas, VERIFY_SAMPLES).map((x) => ({ index: x.index, w: x.w }));
+    }
+    for (const s of samples) {
+      const t = covered[s.index] as number;
+      const at = surfaceAt(t, s.w);
+      const exact = solveSample(
+        plan,
+        t,
+        s.w,
+        at.pos,
+        at.ray,
+        at.nrm,
+        triangleSide(triangles, t),
+        run.rules[g] as AnalyticRules,
+        at.averaged,
+      );
+      if (exact === undefined) continue;
+      const ray = baker.probe(at.pos, at.nrm, at.ray, g, at.averaged);
+      const limit = limitOf(plan, exact.patch, run.steps);
+      run.verified[g] = (run.verified[g] as number) + 1;
+      if (kinds.includes('position')) {
+        const d = length(sub(ray.point, exact.point));
+        run.deviations.add('position', d);
+        note(g, exact.patch, 'position', d, limit.position);
+      }
+      if (kinds.includes('normal') && ray.facet !== undefined) {
+        const d = angleBetween(ray.facet, exact.normal);
+        run.deviations.add('normal', d);
+        note(g, exact.patch, 'normal', d, limit.normal);
+      }
+      if (kinds.includes('height')) {
+        const d = Math.abs(ray.height - exact.height);
+        run.deviations.add('height', d);
+        note(g, exact.patch, 'height', d, limit.height);
+      }
+      if (++done % 64 === 0 && !work.spend(1 + baker.work())) return work.failure as ModelingError;
+    }
+    if (!work.spend(1 + baker.work())) return work.failure as ModelingError;
+  }
+  for (const e of [...worst.values()].sort(
+    (a, c) => a.group - c.group || a.patch - c.patch || a.map.localeCompare(c.map),
+  )) {
+    const patch = plan.patches[e.patch] as AnalyticPatch;
+    run.mismatches.push({
+      group: groups[e.group]?.id ?? '',
+      patch: patch.name,
+      map: e.map,
+      worst: e.worst,
+      tolerance: limitOf(plan, e.patch, run.steps)[e.map],
+      count: e.count,
+    });
+    plan.active[e.group] = 0;
+    plan.reason[e.group] = 'mismatch';
+  }
+  return undefined;
+}
+
 /**
  * Everything a bake derives from its inputs before sampling: surfaces, groups with their
  * resolved cages and BVHs, the direction field and, on the texture target, the atlas
@@ -1868,13 +2380,35 @@ export interface PreparedBake {
   readonly triangles: BaseTriangles;
   readonly hard: HardEdges | undefined;
   readonly encoding: Encoding;
+  /** Analytic bake (BK63, texture target): coverage plan, verifier results; absent when not run. */
+  readonly analytic?: AnalyticRun;
   /** Texture target: the exported base, its chart per triangle and triangles per tile. */
   readonly atlas?: {
     readonly surface: BakeSurface;
     readonly islands: Int32Array;
+    /** Render vertex -> UV chart root (uvChartRoots): the owner of padding and mip bleed. */
+    readonly charts: Int32Array;
     readonly tiles: number;
     readonly bins: readonly (readonly number[])[];
   };
+}
+
+/** The analytic bake of a prepared texture bake: coverage, acceptance rules and the verifier's findings. */
+export interface AnalyticRun {
+  readonly plan: AnalyticPlan;
+  /** Acceptance rules per group. */
+  readonly rules: readonly AnalyticRules[];
+  readonly verify: 'off' | 'sample' | 'all';
+  /** Analytic maps requested, and whether any other map still needs the ray evaluation. */
+  readonly kinds: readonly AnalyticMap[];
+  readonly needRay: boolean;
+  readonly steps: Steps;
+  readonly deviations: Deviations;
+  /** Loosest allowed disagreement per verified map. */
+  readonly tolerance: Record<AnalyticMap, number>;
+  /** Verified samples per group. */
+  readonly verified: number[];
+  readonly mismatches: BakeAnalyticReport['mismatches'][number][];
 }
 
 /** Sampled tile rows of a texture bake: per-texel sums of the rows' texels, in row order. */
@@ -1890,7 +2424,10 @@ export interface BakeRows {
   readonly normal: Float64Array;
   /** With an opacity map: ray-hit samples per texel (the other maps sum only those), else empty. */
   readonly hits: Float64Array;
-  /** Per group: samples, ray hits, nearest-point fallbacks, cage clips (audit A1) and samples on hovering parts (audit A3). */
+  /**
+   * Per group: samples, ray hits, nearest-point fallbacks, cage clips (audit A1), samples on hovering
+   * parts (audit A3), then analytic samples and ray-baked samples of an analytic bake (BK63).
+   */
   readonly counts: Float64Array;
   /** Located cage clips and samples on hovering parts, FINDING_WIDTH numbers per record. */
   readonly findings: Float64Array;
@@ -1917,6 +2454,7 @@ function hovering(
   detailTris: readonly number[],
   floater: Uint8Array,
   vertexOf: Int32Array,
+  sharedBaseBvh?: TriangleBvh,
 ): {
   stray: Uint8Array;
   strayParts: number;
@@ -1952,13 +2490,29 @@ function hovering(
       if (a !== b) parent.set(b, a);
     }
   }
-  const bvh = subsetBvh(base, baseTris).bvh;
+  const firstPart = find(vertexOf[detail.indices[(solid[0] as number) * 3] as number] as number);
+  let hasMultipleParts = false;
+  for (let i = 1; i < solid.length; i++) {
+    if (
+      find(vertexOf[detail.indices[(solid[i] as number) * 3] as number] as number) !== firstPart
+    ) {
+      hasMultipleParts = true;
+      break;
+    }
+  }
+  if (!hasMultipleParts) return none;
+  const bvh = sharedBaseBvh ?? subsetBvh(base, baseTris).bvh;
   const near = new Map<number, number>();
+  const dPos = detail.position;
+  const pt: [number, number, number] = [0, 0, 0];
   const distance = (r: number) => {
     let d = near.get(r);
     if (d === undefined) {
-      const p = [0, 1, 2].map((c) => detail.position[r * 3 + c] as number) as Tuple3;
-      const q = bvh.nearest(p);
+      const r3 = r * 3;
+      pt[0] = dPos[r3] as number;
+      pt[1] = dPos[r3 + 1] as number;
+      pt[2] = dPos[r3 + 2] as number;
+      const q = bvh.nearest(pt);
       d = q === undefined ? 0 : Math.sqrt(q.distanceSquared);
       near.set(r, d);
     }
@@ -1966,21 +2520,35 @@ function hovering(
   };
   const gap = new Map<number, number>();
   const far = new Map<number, number>();
-  let lo = [Infinity, Infinity, Infinity];
-  let hi = [-Infinity, -Infinity, -Infinity];
+  let lo0 = Infinity,
+    lo1 = Infinity,
+    lo2 = Infinity;
+  let hi0 = -Infinity,
+    hi1 = -Infinity,
+    hi2 = -Infinity;
   for (const t of solid) {
     const part = find(vertexOf[detail.indices[t * 3] as number] as number);
     for (let k = 0; k < 3; k++) {
       const r = detail.indices[t * 3 + k] as number;
       const d = distance(r);
-      gap.set(part, Math.min(gap.get(part) ?? Infinity, d));
-      far.set(part, Math.max(far.get(part) ?? 0, d));
-      lo = lo.map((x, c) => Math.min(x, detail.position[r * 3 + c] as number));
-      hi = hi.map((x, c) => Math.max(x, detail.position[r * 3 + c] as number));
+      const prevGap = gap.get(part);
+      if (prevGap === undefined || d < prevGap) gap.set(part, d);
+      const prevFar = far.get(part);
+      if (prevFar === undefined || d > prevFar) far.set(part, d);
+      const r3 = r * 3;
+      const x = dPos[r3] as number;
+      const y = dPos[r3 + 1] as number;
+      const z = dPos[r3 + 2] as number;
+      if (x < lo0) lo0 = x;
+      if (y < lo1) lo1 = y;
+      if (z < lo2) lo2 = z;
+      if (x > hi0) hi0 = x;
+      if (y > hi1) hi1 = y;
+      if (z > hi2) hi2 = z;
     }
   }
   if (gap.size < 2) return none;
-  const touch = CAGE_FLOOR * length(sub(hi as Tuple3, lo as Tuple3));
+  const touch = CAGE_FLOOR * hypot3(hi0 - lo0, hi1 - lo1, hi2 - lo2);
   const closest = minOf(gap.values());
   let relief = 0;
   for (const [part, g] of gap)
@@ -2028,15 +2596,62 @@ function hovering(
 }
 
 /** Texel rows [y0, y1) of tile row `ty`. */
-function rowSpan(ty: number, height: number): [number, number] {
+export function rowSpan(ty: number, height: number): [number, number] {
   return [ty * BAKE_TILE, Math.min(height, (ty + 1) * BAKE_TILE)];
 }
 
 /** Validate the request and derive everything sampling reads (see `PreparedBake`). */
-export function prepareBake(
+const EMPTY_BVH = new TriangleBvh([], []);
+
+/** Materialize deferred JS TriangleBvhs on demand if a GPU baker falls back to CPU. */
+export function ensureGroupBvhs(prepared: PreparedBake): void {
+  const ds = prepared.baker.detail;
+  for (const g of prepared.groups) {
+    if (!g.deferredBvh) continue;
+    const all = subsetBvh(ds, g.map);
+    g.bvh = all.bvh;
+    g.solid = g.solidMap === g.map ? all.bvh : subsetBvh(ds, g.solidMap).bvh;
+    g.deferredBvh = false;
+  }
+}
+
+export interface PreparedCagePlan {
+  readonly groups: readonly GroupBake[];
+  readonly ids: readonly string[];
+  readonly directions: readonly BakeDirection[];
+  readonly diagonal: number;
+  readonly encoding: Encoding;
+  readonly detailTriangles: number;
+  readonly uvReady: boolean;
+}
+
+interface InternalCagePlan extends PreparedCagePlan {
+  readonly baseMesh: EditMesh;
+  readonly detailMesh: EditMesh;
+  readonly ds: BakeSurface;
+  readonly baseSurface: BakeSurface | undefined;
+  readonly baseFaceGroup: FaceGroups;
+  readonly detailFaceGroup: Int32Array;
+  readonly vertexShading: readonly Tuple3[];
+  readonly triangles: BaseTriangles;
+  readonly hard: HardEdges | undefined;
+  readonly floater: Uint8Array;
+  readonly floaterFace: Uint8Array;
+  readonly detailTris: readonly (readonly number[])[];
+  readonly texture:
+    | { readonly width: number; readonly height: number; readonly data: Uint8Array }
+    | undefined;
+}
+
+/**
+ * Derive cage plans, steep-wall area fractions, stray detail clusters, and bounds per bake group
+ * without allocating atlas tile bins or building full detail BVHs. Shared by `resolveBakeCages`
+ * and `prepareBake`.
+ */
+function buildCagePlan(
   request: ComputeJobRequest<'bake'>,
-  work: WorkMeter,
-): Result<PreparedBake, ModelingError> {
+  options?: { readonly allowMissingUv?: boolean; readonly validateTexture?: boolean },
+): Result<InternalCagePlan, ModelingError> {
   const params = request.params;
   const invalid = invalidParams(params, request.inputs.length);
   if (invalid !== undefined) return err(invalid);
@@ -2049,6 +2664,7 @@ export function prepareBake(
       ? undefined
       : { ...params.resample, data: request.inputs[2] };
   if (
+    options?.validateTexture === true &&
     texture !== undefined &&
     (!(texture.width >= 1 && texture.height >= 1) ||
       texture.data.length !== texture.width * texture.height * 4)
@@ -2061,7 +2677,7 @@ export function prepareBake(
       }),
     );
   }
-  if (params.maps.includes('resample')) {
+  if (options?.validateTexture === true && params.maps.includes('resample')) {
     const complete = detail.value
       .faces()
       .every((f) =>
@@ -2091,23 +2707,28 @@ export function prepareBake(
         )
       : detailSurface.value;
   let baseSurface: BakeSurface | undefined;
+  let uvReady = false;
   if (params.target === 'texture') {
     const surface = bakeSurface(base.value, params.baseNormals);
     if (!surface.ok) {
-      const cause = surface.error;
-      return err(
-        modelingError(
-          cause.code,
-          cause.expected,
-          { ...cause.detail, input: 'base' },
-          'give the base complete uv0 (m.uv.auto or m.uv.unwrap + m.uv.pack) before baking',
-        ),
-      );
+      if (options?.allowMissingUv !== true) {
+        const cause = surface.error;
+        return err(
+          modelingError(
+            cause.code,
+            cause.expected,
+            { ...cause.detail, input: 'base' },
+            'give the base complete uv0 (m.uv.auto or m.uv.unwrap + m.uv.pack) before baking',
+          ),
+        );
+      }
+    } else {
+      baseSurface = surface.value;
+      uvReady = true;
     }
-    baseSurface = surface.value;
+  } else {
+    uvReady = true;
   }
-
-  // Groups: one id list over both meshes, in id order.
   const prefix = params.tags?.groupPrefix;
   const baseGroups = faceGroups(base.value, prefix, 'base');
   if (!baseGroups.ok) return baseGroups;
@@ -2122,8 +2743,7 @@ export function prepareBake(
   const baseFaceGroup: FaceGroups = { ids, face: global(baseGroups.value) };
   const detailFaceGroup = global(detailGroups.value);
   const directions = ids.map((id) => directionOf(params, id));
-
-  const vertexShading = params.target === 'vertex' ? vertexNormals(base.value) : [];
+  const vertexShading = baseSurface === undefined ? vertexNormals(base.value) : [];
   const source =
     baseSurface === undefined
       ? fanSource(base.value, vertexShading)
@@ -2131,11 +2751,10 @@ export function prepareBake(
   const triangles = baseTriangles(base.value, source, baseFaceGroup, directions);
   const blend = Math.max(
     0,
-    ...directions.map((d) => (typeof d === 'object' && 'blend' in d ? d.blend : 0)),
+    maxOf(directions.map((d) => (typeof d === 'object' && 'blend' in d ? d.blend : 0))),
   );
   const hard = blend > 0 ? new HardEdges(base.value, source, baseFaceGroup, blend) : undefined;
-
-  const floaterFace = taggedFaces(detail.value, params.tags?.floater);
+  const floaterFace = floaterFaces(detail.value, params.tags?.floater);
   const detailTriangles = ds.indices.length / 3;
   const floater = Uint8Array.from(ds.triangleFace, (f) => floaterFace[f] as number);
   const baseTris: number[][] = ids.map(() => []);
@@ -2172,17 +2791,21 @@ export function prepareBake(
       hard,
     );
     if (!cage.ok) return cage;
-    const all = subsetBvh(ds, own);
     const solidTris = own.filter((t) => floater[t] === 0);
-    const solid = solidTris.length === own.length ? all : subsetBvh(ds, solidTris);
     const reach = (setting: number | 'auto', auto: number) => (setting === 'auto' ? auto : setting);
+    const groupBaseTris = baseTris[g] as number[];
+    const sharedBaseBvh =
+      groupBaseTris.length > 0 && solidTris.length > 0
+        ? subsetBvh(triangles, groupBaseTris).bvh
+        : undefined;
     const steep = steepFraction(
       triangles,
-      baseTris[g] as number[],
+      groupBaseTris,
       ds,
-      own.filter((t) => floater[t] === 0),
+      solidTris,
       directions[g] as BakeDirection,
       hard,
+      sharedBaseBvh,
     );
     groups.push({
       id,
@@ -2192,18 +2815,101 @@ export function prepareBake(
       aoDistance: reach(params.ao.distance, Math.min(AO_DIAGONAL * cage.value.diagonal, AO_MAX)),
       thicknessDistance: reach(params.thickness.distance, THICKNESS_DIAGONAL * cage.value.diagonal),
       direction: directions[g] as BakeDirection,
-      bvh: all.bvh,
-      map: all.map,
-      solid: solid.bvh,
-      solidMap: solid.map,
+      bvh: EMPTY_BVH,
+      map: Int32Array.from(own),
+      solid: EMPTY_BVH,
+      solidMap: solidTris.length === own.length ? Int32Array.from(own) : Int32Array.from(solidTris),
+      deferredBvh: true,
       triangles: own.length,
-      ...hovering(triangles, baseTris[g] as number[], ds, own, floater, detailVertex),
+      ...hovering(triangles, groupBaseTris, ds, own, floater, detailVertex, sharedBaseBvh),
       samples: 0,
       rayHits: 0,
       nearest: 0,
       clipped: 0,
       strayHits: 0,
+      analyticSamples: 0,
+      raySamples: 0,
+      extendedReach: EXTENDED_REACH * cage.value.diagonal,
+      branches: { cage: 0, base: 0, extended: 0, flat: 0 },
     });
+  }
+  const symmetric = Math.max(
+    maxOf(groups.map((g) => Math.max(g.offset, g.maxRay - g.offset))),
+    Number.MIN_VALUE,
+  );
+  const heightRange: readonly [number, number] = params.height.range ?? [-symmetric, symmetric];
+  const encoding: Encoding = { heightRange, positionBounds: bounds, params };
+  const basePositions = base.value.vertices().flatMap((v) => base.value.position(v));
+  const diagonal = diagonalOf(basePositions, ds.position);
+  return ok({
+    baseMesh: base.value,
+    detailMesh: detail.value,
+    ds,
+    baseSurface,
+    baseFaceGroup,
+    detailFaceGroup,
+    vertexShading,
+    triangles,
+    hard,
+    floater,
+    floaterFace,
+    detailTris,
+    texture,
+    groups,
+    ids,
+    directions,
+    diagonal,
+    encoding,
+    detailTriangles,
+    uvReady,
+  });
+}
+
+export function resolveBakeCagePlan(
+  request: ComputeJobRequest<'bake'>,
+  options?: { readonly allowMissingUv?: boolean },
+): Result<PreparedCagePlan, ModelingError> {
+  return buildCagePlan(request, options);
+}
+
+export function prepareBake(
+  request: ComputeJobRequest<'bake'>,
+  work: WorkMeter,
+  options?: { readonly deferDetailBvh?: boolean },
+): Result<PreparedBake, ModelingError> {
+  const plan = buildCagePlan(request, { allowMissingUv: false, validateTexture: true });
+  if (!plan.ok) return plan;
+  const p = plan.value;
+  const params = request.params;
+  const {
+    baseMesh,
+    detailMesh,
+    ds,
+    baseSurface,
+    baseFaceGroup,
+    detailFaceGroup,
+    vertexShading,
+    triangles,
+    hard,
+    floater,
+    floaterFace,
+    detailTris,
+    texture,
+    groups,
+    ids,
+    directions,
+    diagonal,
+    encoding,
+    detailTriangles,
+  } = p;
+  if (!(options?.deferDetailBvh === true && params.target === 'texture')) {
+    for (const group of groups) {
+      const all = subsetBvh(ds, group.map);
+      const solid = group.solidMap === group.map ? all : subsetBvh(ds, group.solidMap);
+      group.bvh = all.bvh;
+      group.solid = solid.bvh;
+      group.deferredBvh = false;
+    }
   }
   const shared =
     params.ao.scope === 'all'
@@ -2213,15 +2919,9 @@ export function prepareBake(
             : (detailTris[g] as number[]).filter((t) => floater[t] === 0),
         )
       : undefined;
-  const symmetric = Math.max(
-    ...groups.map((g) => Math.max(g.offset, g.maxRay - g.offset)),
-    Number.MIN_VALUE,
-  );
-  const heightRange: readonly [number, number] = params.height.range ?? [-symmetric, symmetric];
-  const encoding: Encoding = { heightRange, positionBounds: bounds, params };
-  const basePositions = base.value.vertices().flatMap((v) => base.value.position(v));
-  const diagonal = diagonalOf(basePositions, ds.position);
-  const baker = new Baker(ds, detail.value, params, texture, diagonal, groups, floater, shared);
+  const heightRange = encoding.heightRange;
+  const bounds = encoding.positionBounds;
+  const baker = new Baker(ds, detailMesh, params, texture, diagonal, groups, floater, shared);
   if (!work.spend(Math.ceil(baker.nodes / 4) + 1)) return err(work.failure as ModelingError);
   let atlas: PreparedBake['atlas'];
   if (baseSurface !== undefined) {
@@ -2246,13 +2946,88 @@ export function prepareBake(
       for (let ty = y0; ty <= y1; ty++)
         for (let tx = x0; tx <= x1; tx++) (bins[ty * tiles + tx] as number[]).push(t);
     }
-    atlas = { surface: b, islands: triangleIslands(b), tiles, bins };
+    atlas = { surface: b, islands: triangleIslands(b), charts: uvChartRoots(b), tiles, bins };
+  }
+  let analytic: AnalyticRun | undefined;
+  if (atlas !== undefined && params.analytic !== undefined) {
+    const req = params.analytic;
+    const analyticPlan = planAnalytic({
+      base: baseMesh,
+      detail: detailMesh,
+      domain: req.domain,
+      detailDomain: req.detailDomain,
+      patches: req.patches,
+      groups: ids.length,
+      indices: atlas.surface.indices,
+      vertexCorner: atlas.surface.vertexCorner,
+      triangleFace: atlas.surface.triangleFace,
+      triangleGroup: triangles.group,
+      detailFaceGroup,
+      floater: floaterFace,
+      tiled: typeof params.wrap?.u === 'object' || typeof params.wrap?.v === 'object',
+    });
+    const extent = maxOf(
+      [0, 1, 2].map((c) => (bounds.max[c] as number) - (bounds.min[c] as number)),
+    );
+    const steps: Steps = {
+      height: (heightRange[1] - heightRange[0]) / ((1 << params.height.bits) - 1),
+      position: extent / 255,
+      normal: normalStep(),
+    };
+    const limits = req.patches.map((_, k) => limitOf(analyticPlan, k, steps));
+    const kinds = [
+      ...new Set(params.maps.flatMap((m) => ANALYTIC_KINDS[m] ?? [])),
+    ] as AnalyticMap[];
+    analytic = {
+      plan: analyticPlan,
+      rules: groups.map((g) => ({
+        lo: g.offset - g.maxRay,
+        hi: g.offset,
+        facingMin: FACING_MIN,
+        residual: 1e-7 * diagonal,
+        ...(params.rawCage === true ? {} : { ownSideCos: OWN_SIDE_COS }),
+      })),
+      verify: req.verify,
+      kinds,
+      needRay: params.maps.some((m) => ANALYTIC_KINDS[m] === undefined),
+      steps,
+      deviations: new Deviations(),
+      tolerance: {
+        position: limits.reduce((a, l) => Math.max(a, l.position), steps.position),
+        normal: limits.reduce((a, l) => Math.max(a, l.normal), steps.normal),
+        height: limits.reduce((a, l) => Math.max(a, l.height), steps.height),
+      },
+      verified: groups.map(() => 0),
+      mismatches: analyticPlan.stale.map((x) => ({
+        group: groups[x.group]?.id ?? '',
+        patch: (req.patches[x.patch] as AnalyticPatch).name,
+        map: 'position' as const,
+        worst: x.guard.worst,
+        tolerance: (req.patches[x.patch] as AnalyticPatch).chord,
+        count: x.guard.moved,
+      })),
+    };
+    if (req.verify !== 'off') {
+      const failure = verifyAnalytic(
+        analytic,
+        {
+          params,
+          baker,
+          triangles,
+          surface: atlas.surface,
+          surfaceAt: baseSurfaceAt(atlas.surface, triangles, directions, hard),
+        },
+        groups,
+        work,
+      );
+      if (failure !== undefined) return err(failure);
+    }
   }
   return ok({
     params,
     baker,
     groups,
-    base: base.value,
+    base: baseMesh,
     detailSlots: ds.slots,
     detailTriangles,
     baseFaceGroup,
@@ -2261,6 +3036,7 @@ export function prepareBake(
     triangles,
     hard,
     encoding,
+    ...(analytic === undefined ? {} : { analytic }),
     ...(atlas === undefined ? {} : { atlas }),
   });
 }
@@ -2272,7 +3048,7 @@ export function bakeRows(
   work: WorkMeter,
   occlusionGroups?: Int32Array,
 ): Result<BakeRows, ModelingError> {
-  const { params, baker, groups, triangles, directions, hard } = prepared;
+  const { params, baker, groups, triangles, directions, hard, analytic } = prepared;
   const { surface: b, islands, tiles, bins } = prepared.atlas as NonNullable<PreparedBake['atlas']>;
   const maps = params.maps;
   const { w: width, h: height } = gridOf(params);
@@ -2296,12 +3072,6 @@ export function bakeRows(
     const i = b.indices[t * 3 + k] as number;
     return [(b.uv[i * 2] as number) * width, (b.uv[i * 2 + 1] as number) * height];
   };
-  const attr = (a: Float32Array, width: number, t: number, w: readonly number[], c: number) => {
-    let s = 0;
-    for (let k = 0; k < 3; k++)
-      s += (w[k] as number) * (a[(b.indices[t * 3 + k] as number) * width + c] as number);
-    return s;
-  };
   // V5: a later triangle on a claimed sub-sample re-derives its normal and height there;
   // a sampled triangle whose corners disagree on tangent handedness has no frame (seam).
   const perTexel = grid * grid;
@@ -2318,24 +3088,7 @@ export function bakeRows(
     }
     return false;
   };
-  const surfaceAt = (t: number, w: readonly number[]) => {
-    const g = triangles.group[t] as number;
-    const direction = directions[g] as BakeDirection;
-    const pos = [0, 1, 2].map((c) => attr(b.position, 3, t, w, c)) as Tuple3;
-    const nrm = normalize([0, 1, 2].map((c) => attr(b.normal, 3, t, w, c)) as Tuple3);
-    const tan = [0, 1, 2].map((c) => attr(b.tangent, 4, t, w, c)) as Tuple3;
-    const hand = attr(b.tangent, 4, t, w, 3);
-    const ray = direction === 'shading' ? nrm : rayDirection(triangles, t, w, direction, pos, hard);
-    return {
-      g,
-      pos,
-      nrm,
-      tan,
-      hand,
-      ray,
-      averaged: averagedPart(triangles, t, direction, pos, hard),
-    };
-  };
+  const surfaceAt = baseSurfaceAt(b, triangles, directions, hard);
   const stackSample = (t: number, px: number, py: number) => {
     const [p0, p1, p2] = [0, 1, 2].map((k) => uvOf(t, k)) as [
       [number, number],
@@ -2413,17 +3166,48 @@ export function bakeRows(
               }
               const at = surfaceAt(t, [w0, w1, w2]);
               baker.face = b.triangleFace[t] as number;
-              baker.evaluate(
-                at.pos,
-                at.nrm,
-                at.ray,
-                [at.tan, at.hand],
-                at.g,
-                texel * 16 + s,
-                sample,
-                at.averaged,
-                occlusionGroups !== undefined,
-              );
+              const group = groups[at.g] as GroupBake;
+              const exact =
+                analytic !== undefined && analytic.plan.active[at.g] === 1
+                  ? solveSample(
+                      analytic.plan,
+                      t,
+                      [w0, w1, w2],
+                      at.pos,
+                      at.ray,
+                      at.nrm,
+                      triangleSide(triangles, t),
+                      analytic.rules[at.g] as AnalyticRules,
+                      at.averaged,
+                    )
+                  : undefined;
+              if (analytic !== undefined) {
+                if (exact === undefined) group.raySamples++;
+                else group.analyticSamples++;
+              }
+              if (exact !== undefined && !analytic?.needRay) {
+                baker.lastHit = true;
+              } else {
+                baker.evaluate(
+                  at.pos,
+                  at.nrm,
+                  at.ray,
+                  [at.tan, at.hand],
+                  at.g,
+                  texel * 16 + s,
+                  sample,
+                  at.averaged,
+                  occlusionGroups !== undefined,
+                );
+              }
+              if (exact !== undefined)
+                baker.writeExact(
+                  at.nrm,
+                  [at.tan, at.hand],
+                  exact,
+                  sample,
+                  analytic?.needRay === true,
+                );
               if (occlusionGroups !== undefined) occlusionGroups[i] = at.g;
               const opaque = opacity < 0 || baker.lastHit;
               if (opacity >= 0 && opaque) hits[i] = (hits[i] as number) + 1;
@@ -2654,7 +3438,7 @@ function assembleTexture(prepared: PreparedBake, parts: readonly BakeRows[]) {
   return ok({ sums, pointSum, normalSum, weight, island, hits, stack, handedness, covered });
 }
 
-function finishTexture(
+export function finishTexture(
   prepared: PreparedBake,
   data: Extract<ReturnType<typeof assembleTexture>, { ok: true }>['value'],
   filtered?: readonly Float32Array[],
@@ -2678,7 +3462,10 @@ function finishTexture(
         ];
   let curvatureRange = 0;
   const chart = Uint8Array.from(weight, (w) => (w > 0 ? 1 : 0));
-  let owner: Int32Array = Int32Array.from(island);
+  const charts = prepared.atlas?.charts;
+  const chartOf = (frame: number): number =>
+    charts === undefined || frame < 0 ? frame : (charts[frame] as number);
+  let owner: Int32Array = Int32Array.from(island, chartOf);
   const fill = Math.max(grid.w, grid.h);
   for (const layer of layers) {
     if (layer.kinds.length === 0) continue;
@@ -2730,8 +3517,19 @@ function finishTexture(
       filtered === undefined ? raw : layer.kinds.map((k) => filtered[k] as Float32Array);
     curvatureRange = Math.max(curvatureRange, encodeMaps(kinds, values, lw, encoding));
     const mask = Uint8Array.from(lw, (w) => (w > 0 ? 1 : 0));
-    const layerOwner = Int32Array.from(island, (o, i) => ((lw[i] as number) > 0 ? o : UNOWNED));
-    dilate(kinds, values, mask, layerOwner, grid, params.gutter === 'fill' ? fill : params.gutter);
+    const layerOwner = Int32Array.from(island, (f, i) =>
+      (lw[i] as number) > 0 ? chartOf(f) : UNOWNED,
+    );
+    const frameOf = Int32Array.from(island, (f, i) => ((lw[i] as number) > 0 ? f : UNOWNED));
+    dilate(
+      kinds,
+      values,
+      mask,
+      layerOwner,
+      frameOf,
+      grid,
+      params.gutter === 'fill' ? fill : params.gutter,
+    );
     for (const [j, k] of layer.kinds.entries()) output[k] = values[j] as TextureChannels;
     if (layer.weight === weight) owner = layerOwner;
   }
@@ -2742,6 +3540,37 @@ function finishTexture(
     bleed: mipBleed(owner, chart, grid),
     stack,
     handedness,
+  };
+}
+
+/** The report of an analytic bake: sample shares, deviations from the ray bake, fallbacks. */
+function analyticReport(
+  prepared: PreparedBake,
+  counts: Float64Array,
+): BakeAnalyticReport | undefined {
+  const run = prepared.analytic;
+  if (run === undefined) return undefined;
+  const groups = prepared.groups.map((g, k) => ({
+    id: g.id,
+    patches: run.plan.names[k] as string[],
+    analytic: run.plan.active[k] === 1,
+    ...(run.plan.reason[k] === undefined ? {} : { reason: run.plan.reason[k] }),
+    verified: run.verified[k] as number,
+    guarded: run.plan.guarded[k] as number,
+    analyticSamples: counts[k * GROUP_COUNTERS + 5] as number,
+    raySamples: counts[k * GROUP_COUNTERS + 6] as number,
+  })) as BakeAnalyticReport['groups'][number][];
+  return {
+    verify: run.verify,
+    analyticSamples: groups.reduce((n, g) => n + g.analyticSamples, 0),
+    raySamples: groups.reduce((n, g) => n + g.raySamples, 0),
+    maps: run.kinds.map((map) => ({
+      map,
+      ...run.deviations.summary(map),
+      tolerance: run.tolerance[map],
+    })),
+    groups,
+    mismatches: run.mismatches,
   };
 }
 
@@ -2836,11 +3665,18 @@ export function finishBake(
     id: g.id,
     offset: g.offset,
     maxRay: g.maxRay,
+    branches: {
+      cage: counts[k * GROUP_COUNTERS + 7] as number,
+      base: counts[k * GROUP_COUNTERS + 8] as number,
+      extended: counts[k * GROUP_COUNTERS + 9] as number,
+      flat: counts[k * GROUP_COUNTERS + 10] as number,
+    },
     samples: counts[k * GROUP_COUNTERS] as number,
     rayHits: counts[k * GROUP_COUNTERS + 1] as number,
     nearest: counts[k * GROUP_COUNTERS + 2] as number,
     clipped: counts[k * GROUP_COUNTERS + 3] as number,
     clipClusters: clipClusters(merged, k),
+    missClusters: missClusters(merged, k),
     stray: {
       parts: g.strayParts,
       gap: g.strayGap,
@@ -2857,6 +3693,7 @@ export function finishBake(
   const samples = rayHits + nearest;
   const sampled = groupReports.filter((g) => g.samples > 0);
   const protectedBleed = bleed.slice(0, params.protectMip).reduce((n, b) => n + b, 0);
+  const analytic = analyticReport(prepared, counts);
   return ok({
     status: 'ok',
     outputs: values.map(encodeFloats),
@@ -2873,6 +3710,7 @@ export function finishBake(
       heightRange,
       positionBounds: encoding.positionBounds,
       emissiveScale: emissiveScale(params.slots),
+      ...(analytic === undefined ? {} : { analytic }),
       bleed,
       stack,
       handedness,
@@ -2884,6 +3722,7 @@ export function finishBake(
       rayHits,
       nearest,
       rayHitRatio: samples > 0 ? rayHits / samples : 0,
+      ...(analytic === undefined ? {} : { analyticSamples: analytic.analyticSamples }),
       groups: sampled.length,
       minGroupRayHitRatio:
         sampled.length > 0 ? minOf(sampled.map((g) => g.rayHits / g.samples)) : 0,

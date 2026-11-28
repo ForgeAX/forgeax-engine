@@ -20,8 +20,40 @@ async function select(play, id, expected) {
 /** @param {import('@forgeax/engine/devkit').PlayContext} play */
 export default async function qualityPresets(play) {
   const initial = await play.waitFor(state => state.mode === 'shape' && state.completed !== null, { read });
+  assert.equal(initial.qualityPreset, 'quality-low');
+  assert.equal(initial.viewBlueNoise, false);
+  assert.ok(matches(initial, QUALITY_PRESETS['quality-low'].parameters));
+  await play.page.locator('[data-preset="quality-low"][aria-pressed="true"]').waitFor();
+  await play.page.locator('[data-ui-action="cloud-textured"][aria-pressed="true"]').waitFor();
   assert.ok((await play.screenshot('quality-baseline')).rendered);
-  if (!initial.paused) await play.page.locator('[data-ui-action="cloud-pause"]').click();
+  await play.step('All presets close manually enabled blue noise', async () => {
+    const tracing = play.page.locator('.properties > details').filter({ has: part(play, 'group-tracing') });
+    await tracing.evaluate(node => { node.open = true; });
+    const blueNoise = part(play, 'cloud-blue-noise');
+    const enableBlueNoise = async () => {
+      await blueNoise.check();
+      await play.waitFor(state => state.viewBlueNoise === true, { read });
+    };
+    for (const id of [...QUALITY_PRESET_IDS, ...WEATHER_PRESET_IDS, 'reference', 'bsm-reference']) {
+      await enableBlueNoise();
+      await select(play, id, { viewBlueNoise: false });
+      assert.equal(await blueNoise.isChecked(), false, id);
+    }
+    await enableBlueNoise();
+    await play.page.locator('.properties > details').filter({
+      has: play.page.locator('[data-ui-action="shadow-comparison"]'),
+    }).evaluate(node => { node.open = true; });
+    await play.page.locator('[data-ui-action="shadow-comparison"]').click();
+    await play.waitFor(state => state.mode === 'band' && state.viewBlueNoise === false, { read });
+    await play.page.locator('[data-ui-action="cloud-textured"]').click();
+    await play.waitFor(state => state.mode === 'shape', { read });
+    await enableBlueNoise();
+    await play.page.locator('[data-ui-action="cloud-reset"]').click();
+    await play.waitFor(state => state.request?.action === 'cloud-reset' && state.mode === 'shape' &&
+      state.qualityPreset === 'quality-low' && state.viewBlueNoise === false, { read });
+    await tracing.evaluate(node => { node.open = false; });
+  });
+  if (!(await play.state(read)).paused) await play.page.locator('[data-ui-action="cloud-pause"]').click();
   const paused = await play.waitFor(state => state.paused === true, { read });
   const combinations = [];
   await play.step('Quality and weather selections preserve both axes in all nine combinations', async () => {
@@ -63,7 +95,7 @@ export default async function qualityPresets(play) {
     await play.page.getByText('快照', { exact: true }).click();
     await play.page.locator('[data-ui-action="cloud-snapshot-save"]').click();
     await play.waitFor(state => state.snapshot?.preset === 'backlit' &&
-      state.snapshot.config.parameters.viewSampleCountScale === 0.5, { read });
+      state.snapshot.config.parameters.viewSampleCountScale === QUALITY_PRESETS['quality-low'].parameters.viewSampleCountScale, { read });
     await play.page.waitForFunction(() => [...document.querySelectorAll('#game-ui *')]
       .some(node => node.shadowRoot?.querySelector('[data-ui-part="snapshot-json"]')?.value));
     const saved = await part(play, 'snapshot-json').inputValue();
@@ -119,7 +151,8 @@ export default async function qualityPresets(play) {
       const weather = await part(play, 'weather-presets').boundingBox();
       const quality = await part(play, 'quality-presets').boundingBox();
       assert.ok(weather && quality && weather.y >= quality.y + quality.height);
-      assert.equal(await part(play, 'weather-presets').locator('button').count(), 6);
+      assert.equal(await part(play, 'weather-presets').locator('[data-preset]').count(), WEATHER_PRESET_IDS.length + 2);
+      assert.equal(await part(play, 'weather-presets').locator('button:not([data-preset])').count(), 2);
       assert.equal(await part(play, 'weather-presets').isVisible(), true);
       assert.ok((await play.screenshot(`quality-header-${viewport.width}`)).rendered);
     }

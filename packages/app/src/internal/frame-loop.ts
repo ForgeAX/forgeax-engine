@@ -10,8 +10,7 @@ import type {
 } from '@forgeax/engine-render';
 import { err, ok, type Result } from '@forgeax/engine-types';
 
-import type { AppErrorCode, AppErrorDetailFor } from '../errors';
-import { AppError } from '../errors';
+import { type AppError, makeAppError } from '../errors';
 import type { ExecutionFrameInspection } from '../execution';
 import { APP_PHASE_CATALOG, type SceneAdmission } from '../types';
 import type { FramePacer } from './frame-pacer';
@@ -118,15 +117,6 @@ function finishProfilerCapture(profiler: Profiler | undefined): void {
   } catch {
     // Profiler failures never alter the host stop transition.
   }
-}
-
-function makeAppError<C extends AppErrorCode>(
-  code: C,
-  expected: string,
-  hint: string,
-  detail: AppErrorDetailFor<C>,
-): AppError {
-  return new AppError({ code, expected, hint, detail }) as AppError;
 }
 
 function makeWorldUpdateError(cause: unknown): AppError {

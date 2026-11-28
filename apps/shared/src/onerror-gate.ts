@@ -106,7 +106,7 @@ export function onerrorGate(
       }
     });
 
-    // Headed Chrome Beta on lavapipe can spend several seconds creating the
+    // Headed Chrome on lavapipe can spend several seconds creating the
     // first WebGPU device after neighboring browser groups close. The ordinary
     // gate stays at 30s; multi-pass callers can pass a larger explicit budget
     // for an isolated cold process while retaining a bounded failure rather
@@ -116,7 +116,7 @@ export function onerrorGate(
       async () => {
         if (typeof navigator.gpu === 'undefined') {
           throw new Error(
-            `[${sectionName}.onerror-gate] code: 'webgpu-unavailable'; vitest.config.ts launches chrome-beta with WebGPU flags`,
+            `[${sectionName}.onerror-gate] code: 'webgpu-unavailable'; vitest.config.ts launches chrome with WebGPU flags`,
           );
         }
         canvas = document.createElement('canvas');

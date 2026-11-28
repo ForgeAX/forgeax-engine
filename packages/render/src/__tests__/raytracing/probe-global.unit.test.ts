@@ -2677,14 +2677,7 @@ function actualFieldSubmission(
   assert(encoder.kind === 'open');
   const attempt = { lightTextureResamples: [] } as never;
   const scene = f.source().scene;
-  const capture = encodeCaptureOnlyFrame(
-    f.runtime,
-    {} as never,
-    attempt,
-    encoder.encoder,
-    [],
-    scene,
-  );
+  const capture = encodeCaptureOnlyFrame(f.runtime, attempt, encoder.encoder, scene);
   const hooks = frameSubmissionHooks(
     f.runtime,
     {} as never,

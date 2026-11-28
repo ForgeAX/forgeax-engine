@@ -15,6 +15,7 @@ it('keeps a complete existing facade readable during rebuilds and removes retire
       await copyFile(join(repository, 'packages/engine/scripts', file), join(root, 'packages/engine/scripts', file));
     await symlink(join(repository, 'node_modules'), join(root, 'node_modules'), 'dir');
     await writeFile(join(root, 'packages/engine/package.json'), JSON.stringify({ dependencies: { '@forgeax/engine-ecs': '0.0.0' } }));
+    await writeFile(join(root, 'packages/engine/api-tiers.json'), JSON.stringify({ game: ['ecs'] }));
     await writeFile(join(root, 'packages/ecs/package.json'), JSON.stringify({ name: '@forgeax/engine-ecs', exports: { '.': './dist/index.mjs' } }));
     await writeFile(join(root, 'packages/ecs/dist/index.mjs'), 'export const proof=1;');
     const build = () => new Promise((done, reject) => {

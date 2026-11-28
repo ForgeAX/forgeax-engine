@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer } from 'vite';
@@ -187,6 +188,20 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     fixture = options.fixture ? await startFixture() : undefined;
     const origin = fixture?.origin ?? normalizeOrigin(options.viewHost);
     process.env.FORGEAX_VIEW_DEV_HOST_ORIGIN = origin;
+    if (!fixture) {
+      const engineRoot = resolve(repositoryRoot, '../..');
+      const integration = resolve(engineRoot, 'tools/view-plugins/integration');
+      const panels = resolve(integration, 'panels.tsx');
+      const frontendPlugins = resolve(integration, 'frontend-plugins.ts');
+      if (existsSync(panels) && existsSync(frontendPlugins)) {
+        process.env.FORGEAX_VIEW_PANELS_ENTRY ??= panels;
+        process.env.FORGEAX_VIEW_FRONTEND_PLUGINS_ENTRY ??= frontendPlugins;
+        process.env.FORGEAX_VIEW_INPUT_ROOTS ??= JSON.stringify([
+          resolve(engineRoot, 'tools/view-plugins'),
+          resolve(engineRoot, 'apps/rhi-debug-viewer/src'),
+        ]);
+      }
+    }
     if (fixture) {
       const enginePackage = fileURLToPath(import.meta.resolve('@forgeax/engine/package.json'));
       const engineRoot = resolve(dirname(enginePackage), '../..');

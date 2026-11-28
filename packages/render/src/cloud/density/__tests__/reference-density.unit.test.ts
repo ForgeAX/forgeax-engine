@@ -112,6 +112,28 @@ describe('sampled cloud reference domain', () => {
     expect(full.emissivePerMeter).toEqual([0, 0, 0]);
   });
 
+  it('feathers the horizontal mask inside the authored height profile', () => {
+    const textures: ReferenceCloudTextures = {
+      ...testTextures(),
+      mask: () => [1, 1, 1, 0],
+      profile: ([height]) => [0, height, 0, 0],
+    };
+    const sample = (heightFraction: number, options = controls) => {
+      const position = { ...point, heightFraction };
+      const c4 = evaluateReferenceConservative(position, options, textures, false);
+      return {
+        mask: c4[0] - c4[1],
+        extinction: evaluateReferenceMedium(position, options, c4).extinctionPerMeter,
+      };
+    };
+
+    expect(sample(0.45)).toEqual({ mask: 0, extinction: 0 });
+    expect(sample(0.5).mask).toBe(0);
+    expect(sample(0.505).mask).toBeCloseTo(0.005, 12);
+    expect(sample(0.52).mask).toBeCloseTo(0.01, 12);
+    expect(sample(0.45, { ...controls, profileWeight: 0 }).mask).toBeCloseTo(0.01, 12);
+  });
+
   it('applies the height gate and camera-relative meter fade independently', () => {
     const textures = testTextures();
     for (const heightFraction of [-0.01, 0, 0.019, 0.981, 1, 1.01]) {

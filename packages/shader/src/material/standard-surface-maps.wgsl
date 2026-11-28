@@ -51,8 +51,9 @@ fn surfaceProjection(input : SurfaceInput, materialValue : MaterialParameters) -
   let dx = vec3<f32>(0.0);
   let dy = vec3<f32>(0.0);
 #else
-  let dx = dpdx(position);
-  let dy = dpdy(position);
+  // UE multiplies the derivatives by 2^bias for derivative-mode sampling.
+  let dx = dpdx(position) * exp2(input.materialTextureMipBias);
+  let dy = dpdy(position) * exp2(input.materialTextureMipBias);
 #endif
   return SurfaceProjection(
     position, dx, dy, normal,
@@ -106,7 +107,7 @@ fn surfaceSample(tex : texture_2d<f32>, smp : sampler, input : SurfaceInput, tri
     return samples.x * w.x + samples.y * w.y + samples.z * w.z;
   }
   return sampleSurfaceTexture(tex, smp, surfaceUv(input, transform, metadata, rotation) * metadata.zw,
-    surfaceTextureFootprint(input, transform, metadata));
+    surfaceTextureFootprint(input, transform, metadata), input.materialTextureMipBias);
 }
 
 #endif

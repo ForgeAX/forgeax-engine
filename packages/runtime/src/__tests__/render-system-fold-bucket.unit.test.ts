@@ -1,6 +1,6 @@
 // feat-20260622-chunk-gpu-instancing-sprite-tilemap M1 / w1 — fold-bucket basics.
 //
-// Drives the pure fold helper `foldDispatchBuckets(entries, mode, renderables)`
+// Drives the pure fold helper `foldDispatchBuckets(entries, mode, readRow)`
 // for mode-0 (LAYER_Z) basic paths:
 //   (1) single material, N consecutive DispatchEntry sharing (layer, posZ,
 //       materialHandle) -> 1 fold bucket with bucketSize=N.
@@ -17,11 +17,11 @@
 
 import { RenderQueue } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { MaterialResource } from '../../../render/src/material-resource';
 import { foldDispatchBuckets } from '../../../render/src/record/mesh-ssbo';
 import {
   type DispatchEntry,
   defaultMaterialSnapshot,
-  type MaterialSnapshot,
 } from '../../../render/src/render-system-extract';
 import { TRANSPARENT_SORT_MODE_LAYER_Z } from '../../../render/src/systems/transparent-sort-config';
 
@@ -65,7 +65,7 @@ function mockRenderable(
   ...rest: [true | undefined] | []
 ): {
   transform: { world: Float32Array };
-  material: MaterialSnapshot;
+  material: MaterialResource;
 } {
   const world = new Float32Array(16);
   world[0] = 1;
@@ -76,17 +76,17 @@ function mockRenderable(
   const transparent = rest.length === 0 ? true : rest[0];
   return {
     transform: { world },
-    material: {
+    material: new MaterialResource({
       ...defaultMaterialSnapshot(),
       ...(transparent ? { transparent } : {}),
       passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
-    },
+    }),
   };
 }
 
 describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
   it('empty entries produces 0 buckets', () => {
-    const buckets = foldDispatchBuckets([], TRANSPARENT_SORT_MODE_LAYER_Z, []);
+    const buckets = foldDispatchBuckets([], TRANSPARENT_SORT_MODE_LAYER_Z, () => undefined);
     expect(buckets).toHaveLength(0);
   });
 
@@ -99,7 +99,11 @@ describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
       renderables.push(mockRenderable(1.5));
     }
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets).toHaveLength(1);
     const bucket = buckets[0];
@@ -131,7 +135,11 @@ describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
       w[13] = i * 100; // distinct posY
     }
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
     expect(buckets).toHaveLength(1);
     const bucket = buckets[0];
     expect(bucket).toBeDefined();
@@ -164,7 +172,11 @@ describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
       renderables.push(mockRenderable(i + 0.5)); // distinct posZ
     }
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
     expect(buckets).toEqual([]);
   });
 });
@@ -201,16 +213,16 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
       const row = mockRenderable(1.0, true);
       return {
         ...row,
-        material: {
-          ...row.material,
+        material: new MaterialResource({
+          ...row.material.snapshot,
           passes: [{ name: 'Forward', program: { module: 'forgeax::default-standard-pbr' } }],
-        },
+        }),
       };
     });
     const standardBuckets = foldDispatchBuckets(
       standardEntries,
       TRANSPARENT_SORT_MODE_LAYER_Z,
-      standardRenderables,
+      (index) => standardRenderables[index],
     );
     expect(standardBuckets).toEqual([]);
 
@@ -218,16 +230,17 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
       const spriteEntries = [0, 1].map((renderableIndex) =>
         mockEntry({ renderableIndex, materialHandle: 13, layer: 0, materialShaderId }),
       );
+      const spriteRenderables = standardRenderables.map((row) => ({
+        ...row,
+        material: new MaterialResource({
+          ...row.material.snapshot,
+          passes: [{ name: 'Forward', program: { module: materialShaderId } }],
+        }),
+      }));
       const spriteBuckets = foldDispatchBuckets(
         spriteEntries,
         TRANSPARENT_SORT_MODE_LAYER_Z,
-        standardRenderables.map((row) => ({
-          ...row,
-          material: {
-            ...row.material,
-            passes: [{ name: 'Forward', program: { module: materialShaderId } }],
-          },
-        })),
+        (index) => spriteRenderables[index],
       );
       expect(spriteBuckets).toHaveLength(1);
       expect(spriteBuckets[0]?.bucketSize).toBe(2);
@@ -246,7 +259,11 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
       renderables.push(mockRenderable(1.0, undefined)); // <-- not transparent
     }
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets).toEqual([]);
   });
@@ -264,7 +281,11 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
       renderables.push(mockRenderable(2.0, undefined)); // <-- not transparent
     }
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets).toEqual([]);
   });
@@ -290,7 +311,11 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
       mockRenderable(1.0, undefined),
     ];
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets.map((bucket) => bucket.bucketSize)).toEqual([3]);
   });
@@ -315,7 +340,11 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
       mockRenderable(0.5, true),
     ];
 
-    const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
+    const buckets = foldDispatchBuckets(
+      entries,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      (index) => renderables[index],
+    );
 
     expect(buckets.map((bucket) => bucket.entries.map((entry) => entry.renderableIndex))).toEqual([
       [0, 1],

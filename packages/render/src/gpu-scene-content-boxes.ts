@@ -12,10 +12,22 @@ import {
   CONTENT_WHOLE,
   type RowChangeLog,
 } from './scene/row-change-log';
+import type { RowContent } from './scene/row-contents';
+import { PublishedPoseRows } from './scene/scene-slots';
 
 /** The scene writes its six coordinates directly. Borrowed sources may supply an owned box. */
 export type GpuSceneSlotBounds =
-  | { writeCullingWorldBoundsAt(slot: RenderSceneSlot, out: box3.Box3): boolean }
+  | {
+      writeCullingWorldBoundsAt(slot: RenderSceneSlot, out: box3.Box3): boolean;
+      writeCullingPoseBounds?(
+        slot: number,
+        version: number,
+        content: RowContent,
+        column: Float32Array,
+        offset: number,
+        out: box3.Box3,
+      ): boolean;
+    }
   | ((slot: RenderSceneSlot) => RenderSceneBounds | undefined);
 
 /** Changed world bounds since a cursor, or `'unbounded'` when a change has no proven box. */
@@ -134,56 +146,90 @@ export class GpuSceneContentBoxes {
     }
     const visit = ++this.visit;
     let absent: Set<number> | undefined;
-    for (const records of [
-      delta.createdSlots,
-      delta.recreatedSlots,
-      delta.updatedSlots,
-      delta.contentUpdatedSlots,
-      delta.instanceUpdatedSlots,
-    ]) {
-      for (const record of records) {
-        const slot = record.slot;
-        const before = this.pages.get(Math.floor(slot / PAGE_ROWS));
-        const high = (slot & 32) !== 0;
-        const bit = 1 << (slot & 31);
-        if (
-          (before?.visit === visit && ((high ? before.high : before.low) & bit) !== 0) ||
-          absent?.has(slot)
-        )
-          continue;
-        const page = this.recordSlot(journal, record, boundsOf, scratch, before);
-        if (page === undefined) {
-          // A zero-instance row owns no bounds storage to carry the duplicate mark.
-          absent ??= new Set();
-          absent.add(slot);
-          continue;
-        }
-        if (page.visit !== visit) {
-          page.visit = visit;
-          page.low = page.high = 0;
-        }
-        if (high) page.high |= bit;
-        else page.low |= bit;
+    const recordPose = (
+      slot: number,
+      content: RowContent,
+      record: RenderSceneSlot | undefined,
+      version: number,
+      column?: Float32Array,
+      offset = 0,
+    ) => {
+      const before = this.pages.get(Math.floor(slot / PAGE_ROWS));
+      const high = (slot & 32) !== 0;
+      const bit = 1 << (slot & 31);
+      if (
+        (before?.visit === visit && ((high ? before.high : before.low) & bit) !== 0) ||
+        absent?.has(slot)
+      )
+        return;
+      const page = this.recordSlot(
+        journal,
+        slot,
+        content,
+        boundsOf,
+        scratch,
+        before,
+        record,
+        version,
+        column,
+        offset,
+      );
+      if (page === undefined) {
+        // A zero-instance row owns no bounds storage to carry the duplicate mark.
+        absent ??= new Set();
+        absent.add(slot);
+        return;
       }
-    }
+      if (page.visit !== visit) {
+        page.visit = visit;
+        page.low = page.high = 0;
+      }
+      if (high) page.high |= bit;
+      else page.low |= bit;
+    };
+    const recordChange = (record: RenderSceneSlot) => {
+      recordPose(record.slot, slotContent(record), record, record.version);
+    };
+    delta.createdSlots.forEach(recordChange);
+    delta.recreatedSlots.forEach(recordChange);
+    const updated = delta.updatedSlots;
+    if (
+      updated instanceof PublishedPoseRows &&
+      (boundsOf === undefined ||
+        (typeof boundsOf !== 'function' && boundsOf.writeCullingPoseBounds !== undefined))
+    )
+      updated.visitWrites(recordChange, (slot, version, content, column, offset) => {
+        recordPose(slot, content, undefined, version, column, offset);
+      });
+    else updated.forEach(recordChange);
+    delta.contentUpdatedSlots.forEach(recordChange);
+    delta.instanceUpdatedSlots.forEach(recordChange);
   }
 
   private recordSlot(
     journal: RowChangeLog,
-    record: RenderSceneSlot,
+    slot: number,
+    snapshot: RowContent,
     boundsOf: GpuSceneSlotBounds | undefined,
     scratch: box3.Box3,
     before: BoundsPage | undefined,
+    record: RenderSceneSlot | undefined,
+    version: number,
+    column: Float32Array | undefined,
+    offset: number,
   ): BoundsPage | undefined {
-    const slot = record.slot;
-    const snapshot = slotContent(record);
     const changed = this.appendOld(journal, slot, CONTENT_CHANGED, before);
     // Skinned and sprite casters deform beyond their bind-pose box.
     let borrowed: RenderSceneBounds | undefined;
     let written = false;
     if (snapshot.skinBinding === undefined && snapshot.spriteInstances === undefined) {
-      if (typeof boundsOf === 'function') borrowed = boundsOf(record);
-      else written = boundsOf?.writeCullingWorldBoundsAt(record, scratch) === true;
+      if (record !== undefined) {
+        if (typeof boundsOf === 'function') borrowed = boundsOf(record);
+        else written = boundsOf?.writeCullingWorldBoundsAt(record, scratch) === true;
+      } else if (column !== undefined && typeof boundsOf !== 'function')
+        written =
+          boundsOf?.writeCullingPoseBounds?.(slot, version, snapshot, column, offset, scratch) ===
+          true;
     }
     if (written || borrowed !== undefined) {
       const page = this.setState(slot, BOXED) as BoundsPage;

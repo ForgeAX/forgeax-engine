@@ -2,6 +2,7 @@ import type { GraphPreparationStep, RenderGraphFrame } from '@forgeax/engine-ren
 import type { BindGroupLayout, PipelineLayout, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { type ShaderSource, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { stockUtilityShaderFactory } from '../assembly/utility-shader-prewarm';
 import {
   type ComputeState,
   computePipelineError,
@@ -9,8 +10,14 @@ import {
 } from '../compute-graph-state';
 import type { DeviceScope } from '../device/device-scope';
 import type { NativeGraphInputs } from '../record/native-graph-inputs';
+import type { DepthPyramidShaderSources } from '../render-contract';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { recordContext } from '../world/view-record-context';
+
+/** Check an admitted bundle without composing its source getters. */
+export function hasDepthPyramidPrograms(sources: DepthPyramidShaderSources | undefined): boolean {
+  return sources !== undefined && 'seed' in sources && 'reduce' in sources;
+}
 
 type Variant =
   | 'seed'
@@ -208,7 +215,7 @@ export function* prepareDepthPyramidProgram(
   current: () => boolean,
   layoutIdentity = JSON.stringify(entries),
 ): Generator<GraphPreparationStep, { readonly state: ComputeState; isCurrent(): boolean }> {
-  const factory = inputs.shaderModuleFactory;
+  const factory = stockUtilityShaderFactory(inputs);
   if (factory?.peekShaderModule === undefined)
     throw computePipelineError('depth pyramid module witness');
   const descriptor = shaderSourceDescriptor(source, `depth_pyramid_${stageOf(variant)}`);
@@ -286,7 +293,7 @@ export function createDepthPyramidProgramResolver(
   ): ComputeState => {
     const stage = stageOf(variant),
       runtime = (frame as RenderPipelineFrame).runtime;
-    const factory = runtime?.shaderModuleFactory;
+    const factory = runtime === undefined ? undefined : stockUtilityShaderFactory(runtime);
     if (factory === undefined) throw computePipelineError(`depth_pyramid_${stage} shader module`);
     const { device } = runtime;
     const scope = recordContext(runtime as { readonly deviceScope?: DeviceScope }).deviceScope;

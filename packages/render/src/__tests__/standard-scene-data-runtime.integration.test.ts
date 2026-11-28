@@ -978,6 +978,9 @@ it('keeps AO inspection and receipts on the installed graph across a failed cand
   const fixture = await createSceneDataRuntime(undefined, { ao: false, algorithm: 'gtao' });
   const camera = fixture.cameraEntity;
   if (camera === undefined) throw new Error('AO candidate fixture is missing its camera');
+  // The injected allocation failure belongs to the compiled AO graph. Establish
+  // the previous graph on that same conformance lane before arming the fault.
+  fixture.host.setGtaoExecutionOverrideForConformance('fragment');
   fixture.host.setClusterWorkObservationForConformance(true);
   const rendererEvents: unknown[] = [];
   const candidateSnapshots: {
@@ -1849,16 +1852,8 @@ it.each([
     ao: false,
   });
   try {
-    const warmup = fixture.drawFrame();
-    expect(warmup.ok, warmup.ok ? '' : JSON.stringify(warmup.error)).toBe(true);
-    if (warmup.ok) expect((await warmup.value.completed).ok).toBe(true);
-
-    const ready = fixture.drawFrame();
-    expect(ready.ok, ready.ok ? '' : JSON.stringify(ready.error)).toBe(true);
-    if (!ready.ok) return;
-    const completed = await ready.value.completed;
-    expect(completed.ok, completed.ok ? '' : JSON.stringify(completed.error)).toBe(true);
-    expect(ready.value.frameId).toBeGreaterThan(0);
+    const ready = await completeReadyFrame(() => fixture.drawFrame().unwrap());
+    expect(ready.frameId).toBeGreaterThan(0);
     expect(token?.schema).toBe(SCENE_DATA_TEMPORAL_V1_SCHEMA);
     expect(catalog?.inspect(SCENE_DATA_TEMPORAL_V1_SCHEMA)).toMatchObject({
       status: 'available',

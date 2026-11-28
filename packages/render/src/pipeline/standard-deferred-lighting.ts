@@ -81,6 +81,7 @@ export const DEFERRED_LIGHTING_PARAMS_BYTES = 2 * 4 * Float32Array.BYTES_PER_ELE
 export interface StandardSceneShaderSources {
   readonly gbuffer?: import('@forgeax/engine-types').MaterialGBufferLayout;
   readonly compactGbuffer?: import('@forgeax/engine-types').CompactGBufferLayout;
+  /** An available supplier admits the projection; only the Pass calls it. */
   readonly forwardDirectionalShadow?: string | ShaderSource | undefined;
   readonly forwardScreenCompose?: string | import('@forgeax/engine-types').ShaderSource;
   readonly forwardContact?: string | import('@forgeax/engine-types').ShaderSource;
@@ -1011,6 +1012,15 @@ export function addStandardDeferredLighting(
     ),
     'utility',
   );
+  const publishDeferredShadowViews = (
+    outputs: import('../record/frame-snapshot').RenderFrameState['frameOutputs'] | undefined,
+    directionalShadow: TextureView | undefined,
+    spotShadow: TextureView | undefined,
+  ): void => {
+    if (outputs === undefined) return;
+    if (directionalShadow !== undefined) outputs.directionalShadowView = directionalShadow;
+    if (spotShadow !== undefined) outputs.spotShadowView = spotShadow;
+  };
   return graph.addRasterPass('lighting', {
     accesses: [
       ...(input.environment === undefined
@@ -1071,6 +1081,9 @@ export function addStandardDeferredLighting(
               },
             };
       const sky = prepareMaterialSkylight(environment).skylightResources;
+      const directionalShadow = view(input.directionalShadow);
+      const spotShadow = view(input.spotShadow);
+      publishDeferredShadowViews(internal.frameState.frameOutputs, directionalShadow, spotShadow);
       const viewBindGroup = buildViewBindGroup(
         internal.runtime as RenderSystemInternals,
         internal.frameState,
@@ -1081,8 +1094,8 @@ export function addStandardDeferredLighting(
           sky,
           cluster,
           atmosphere: resolveDeferredSunTable(resources, solarTable),
-          directionalShadow: view(input.directionalShadow),
-          spotShadow: view(input.spotShadow),
+          directionalShadow,
+          spotShadow,
           cloudShadow: view(input.cloudShadow),
           projector: internal.spotLightProjector?.view,
           projectorSampler: internal.spotLightProjector?.sampler,

@@ -81,8 +81,8 @@ export const FACETS: readonly FacetGroup[] = [
       return back.or(back.grow(BACK_HAIR_CAP_RINGS).and(region('hair')(m)).minus(lobeFaces(m)));
     },
     // Past the dome's plan edge 0.065 (906 per m2 there, over its 875 band): 801 per m2.
-    edge: 0.07,
-    adaptive: { error: 0.004, minEdge: 0.056 },
+    edge: 0.068,
+    adaptive: { error: 0.004, minEdge: 0.054 },
   },
   // The lobes and the side locks are explicit facets (hair.ts LOBES, LOCK_FACETS): no group, they
   // keep their facets. The rest of the hair (cap, side masses) at the cap's 0.05, never
@@ -120,12 +120,12 @@ export const FACETS: readonly FacetGroup[] = [
   { name: 'apron', faces: tagged(...APRON_UNITS.panel), edge: 0.05, simplify: false },
   // The bib is 38-48 triangles: at 0.04 one sliver at its top corner (aspect 6.2) was 2.6 %; at
   // 0.036 none (2250 per m2, in its 0.04 band).
-  { name: 'bib', faces: tagged(...APRON_UNITS.bib), edge: 0.036, simplify: false },
+  { name: 'bib', faces: tagged(...APRON_UNITS.bib), edge: 0.037, simplify: false },
   // Per-unit mesh quality (bodice-sleeves): the bodice at 0.052 without QEM, its field down to 0.038 (at a
   // 0.04 floor the armhole and bib-outline borders fail min-angle p10; at 0.06 p10 19.8): 2217
   // per m2, in its band. The sleeves stay at 0.055 for their band: no remesh meets both (at
   // 0.032 the mesh-quality limits pass at 4770 per m2, band 1508-3016); their mesh quality is open (facet-plan.json).
-  { name: 'bodice', faces: tagged('bodice'), edge: 0.052, adaptive: { error: 0.006, minEdge: 0.038 }, simplify: false },
+  { name: 'bodice', faces: tagged('bodice'), edge: 0.054, adaptive: { error: 0.006, minEdge: 0.038 }, simplify: false },
   { name: 'sleeves', faces: tagged('sleeve-l', 'sleeve-r'), edge: 0.055, adaptive: { error: 0.004, minEdge: 0.044 } },
   // Faceted before the ties are seated on it.
   // The flukes are built as facets (attachments.ts facetFlukes): no group. The tail body at its

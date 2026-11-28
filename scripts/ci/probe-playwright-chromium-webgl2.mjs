@@ -13,21 +13,20 @@ const launchArgs = [
   '--enable-unsafe-swiftshader',
   '--disable-gpu-driver-bug-workarounds',
 ];
-const configuredExecutable = process.env.FORGEAX_CHROMIUM_EXECUTABLE;
-const configuredChannel = process.env.FORGEAX_CHROME_CHANNEL;
+const configuredExecutable =
+  process.env.FORGEAX_CHROMIUM_EXECUTABLE || process.env.FORGEAX_BROWSER_EXECUTABLE;
+const configuredChannel = process.env.FORGEAX_CHROME_CHANNEL || 'chrome';
 // Playwright rejects channel and executablePath together. Prefer an explicit
-// executable, then the configured Chrome channel, and otherwise use its
-// managed Chromium so the emitted identity describes the actual launch.
+// executable, and otherwise use the unified Chrome channel so the emitted
+// identity describes the actual launch without pinning a Playwright Chromium.
 let carrier;
 let carrierLaunchOptions = {};
-if (configuredExecutable !== undefined) {
+if (configuredExecutable) {
   carrier = { kind: 'executable', value: configuredExecutable };
   carrierLaunchOptions = { executablePath: configuredExecutable };
-} else if (configuredChannel !== undefined) {
+} else {
   carrier = { kind: 'channel', value: configuredChannel };
   carrierLaunchOptions = { channel: configuredChannel };
-} else {
-  carrier = { kind: 'playwright-managed-chromium', value: null };
 }
 const launchOptions = {
   headless,

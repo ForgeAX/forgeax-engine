@@ -41,7 +41,7 @@ function fixture(accepted: boolean) {
   const mapping = {};
   const display = {
     frame: 3,
-    attempt: { captureFrames: [{ work: { target: 'target', physical: 'layer' } }] },
+    attempt: {},
     resolution,
     extent: { width: 16, height: 8 },
     rasterRows: () => 7,
@@ -56,6 +56,7 @@ function fixture(accepted: boolean) {
     frameOutputs: { sceneSubmitted: false },
   } as unknown as RenderFrameState;
   const internals = {
+    captureView: { state: { work: [{ target: 'target', physical: 'layer' }] } },
     markRenderTargetSubmitted: vi.fn(),
     errorRegistry: { fire: vi.fn() },
     renderWorld: world,

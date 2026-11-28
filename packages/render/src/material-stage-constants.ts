@@ -126,16 +126,28 @@ function selectAxisOn(variantSet: string, axis: string): string {
   return variantSet === '' ? variantSet : `${variantSet}+${axis}=true`;
 }
 
-/** Select the same source axes for artifact proof and PSO assembly. */
-export function variantSetForSurfaceDiscards(variantSet: string | undefined, mask: number): string {
-  let selected =
-    variantSet ??
-    `${STANDARD_SURFACE_DISCARD_CLIPPING_AXIS}=false+${STANDARD_SURFACE_DISCARD_LOD_AXIS}=false`;
+function projectSurfaceDiscardAxes(selected: string, mask: number): string {
   if ((mask & STANDARD_SURFACE_DISCARD_LOD_COVERAGE) !== 0)
     selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_LOD_AXIS);
   if ((mask & STANDARD_SURFACE_DISCARD_VIEW_CLIPPING) !== 0)
     selected = selectAxisOn(selected, STANDARD_SURFACE_DISCARD_CLIPPING_AXIS);
   return withSupportedLeanInputs(selected);
+}
+
+const IMPLICIT_DISCARD_VARIANTS = Array.from({ length: 4 }, (_, mask) =>
+  projectSurfaceDiscardAxes(
+    `${STANDARD_SURFACE_DISCARD_CLIPPING_AXIS}=false+${STANDARD_SURFACE_DISCARD_LOD_AXIS}=false`,
+    mask,
+  ),
+);
+
+/** Select the same source axes for artifact proof and PSO assembly. */
+export function variantSetForSurfaceDiscards(variantSet: string | undefined, mask: number): string {
+  return variantSet === undefined
+    ? (IMPLICIT_DISCARD_VARIANTS[
+        mask & (STANDARD_SURFACE_DISCARD_LOD_COVERAGE | STANDARD_SURFACE_DISCARD_VIEW_CLIPPING)
+      ] as string)
+    : projectSurfaceDiscardAxes(variantSet, mask);
 }
 
 /**

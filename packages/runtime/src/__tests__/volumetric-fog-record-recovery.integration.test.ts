@@ -235,7 +235,7 @@ describe('volumetric fog record recovery projection', () => {
     if (!lease.ok) return;
     const request = { source: lease.value } as const;
 
-    expect(required(renderer.draw(request))).toBeDefined();
+    await drawReadyFrame(renderer, request);
     const accepted = renderer.inspect().volumetricFog;
     expect(accepted).toMatchObject({
       status: 'available',

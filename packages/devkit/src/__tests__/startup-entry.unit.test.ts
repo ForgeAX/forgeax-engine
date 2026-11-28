@@ -38,7 +38,9 @@ it('compiles versioned and retry TypeScript entries through Vite with their CSS 
     if (!address || typeof address === 'string') throw Error('Missing preview address');
     const executablePath = [
       process.env.FORGEAX_BROWSER_EXECUTABLE,
-      '/opt/google/chrome-beta/chrome',
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/opt/google/chrome/chrome',
+      '/usr/bin/google-chrome',
       chromium.executablePath(),
     ].find((path): path is string => path !== undefined && existsSync(path));
     browser = await chromium.launch({

@@ -12,7 +12,7 @@ const server = createServer((_, response) => { response.setHeader('content-type'
 server.listen(0, '127.0.0.1'); await once(server, 'listening');
 let browser;
 try {
-  browser = await chromium.launch({ executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE, headless: true, chromiumSandbox: true });
+  browser = await chromium.launch({ ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }), headless: true, chromiumSandbox: true });
   const page = await browser.newPage();
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);

@@ -245,20 +245,6 @@
       ]
     },
     {
-      "package": "@forgeax/hello-dsh-federation",
-      "path": "apps/hello/dsh-federation/package.json",
-      "classification": "excluded",
-      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
-      "gates": [
-        {
-          "gateId": "hello-dsh-federation/smoke",
-          "commandId": "smoke",
-          "executionClass": "excluded",
-          "oracle": "assertion"
-        }
-      ]
-    },
-    {
       "package": "@forgeax/hello-entity-visibility",
       "path": "apps/hello/entity-visibility/package.json",
       "classification": "run",
@@ -392,20 +378,6 @@
           "commandId": "smoke",
           "executionClass": "independent",
           "oracle": "frameReceipt"
-        }
-      ]
-    },
-    {
-      "package": "@forgeax/hello-intelligence-worker",
-      "path": "apps/hello/intelligence-worker/package.json",
-      "classification": "excluded",
-      "reason": "smoke script is a browser or composite path, not a direct Dawn smoke",
-      "gates": [
-        {
-          "gateId": "hello-intelligence-worker/smoke",
-          "commandId": "smoke",
-          "executionClass": "excluded",
-          "oracle": "assertion"
         }
       ]
     },

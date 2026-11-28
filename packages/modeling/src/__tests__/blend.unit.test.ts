@@ -641,16 +641,19 @@ describe('blend run-out and sub-range', () => {
     // band is under 1 % of its width.
     const split = nurbs.surface.split(b, 'u', 0.98);
     if (!split.ok) throw split.error;
-    const report = checkSurfaceQuality({
-      surfaces: [
-        { name: 'tip', surface: split.value[1] },
-        {
-          name: 'roll',
-          surface: result.value.blend,
-          transition: { kind: 'blend' as const, continuity: 'G1' as const },
-        },
-      ],
-    });
+    const report = checkSurfaceQuality(
+      {
+        surfaces: [
+          { name: 'tip', surface: split.value[1] },
+          {
+            name: 'roll',
+            surface: result.value.blend,
+            transition: { kind: 'blend' as const, continuity: 'G1' as const },
+          },
+        ],
+      },
+      { position: 1e-4 },
+    );
     if (!report.ok) throw report.error;
     expect(report.value.pass).toBe(false);
     expect(report.value.edges).toEqual([]);

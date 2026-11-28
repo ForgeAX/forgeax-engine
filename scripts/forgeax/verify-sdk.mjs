@@ -1169,7 +1169,7 @@ if (selected('project')) {
         resources.page.evaluate(() => globalThis.__forgeaxGameInspection?.renderer()),
       );
       if (canRecoverSelectedBrowser(renderer, startup.recovery)) {
-        // Hosted Chrome Beta + lavapipe can lose the external GPU instance after
+        // Hosted Chrome + lavapipe can lose the external GPU instance after
         // a valid gameplay journey. Match the source-template verifier's
         // fresh-process viability proof before attributing that runner teardown
         // to the archived SDK runtime.
@@ -1340,11 +1340,7 @@ if (selected('project')) {
       const renderer = await resources.page
         .evaluate(() => globalThis.__forgeaxGameInspection?.renderer())
         .catch(() => undefined);
-      if (
-        process.platform !== 'linux' ||
-        channel !== 'chrome-beta' ||
-        !isHostGpuInstanceLoss(renderer)
-      )
+      if (process.platform !== 'linux' || channel !== 'chrome' || !isHostGpuInstanceLoss(renderer))
         throw cause;
       recovery = {
         reason: 'host-gpu-instance-lost',
@@ -1389,9 +1385,9 @@ if (selected('project')) {
       '--ignore-gpu-blocklist',
     ];
     // Hosted Linux runners have no physical display/GPU. Match the repository's
-    // proven Chrome Beta + lavapipe/Xvfb lane so the SDK template smoke checks
+    // proven Chrome + lavapipe/Xvfb lane so the SDK template smoke checks
     // the real WebGPU compositor instead of silently accepting a static canvas.
-    if (process.platform === 'linux' && chromeChannel === 'chrome-beta') {
+    if (process.platform === 'linux' && chromeChannel === 'chrome') {
       chromeArgs.push(
         '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
         '--use-vulkan=swiftshader',

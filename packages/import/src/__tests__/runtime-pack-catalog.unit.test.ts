@@ -1,5 +1,10 @@
 import { preparePackProgram } from '@forgeax/engine-pack/runtime';
-import { type CatalogDelta, ok, type SamplerAsset } from '@forgeax/engine-types';
+import {
+  type CatalogDelta,
+  type MaterialRootAsset,
+  ok,
+  type SamplerAsset,
+} from '@forgeax/engine-types';
 import { expect, it, onTestFinished } from 'vitest';
 import { prepareRuntimePackContent, RuntimePackProducer } from '../runtime-pack';
 import { parseRuntimePackContent, runtimeGeneratorDefinition } from '../runtime-pack-content';
@@ -29,6 +34,29 @@ it('reads saved generator metadata with the retired build option', () => {
     throw new Error('Expected a generator');
   const executable = runtimeGeneratorDefinition(source, () => ok({}));
   expect(executable.runtime).toEqual({ ...runtime, execution: 'task-worker' });
+});
+
+it('keeps material program admission on the Runtime Pack output path', async () => {
+  const id = '01900000-0000-7000-8000-000000000197';
+  const material = (module: string): MaterialRootAsset => ({
+    kind: 'material',
+    passes: [{ name: 'main', program: { module } }],
+    values: {},
+  });
+  const stock = await prepareRuntimePackContent(id, {
+    material: material('forgeax::default-unlit'),
+  });
+  expect(stock.ok).toBe(true);
+  const project = await prepareRuntimePackContent(id, {
+    material: material('project::custom'),
+  });
+  expect(project).toMatchObject({
+    ok: false,
+    error: {
+      code: 'runtime-pack-invalid',
+      detail: { cause: { message: 'authored material programs require build-time Cook' } },
+    },
+  });
 });
 
 it.each([

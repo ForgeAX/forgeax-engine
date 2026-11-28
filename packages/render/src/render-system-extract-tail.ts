@@ -104,6 +104,7 @@ import {
   type MaterialProgramSelection,
   type MaterialRasterPrograms,
   materialProgramSelectionsForMaterial,
+  type SourceMaterialProgramDemand,
 } from './material-program-selection';
 import { MaterialResource, materialUsesSpriteGeometry } from './material-resource';
 import { captureMaterialSource, materialSourceMatchesCurrent } from './material-source';
@@ -163,7 +164,7 @@ import {
   storeMaterialSnapshot,
   tonemapParams,
 } from './render-system-extract';
-import { ScenePoseWriter } from './scene/captured-transform';
+import { CapturedSceneTransform, ScenePoseWriter } from './scene/captured-transform';
 import { EMPTY_FRAME_ROWS } from './scene/frame-list';
 import { captureMaterialOverrides } from './scene/mesh-materials';
 import { renderSourceLayout } from './scene/render-source';
@@ -207,6 +208,7 @@ export function extractSource(
   materialSnapshotContexts?: MaterialSnapshotContexts,
   options: {
     readonly materialContext?: MaterialCookRasterContext;
+    readonly materialProgramDemand?: SourceMaterialProgramDemand | undefined;
     readonly cull?: 'normal' | 'none';
     readonly cameraEntityKey?: number;
     readonly view?: import('./render-contract').ResolvedViewCamera;
@@ -260,6 +262,8 @@ export function extractSource(
       if (materialSnapshotContexts !== undefined)
         input.materialSnapshotContexts = materialSnapshotContexts;
       if (options.materialContext !== undefined) input.materialContext = options.materialContext;
+      if (options.materialProgramDemand !== undefined)
+        input.materialProgramDemand = options.materialProgramDemand;
       if (options.preparationMesh?.world === world) input.preparationMesh = options.preparationMesh;
       if (options.getMaterialShaderArtifact !== undefined)
         input.getMaterialShaderArtifact = options.getMaterialShaderArtifact;
@@ -675,10 +679,36 @@ function createWorldExtraction(
     frustumTotal: 0,
     preparedPose: false,
     poses: new ScenePoseWriter(expectedPoseRows),
+    cullPose: undefined as Float32Array | undefined,
   };
 }
 
 type WorldExtraction = ReturnType<typeof createWorldExtraction>;
+
+/** Select initial mesh programs without publishing a frame or routing scene errors. */
+export function prepareSourceMeshPrograms(
+  world: World,
+  options: Pick<
+    NonNullable<Parameters<typeof prepareExtractContext>[1]>,
+    'assets' | 'materialContext' | 'materialProgramDemand'
+  >,
+): void {
+  const context = prepareExtractContext(world, { ...options, cull: 'none', retainHidden: true });
+  const internal = createWorldInternalView(world);
+  const scope = createWorldExtraction(
+    world,
+    context,
+    {
+      ...internal,
+      _routeError(error, detail) {
+        if (detail.severity === Severity.Error) throw error;
+      },
+    },
+    emptyExtractedFrame().lights,
+    [],
+  );
+  extractMeshRenderers(scope);
+}
 
 /** Engine-only roster read; ordinary extraction retains its Query filtering. */
 export function extractInactiveMeshMember(
@@ -2430,6 +2460,7 @@ function resolveFreshMaterial(
       assets,
       lane.materialContext,
       lane.vertexColorAvailable,
+      scope.context.materialProgramDemand?.deferred === false,
     );
   } catch (error) {
     if (rejectsUncookedSkinProgram(scope, read.entity, material, assets, lane, mesh, error))
@@ -2451,6 +2482,7 @@ function resolveFreshMaterial(
     vertexColorAvailable: lane.vertexColorAvailable,
     geometry: lane.geometry,
     previousProgramSnapshot: lane.persistent.get(handle)?.snapshot,
+    materialProgramDemand: scope.context.materialProgramDemand,
   });
   if (!admitSkinMaterial(scope, read, snapshot.materialShaderId, programs.selections))
     return undefined;
@@ -2765,6 +2797,8 @@ function resolveSubmeshMaterials(
           lane.materialContext,
           scope.materialTextureSources,
           lane.vertexColorAvailable,
+          lane.geometry,
+          scope.context.materialProgramDemand,
         ),
     );
   }
@@ -3069,6 +3103,8 @@ function captureEntityMaterialOverrides(
           lane.materialContext,
           scope.materialTextureSources,
           lane.vertexColorAvailable,
+          lane.geometry,
+          scope.context.materialProgramDemand,
         ),
       );
     }),
@@ -3261,20 +3297,21 @@ function admitFrustumVisibility(
     scope.frustumTotal += 1;
     return true;
   }
-  const worldMatrix = transform.world;
+  const pose = CapturedSceneTransform.storage(transform);
   const instanceBounds =
     instances === undefined
       ? undefined
       : deriveInstancesUnionBounds({
           meshAabb: geometry.cullingLocalAabb,
-          entityWorld: worldMatrix,
+          entityWorld: CapturedSceneTransform.column(pose),
+          entityWorldOffset: CapturedSceneTransform.offset(pose),
           transforms: instances.transforms,
         });
   // Missing/malformed derived facts (non-finite producer matrices/AABB) are a
   // conservative no-cull result.
   if (read.layout?.instances && (instances === undefined || instanceBounds === undefined))
     return true;
-  const worldAabb = worldCullingAabb(geometry.cullingLocalAabb, worldMatrix, instanceBounds);
+  const worldAabb = worldCullingAabb(scope, geometry.cullingLocalAabb, pose, instanceBounds);
   scope.frustumTotal += 1;
   if (intersectsAnyFrustum(scope.frustumPlanes, worldAabb)) return true;
   scope.frustumCulled += 1;
@@ -3285,13 +3322,16 @@ function admitFrustumVisibility(
 
 /** Same-source world bounds as the record stage's mesh SSBO (feat-20260601 D-3). */
 function worldCullingAabb(
+  scope: WorldExtraction,
   localAabb: Float32Array | readonly number[],
-  worldMatrix: Float32Array,
+  pose: import('./scene/captured-transform').ScenePoseStorage,
   instanceBounds: ArrayLike<number> | undefined,
 ): box3.Box3 {
   const worldAabb = box3.create();
   if (instanceBounds === undefined) {
-    box3.transformBox3(worldAabb, localAabb, worldMatrix);
+    scope.cullPose ??= new Float32Array(16);
+    CapturedSceneTransform.writeStorage(scope.cullPose, 0, pose);
+    box3.transformBox3(worldAabb, localAabb, scope.cullPose);
     return worldAabb;
   }
   for (let index = 0; index < 6; index += 1) worldAabb[index] = instanceBounds[index] ?? 0;

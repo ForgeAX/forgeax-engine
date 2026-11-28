@@ -21,10 +21,20 @@ const renderSourceAliases = [
     replacement: fileURLToPath(new URL('../packages/render/src/tasks.ts', import.meta.url)),
   },
   {
+    find: '@forgeax/engine-render/internal/backend-contract',
+    replacement: fileURLToPath(
+      new URL('../packages/render/src/assembly/backend-contract.ts', import.meta.url),
+    ),
+  },
+  {
     find: '@forgeax/engine-render/internal/construct-renderer',
     replacement: fileURLToPath(
       new URL('../packages/render/src/construct-renderer.ts', import.meta.url),
     ),
+  },
+  {
+    find: '@forgeax/engine-render/internal/host-data',
+    replacement: fileURLToPath(new URL('../packages/render/src/host-data.ts', import.meta.url)),
   },
 ] as const;
 

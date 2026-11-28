@@ -125,7 +125,12 @@ export class AssetGraph<
     });
   }
 
-  load(guid: string, signal = new AbortController().signal, scope?: S): Promise<GraphResult<P>> {
+  load(
+    guid: string,
+    signal = new AbortController().signal,
+    scope?: S,
+    parallelDependencies = false,
+  ): Promise<GraphResult<P>> {
     const canonicalGuid = guid.toLowerCase();
     if (this.disposed) return Promise.resolve(err(disposed()));
     if (signal.aborted) return Promise.resolve(err(cancelled(canonicalGuid)));
@@ -149,7 +154,16 @@ export class AssetGraph<
     const current = () => this.requests.get(canonicalGuid) === request;
     const closure = this.retainClosure(canonicalGuid);
     const request = Promise.resolve()
-      .then(() => this.loadClosure(closure, this.lifetime.signal, ticketEpoch, current, scope))
+      .then(() =>
+        this.loadClosure(
+          closure,
+          this.lifetime.signal,
+          ticketEpoch,
+          current,
+          parallelDependencies,
+          scope,
+        ),
+      )
       .finally(() => {
         if (this.requests.get(canonicalGuid) === request) this.requests.delete(canonicalGuid);
         this.releaseClosure(closure);
@@ -292,13 +306,23 @@ export class AssetGraph<
     signal: AbortSignal,
     ticketEpoch: number,
     current: () => boolean,
+    parallelDependencies: boolean,
     scope = this.openScope(),
   ): Promise<GraphResult<P>> {
     if (this.disposed) return err(disposed());
     const { root } = closure;
     const values = new Map<string, P>();
     const seen = new Map<string, number>();
-    const result = await this.visit(root, signal, seen, values, current, scope, closure);
+    const result = await this.visit(
+      root,
+      signal,
+      seen,
+      values,
+      current,
+      scope,
+      closure,
+      parallelDependencies,
+    );
     if (this.disposed) return err(disposed());
     if (!current()) return err(superseded(root, ticketEpoch));
     if (!result.ok) return result;
@@ -318,6 +342,7 @@ export class AssetGraph<
     current: () => boolean,
     scope: S,
     closure: ClosureRead,
+    parallelDependencies = false,
   ): Promise<GraphResult<void>> {
     if (seen.has(guid)) return ok(undefined);
     const generation = this.generations.get(guid) ?? 0;
@@ -332,7 +357,9 @@ export class AssetGraph<
     values.set(guid, read.value);
     const references = (read.value as P & { readonly references?: 'eager' | 'deferred' })
       .references;
-    for (const ref of references === 'deferred' ? [] : read.value.refs) {
+    const refs = references === 'deferred' ? [] : read.value.refs;
+    if (refs.length === 0) return ok(undefined);
+    const visitDependency = async (ref: string): Promise<GraphResult<void>> => {
       const child = await this.visit(
         ref.toLowerCase(),
         signal,
@@ -341,16 +368,26 @@ export class AssetGraph<
         current,
         scope,
         closure,
+        parallelDependencies,
       );
-      if (!child.ok) {
-        seen.delete(guid);
-        return err({
-          code: 'asset-dependency-failed',
-          expected: 'every referenced asset to load successfully',
-          hint: 'repair the dependency publication and retry the root asset',
-          detail: { guid, dependencyGuid: ref },
-        });
-      }
+      return child.ok
+        ? child
+        : err({
+            code: 'asset-dependency-failed',
+            expected: 'every referenced asset to load successfully',
+            hint: 'repair the dependency publication and retry the root asset',
+            detail: { guid, dependencyGuid: ref },
+          });
+    };
+    if (parallelDependencies) {
+      // A render Scene reads independent branches throughout its closure. Read
+      // permits bound transport and decoding, and promotion awaits every branch.
+      const completed = await Promise.all(refs.map(visitDependency));
+      return completed.find((result) => !result.ok) ?? ok(undefined);
+    }
+    for (const ref of refs) {
+      const child = await visitDependency(ref);
+      if (!child.ok) return child;
     }
     return ok(undefined);
   }
@@ -381,9 +418,14 @@ export class AssetGraph<
 
   private async withPermit<T>(operation: () => Promise<T>): Promise<T> {
     if (this.activeReads >= this.limit) {
-      await new Promise<void>((resolve) => this.readWaiters.push(resolve));
-    }
-    this.activeReads += 1;
+      await new Promise<void>((resolve) =>
+        this.readWaiters.push(() => {
+          // Reserve the released slot before a new read can enter this queue.
+          this.activeReads += 1;
+          resolve();
+        }),
+      );
+    } else this.activeReads += 1;
     try {
       return await operation();
     } finally {

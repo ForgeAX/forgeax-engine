@@ -75,12 +75,7 @@ it('reports ordinary boot and first-use recipes for real Standard draws', {
         program.identifier.includes('standard-pbr') &&
         program.definesKey.includes('GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true'),
     );
-    expect(scenes?.length).toBeGreaterThanOrEqual(2);
-    for (const { definesKey } of scenes ?? []) {
-      expect(definesKey).not.toMatch(
-        /(?:^|\+)(?:WATER_WAVES_AVAILABLE|WATER_INFO_RGBA16|LOD_DITHER|CLIPPING_PLANES)=true(?:\+|$)/,
-      );
-    }
+    expect(scenes).toEqual([]);
     expect(startup.passes).toBeUndefined();
     renderer.inspect({ fields: ['pipelineLibraryCollecting'], pipelineLibraryCollection: true });
     renderer
@@ -239,6 +234,17 @@ it('reports ordinary boot and first-use recipes for real Standard draws', {
       setMaterial(0.75, false, 0, false, true);
       const scene = await draw('scene-orm', 'automatic');
       expect(opaqueSurfaceSlots(scene.library)).toEqual([ormSlot]);
+      const scenePrograms = scene.shader.programs?.filter(
+        ({ identifier, definesKey }) =>
+          identifier.includes('standard-pbr') &&
+          definesKey.includes('GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true'),
+      );
+      expect(scenePrograms?.length).toBeGreaterThan(0);
+      for (const { definesKey } of scenePrograms ?? []) {
+        expect(definesKey).not.toMatch(
+          /(?:^|\+)(?:WATER_WAVES_AVAILABLE|WATER_INFO_RGBA16|LOD_DITHER|CLIPPING_PLANES)=true(?:\+|$)/,
+        );
+      }
       expect(
         scene.passes?.requests.some(
           ({ shader, nativeRecipe }) =>

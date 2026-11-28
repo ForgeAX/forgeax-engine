@@ -1,6 +1,9 @@
 import type { Materials } from '@forgeax/engine-render';
-import { ok, type Result, type TextureAsset } from '@forgeax/engine-types';
+import { err, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
+import { getModelingKernelWasm } from '@forgeax/modeling-kernel';
 import type { ModelingError } from './errors';
+import { kernelErrorToModelingError } from './mesh-store-rust';
+import { generateBrushed, generatePerlinFbm, rustImageToTextureAsset } from './surface-kernel';
 import {
   type DecalTextureOptions,
   decalTexture,
@@ -264,22 +267,39 @@ function metal(o: MetalOptions): Result<StandardMaterialOptions, ModelingError> 
   if (o.finish === 'chrome') return ok({ baseColor: base, metallic: 1, roughness: 0.04 });
   const key = o.key ?? `metal-${o.finish}`;
   const brushed = o.finish === 'brushed';
-  const height = normalFromHeight(
-    SIZE,
-    SIZE,
-    (x, y) =>
-      brushed
-        ? fractalNoise(x / SIZE, (y / SIZE) * 1, 96, 3, 11) * 0.2 +
-          valueNoise(x / SIZE / 64, y / SIZE, 256, 13)
-        : fractalNoise(x / SIZE, y / SIZE, 16, 4, 17),
-    brushed ? 0.6 : 0.5,
-    mipsOf(o.placement),
-  );
-  if (!height.ok) return height;
   if (o.texture === undefined) {
     return ok({ baseColor: base, metallic: 1, roughness: brushed ? 0.3 : 0.45 });
   }
-  const ref = o.texture(`${key}-normal`, height.value);
+  let packedNormal: Result<TextureAsset, ModelingError>;
+  if (getModelingKernelWasm() !== undefined) {
+    const heightBuf = brushed
+      ? generateBrushed({ width: SIZE, height: SIZE, scaleU: 4, scaleV: 96, seed: 11 })
+      : generatePerlinFbm({ width: SIZE, height: SIZE, scaleX: 16, octaves: 4, seed: 17 });
+    if (!heightBuf.ok) return err(kernelErrorToModelingError(heightBuf.error));
+    const normBuf = heightBuf.value.heightToNormal(brushed ? 0.6 : 0.5);
+    heightBuf.value.dispose();
+    if (!normBuf.ok) return err(kernelErrorToModelingError(normBuf.error));
+    packedNormal = rustImageToTextureAsset(normBuf.value, {
+      colorSpace: 'linear',
+      content: 'normal',
+      ...mipsOf(o.placement),
+    });
+    normBuf.value.dispose();
+  } else {
+    packedNormal = normalFromHeight(
+      SIZE,
+      SIZE,
+      (x, y) =>
+        brushed
+          ? fractalNoise(x / SIZE, (y / SIZE) * 1, 96, 3, 11) * 0.2 +
+            valueNoise(x / SIZE / 64, y / SIZE, 256, 13)
+          : fractalNoise(x / SIZE, y / SIZE, 16, 4, 17),
+      brushed ? 0.6 : 0.5,
+      mipsOf(o.placement),
+    );
+  }
+  if (!packedNormal.ok) return packedNormal;
+  const ref = o.texture(`${key}-normal`, packedNormal.value);
   const placement = { ...(o.placement ?? {}), rotation: o.direction ?? o.placement?.rotation ?? 0 };
   return ok({
     baseColor: base,

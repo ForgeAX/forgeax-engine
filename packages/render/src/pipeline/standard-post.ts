@@ -6,13 +6,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, mipDimension, ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
-import { standardBloomAdmitted } from '../bloom-admission';
-import {
-  BLOOM_QUALITY_HIGH,
-  BLOOM_QUALITY_LOW,
-  isFxaaAntialias,
-  isTemporalAntialias,
-} from '../components/camera';
+import { BLOOM_QUALITY_HIGH, BLOOM_QUALITY_LOW, isTemporalAntialias } from '../components/camera';
 import { addTypedDebugOverlayPass } from '../debug-draw-glue';
 import type { GraphAtmosphere } from '../environment/luts';
 import { RenderFeatureCapabilityMissingError, SceneDataUnavailableError } from '../errors/render';
@@ -33,11 +27,8 @@ import {
   LENS_FLARE_COMBINED,
   LENS_FLARE_PREFILTER,
 } from '../features/lens-flare-graph';
-import {
-  addMotionBlurPass,
-  MOTION_BLUR_FEATURE_IDENTITY,
-} from '../features/motion-blur/motion-blur-feature';
-import { addSceneVelocityMotionBlur } from '../features/motion-blur/scene-velocity-motion-blur';
+import { MOTION_BLUR_FEATURE_IDENTITY } from '../features/motion-blur/motion-blur-execution';
+import { addNativeMotionBlur } from '../features/motion-blur/scene-velocity-motion-blur';
 import { addDistanceOutlinePasses } from '../features/outline/distance-graph';
 import { addOutlinePasses } from '../features/outline/graph';
 import { isOutlinePostProcess } from '../features/outline/shaders';
@@ -95,6 +86,8 @@ import {
 import {
   nativeGradeNeedsLinearImage,
   nativeGradeOverlaysLinearImage,
+  StandardOutputStage,
+  standardOutputStages,
   usesNativeGrade,
 } from './standard-output/layout';
 import { addStandardColorLutPass } from './standard-output/lut-gpu';
@@ -537,12 +530,14 @@ export function contributeStandardSceneFeatures(
     readonly color: RenderPipelineTarget;
     readonly colorResolve: GraphTextureView | undefined;
     readonly depth: RenderPipelineTarget;
+    readonly temporal?: RenderPipelineTarget | undefined;
   },
   receiverAccesses: readonly GraphAccess[],
   atmosphere?: GraphAtmosphere,
   semanticTargets: readonly RenderPipelineTarget[] = [],
+  placement: 'scene' | 'before-medium' = 'scene',
 ): Result<void, RenderPipelineBuildError> {
-  const { color, colorResolve, depth } = targets;
+  const { color, colorResolve, depth, temporal } = targets;
   return context.contributeFeatures({
     targets: [
       {
@@ -561,11 +556,23 @@ export function contributeStandardSceneFeatures(
         format: depth.format,
         sampleCount: depth.sampleCount,
       },
+      ...(temporal === undefined
+        ? []
+        : [
+            {
+              name: 'temporal-reactivity',
+              kind: 'scene-color' as const,
+              texture: temporal.texture,
+              view: temporal.view,
+              format: temporal.format,
+              sampleCount: temporal.sampleCount,
+            },
+          ]),
     ],
     semanticTargets,
     namedTargets: {},
     standardSurfaceAccesses: receiverAccesses,
-    placement: 'scene',
+    placement,
     exclude: [BARREL_DISTORTION_FEATURE_IDENTITY, EDITOR_ASSISTANCE_FEATURE_IDENTITY],
     passNames: [],
     atmosphere: atmosphere,
@@ -575,7 +582,42 @@ export function contributeStandardSceneFeatures(
 /** Output-route decisions derived once from the topology; every post stage reads the same facts. */
 type StandardPostContext = RenderPipelineBuildContext<RenderPipelineFrame> & {
   readonly readOutputDither?: (frame: RenderPipelineFrame) => boolean;
+  readonly outputStages?: number;
 };
+
+export type OrderedStandardPostInputs = Pick<
+  StandardPostContext,
+  | 'standardOutput'
+  | 'taaHistory'
+  | 'targetCoverage'
+  | 'cloudHistory'
+  | 'cloudShadowResolution'
+  | 'hasFeatureWork'
+  | 'hasFeatureRasterWork'
+  | 'ssrSceneColorHistory'
+  | 'ssrSceneColorOutput'
+> &
+  Pick<
+    RenderPipelineBuildContext<RenderPipelineFrame>,
+    | 'viewIdentity'
+    | 'waterFluid'
+    | 'waterSsr'
+    | 'nativeInputs'
+    | 'getSharedGraphTextureBinding'
+    | 'getFeatureGraphTextureView'
+    | 'getFeatureGraphTextureFormat'
+    | 'getFeatureGraphTextureBinding'
+    | 'getFeatureGraphTextureBindings'
+    | 'getWaterMeshGraphAccesses'
+    | 'afterTonemapOutput'
+  > & {
+    readonly contributeFeatures?: StandardPostContext['contributeFeatures'];
+    readonly planarReflection?: GraphTextureView;
+    readonly encodeTransmissionMip?: NonNullable<
+      RenderPipelineBuildContext<RenderPipelineFrame>['encodeTransmissionMip']
+    >;
+    readonly outputStages: number;
+  };
 
 interface StandardPostRoute {
   readonly clearOnly: boolean;
@@ -611,15 +653,13 @@ function standardPostRoute(
   const clearOnly = topology.clearOnly === true;
   const camera = topology.camera;
   const postProcessing = !clearOnly && camera.postProcessing !== false;
-  const features = standardOutputFeatures(topology, clearOnly);
+  const features = standardOutputFeatures(context, topology);
   const hdr =
     !clearOnly &&
     (camera.tonemap !== 'none' || isTemporalAntialias(camera.antialias) || features.bloom);
   const rawOnly = !clearOnly && topology.surface.profile?.kind === 'raw-only';
-  // The barrel declaration is supplied by the ordinary feature host so its
-  // shader stays prepared and recoverable, but Standard owns its one explicit
-  // linear-LDR stage below. Do not send that identity through the generic
-  // encoded tail, or storage-buffer lanes would sample the image twice.
+  // Dedicated stages own their linear-domain work. The encoded tail only
+  // accepts effects that can read and write the encoded image.
   const preTemporalEffects = postProcessing ? (topology.preTemporalEffects ?? []) : [];
   const postEffects = postProcessing ? encodedPostEffects(topology, preTemporalEffects) : [];
   return {
@@ -647,26 +687,27 @@ function standardPostRoute(
 
 /** Which Standard output stages this camera and output configuration request. */
 function standardOutputFeatures(
+  context: StandardPostContext,
   topology: RenderPipelineTopology,
-  clearOnly: boolean,
 ): StandardOutputPlan['features'] {
-  const camera = topology.camera;
-  const postProcessing = !clearOnly && camera.postProcessing !== false;
+  const stages = context.outputStages ?? standardOutputStages(topology);
+  const stage = StandardOutputStage;
+  const autoExposure = (stages & stage.autoExposure) !== 0;
   return {
-    temporal: postProcessing && isTemporalAntialias(camera.antialias),
-    meter: postProcessing && topology.output?.autoExposure === true,
-    bloom: postProcessing && standardBloomAdmitted(topology.camera),
-    dof: postProcessing && camera.depthOfField !== undefined,
-    chromaticAberration: postProcessing && camera.chromaticAberration === true,
-    lensFlare: postProcessing && camera.lensFlare === true,
-    exposure: postProcessing && topology.output?.autoExposure === true,
-    whiteBalance: postProcessing && topology.output?.whiteBalance === true,
-    lut: postProcessing && topology.output?.colorLut === true,
-    outline: postProcessing && (camera.outline === true || typeof camera.outline === 'object'),
-    barrelDistortion: postProcessing && camera.barrelDistortion === true,
-    lensEffects: postProcessing && camera.lensEffects === true,
-    fxaa: postProcessing && isFxaaAntialias(camera.antialias),
-    smaa: postProcessing && camera.antialias === 'smaa',
+    temporal: (stages & stage.temporal) !== 0,
+    meter: autoExposure,
+    bloom: (stages & stage.bloom) !== 0,
+    dof: (stages & stage.depthOfField) !== 0,
+    chromaticAberration: (stages & stage.chromaticAberration) !== 0,
+    lensFlare: (stages & stage.lensFlare) !== 0,
+    exposure: autoExposure,
+    whiteBalance: (stages & stage.whiteBalance) !== 0,
+    lut: (stages & stage.colorLut) !== 0,
+    outline: (stages & stage.outline) !== 0,
+    barrelDistortion: (stages & stage.barrelDistortion) !== 0,
+    lensEffects: (stages & stage.lensEffects) !== 0,
+    fxaa: (stages & stage.fxaa) !== 0,
+    smaa: (stages & stage.smaa) !== 0,
   };
 }
 
@@ -1148,11 +1189,15 @@ function addMotionBlurStage(
   });
   if (!features.ok) return features;
 
-  if (sceneVelocity !== undefined && sceneTemporal !== undefined) {
-    const native = addSceneVelocityMotionBlur(
+  const temporal = sceneVelocity === undefined ? postTemporal : sceneTemporal;
+  if (
+    temporal !== undefined &&
+    (sceneVelocity !== undefined || context.hasFeature?.(MOTION_BLUR_FEATURE_IDENTITY) !== true)
+  ) {
+    const native = addNativeMotionBlur(
       context.graph,
       postInput,
-      sceneTemporal,
+      temporal,
       sceneVelocity,
       blurred.value,
       topology.surface.width,
@@ -1160,10 +1205,6 @@ function addMotionBlurStage(
       topology.lane.compute && topology.lane.storageBuffer && topology.lane.storageTexture === true,
     );
     return native.ok ? ok(blurred.value) : native;
-  }
-  if (postTemporal !== undefined && context.hasFeature?.(MOTION_BLUR_FEATURE_IDENTITY) !== true) {
-    const fallback = addMotionBlurPass(context.graph, postInput, postTemporal, blurred.value);
-    if (!fallback.ok) return fallback;
   }
   return ok(blurred.value);
 }
@@ -1619,24 +1660,23 @@ function addBarrelDistortionStage(
     domain: 'linear-ldr',
   });
   if (!barrelOutput.ok) return barrelOutput;
-  const barrel = context.contributeFeatures({
-    targets: featureTargets,
-    semanticTargets: [],
-    namedTargets: { 'barrel-input': postInput, 'barrel-output': barrelOutput.value },
-    standardSurfaceAccesses: [],
-    include: [BARREL_DISTORTION_FEATURE_IDENTITY],
-  });
-  if (!barrel.ok) return barrel;
-  if (context.hasFeature?.(BARREL_DISTORTION_FEATURE_IDENTITY) !== true) {
-    return err(
-      new RenderFeatureCapabilityMissingError(
-        BARREL_DISTORTION_FEATURE_IDENTITY,
-        0,
-        'rgba16floatRenderable',
-      ),
-    );
+  if (context.hasFeature?.(BARREL_DISTORTION_FEATURE_IDENTITY) === true) {
+    const barrel = context.contributeFeatures({
+      targets: featureTargets,
+      semanticTargets: [],
+      namedTargets: { 'barrel-input': postInput, 'barrel-output': barrelOutput.value },
+      standardSurfaceAccesses: [],
+      include: [BARREL_DISTORTION_FEATURE_IDENTITY],
+    });
+    return barrel.ok ? ok(barrelOutput.value) : barrel;
   }
-  return ok(barrelOutput.value);
+  const barrel = addTypedFullscreenPass(context.graph, {
+    name: 'barrel-distortion',
+    shader: BARREL_DISTORTION_POST_PROCESS_ID,
+    input: postInput,
+    outputs: [barrelOutput.value],
+  });
+  return barrel.ok ? ok(barrelOutput.value) : barrel;
 }
 
 function declareEncodedFxaaInput(
@@ -2011,7 +2051,7 @@ function addStandardPostTemporalInputs(
   const focused = route.features.dof
     ? addDepthOfFieldPasses(
         context.graph,
-        context.camera?.depthOfField,
+        topology.camera.depthOfField,
         renderInternalCopySize(topology),
         preTemporal.value,
         visibleDepth,
@@ -2268,4 +2308,119 @@ export function addStandardPost(
     return publishStandardOutput();
   };
   return addSelectedColorOutput();
+}
+
+function applyDebugOutputEditorAssistance(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
+  postInput: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+  featureTargets: StandardFeatureTargets,
+  internalSize: ReturnType<typeof renderInternalSize>,
+): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  if (topology.camera.editorAssistance !== true) return ok(postInput);
+  if (context.hasFeatureRasterWork?.(EDITOR_ASSISTANCE_FEATURE_IDENTITY) !== true) {
+    return ok(postInput);
+  }
+  let current = postInput;
+  if (topology.camera.editorOutline === true) {
+    const outlined = addOutlinePasses(context.graph, current, depth, internalSize, {
+      prefix: 'editor-outline',
+      programPrefix: 'forgeax.editor-outline',
+      selection: (frame) => frame.editorAssistance?.source.outline,
+    });
+    if (!outlined.ok) return outlined;
+    current = outlined.value;
+  }
+  const output = target(context, 'standard-editor-assistance', {
+    format: 'rgba16float',
+    size: 'surface',
+    domain: 'linear-ldr',
+  });
+  if (!output.ok) return output;
+  const assistance = context.contributeFeatures({
+    targets: featureTargets,
+    semanticTargets: [],
+    namedTargets: {
+      'editor-input': current,
+      'editor-output': output.value,
+      'editor-depth': depth,
+    },
+    standardSurfaceAccesses: [],
+    include: [EDITOR_ASSISTANCE_FEATURE_IDENTITY],
+  });
+  return assistance.ok ? ok(output.value) : assistance;
+}
+
+/**
+ * Minimal post-output stage for viewport debug visualization: preserves
+ * EditorAssistance (selection outlines & gizmos), DebugOverlay, exact linear->sRGB
+ * encoding (no tonemap, exposure, bloom, or dither), and `final-display` observation.
+ */
+export function addStandardDebugOutputPost(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
+  color: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+  surface: StandardPostSurface,
+): Result<void, RenderPipelineBuildError> {
+  const internalSize = renderInternalSize(topology);
+  const featureTargets: StandardFeatureTargets = [
+    { ...color, kind: 'scene-color' },
+    { ...depth, kind: 'scene-depth' },
+  ];
+  const assisted = applyDebugOutputEditorAssistance(
+    context,
+    topology,
+    color,
+    depth,
+    featureTargets,
+    internalSize,
+  );
+  if (!assisted.ok) return assisted;
+  const postInput = assisted.value;
+  const rawOnly = topology.surface.profile?.kind === 'raw-only';
+  if (rawOnly) {
+    const overlay = addTypedDebugOverlayPass(context.graph, postInput);
+    if (!overlay.ok) return overlay;
+  }
+  const observeFinal = context.observationCaptureDomains?.includes('final-display') === true;
+  const observedTarget =
+    rawOnly && observeFinal
+      ? target(context, 'standard-debug-observed', {
+          format: topology.surface.storageFormat,
+          size: 'surface',
+          usage: GPU_TEXTURE_USAGE_COPY_SRC,
+          domain: 'display-encoded',
+        })
+      : ok(undefined);
+  if (!observedTarget.ok) return observedTarget;
+  const encodedOutput = observedTarget.value ?? surface.storage;
+  const encoded = addTypedOutputTransformPass(context.graph, postInput, encodedOutput, {
+    dither: false,
+    name: 'standard-output-encoding',
+    fragmentEntryPoint: 'fs_encode_only',
+  });
+  if (!encoded.ok) return encoded;
+  if (!rawOnly) {
+    const overlay = addTypedDebugOverlayPass(context.graph, surface.display ?? surface.storage);
+    if (!overlay.ok) return overlay;
+  }
+  if (observeFinal) {
+    const captured = addObservationCapturePass(context.graph, encodedOutput, 'final-display');
+    if (!captured.ok) return captured;
+  }
+  if (observedTarget.value !== undefined) {
+    const presented = addTypedOutputTransformPass(
+      context.graph,
+      observedTarget.value,
+      surface.storage,
+      {
+        name: 'standard-observed-present',
+        fragmentEntryPoint: 'fs_present',
+      },
+    );
+    if (!presented.ok) return presented;
+  }
+  return ok(undefined);
 }

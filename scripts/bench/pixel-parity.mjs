@@ -501,7 +501,7 @@ async function captureBothFromSinglePage(targetConfig) {
   );
   const browser = await chromium.launch({
     headless: browserHeadless,
-    channel: 'chrome-beta',
+    channel: 'chrome',
     args: [
       '--enable-unsafe-webgpu',
       '--enable-features=Vulkan',

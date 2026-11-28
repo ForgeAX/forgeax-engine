@@ -119,7 +119,10 @@ describe('Engine manifest Water boot selection', () => {
       composedWgsl: 'canonical shadow',
       variants,
     };
-    const registry = { materialShaderManifestEntries: () => [shadow] } as unknown as ShaderCatalog;
+    const registry = {
+      materialShaderManifestEntries: () => [shadow],
+      materialShaderManifestEntry: (id: string) => (id === shadow.identifier ? shadow : undefined),
+    } as unknown as ShaderCatalog;
     const caps = {
       storageBuffer,
       atmosphere: false,

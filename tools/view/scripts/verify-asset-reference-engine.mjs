@@ -27,7 +27,7 @@ try {
   await writeFile(join(root, 'forge.json'), JSON.stringify({ schemaVersion: '3.0.0', id: 'asset-reference-proof', name: 'Asset reference proof', roots: {} }));
   }
   browser = await chromium.launch({ headless: false,
-    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'], chromiumSandbox: true });
   page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.addInitScript(() => localStorage.setItem('forgeax.view.locale', 'en'));

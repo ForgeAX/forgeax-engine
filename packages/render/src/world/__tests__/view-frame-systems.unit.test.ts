@@ -99,7 +99,7 @@ function setup(
   };
   const frameState = {
     installedPipelineHandle: 3,
-    standardInstall: { configured: undefined, built, cameraSignature: '', cameraFailure: '' },
+    standardInstall: { configured: undefined, built, cameraConfigured: false, cameraFailure: '' },
   };
   const internals = {
     assets: new AssetRegistry(),

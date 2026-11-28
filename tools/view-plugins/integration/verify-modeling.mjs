@@ -60,9 +60,11 @@ const bootstrap = await fetch(new URL('/__forgeax/view/bootstrap', start.url)).t
 const client = await connectViewWorkspace({ endpoint: bootstrap.endpoint, token: bootstrap.token, clientId: 'modeling-view-proof' });
 const launch = JSON.parse(await readFile(join(checkout, 'scripts/ci/browser-launch.json'), 'utf8'));
 const browser = await chromium.launch({
- ...launch, headless: true, channel: undefined,
+ ...launch, headless: true,
  args: [...launch.args, '--use-angle=swiftshader'],
- ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
+ ...(process.env.FORGEAX_BROWSER_EXECUTABLE
+   ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE, channel: undefined }
+   : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? launch.channel }),
  chromiumSandbox: true,
 });
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });

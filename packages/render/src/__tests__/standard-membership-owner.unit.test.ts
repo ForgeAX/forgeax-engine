@@ -7,7 +7,10 @@ import {
   prepareStandardLighting,
   type StandardLightFrame,
 } from '../pipeline/standard-lighting/prepare';
-import { standardLightingTopologySignature } from '../pipeline/standard-lighting/topology';
+import {
+  matchesStandardLightingDeclaration,
+  standardLightingDeclaration,
+} from '../pipeline/standard-lighting/topology';
 import { selectTestStandardClusterTransport } from './cluster-test-abi';
 
 function frame(): StandardLightFrame {
@@ -49,25 +52,26 @@ describe('stock view Cluster membership owner', () => {
         prepared,
       ).unwrap();
       const input = { kind: 'clustered' as const, prepared, transport };
-      const key = standardLightingTopologySignature(input, owner.graphLayout);
-      expect(key).toBe(standardLightingTopologySignature(input));
-      return { layout: prepared.layout, key };
+      return input;
     }
     const first = declaration(32, true);
+    const binding = standardLightingDeclaration(first);
     for (let frameIndex = 0; frameIndex < 60; frameIndex++) {
       light[0] = frameIndex / 8;
       const moved = declaration(32, true);
-      expect(moved.layout).toBe(first.layout);
-      expect(moved.key).toBe(first.key);
+      expect(moved.prepared.layout).toBe(first.prepared.layout);
+      expect(matchesStandardLightingDeclaration(binding, moved)).toBe(true);
     }
-    expect(declaration(32, false).key).not.toBe(first.key);
-    expect(declaration(64, true).key).not.toBe(first.key);
+    expect(matchesStandardLightingDeclaration(binding, declaration(32, false))).toBe(false);
+    expect(matchesStandardLightingDeclaration(binding, declaration(64, true))).toBe(false);
     const borrowed = { x: 2, y: 3, z: 4 };
-    const oldKey = declaration(64, true, borrowed).key;
+    const borrowedBinding = standardLightingDeclaration(declaration(64, true, borrowed));
     borrowed.y++;
-    expect(declaration(64, true, borrowed).key).not.toBe(oldKey);
+    expect(
+      matchesStandardLightingDeclaration(borrowedBinding, declaration(64, true, borrowed)),
+    ).toBe(false);
     owner.clear();
-    expect(declaration(32, true).layout).not.toBe(first.layout);
+    expect(declaration(32, true).prepared.layout).not.toBe(first.prepared.layout);
   });
 
   it('keeps only numerical membership while current light and path payloads change', () => {

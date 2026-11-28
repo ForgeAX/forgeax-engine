@@ -166,12 +166,12 @@ test('Editor action keeps the source-only contract while Engine CI owns its fast
   assert.match(coreBuild, /uses: \.\/\.github\/actions\/prepare-codec-wasm/);
   assert.match(coreBuild, /Build package JavaScript once/);
   assert.match(coreBuild, /Stage core artifact classes[\s\S]*packages\/\*\/dist/);
-  assert.match(coreBuild, /for source in[^\n]*packages\/dsh\/lib/);
-  assert.match(coreBuild, /engineDistPaths = \[[\s\S]*'packages\/dsh\/lib\/client\.js'/);
+  assert.match(coreBuild, /for source in[^\n]*packages\/preview\/assets\/canonical-kit/);
+  assert.match(coreBuild, /engineDistPaths = \[[\s\S]*'packages\/preview\/assets\/canonical-kit'/);
   assert.ok(
     JSON.parse(
       readFileSync(resolve(ENGINE_ROOT, 'scripts/ci/build-artifact-contract.json'), 'utf8'),
-    ).artifactClasses['engine-dist'].fileClasses.includes('packages/dsh/lib/client.js'),
+    ).artifactClasses['engine-dist'].fileClasses.includes('packages/preview/assets/canonical-kit'),
   );
   assert.match(coreBuild, /Bind core artifact to the checked-out Engine source/);
   assert.match(action, /build-editor-prerequisite\.mjs/);

@@ -28,13 +28,15 @@ describe('DirectLightSlot WGSL ABI', () => {
     const common = await readShader('common.wgsl');
     const standard = await readShader('standard-surface.wgsl');
     const clustered = await readShader('standard-cluster.wgsl');
+    const layout = await readShader('standard-cluster-layout.wgsl');
 
     expect(common).toContain('struct DirectLightSlot');
     expect(standard).not.toContain('DirectLightSlot');
     expect(standard).not.toContain('pointLightsBuffer');
     expect(standard).not.toContain('spotLightsBuffer');
     expect(clustered).toContain('DirectLightSlot');
-    expect(clustered).toContain('array<DirectLightSlot, 1024>');
+    expect(layout).toContain('array<DirectLightSlot, 1024>');
+    expect(clustered).toContain('forgeax_standard::cluster_layout::{light_data}');
     expect(clustered).not.toContain('struct LightSlot');
   });
 });

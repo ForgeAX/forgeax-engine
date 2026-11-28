@@ -45,3 +45,28 @@ fn atmosphere_sky_uv(m: AtmosphereMedium, p: vec3<f32>, sun: vec3<f32>, directio
   if angle>=horizon { y=1.0-0.5*sqrt(max((ATMOSPHERE_PI-angle)/(ATMOSPHERE_PI-horizon),0.0)); }
   return vec2<f32>(atan2(local.z,local.x)/(2.0*ATMOSPHERE_PI)+0.5,y);
 }
+
+// UE desktop SkyView gives latitude samples on each side of the horizon.
+fn atmosphere_ue5_sky_direction(m: AtmosphereMedium, p: vec3f, sun: vec3f,
+  texelUv: vec2f, size: vec2f) -> vec3f {
+  let uv = clamp((texelUv - 0.5 / size) * size / (size - 1.0), vec2f(0.0), vec2f(1.0));
+  let horizon = atmosphere_horizon_angle(m, p);
+  let upper = 1.0 - 2.0 * uv.y;
+  let lower = 2.0 * uv.y - 1.0;
+  let angle = select(horizon * (1.0 - upper * upper),
+    horizon + (ATMOSPHERE_PI - horizon) * lower * lower, uv.y >= 0.5);
+  let azimuth = uv.x * 2.0 * ATMOSPHERE_PI;
+  return atmosphere_sky_basis(p, sun) * vec3f(sin(angle) * cos(azimuth), cos(angle), sin(angle) * sin(azimuth));
+}
+
+fn atmosphere_ue5_sky_uv(m: AtmosphereMedium, p: vec3f, sun: vec3f,
+  direction: vec3f, size: vec2f) -> vec2f {
+  let local = transpose(atmosphere_sky_basis(p, sun)) * direction;
+  let angle = acos(clamp(local.y, -1.0, 1.0));
+  let horizon = atmosphere_horizon_angle(m, p);
+  let v = select(0.5 - 0.5 * sqrt(max(0.0, 1.0 - angle / horizon)),
+    0.5 + 0.5 * sqrt(max(0.0, (angle - horizon) / max(ATMOSPHERE_PI - horizon, 1e-6))),
+    angle >= horizon);
+  let u = fract(atan2(local.z, local.x) / (2.0 * ATMOSPHERE_PI) + 1.0);
+  return (vec2f(u, v) + 0.5 / size) * size / (size + 1.0);
+}

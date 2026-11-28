@@ -53,8 +53,20 @@ export default async function sunSliders(play) {
     const current = await stable();
     for (const [name, key] of [['sun-elevation', 'sunElevation'], ['sun-azimuth', 'sunAzimuth']]) {
       assert.ok(Math.abs(Number(await part(name).inputValue()) - current[key]) < 1e-5);
-      const readout = await part(`${name}-value`).textContent();
-      assert.ok(Math.abs(Number.parseFloat(readout) - current[key]) < 0.0051);
+      assert.ok(Math.abs(Number(await part(`${name}-number`).inputValue()) - current[key]) < 1e-5);
+    }
+  });
+  await play.step('Commit decimal solar inputs and restore invalid edits', async () => {
+    for (const [name, key, value] of [['sun-elevation', 'sunElevation', -3.125], ['sun-azimuth', 'sunAzimuth', 127.375]]) {
+      const number = part(`${name}-number`);
+      await number.fill(String(value));
+      await number.press('Enter');
+      await play.waitFor(state => Math.abs(state[key] - value) < 1e-4, { read });
+      assert.ok(Math.abs(Number(await part(name).inputValue()) - value) < 1e-4);
+      await number.fill('999');
+      await number.press('Tab');
+      assert.ok(Math.abs(Number(await number.inputValue()) - value) < 1e-4);
+      assert.ok(Math.abs((await stable())[key] - value) < 1e-4);
     }
   });
   await play.step('Camera switches keep the committed solar controls synchronized', async () => {

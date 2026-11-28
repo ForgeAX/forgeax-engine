@@ -1,21 +1,57 @@
 export type { Affine, Angles } from './affine';
 export type { ArrayOptions } from './array';
 export {
+  ASSET_OUTPUT_PROFILES,
+  type AssetBudgetCode,
+  type AssetMaterialUv,
+  type AssetOutputProfile,
+  type AssetOutputProfileId,
+  type AssetPart,
+  type AssetStats,
+  type AssetStatsOptions,
+  assetStats,
+  checkAssetBudget,
+} from './asset-budget';
+export {
+  type AnalyticOptions,
+  type AtlasBleedReport,
+  type AtlasGrid,
+  atlasBleedReport,
   BAKE_COOK_KIND,
+  type BakeCageGroupPlan,
+  type BakeCageOptions,
+  type BakeCagePlan,
+  type BakeCageStrayPart,
   type BakeCookInput,
   type BakeCookSource,
+  type BakeCorrespondence,
+  type BakeCorrespondOptions,
+  type BakeEvalOptions,
   type BakeExecutor,
   type BakeFailure,
+  type BakeLowpolyOptions,
+  type BakeLowpolyResult,
   type BakeOptions,
   type BakeResult,
   type BakeSettings,
   type BakeSourceOptions,
   type BakeTarget,
+  bakeCorrespond,
+  bakeCorrespondWithGpu,
+  bakeLowpoly,
+  bakeLowpolyWithGpu,
   bakeMaps,
   bakeMapsParallel,
   bakeMapsWithGpu,
   bakeSources,
   createBakeCooker,
+  type DilateAtlasOptions,
+  type DilateAtlasResult,
+  dilateAtlas,
+  dilateAtlasWithGpu,
+  evaluateBakeMaps,
+  evaluateBakeMapsWithGpu,
+  resolveBakeCages,
 } from './bake';
 export { BAKE_CHECKS, type BakeCheck, type BakeValidateOptions } from './bake-checks';
 export type { BevelOptions } from './bevel';
@@ -26,6 +62,16 @@ export {
   type SurfaceBlend,
   type SurfaceCorner,
 } from './blend';
+export {
+  type BomCode,
+  type BomGeometry,
+  type BomItem,
+  type BomMaterial,
+  type BomReport,
+  type BomRow,
+  bom,
+  bomTable,
+} from './bom';
 export type { BooleanOptions } from './boolean';
 export {
   type CaptureOptions,
@@ -55,6 +101,12 @@ export {
 export { jobTriangles, TS_BACKEND_IDENTITY, tsBackend } from './compute/boolean-ts';
 export { type NearestPoint, type RayHit, TriangleBvh } from './compute/bvh';
 export type {
+  AnalyticFallback,
+  AnalyticMap,
+  AnalyticPatch,
+  AnalyticVerify,
+  BakeAnalyticParams,
+  BakeAnalyticReport,
   BakeBounds,
   BakeCage,
   BakeClipCluster,
@@ -64,6 +116,7 @@ export type {
   BakeJobNormals,
   BakeJobParams,
   BakeMapKind,
+  BakeMissCluster,
   BakeProvenance,
   BakeSlot,
   BakeStrayCluster,
@@ -118,6 +171,10 @@ export {
   type UvPinRule,
   type UvPlacement,
   type UvRefineStatus,
+  type UvStraightenIsland,
+  type UvStraightenJobParams,
+  type UvStraightenProvenance,
+  type UvStraightenStatus,
   type UvUnwrapJobParams,
   type VoxelJobParams,
   type VoxelOperation,
@@ -136,6 +193,7 @@ export {
   TripletList,
 } from './compute/sparse';
 export { tsSubdivideBackend } from './compute/subdivide-ts';
+export { mipChainWithGpu, packTextureWithGpuMips } from './compute/texture-webgpu';
 export { tsUvBackend } from './compute/uv-backend';
 export { measureUv, type UvMeasurement } from './compute/uv-ts';
 export { decodeSdf, encodeSdf, type SdfData } from './compute/voxel-ts';
@@ -170,6 +228,22 @@ export {
   type PinRule,
 } from './deform-solve';
 export {
+  DELIVERY_ERROR_HINTS,
+  type DeliverBake,
+  type DeliveredAsset,
+  type DeliverOptions,
+  type DeliveryAttempt,
+  type DeliveryBakeReport,
+  type DeliveryError,
+  type DeliveryErrorCode,
+  type DeliveryPart,
+  type DeliveryReport,
+  type DeliverySource,
+  type DeliveryStep,
+  type DeliveryStepReport,
+  deliverAsset,
+} from './deliver';
+export {
   OVERLAY_KINDS,
   type Overlay,
   type OverlayKind,
@@ -188,6 +262,7 @@ export {
   type ProvenanceDiff,
 } from './diff';
 export {
+  type ApplyDraftOptions,
   type DraftClass,
   type DraftFace,
   type DraftOptions,
@@ -256,6 +331,13 @@ export {
   meshViewLines,
   type ViewLinesOptions,
 } from './drawing-hlr';
+export {
+  drawingPng,
+  drawingRaster,
+  RASTER_PIXEL_LIMIT,
+  type RasterImage,
+  type RasterOptions,
+} from './drawing-raster';
 export { drawingTable, type TableSource } from './drawing-table';
 export {
   checkEdgeFlow,
@@ -277,15 +359,28 @@ export type { ExportTopology } from './export-topology';
 export type { Falloff, FalloffCurve, FalloffDistance } from './falloff';
 export {
   type ClipReport,
+  EDGE_KIND,
   type ExportOptions,
   type ExportReport,
   type ExportResult,
+  type ExportSidecar,
+  edgeKinds,
   exportMesh,
   type NormalMode,
 } from './finish';
+export {
+  type FontErrorReason,
+  type FontRegionOptions,
+  type FontRegionResult,
+  fontRegion,
+  type GlyphInfo,
+  parseTrueTypeFont,
+  type TrueTypeFont,
+} from './font';
 export { decodeSnapshot, encodeSnapshot, FXEM_VERSION } from './fxem';
 export { type Axis, meshVolume, type SignedAxis, type Tuple3 } from './geom';
 export { type HighlightLine, type HighlightOptions, highlightLines } from './highlight-lines';
+export type { HoleCutOptions, HoleKind } from './hole';
 export type {
   ConnectivityOptions,
   ConnectivityPose,
@@ -293,6 +388,7 @@ export type {
   DesignedContact,
   FitCheck,
   FloatingPart,
+  InterferenceBasis,
   InterferenceOptions,
   InterferencePair,
   InterferenceReason,
@@ -352,8 +448,13 @@ export {
   EDGE_SHARP,
   EditMesh,
   FACE_EDGE_ROUND,
+  FACE_FLOAT,
   FACE_MIRRORED,
+  FACE_SURFACE_TRIM,
   NONE,
+  PART_ROLES,
+  type PartRole,
+  partRole,
 } from './mesh';
 export {
   type AssetsJob,
@@ -362,6 +463,7 @@ export {
   assetsJobSources,
   buildMeshJobSet,
   createMeshJobCooker,
+  type JsonValue as MeshJobFingerprint,
   MESH_JOB_COOK_KIND,
   type MeshJob,
   type MeshJobCookInput,
@@ -380,6 +482,21 @@ export {
   type MeshQualityReport,
   meshQuality,
 } from './mesh-quality';
+export {
+  type CornerChannelView,
+  type EditMeshSoaViews,
+  type EditMeshStore,
+  type KernelPolicy,
+  type MeshSnapshotToken,
+  TsEditMeshStore,
+} from './mesh-store';
+export {
+  createEditMeshStore,
+  kernelErrorToModelingError,
+  RustEditMeshStore,
+  syncRustToTs,
+  syncTsToRust,
+} from './mesh-store-rust';
 export {
   type Checkpoint,
   type ExtrudeContourOptions,
@@ -409,9 +526,16 @@ export {
   type Parametrization,
   type SurfaceCurvature,
 } from './nurbs';
-export type { FitSurfaceOptions, FitSurfaceResult } from './nurbs-fit';
+export type { FairSurfaceOptions, FitSurfaceOptions, FitSurfaceResult } from './nurbs-fit';
 export type { MatchLevel, MatchOptions, MatchResult } from './nurbs-match';
+export type { OffsetSurfaceOptions, OffsetSurfaceResult } from './nurbs-offset';
 export type { ExtendOptions, SurfaceDirection } from './nurbs-surface';
+export type {
+  BirailOptions,
+  BirailResult,
+  RailSweepOptions,
+  RailSweepResult,
+} from './nurbs-sweep';
 export type {
   OpDiagnostic,
   ProjectionMode,
@@ -421,7 +545,16 @@ export type {
   RepairSite,
   RoleCounts,
 } from './ops';
+export { REGION_MODES } from './ops';
 export type { PanelLineOptions, PanelProfile } from './panel';
+export {
+  type BakeGroupsOptions,
+  type IdMap,
+  type IdMapGroup,
+  type IdMapOptions,
+  idMap,
+  type PartGroup,
+} from './part-groups';
 export type { PathExtrudeOptions } from './path-extrude';
 export type { PipeBendOptions } from './pipe-bend';
 export type { PipeNetworkOptions } from './pipe-network';
@@ -521,20 +654,91 @@ export type {
   UnroutableMount,
 } from './rig-hardware';
 export type { LoopClosure, LoopSpec } from './rig-loops';
+export type {
+  RigLeader,
+  RigManifest,
+  RigManifestIssue,
+  RigManifestIssueCode,
+  RigManifestJoint,
+  RigManifestPart,
+  RigPose,
+  RigPoseClamp,
+  RigPoseError,
+  RigPoseErrorCode,
+  RigPoseOptions,
+  RigPoseValue,
+  RigQuat,
+  RigRange,
+  RigSphericalLimits,
+  RigStopEnd,
+  RigTransform,
+} from './rig-manifest';
+export {
+  poseRigManifest,
+  RIG_MANIFEST_HINT,
+  RIG_MANIFEST_SCHEMA,
+  RIG_POSE_ERROR_HINTS,
+  readRigManifest,
+  rigManifestJson,
+} from './rig-manifest';
+export {
+  type Bounds3,
+  type Quat,
+  SCENE_MANIFEST_ERROR_HINTS,
+  SCENE_OUTPUT_PROFILES,
+  type SceneAsset,
+  type SceneBudgetCode,
+  type SceneManifest,
+  type SceneManifestAsset,
+  type SceneManifestError,
+  type SceneManifestErrorCode,
+  type SceneManifestInstance,
+  type SceneManifestLod,
+  type SceneManifestTexture,
+  type SceneManifestTotals,
+  type SceneOutputProfile,
+  type SceneOutputProfileId,
+  type ScenePlacement,
+  type SceneWarningCode,
+  sceneManifest,
+  sceneTrianglesAt,
+} from './scene-manifest';
+export {
+  measureSeamVisibility,
+  type SeamChain,
+  type SeamIslandScore,
+  type SeamVisibilityOptions,
+  type SeamVisibilityReport,
+} from './seam-visibility';
 export {
   type Cardinality,
   type Domain,
+  decodeSelectorAst,
   type EdgeSelector,
   edgeSel,
+  encodeSelectorAst,
+  evaluateSelectorAst,
   type FaceSelector,
   faceSel,
   type HitRule,
   type Inclusion,
+  isPureSelectorAst,
   Selector,
+  type SelectorAst,
   type SelectorUse,
   sel,
   type VertSelector,
 } from './selectors';
+export { type SheetBend, type SheetMetalSpec, sheet } from './sheet';
+export {
+  type BendForming,
+  type FormingCode,
+  type FormingReport,
+  SHEET_MATERIALS,
+  type SheetFormingOptions,
+  type SheetMaterial,
+  sheetForming,
+} from './sheet-forming';
 export type { ShellDirection, ShellFlange, ShellOptions } from './shell';
 export { SHELL_WALL_ROLES } from './shell';
 export {
@@ -557,6 +761,14 @@ export {
   type ShutLineStatus,
   type ShutLineZone,
 } from './shut-lines';
+export type {
+  SketchConstraint,
+  SketchCurve,
+  SketchOptions,
+  SketchSolution,
+  SketchSpec,
+} from './sketch';
+export { sketch } from './sketch';
 export {
   jointTreeOfPaths,
   reduceSkinForLod,
@@ -574,6 +786,7 @@ export {
   type GrooveOptions,
   type HoleOptions,
   type KnurlOptions,
+  type OutlineStampOptions,
   type PerforationOptions,
   type RivetOptions,
   type SlotOptions,
@@ -613,7 +826,41 @@ export {
   type ZebraOptions,
   zebraStripes,
 } from './surface-analysis';
+export {
+  SURFACE_CHECKS,
+  type SurfaceChannel,
+  type SurfaceCheck,
+  type SurfaceContract,
+} from './surface-contract';
+export {
+  type DeviationCode,
+  type DeviationOptions,
+  type DeviationReport,
+  type DeviationSide,
+  type DeviationTarget,
+  surfaceDeviation,
+} from './surface-deviation';
 export type { FillBoundary, FillResidual } from './surface-fill';
+export {
+  createModelPbrSurface,
+  exportPbrTextureAssets,
+  generateBrick,
+  generateBrushed,
+  generatePerlinFbm,
+  generateWood,
+  generateWorley,
+  type PbrLayerOptions,
+  type PbrTextureAssets,
+  type RustImageBuffer,
+  type RustPbrSurface,
+  rustImageToTextureAsset,
+  type StandardPbrTextureSet,
+  type SurfaceBlendModeName,
+  textureAssetToRustImage,
+  type WebGpuDeviceLike,
+  WebGpuSurfaceAccelerator,
+  type WorleyModeName,
+} from './surface-kernel';
 export {
   type Continuity,
   type ContinuityEdge,
@@ -669,6 +916,7 @@ export {
   mipChain,
   normalFromHeight,
   normalTexture,
+  packFloat32Texture,
   type Rgba,
   type StudioEnvironmentOptions,
   studioEnvironment,
@@ -678,6 +926,7 @@ export {
 } from './texture';
 export type { ThinHoleOptions, ThinHolePlan, ThinHoleReport } from './thin-hole';
 export { thinHole, thinHoleCheck } from './thin-hole';
+export { type ThreadDesignation, type ThreadFamily, type ThreadSpec, threads } from './threads';
 export {
   bakeTrimSheet,
   TRIM_MAP_KINDS,
@@ -712,6 +961,7 @@ export {
   type PackOptions,
   paddingTexels,
   type SeamSource,
+  type StraightenOptions,
   type SwatchUvOptions,
   type TrimFit,
   type TrimUvOptions,
@@ -720,6 +970,20 @@ export {
   type UvChannel,
   type UvPadding,
 } from './uv';
+export {
+  CHANNEL_OPS,
+  type ChannelOp,
+  type ChannelOptions,
+  type LightmapOptions,
+} from './uv-channel';
+export { uvOverlapPairs } from './uv-overlap';
+export { type FromPatchOptions, PATCH_UV_MODES, type PatchUvMode } from './uv-patch';
+export {
+  type UvCheckerOptions,
+  type UvHeatmapOptions,
+  uvCheckerTexture,
+  uvHeatmapTexture,
+} from './uv-textures';
 export {
   type ValidateOptions,
   type ValidationCode,
@@ -737,6 +1001,14 @@ export {
   toView,
   type ViewFrame,
 } from './views';
+export {
+  type PartVisibility,
+  VISIBILITY_FINDINGS,
+  type VisibilityAudit,
+  type VisibilityFinding,
+  type VisibilityFindingCode,
+  type VisibilityOptions,
+} from './visibility-audit';
 export {
   SdfGrid,
   type VoxelFillOptions,

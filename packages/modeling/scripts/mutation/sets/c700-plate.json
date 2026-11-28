@@ -1,0 +1,81 @@
+{
+ "tests": [
+  "examples/plate/__tests__/plate.unit.test.ts",
+  "examples/plate/__tests__/plate.pack.integration.test.ts",
+  "examples/plate/__tests__/plate.import.integration.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "p1-box-axes-swapped",
+   "file": "examples/plate/plate.ts",
+   "old": "size: [p.width, p.thickness, p.depth]",
+   "new": "size: [p.width, p.depth, p.thickness]"
+  },
+  {
+   "id": "p2-rim-slot-on-faces",
+   "file": "examples/plate/plate.ts",
+   "old": "sel.createdBy('plate.py').or(sel.createdBy('plate.ny')), PLATE_SLOTS.face",
+   "new": "sel.createdBy('plate.py').or(sel.createdBy('plate.ny')), PLATE_SLOTS.rim"
+  },
+  {
+   "id": "p3-rim-selects-ny-twice",
+   "file": "examples/plate/plate.ts",
+   "old": "sel.createdBy('plate.px').or(sel.createdBy('plate.nx')).or(sel.createdBy('plate.pz')).or(sel.createdBy('plate.nz'))",
+   "new": "sel.createdBy('plate.px').or(sel.createdBy('plate.nx')).or(sel.createdBy('plate.pz'))"
+  },
+  {
+   "id": "p4-defaults-differ-from-pack",
+   "file": "examples/plate/plate.ts",
+   "old": "width: 0.24, depth: 0.16, thickness: 0.012",
+   "new": "width: 0.30, depth: 0.16, thickness: 0.012"
+  },
+  {
+   "id": "p5-pack-default-differs",
+   "file": "examples/plate/plate.pack.ts",
+   "old": "default: 0.24",
+   "new": "default: 0.25"
+  },
+  {
+   "id": "p6-job-name-changed",
+   "file": "examples/plate/plate.ts",
+   "old": "name: 'plate-c700'",
+   "new": "name: 'plate-c701'"
+  },
+  {
+   "id": "p7-record-drops-brep-proxy",
+   "file": "examples/case/record.ts",
+   "old": " || property === 'brep') && holder === target",
+   "new": ") && holder === target"
+  },
+  {
+   "id": "p8-sourcecalls-drops-brep",
+   "file": "examples/case/record.ts",
+   "old": "voxel\\.\\w+|brep\\.\\w+|smooth",
+   "new": "voxel\\.\\w+|smooth"
+  },
+  {
+   "id": "p9-record-ignores-options",
+   "file": "examples/case/record.ts",
+   "old": "const target = model(options);",
+   "new": "const target = model();"
+  },
+  {
+   "id": "p10-export-angle",
+   "file": "examples/plate/plate.ts",
+   "old": "angle: 40",
+   "new": "angle: 89"
+  },
+  {
+   "id": "p11-pack-param-key",
+   "file": "examples/plate/plate.pack.ts",
+   "old": "key: 'plate',",
+   "new": "key: 'plate2',"
+  },
+  {
+   "id": "p12-param-min-too-big",
+   "file": "examples/plate/plate.pack.ts",
+   "old": "minimum: 0.002",
+   "new": "minimum: 0.0000001"
+  }
+ ]
+}

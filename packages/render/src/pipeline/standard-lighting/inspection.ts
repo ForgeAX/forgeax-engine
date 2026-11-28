@@ -1,4 +1,10 @@
-import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
+import {
+  type CompiledRenderGraph,
+  type CompiledRenderGraphInfo,
+  compiledRenderGraphPassDeclarations,
+  compiledRenderGraphResourceDeclarations,
+  type RenderGraphFrame,
+} from '@forgeax/engine-render-graph';
 import type { RenderPipelineAsset } from '@forgeax/engine-types';
 import { type ClusterOccupancyReport, measureClusterOccupancy } from '../../cluster-binner';
 import { getSsaoParameters, resolveSsaoQuality, ssaoUsesLighting } from '../../ssao-config';
@@ -9,6 +15,29 @@ import type { StandardClusterTransport } from './transport';
 type AmbientOcclusionConfig = NonNullable<
   NonNullable<RenderPipelineAsset['config']>['ambientOcclusion']
 >;
+
+export type AmbientOcclusionViewFacts = Pick<CompiledRenderGraphInfo, 'passes' | 'resources'>;
+
+/** Retain declarations the AO inspector consumes, without retaining the view allocation. */
+export function bindAmbientOcclusionViewFacts<Frame extends RenderGraphFrame>(
+  graph: CompiledRenderGraph<Frame>,
+): AmbientOcclusionViewFacts {
+  const passes = compiledRenderGraphPassDeclarations(graph).filter(
+    (pass) =>
+      pass.name.startsWith('ssao-') ||
+      pass.name.startsWith('gtao-') ||
+      (pass.name === 'forward-directional-shadow' &&
+        pass.accesses.some(({ resource }) => resource === 'ssao-screen-parameters-0')),
+  );
+  const labels = new Set(['ssao-horizontal']);
+  for (const pass of passes) {
+    for (const { resource } of pass.accesses) labels.add(resource);
+  }
+  return {
+    passes,
+    resources: compiledRenderGraphResourceDeclarations(graph, [...labels]),
+  };
+}
 
 export interface StandardAmbientOcclusionInspection {
   readonly requested: boolean;
@@ -142,7 +171,7 @@ export type StandardLightingInspection =
 
 type SubmittedAmbientOcclusion = {
   readonly config: AmbientOcclusionConfig | undefined;
-  readonly graph: CompiledRenderGraphInfo | undefined;
+  readonly graph: AmbientOcclusionViewFacts | undefined;
   readonly installedGraphGeneration?: number | undefined;
   readonly deviceGeneration: number;
   readonly gtaoHistoryFrames?: number | undefined;
@@ -288,7 +317,7 @@ export function inspectStandardLighting(
 }
 
 function graphResource(
-  graph: CompiledRenderGraphInfo | undefined,
+  graph: AmbientOcclusionViewFacts | undefined,
   name: string | undefined,
 ): CompiledRenderGraphInfo['resources'][number] | undefined {
   return name === undefined
@@ -310,7 +339,7 @@ function sumKnownBytes(
   return present.reduce((sum, resource) => sum + (resource.byteSize ?? 0), 0);
 }
 
-function ambientOcclusionGraphResources(graph: CompiledRenderGraphInfo | undefined) {
+function ambientOcclusionGraphResources(graph: AmbientOcclusionViewFacts | undefined) {
   const fused = graph?.passes.find(
     (pass) =>
       pass.name === 'forward-directional-shadow' &&
@@ -370,7 +399,7 @@ function ambientOcclusionWorkBudget(
 
 function collectAmbientOcclusionFacts(input: {
   readonly config: AmbientOcclusionConfig | undefined;
-  readonly graph: CompiledRenderGraphInfo | undefined;
+  readonly graph: AmbientOcclusionViewFacts | undefined;
   readonly renderPath: 'forward' | 'deferred';
 }) {
   const requested = input.config?.enabled === true;
@@ -506,7 +535,7 @@ function ambientOcclusionOutputInspection(facts: ReturnType<typeof collectAmbien
 
 function inspectStandardAmbientOcclusion(input: {
   readonly config: AmbientOcclusionConfig | undefined;
-  readonly graph: CompiledRenderGraphInfo | undefined;
+  readonly graph: AmbientOcclusionViewFacts | undefined;
   readonly installedGraphGeneration?: number | undefined;
   readonly renderPath: 'forward' | 'deferred';
   readonly gtaoHistoryFrames?: number | undefined;

@@ -1002,6 +1002,33 @@ it('discards an oversized publication before transfer', async () => {
   }
 });
 
+it('returns the failed send credit while the earlier publication stays in flight', async () => {
+  const { source, worker, complete, frame } = await startCreditFixture(3, 512);
+  try {
+    source.publish(frame, 0);
+    expect(packetAt(worker, 0).publication.record.byteLength).toBe(256);
+    const failed = vi.spyOn(worker, 'postMessage').mockImplementationOnce(() => {
+      throw new Error('posting publication failed');
+    });
+    try {
+      expect(() => source.publish({ ...frame, frameId: 2 }, 1)).toThrow(
+        'posting publication failed',
+      );
+    } finally {
+      failed.mockRestore();
+    }
+    expect(worker.packets.map((packet) => packet.frameId)).toEqual([1]);
+    expect(source.publish({ ...frame, frameId: 3 }, 2)).toBeUndefined();
+    expect(worker.packets.map((packet) => packet.frameId)).toEqual([1, 3]);
+    expect(source.hasPublicationCapacity).toBe(false);
+    complete();
+    expect(source.hasPublicationCapacity).toBe(true);
+    complete();
+  } finally {
+    await source.dispose();
+  }
+});
+
 it.each([
   { duplicateReady: false, capacity: 2 },
   { duplicateReady: true, capacity: 2 },

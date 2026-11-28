@@ -1,6 +1,6 @@
 import { ok, publishShaderProgramTemplates, ShaderRegistry } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
-import { prewarmUtilityShaders } from '../assembly/utility-shader-prewarm';
+import { prepareUtilityShaders } from '../assembly/utility-shader-prewarm';
 import {
   findEngineManifestEntry,
   prepareStandardSceneSources,
@@ -69,7 +69,10 @@ it('uses a native program declaration to find the reserved Engine role without r
   expect(registry.programTemplateInspection().selections).toBe(0);
 });
 
-it('discovers a native utility by identity without preparing unrelated source or reflection', async () => {
+it.each([
+  false,
+  true,
+])('discovers only the requested native utility with deferred source %s', async (deferred) => {
   const profile = {
     id: 'utility',
     language: 'wgsl',
@@ -115,16 +118,17 @@ it('discovers a native utility by identity without preparing unrelated source or
   });
   (await registry.loadManifest()).unwrap();
   const deviceCompile = vi.fn(async () => ({}) as never);
-  const sources = await prewarmUtilityShaders(
+  const sources = await prepareUtilityShaders(
     'test',
     [['stage', 'selected', 'selected', 'selected']],
     [...registry.entries()],
-    deviceCompile,
+    deferred ? undefined : deviceCompile,
     vi.fn(),
   );
+  if (deferred) expect(compile).not.toHaveBeenCalled();
   expect(sources?.stage.read()).toContain('fn selected');
   expect(compile).toHaveBeenCalledTimes(1);
-  expect(deviceCompile).toHaveBeenCalledTimes(1);
+  expect(deviceCompile).toHaveBeenCalledTimes(deferred ? 0 : 1);
   expect(registry.programTemplateInspection().selections).toBe(1);
 });
 

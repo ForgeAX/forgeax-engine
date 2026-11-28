@@ -6,6 +6,7 @@ import {
   interleavedMesh,
   meshAssetContribution,
 } from '@forgeax/engine-geometry';
+import { encodeAssetBundle } from '@forgeax/engine-pack/bundle';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { sceneAssetContribution } from '@forgeax/engine-scene';
 import {
@@ -51,6 +52,7 @@ async function fixture(
     scene?: 'draw' | 'mixed';
     materialReady?: boolean;
     corrupt?: boolean;
+    bundled?: boolean;
     demand?: boolean;
     wait?: () => Promise<void>;
     waitForMaterial?: () => Promise<void>;
@@ -73,8 +75,10 @@ async function fixture(
     await meshAssetOutputProducer.produce({ guid, sourceKey: 'mesh', asset: mesh })
   ).unwrap();
   const body = defined(product.artifacts.body);
+  const bytes = new Uint8Array(body.bytes);
+  const bundle = options.bundled ? encodeAssetBundle([bytes]) : undefined;
   const descriptor = {
-    path: 'mesh.bin',
+    path: bundle === undefined ? 'mesh.bin' : 'mesh.bundle.bin',
     contentEncoding: 'identity' as const,
     mediaType: body.mediaType,
     assetCodec: body.assetCodec,
@@ -83,6 +87,14 @@ async function fixture(
       algorithm: 'sha256' as const,
       digest: `sha256:${createHash('sha256').update(body.bytes).digest('hex')}`,
     },
+    ...(bundle === undefined
+      ? {}
+      : {
+          byteRange: {
+            ...defined(bundle.windows[0]),
+            bundleDigest: `sha256:${createHash('sha256').update(bundle.bytes).digest('hex')}`,
+          },
+        }),
   };
   const { pack, publication } = catalogPack(
     [
@@ -141,13 +153,13 @@ async function fixture(
     sourcePath: 'mesh',
     publication,
   }));
-  const bytes = new Uint8Array(body.bytes);
-  if (options.corrupt) bytes[bytes.length - 1] ^= 1;
+  const supplied = bundle?.bytes ?? bytes;
+  if (options.corrupt) supplied[supplied.length - 1] ^= 1;
   const fetcher = vi.fn<typeof fetch>(async (input) => {
     if (String(input) === packageUrl) return Response.json(pack);
-    if (String(input) === new URL('mesh.bin', packageUrl).href) {
+    if (String(input) === new URL(descriptor.path, packageUrl).href) {
       await options.wait?.();
-      return new Response(bytes);
+      return new Response(supplied);
     }
     return new Response('', { status: 404 });
   });
@@ -803,6 +815,62 @@ it('keeps a shared first handoff when one visual waiter cancels after transfer',
   } finally {
     ready.release();
     await first;
+    f.assets.dispose();
+  }
+});
+
+it.each([
+  { bundled: false, corrupt: false },
+  { bundled: true, corrupt: false },
+  { bundled: true, corrupt: true },
+])('overlaps verified Scene reads with deferred publication admission ($bundled, corrupt=$corrupt)', async ({
+  bundled,
+  corrupt,
+}) => {
+  const f = await fixture({ scene: 'draw', material: true, materialReady: true, bundled, corrupt });
+  const admitted = gate();
+  const materialRequested = gate();
+  f.assets.setCatalogSource({
+    ...f.source,
+    enumerate: async () =>
+      ok(
+        f.rows.map((row) => {
+          if (row.guid !== materialGuid) return row;
+          const { publication: _publication, ...declared } = row;
+          return { ...declared, lifecycle: 'missing' as const };
+        }),
+      ),
+    get: async () => {
+      materialRequested.release();
+      await admitted.promise;
+      return ok(f.rows.filter((row) => row.guid === materialGuid));
+    },
+  });
+  const loading = f.assets.load(sceneGuid, 'scene', { usage: 'render' });
+  try {
+    await Promise.race([materialRequested.promise, loading.then((result) => result.unwrap())]);
+    const packReads = () =>
+      f.fetcher.mock.calls.filter(([input]) => String(input) === packageUrl).length;
+    expect(packReads()).toBe(1);
+    const bundleReads = () =>
+      f.fetcher.mock.calls.filter(([input]) => String(input).endsWith('/mesh.bundle.bin')).length;
+    if (bundled) {
+      await vi.waitFor(() => expect(bundleReads()).toBe(1));
+      expect(f.assets.inspect().assets).toEqual([]);
+    }
+    admitted.release();
+    const result = await loading;
+    if (corrupt) {
+      expect(result).toMatchObject({ ok: false, error: { code: 'asset-dependency-failed' } });
+      expect(f.assets.inspect().assets).toEqual([]);
+    } else {
+      f.assets.release(result.unwrap()).unwrap();
+      expect(bundleReads()).toBe(bundled ? 1 : 0);
+    }
+    expect(packReads()).toBe(1);
+  } finally {
+    admitted.release();
+    await Promise.allSettled([loading]);
     f.assets.dispose();
   }
 });

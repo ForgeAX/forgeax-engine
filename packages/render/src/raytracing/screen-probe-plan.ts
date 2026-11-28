@@ -19,7 +19,7 @@ export const SCREEN_PROBE_RADIANCE_BYTES = 40;
 /** Retained geometry and directional transport records with effective history ages. */
 export const SCREEN_PROBE_HISTORY_BYTES =
   SCREEN_PROBE_RECORD_BYTES + SCREEN_PROBE_TEXELS * SCREEN_PROBE_RADIANCE_BYTES;
-export const SCREEN_PROBE_FRAME_BYTES = 192;
+export const SCREEN_PROBE_FRAME_BYTES = 208;
 /** Per-pixel history metadata: view distance, encoded normal, sample count, and flags with optional f16 AO. */
 export const SCREEN_PROBE_META_BYTES = 16;
 
@@ -276,6 +276,8 @@ export interface ScreenProbeFrame {
 export interface ScreenProbeReprojection {
   readonly viewProjection: ArrayLike<number>;
   readonly cameraPosition: readonly [number, number, number];
+  /** Jitter (uv) of the view that rendered the retained history; absent for an unjittered view. */
+  readonly jitterUv?: readonly [number, number] | undefined;
 }
 
 /** Must match `ScreenProbeFrame` in ray-screen-probe.wgsl. */
@@ -317,6 +319,7 @@ export function packScreenProbeFrame(frame: ScreenProbeFrame): Uint8Array {
   if (previous !== undefined) {
     for (let i = 0; i < 16; i++) f[24 + i] = previous.viewProjection[i] ?? 0;
     f.set([...previous.cameraPosition, 1], 40);
+    f.set(previous.jitterUv ?? [0, 0], 48);
   }
   return bytes;
 }

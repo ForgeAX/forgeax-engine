@@ -800,6 +800,9 @@ function appendSharedMaterialValue(
       expected: 'the asset scope for every shared material',
       hint: 'keep prepared World indices aligned with the frame resource scopes',
     });
+  // An owned CPU publication can still be read by earlier submissions.
+  if (Object.isFrozen(table.slots)) table.slots = table.slots.slice();
+  if (Object.isFrozen(table.bindings)) table.bindings = table.bindings.slice();
   (table.slots as MaterialSnapshot[]).push(
     acceptedMaterialSnapshot(binding.material, sharedMaterials.frame),
   );
@@ -955,7 +958,7 @@ function addressPhysicalRows(
 export function cleanPerFrameCaches(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
-  validated: Iterable<ValidatedRenderable>,
+  validated: Iterable<Pick<ValidatedRenderable, 'source'>>,
   retainedEntityKeys?: ReadonlySet<number>,
   retainedFoldKeys?: Iterable<number>,
 ): void {
@@ -1026,9 +1029,8 @@ export function computeFoldBuckets(
   world: RenderResourceScope,
   frameState: RenderFrameState,
   transparentDispatch: DispatchList,
-  rows:
-    | readonly import('./mesh-ssbo').FoldRenderableLike[]
-    | (() => readonly import('./mesh-ssbo').FoldRenderableLike[]),
+  read: import('./mesh-ssbo').FoldRowReader,
+  materials?: MaterialFrame,
 ): readonly FoldBucket[] {
   if (transparentDispatch.length === 0) {
     frameState.lastFoldBucketCount = 0;
@@ -1049,7 +1051,6 @@ export function computeFoldBuckets(
   // One row-level skip flag cannot represent multiple authored passes.
   // Preserve that conservative admission before asking the fold owner for
   // actual multi-draw runs. It leaves incompatible entries as ordering barriers.
-  const renderables = typeof rows === 'function' ? rows() : rows;
   const drawn = new Set<number>();
   for (const entry of transparentDispatch) {
     if (drawn.has(entry.renderableIndex)) {
@@ -1061,7 +1062,8 @@ export function computeFoldBuckets(
   const foldBuckets = foldDispatchBuckets(
     transparentDispatch,
     transparentSortCfg.mode,
-    renderables,
+    read,
+    materials,
   );
   frameState.lastFoldBucketCount = foldBuckets.length;
   return foldBuckets;

@@ -244,7 +244,7 @@ ${traversal === 'global-sdf' ? CARD_RECEIVER_WGSL : ''}
   // a visibility query could finish. It cannot invalidate known emission.
   if(kind==0u||all(light.radiance.xyz==vec3f(0))){continue;}
   var incoming=normalize(-light.directionRange.xyz);var tMax=frame.trace.x;
-  if(kind>=2u){let delta=light.positionKind.xyz-position;let d=length(delta);incoming=delta/max(d,1e-8);tMax=d-bias;}
+  if(kind>=2u){let delta=light.positionKind.xyz-position;let d=length(delta);if(light.directionRange.w>0.0&&d*d*light.directionRange.w>=1.0){continue;}incoming=delta/max(d,1e-8);tMax=d-bias;if(kind==3u&&dot(-incoming,normalize(light.directionRange.xyz))<light.cone.y){continue;}}
   if(dot(geometric,incoming)<=0.0||dot(shading,incoming)<=0.0){continue;}
   ${
     traversal === 'global-sdf'
@@ -256,7 +256,7 @@ ${traversal === 'global-sdf' ? CARD_RECEIVER_WGSL : ''}
   let ray=Ray(bitcast<vec3f>(segment.world.originLo),0.0,bitcast<vec3f>(segment.world.directionLo),bitcast<f32>(segment.world.tRange.y),vec4u(1u,0u,0u,0u));
   let hit=traceWorld(ray,frame.query.x,bitcast<f32>(frame.query.y),segment.world.originHi,segment.world.directionHi,contact);`
       : `if(tMax<=0.0){mask|=1u<<l;continue;}
-  let hit=traceWorldVisibility(Ray(origin,0.0,incoming,tMax,vec4u(1u,0u,0u,0u)),frame.query.x);`
+  let hit=traceWorldVisibility(Ray(origin,0.0,incoming,tMax,vec4u(1u,0u,0u,0u)),frame.query.x,bitcast<f32>(frame.query.y));`
   }
   if(hit.state.x==${GlobalSdfQueryStatus.miss}u){mask|=1u<<l;}
   else if(hit.state.x!=${GlobalSdfQueryStatus.hit}u&&hit.state.x!=${GlobalSdfQueryStatus.negativeStart}u){complete=false;}
@@ -1293,6 +1293,9 @@ async function createFieldViewKernels<Stage extends IrradianceFieldViewStage>(
   sampleLayout: BindGroupLayout,
   selected: readonly Stage[],
   radiosity: boolean,
+  overrides?: Partial<
+    Record<Stage, { readonly module: ShaderModule; readonly entryPoint: string }>
+  >,
 ) {
   const kernels = {} as Record<
     Stage,
@@ -1310,6 +1313,7 @@ async function createFieldViewKernels<Stage extends IrradianceFieldViewStage>(
     const layout = createComputeLayout(device, roster);
     if (!layout.ok) return layout;
     const program = fieldViewProgram(stage, mode, radiosity);
+    const override = overrides?.[stage];
     const usesField = program.samplesField;
     const pipelineLayout = device.createPipelineLayout({
       bindGroupLayouts: usesField ? [layout.value, sampleLayout] : [layout.value],
@@ -1319,8 +1323,8 @@ async function createFieldViewKernels<Stage extends IrradianceFieldViewStage>(
       label: `irradiance-field.${stage}`,
       layout: pipelineLayout.value,
       compute: {
-        module,
-        entryPoint: program.entryPoint,
+        module: override?.module ?? module,
+        entryPoint: override?.entryPoint ?? program.entryPoint,
       },
     });
     if (!pipeline.ok) return pipeline;
@@ -1450,7 +1454,10 @@ export async function createIrradianceFieldViewKernels(
       },
     },
     prepareGather,
-    reflectionKernels: async (reflectionModule: ShaderModule) =>
+    reflectionKernels: async (
+      reflectionModule: ShaderModule,
+      chebyshevGenerateModule?: ShaderModule,
+    ) =>
       await createFieldViewKernels(
         device,
         reflectionModule,
@@ -1458,6 +1465,14 @@ export async function createIrradianceFieldViewKernels(
         sampleLayout.value,
         REFLECTION_VIEW_STAGES,
         true,
+        chebyshevGenerateModule === undefined
+          ? undefined
+          : {
+              generateFieldReflections: {
+                module: chebyshevGenerateModule,
+                entryPoint: 'generateReflectionsChebyshev',
+              },
+            },
       ),
   });
 }

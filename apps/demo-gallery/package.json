@@ -45,7 +45,6 @@
     "@forgeax/engine-runtime": "workspace:*",
     "@forgeax/engine-shader-compiler": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
-    "@forgeax/engine-dsh": "workspace:*",
     "@forgeax/engine-vfx-compiler": "workspace:*",
     "@forgeax/engine-vite-plugin-pack": "workspace:*",
     "@forgeax/engine-vite-plugin-rhi-debug": "workspace:*",

@@ -112,12 +112,12 @@ function gapBetween(m: Model, other?: Model): number {
   return best;
 }
 
-/** Snapshot digests on the base commit (main 5047b49), before the relief existed. */
+/** Snapshot digests with canonical (name-sorted) tag order: unchanged geometry, tags renumbered (R-M6). */
 const BASE = {
-  one: '0796d962003508cb',
-  far: 'dce77bc0c89e6dc8',
-  near: '42d8583c20ef3552',
-  out: '23f56b392f421226',
+  one: '9a1fb3a760e4cfa4',
+  far: 'cf0b8107a0710430',
+  near: '0fddd1bf99d584c3',
+  out: 'deb7fc3802370aa4',
 };
 
 const sha = (m: Model) => createHash('sha256').update(m.snapshot()).digest('hex').slice(0, 16);

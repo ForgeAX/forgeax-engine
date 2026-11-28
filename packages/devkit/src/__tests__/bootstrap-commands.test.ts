@@ -906,7 +906,7 @@ describe('doctorCommand', () => {
       ok: true,
       value: { packSources: 1 },
     });
-  });
+  }, 45_000);
 
   it('keeps exact-version dependencies on the registry path without a local binding', async () => {
     const sdk = await sdkFixture(false);

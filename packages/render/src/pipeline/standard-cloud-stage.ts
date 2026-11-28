@@ -5,8 +5,12 @@ import type {
 } from '@forgeax/engine-render-graph';
 import { ok, type Result } from '@forgeax/engine-types';
 import { ANALYTIC_CLOUD_DEPTH, ANALYTIC_CLOUD_LT } from '../cloud/analytic-feature';
-import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/contracts';
+import { CLOUD_DEPTH_RANGE_QUARTER, CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/contracts';
 import { CLOUD_ATMOSPHERE_TARGETS } from '../cloud/lighting/environment';
+import {
+  CLOUD_SHADOW_FINAL_TARGET,
+  cloudShadowSpatialLayout,
+} from '../cloud/lighting/shadow-spatial-layout';
 import {
   CLOUD_MODE0_PROBE_PASS,
   CLOUD_MODE0_PROBE_TARGETS,
@@ -30,13 +34,78 @@ import {
   type RenderPipelineTarget,
   renderPipelineCloudHistoryTargets,
 } from '../render-pipeline';
+import { addCloudSceneDepthMinMax } from './cloud-scene-depth-minmax';
 import type { StandardPipelineBuildContext } from './standard-build-context';
+
+/** A transport-only resolve loads the existing color attachment and never samples it. */
+export function standardCloudCompositesInPlace(context: StandardPipelineBuildContext): boolean {
+  const hasResolve = (sampledTarget?: string) =>
+    context.hasFeatureRasterWork?.(
+      CLOUD_LAYER_FEATURE_IDENTITY,
+      'scene',
+      SkyPass.cloudResolve,
+      sampledTarget,
+    ) === true;
+  return (
+    context.cloudHistory?.currentDepth.format === 'rgba16float' &&
+    hasResolve() &&
+    !hasResolve('motion-input')
+  );
+}
+
+export interface StandardCloudPhase {
+  readonly scene: RenderPipelineTarget | undefined;
+  readonly shadow: RenderPipelineTarget | undefined;
+  readonly featureTargets: readonly RenderPipelineFeatureTarget[];
+}
+
+/** Both recording procedures bind the same Beer-shadow producers and scene ports. */
+export function declareStandardCloudPhase(
+  context: StandardPipelineBuildContext,
+  color: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+  descriptor: Pick<GraphTextureDescriptor, 'size' | 'domain'>,
+  singleSample: boolean,
+): Result<StandardCloudPhase, RenderPipelineBuildError> {
+  const active = context.hasFeatureRasterWork?.(CLOUD_LAYER_FEATURE_IDENTITY, 'scene') === true;
+  const inPlace = singleSample && standardCloudCompositesInPlace(context);
+  const scene = createStandardCloudSceneTarget(context, active && singleSample && !inPlace, {
+    format: color.format,
+    ...descriptor,
+  });
+  if (!scene.ok) return scene;
+  const shadow = createStandardCloudShadowTarget(context, active);
+  if (!shadow.ok) return shadow;
+  const featureTargets = contributeStandardCloudPreOpaque(context, {
+    color,
+    depth,
+    cloudShadow: shadow.value,
+  });
+  if (!featureTargets.ok) return featureTargets;
+  return ok({
+    scene: inPlace ? color : scene.value,
+    shadow: shadow.value,
+    featureTargets: featureTargets.value,
+  });
+}
+
+/** Ordered display only invokes the cloud declaration for an admitted producer. */
+export function declareOrderedCloudPhase(
+  context: StandardPipelineBuildContext,
+  color: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+  size: GraphTextureDescriptor['size'],
+): Result<StandardCloudPhase | undefined, RenderPipelineBuildError> {
+  return context.cloudHistory === undefined
+    ? ok(undefined)
+    : declareStandardCloudPhase(context, color, depth, { size, domain: 'linear-hdr' }, true);
+}
 
 /**
  * Single-sample scene target the CloudLayer composite resolves into, declared
  * only when the lane can project the composite this frame.
  */
-export function createStandardCloudSceneTarget(
+function createStandardCloudSceneTarget(
   context: StandardPipelineBuildContext,
   enabled: boolean,
   descriptor: Pick<GraphTextureDescriptor, 'format' | 'size' | 'domain'>,
@@ -53,30 +122,37 @@ export function createStandardCloudSceneTarget(
   });
 }
 
+function standardCloudShadowLayout(context: StandardPipelineBuildContext) {
+  return (
+    context.cloudShadowLayout ??
+    (context.cloudShadowResolution === undefined
+      ? undefined
+      : cloudShadowSpatialLayout(context.cloudShadowResolution))
+  );
+}
+
 /**
  * CloudLayer's spatial receiver shadow, declared only when the feature has
  * a projected filter writer and the renderer resolved a shadow resolution.
  */
+/** Allocate the receiver map when the view has a Beer shadow producer. */
 export function createStandardCloudShadowTarget(
   context: StandardPipelineBuildContext,
   featureRasterWork: boolean,
 ): Result<RenderPipelineTarget | undefined, RenderGraphError> {
-  const resolution = context.cloudShadowResolution;
+  const layout = standardCloudShadowLayout(context);
   if (
     !featureRasterWork ||
-    resolution === undefined ||
-    context.hasFeatureRasterWork?.(
-      CLOUD_LAYER_FEATURE_IDENTITY,
-      'scene',
-      SkyPass.cloudShadowFilter,
-    ) !== true
+    layout === undefined ||
+    context.hasFeatureRasterWork?.(CLOUD_LAYER_FEATURE_IDENTITY, 'scene', SkyPass.cloudShadow) !==
+      true
   )
     return ok(undefined);
   return createRenderPipelineTarget(context.graph, 'cloud-layer-shadow', {
-    format: 'rgba32float',
+    format: context.cloudShadowFormat ?? 'rgba32float',
     size: {
-      width: Math.ceil(resolution / 2),
-      height: Math.ceil(resolution / 2),
+      width: layout.filteredResolution,
+      height: layout.filteredResolution,
       depthOrArrayLayers: 1,
     },
     sampleCount: 1,
@@ -94,7 +170,7 @@ export function createStandardCloudShadowTarget(
  * later scene pass that each lane projects after its receiver pass; the
  * returned roster is reused there.
  */
-export function contributeStandardCloudPreOpaque(
+function contributeStandardCloudPreOpaque(
   context: StandardPipelineBuildContext,
   targets: {
     readonly color: RenderPipelineTarget;
@@ -103,21 +179,33 @@ export function contributeStandardCloudPreOpaque(
   },
 ): Result<readonly RenderPipelineFeatureTarget[], RenderPipelineBuildError> {
   const { color, depth, cloudShadow } = targets;
-  let cloudShadowRaw: RenderPipelineTarget | undefined;
-  if (cloudShadow !== undefined) {
-    const resolution = context.cloudShadowResolution ?? 1;
-    const raw = createRenderPipelineTarget(context.graph, 'cloud-layer-shadow-raw', {
-      format: 'rgba32float',
-      size: { width: resolution, height: resolution, depthOrArrayLayers: 1 },
-      sampleCount: 1,
-      domain: 'linear-hdr',
-      usage:
-        GPU_TEXTURE_USAGE_COPY_SRC |
-        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        GPU_TEXTURE_USAGE_TEXTURE_BINDING,
-    });
-    if (!raw.ok) return raw;
-    cloudShadowRaw = raw.value;
+  const shadowTargets: Record<string, RenderPipelineTarget> = {};
+  const layout = standardCloudShadowLayout(context);
+  if (cloudShadow !== undefined && layout !== undefined) {
+    shadowTargets[CLOUD_SHADOW_FINAL_TARGET] = cloudShadow;
+    const stages = [
+      { output: layout.traceTarget, resolution: layout.rawResolution },
+      ...layout.passes,
+    ];
+    for (const { output, resolution } of stages) {
+      if (output === CLOUD_SHADOW_FINAL_TARGET) continue;
+      const target = createRenderPipelineTarget(
+        context.graph,
+        output === layout.traceTarget ? 'cloud-layer-shadow-raw' : output,
+        {
+          format: cloudShadow.format,
+          size: { width: resolution, height: resolution, depthOrArrayLayers: 1 },
+          sampleCount: 1,
+          domain: 'linear-hdr',
+          usage:
+            GPU_TEXTURE_USAGE_COPY_SRC |
+            GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
+            GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+        },
+      );
+      if (!target.ok) return target;
+      shadowTargets[output] = target.value;
+    }
   }
   const featureTargets: readonly RenderPipelineFeatureTarget[] = [
     {
@@ -135,44 +223,22 @@ export function contributeStandardCloudPreOpaque(
       format: depth.format,
       sampleCount: depth.sampleCount,
     },
-    ...(cloudShadow === undefined
-      ? []
-      : [
-          {
-            name: 'cloud-shadow',
-            kind: 'scene-color' as const,
-            texture: cloudShadow.texture,
-            view: cloudShadow.view,
-            format: cloudShadow.format,
-            sampleCount: 1 as const,
-          },
-        ]),
+    ...Object.entries(shadowTargets).map(([name, target]) => ({
+      name,
+      kind: 'scene-color' as const,
+      texture: target.texture,
+      view: target.view,
+      format: target.format,
+      sampleCount: 1 as const,
+    })),
     ...(context.cloudHistory === undefined
       ? []
       : renderPipelineCloudHistoryTargets(context.cloudHistory)),
-    ...(cloudShadowRaw === undefined
-      ? []
-      : [
-          {
-            name: 'cloud-shadow-raw',
-            kind: 'scene-color' as const,
-            texture: cloudShadowRaw.texture,
-            view: cloudShadowRaw.view,
-            format: cloudShadowRaw.format,
-            sampleCount: 1 as const,
-          },
-        ]),
   ];
   const contributed = context.contributeFeatures({
     targets: featureTargets,
     semanticTargets: [],
-    namedTargets:
-      cloudShadow === undefined
-        ? {}
-        : {
-            'cloud-shadow': cloudShadow,
-            ...(cloudShadowRaw === undefined ? {} : { 'cloud-shadow-raw': cloudShadowRaw }),
-          },
+    namedTargets: shadowTargets,
     standardSurfaceAccesses: [],
     placement: 'scene',
     passNames: STANDARD_FEATURE_PRE_OPAQUE_PASSES,
@@ -192,6 +258,8 @@ export function contributeStandardCloudComposite(
   featureTargets: readonly RenderPipelineFeatureTarget[],
   targets: {
     readonly input: RenderPipelineTarget;
+    readonly depth: RenderPipelineTarget;
+    readonly depthSize: { readonly width: number; readonly height: number };
     readonly output: RenderPipelineTarget;
     readonly cloudShadow: RenderPipelineTarget | undefined;
   },
@@ -202,6 +270,20 @@ export function contributeStandardCloudComposite(
   const history = context.cloudHistory;
   const namedOutputs: Record<string, RenderPipelineTarget> = {};
   if (history !== undefined) {
+    const readsDepthRange = [SkyPass.cloudSampledTrace, SkyPass.cloudAnalyticTrace].some(
+      (name) =>
+        context.hasFeatureRasterWork?.(
+          CLOUD_LAYER_FEATURE_IDENTITY,
+          'scene',
+          name,
+          CLOUD_DEPTH_RANGE_QUARTER,
+        ) === true,
+    );
+    if (readsDepthRange) {
+      const depthRange = addCloudSceneDepthMinMax(context.graph, targets.depth, targets.depthSize);
+      if (!depthRange.ok) return depthRange;
+      namedOutputs[CLOUD_DEPTH_RANGE_QUARTER] = depthRange.value.quarter;
+    }
     if (
       context.hasFeatureRasterWork?.('forgeax.cloud-layer', 'scene', CLOUD_MODE0_PROBE_PASS) ===
       true
@@ -224,7 +306,9 @@ export function contributeStandardCloudComposite(
     for (const name of CLOUD_MODE0_TRACE_TARGETS) {
       const created = createRenderPipelineTarget(context.graph, name, {
         size: 'quarter-surface',
-        format: name.endsWith('depth') ? 'rgba32float' : history.currentRadiance.format,
+        format: name.endsWith('depth')
+          ? history.currentDepth.format
+          : history.currentRadiance.format,
         domain: 'linear-hdr',
         sampleCount: 1,
         usage:
@@ -263,12 +347,14 @@ export function contributeStandardCloudComposite(
         : {
             [CLOUD_ATMOSPHERE_TARGETS.transmittance]: {
               ...atmosphere.cloudSources.transmittance,
-              format: 'rgba16float' as const,
+              format:
+                atmosphere.ue5 === true ? ('rg11b10ufloat' as const) : ('rgba16float' as const),
               sampleCount: 1 as const,
             },
             [CLOUD_ATMOSPHERE_TARGETS.distantSkyLight]: {
               ...atmosphere.cloudSources.distantSkyLight,
-              format: 'rgba16float' as const,
+              format:
+                atmosphere.ue5 === true ? ('rg11b10ufloat' as const) : ('rgba16float' as const),
               sampleCount: 1 as const,
             },
           }),

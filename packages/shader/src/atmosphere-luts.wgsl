@@ -1,6 +1,6 @@
 #define_import_path forgeax_atmosphere::luts
 #import forgeax_view::common::{View, view_atmosphere_fast_ap_samples}
-#import forgeax_atmosphere::table_kernels::{atmosphere_transmittance_texel, atmosphere_multiple_scattering_texel, atmosphere_sky_view_texel, atmosphere_aerial_texel, atmosphere_distant_sky_sample}
+#import forgeax_atmosphere::table_kernels::{atmosphere_transmittance_texel, atmosphere_multiple_scattering_texel, atmosphere_sky_view_texel, atmosphere_aerial_texel, atmosphere_distant_sky_sample, atmosphere_ue5_aerial_texel, atmosphere_ue5_distant_sky_ray}
 #import forgeax_atmosphere::sampling::{atmosphere_aerial_integrate}
 #import forgeax_atmosphere::optics::{ATMOSPHERE_PI, atmosphere_medium, atmosphere_interval, atmosphere_sphere, atmosphere_segment, atmosphere_transmittance_ray, atmosphere_solar_transmittance, atmosphere_integrate, atmosphere_integrate_phases}
 #import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_view_ray, atmosphere_sky_direction}
@@ -70,4 +70,26 @@ fn atmosphere_distant_sky_light(@builtin(local_invocation_index) i:u32) {
     for(var sample=0u;sample<64u;sample+=1u){light+=distantSamples[sample];}
     textureStore(output2d,vec2<i32>(0),vec4<f32>(light,1.0));
   }
+}
+
+@group(0) @binding(7) var<storage, read_write> distantSkyBuffer: vec4f;
+
+@compute @workgroup_size(64)
+fn atmosphere_ue5_distant_sky_light(@builtin(local_invocation_index) index: u32) {
+  distantSamples[index] = atmosphere_ue5_distant_sky_ray(parameters, index, transmittance, multiple, filtering);
+  workgroupBarrier();
+  if index == 0u {
+    var sum = vec3f(0.0);
+    for (var i = 0u; i < 64u; i += 1u) {
+      sum += distantSamples[i];
+    }
+    distantSkyBuffer = vec4f(sum / 64.0, 0.0);
+  }
+}
+
+@compute @workgroup_size(4, 4, 4)
+fn atmosphere_ue5_aerial_perspective(@builtin(global_invocation_id) id: vec3u) {
+  let size = textureDimensions(output3d);
+  if any(id >= size) { return; }
+  textureStore(output3d, vec3i(id), atmosphere_ue5_aerial_texel(parameters, id, size, transmittance, multiple, filtering));
 }

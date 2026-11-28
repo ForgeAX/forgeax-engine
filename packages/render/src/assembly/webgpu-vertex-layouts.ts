@@ -147,6 +147,7 @@ export const WATER_INFO_POSITION_FLOW_VERTEX_BUFFERS = [
 ] satisfies readonly GPUVertexBufferLayout[];
 
 const PREPARED_MATERIAL_VERTEX_LAYOUTS: ReadonlySet<string> = new Set([
+  'none',
   RENDER_FEATURE_VERTEX_LAYOUTS.billboardMaterialInstance,
   RENDER_FEATURE_VERTEX_LAYOUTS.billboardMaterialInputInstance,
   RENDER_FEATURE_VERTEX_LAYOUTS.topologySegmentInstance,
@@ -161,6 +162,7 @@ export function materialPipelineVertexAttributes(
   vertexLayout: string | undefined,
 ): VertexAttributeMap {
   if (meshAttributes !== undefined) return meshAttributes;
+  if (vertexLayout === 'none') return {};
   if (vertexLayout === RENDER_FEATURE_VERTEX_LAYOUTS.positionSizeColorInstance)
     return PREPARED_INSTANCE_VERTEX_ATTRS;
   return isPreparedMaterialVertexLayout(vertexLayout)

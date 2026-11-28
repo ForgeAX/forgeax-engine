@@ -23,7 +23,7 @@ export function requireTsrCapabilities(device: RhiDevice): void {
   const compute = usesTsrCompute(device.caps);
   const raster =
     device.caps.rgba16floatRenderable &&
-    device.caps.maxColorAttachments >= 3 &&
+    device.caps.maxColorAttachments >= 4 &&
     (device.limits.maxColorAttachmentBytesPerSample ?? 32) >=
       TSR_RASTER_ATTACHMENT_BYTES_PER_SAMPLE;
   if (!compute && !raster) throw tsrUnavailable();

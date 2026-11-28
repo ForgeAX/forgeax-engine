@@ -76,7 +76,7 @@ function functionBody(source: string, name: string): string {
  * endpoint bias and World query are compiled by Naga, not simulated by this test. */
 export function cardLinkStatus(status: number): number {
   const body = functionBody(CARD_RADIOSITY_LINK_TRACE_WGSL, 'cardLinkVisible');
-  const markers = [...body.matchAll(/let hit=traceWorld\([^;]+;/g)];
+  const markers = [...body.matchAll(/let hit=traceWorld(?:Visibility)?\([^;]+;/g)];
   if (markers.length !== 1) throw new Error('World query seam is not unique');
   const marker = markers[0];
   if (!marker || marker.index === undefined) throw new Error('World query seam missing');

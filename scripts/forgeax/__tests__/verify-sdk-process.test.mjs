@@ -292,7 +292,7 @@ async function sdkStartupRecoveryProbe({
   loss,
   repeatFailure = false,
   platform = 'linux',
-  channel = 'chrome-beta',
+  channel = 'chrome',
 }) {
   const source = await readFile(new URL('../verify-sdk.mjs', import.meta.url), 'utf8');
   const declaration =
@@ -403,7 +403,7 @@ test('SDK startup does not retry preparation stalls, other losses or other carri
     { loss: 'invalid diagnostic' },
     { loss: nativeInstanceLoss.replace('Instance reference', 'device reference') },
     { loss: nativeInstanceLoss, platform: 'darwin' },
-    { loss: nativeInstanceLoss, channel: 'chrome' },
+    { loss: nativeInstanceLoss, channel: 'chromium' },
   ]) {
     const probe = await sdkStartupRecoveryProbe(options);
     await assert.rejects(probe.pending, (error) => error.cause === probe.failure);

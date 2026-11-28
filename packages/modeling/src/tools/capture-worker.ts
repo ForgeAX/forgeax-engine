@@ -36,6 +36,7 @@ import {
   type VerifyPayload,
   XRAY_SLOT,
 } from './protocol';
+import { parseSelectorExpression } from './selector-parse';
 
 function failure(code: string, expected: string, hint: string, detail?: unknown): CaptureFailure {
   return { code, expected, hint, ...(detail === undefined ? {} : { detail: plain(detail) }) };
@@ -347,26 +348,19 @@ function targetSession(
 }
 
 function parseSelector(expression: string): modeling.Selector<modeling.Domain> | CaptureFailure {
-  let selector: unknown;
-  try {
-    selector = new Function('sel', `"use strict"; return (${expression});`)(modeling.sel);
-  } catch (error) {
+  const parsed = parseSelectorExpression(expression, {
+    sel: modeling.sel,
+    Selector: modeling.Selector,
+  });
+  if (!parsed.ok) {
     return failure(
       'tool-invalid-args',
-      'selector is a sel.* expression',
+      'selector is a sel.* expression with literal arguments',
       "write it as in code, for example sel.tag('shell').and(sel.facing('+y'))",
-      String(error),
+      { selector: expression, reason: parsed.reason },
     );
   }
-  if (!(selector instanceof modeling.Selector)) {
-    return failure(
-      'tool-invalid-args',
-      'selector evaluates to a Selector',
-      'start the expression with sel.',
-      { selector: expression },
-    );
-  }
-  return selector as modeling.Selector<modeling.Domain>;
+  return parsed.value as modeling.Selector<modeling.Domain>;
 }
 
 function select(
@@ -952,15 +946,37 @@ function packMaterials(
 ): PackMaterials | undefined {
   const materials: Record<string, PackMaterials['materials'][string]> = {};
   const textures: Record<string, PackMaterials['textures'][string]> = {};
+  const cookSources: Record<string, NonNullable<PackMaterials['cookSources']>[string]> = {};
+  let hasMaterial = false;
   for (const [key, asset] of Object.entries(outputs ?? {})) {
-    if (key.startsWith('material/')) {
+    const material = key.startsWith('material/');
+    if (!material && !key.startsWith('texture/')) continue;
+    hasMaterial ||= material;
+    if (
+      asset !== null &&
+      typeof asset === 'object' &&
+      'execution' in asset &&
+      asset.execution === 'cooked'
+    ) {
+      cookSources[AssetGuid.format(AssetGuid.derive(packageId, key))] = {
+        sourceKey: key,
+        value: asset as NonNullable<PackMaterials['cookSources']>[string]['value'],
+      };
+      continue;
+    }
+    const kind = material ? 'material' : 'texture';
+    if (asset === null || typeof asset !== 'object' || !('kind' in asset) || asset.kind !== kind) {
+      throw new TypeError(`${key} must produce a ${kind} Asset or a PackCookSource`);
+    }
+    if (material)
       materials[key.slice('material/'.length)] = asset as PackMaterials['materials'][string];
-    } else if (key.startsWith('texture/')) {
+    else
       textures[AssetGuid.format(AssetGuid.derive(packageId, key))] =
         asset as PackMaterials['textures'][string];
-    }
   }
-  return Object.keys(materials).length === 0 ? undefined : { materials, textures };
+  return !hasMaterial
+    ? undefined
+    : { materials, textures, ...(Object.keys(cookSources).length === 0 ? {} : { cookSources }) };
 }
 
 function overlayPayload(
@@ -1135,7 +1151,7 @@ function renderPayload(
   // last), so they view with 35 degree auto-smoothing; the final state keeps intent.
   const options = intermediate
     ? ({ normals: { mode: 'autoSmooth', angle: 35 } } as const)
-    : ({ normals: { mode: 'weighted' } } as const);
+    : { normals: model.inspect().normals ?? { mode: 'weighted' as const } };
   let exported = view.toMesh(options);
   let uvProjected = false;
   // Between UV writes a state can lack uv0 and a partly written uv1; box-project the

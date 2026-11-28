@@ -7,15 +7,16 @@ import {
 } from '@forgeax/engine-render';
 import { rhi as webgl } from '@forgeax/engine-rhi-wgpu';
 import { registerPropagateTransforms } from '@forgeax/engine-scene';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { createDepthOfFieldScene } from './depth-of-field-scene.fixture';
 
 it.each([
   { backend: 'webgpu', renderPath: 'deferred', antialias: ANTIALIAS_TSR },
+  { backend: 'webgpu', renderPath: 'forward', antialias: ANTIALIAS_TAA },
   { backend: 'wgpu-webgl2', renderPath: 'forward', antialias: ANTIALIAS_TAA },
-] as const)('renders pre-temporal depth of field on $backend', async ({
+] as const)('renders pre-temporal depth of field on $backend $renderPath', async ({
   backend,
   renderPath,
   antialias,
@@ -24,6 +25,13 @@ it.each([
   canvas.width = 129;
   canvas.height = 73;
   document.body.append(canvas);
+  const compilation =
+    backend === 'webgpu' ? vi.spyOn(GPUDevice.prototype, 'createShaderModule') : undefined;
+  const countDepthOfField = () =>
+    compilation?.mock.calls.filter(([descriptor]) => descriptor.code.includes('fn fs_coc(')).length;
+  const countTaa = () =>
+    compilation?.mock.calls.filter(([descriptor]) => descriptor.code.includes('fn fs_taa_resolve('))
+      .length;
   const host = await constructRuntimeRendererHost(
     canvas,
     {
@@ -36,7 +44,10 @@ it.each([
     },
     { shaderManifestUrl: '/shaders/manifest.json' },
   );
-  if (!host.ok) throw host.error;
+  if (!host.ok) {
+    compilation?.mockRestore();
+    throw host.error;
+  }
   const { renderer } = host.value;
   const { world, camera } = createDepthOfFieldScene(canvas.width, canvas.height, antialias, 0.5);
   const releaseTransforms = registerPropagateTransforms(world);
@@ -47,6 +58,16 @@ it.each([
   try {
     const initialized = await host.value.initialization;
     if (!initialized.ok) throw initialized.error;
+    if (compilation !== undefined) {
+      expect(countDepthOfField()).toBe(0);
+      expect(countTaa()).toBe(0);
+      const labels = compilation.mock.calls.map(([descriptor]) => descriptor.label);
+      expect(labels).not.toContain('ssr_trace');
+      expect(labels).not.toContain('ssr_compose');
+      expect(labels).not.toContain('scene-velocity-temporal');
+      expect(labels).not.toContain('motion-blur-tile-summary');
+      expect(labels).not.toContain('shadow-static-depth-clear');
+    }
     const lease = renderer.attach(world).unwrap();
     try {
       const read = async () => {
@@ -64,6 +85,10 @@ it.each([
         };
       };
       const sharp = await read();
+      if (compilation !== undefined) {
+        expect(countDepthOfField()).toBe(0);
+        if (antialias === ANTIALIAS_TAA) expect(countTaa()).toBeGreaterThan(0);
+      }
       world
         .addComponent(camera, {
           component: DepthOfField,
@@ -77,6 +102,7 @@ it.each([
         })
         .unwrap();
       const blurred = await read();
+      if (compilation !== undefined) expect(countDepthOfField()).toBe(1);
       const inspection = renderer.inspect();
       expect(errors).toEqual([]);
       expect(inspection.capabilities.backendKind).toBe(backend);
@@ -101,7 +127,11 @@ it.each([
   } finally {
     unsubscribe();
     releaseTransforms();
-    await renderer.dispose();
-    canvas.remove();
+    try {
+      await renderer.dispose();
+    } finally {
+      compilation?.mockRestore();
+      canvas.remove();
+    }
   }
 }, 120_000);

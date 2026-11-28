@@ -4,7 +4,17 @@ import {
 } from '@forgeax/engine/render';
 import { cloudParameterLabels, conditionReasons, type CloudParameterKey } from './parameter-labels.ts';
 
-export const CLOUD_MODES = ['uniform', 'shape', 'sample-ue', 'band', 'band-wide'] as const;
+import { NUBIS_MODES } from './nubis/presets.ts';
+
+export const CLOUD_TEXTURE_SETS = ['shape', 'sample-ue', ...NUBIS_MODES, 'alpine-valley'] as const;
+const CLOUD_RENDER_MODES = ['uniform', 'band', 'band-wide'] as const;
+export const CLOUD_MODES = [...CLOUD_RENDER_MODES, ...CLOUD_TEXTURE_SETS] as const;
+export const CLOUD_RENDER_ACTIONS = ['off', 'textured', ...CLOUD_RENDER_MODES].map(mode => `cloud-${mode}`);
+export const CLOUD_MODE_ACTIONS = [...CLOUD_RENDER_ACTIONS, ...CLOUD_TEXTURE_SETS.map(set => `cloud-${set}`)];
+
+export function isSampledCloudMode(mode: unknown): boolean {
+  return CLOUD_TEXTURE_SETS.some(set => set === mode);
+}
 export type CloudMaterialMode = typeof CLOUD_MODES[number];
 export type CloudMode = 'off' | CloudMaterialMode;
 export type CloudView = 'normal' | 'transmittance' | 'contour';
@@ -86,7 +96,7 @@ export function unavailableParameter(key: CloudParameterKey, mode: CloudMode, fi
   const enabled = mode !== 'off';
   const program = enabled && mode !== 'uniform';
   const available = {
-    always: true, enabled, program, sampled: mode === 'shape' || mode === 'sample-ue',
+    always: true, enabled, program, sampled: isSampledCloudMode(mode),
     ray: program && fields.selfShadow === true && fields.shadowMode === 0,
     map: enabled && (fields.groundShadowEnabled === true || fields.atmosphereShadowEnabled === true ||
       (program && fields.selfShadow === true && fields.shadowMode === 1)),

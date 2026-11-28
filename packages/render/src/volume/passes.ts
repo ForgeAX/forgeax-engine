@@ -14,6 +14,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { stockUtilityShaderFactory } from '../assembly/utility-shader-prewarm';
 import { GPU_TEXTURE_USAGE_TEXTURE_BINDING } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
@@ -28,7 +29,6 @@ import type {
   RenderPipelineTopology,
 } from '../render-pipeline';
 import { recordContext } from '../world/view-record-context';
-import type { VolumetricFogLightKind } from './capability';
 import { MAX_VOLUMETRIC_FOG_OWNERS } from './component';
 import { volumeCompositeScissor } from './composite-scissor';
 import {
@@ -61,7 +61,6 @@ interface VolumetricFogPassInputs {
   /** The Cluster uniform carries the admitted light count for slot guards. */
   readonly clusterUniform: GraphBuffer;
   readonly atmosphereTransmittance?: GraphTextureView | undefined;
-  readonly selectedLightKind: VolumetricFogLightKind;
   readonly projector?: GraphTextureView;
   /** Stable world-space cloud shadow map sampled at each volume point. */
   readonly cloudShadow?: GraphTextureView;
@@ -83,11 +82,12 @@ function shaderSource(
 }
 function volumeContext(frame: RenderPipelineFrame): VolumeProgramContext {
   const runtime = (frame as _InternalRenderPipelineContext).runtime;
-  if (runtime.shaderModuleFactory === undefined) throw pipelineError('shader module factory');
+  const factory = stockUtilityShaderFactory(runtime);
+  if (factory === undefined) throw pipelineError('shader module factory');
   return {
     device: runtime.device,
     deviceScope: recordContext(runtime).deviceScope,
-    shaderModuleFactory: runtime.shaderModuleFactory,
+    shaderModuleFactory: factory,
   };
 }
 
@@ -126,7 +126,6 @@ function importVolumeInputs(
   sceneDepth: GraphTextureView,
   directionalShadow: GraphTextureView | undefined,
   spotShadow: GraphTextureView | undefined,
-  selectedLightKind: VolumetricFogLightKind | undefined,
   clusterBuffers: StandardClusterGraphBuffers | null,
   cloudShadow: GraphTextureView | undefined,
 ): Result<ImportedVolumeInputs | undefined, RenderGraphError> {
@@ -269,7 +268,6 @@ function importVolumeInputs(
     spotShadow,
     lightData: clusterBuffers.lightData,
     clusterUniform: clusterBuffers.clusterUniform,
-    selectedLightKind: selectedLightKind ?? 'directional',
     ...(projector === undefined ? {} : { projector }),
     ...(cloudShadow === undefined ? {} : { cloudShadow }),
   });
@@ -285,14 +283,6 @@ export function addAuthoredVolumetricFogPasses(
   cloudShadow?: GraphTextureView,
   atmosphereTransmittance?: GraphTextureView,
 ): Result<void, RenderGraphError> {
-  // A paired Point+Spot volume stores the Spot shadow lane as well. The
-  // topology's primary light remains PointLight for radiance selection, but
-  // injection must import the spot atlas so the packed visibility can be
-  // applied only to the spot term during integration.
-  const shadowLightKind =
-    topology.volumetricFog?.spotLightEntity === undefined
-      ? topology.volumetricFog?.lightKind
-      : 'spot';
   const imported = importVolumeInputs(
     graph,
     topology,
@@ -300,7 +290,6 @@ export function addAuthoredVolumetricFogPasses(
     sceneDepth,
     directionalShadow,
     spotShadow,
-    shadowLightKind,
     clusterBuffers,
     cloudShadow,
   );

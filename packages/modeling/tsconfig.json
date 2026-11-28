@@ -8,17 +8,15 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
-    "types": [
-      "@webgpu/types",
-      "node"
-    ]
+    "types": ["@webgpu/types", "node"]
   },
-  "include": [
-    "src/**/*"
-  ],
+  "include": ["src/**/*"],
   "references": [
     {
       "path": "../geometry"
+    },
+    {
+      "path": "../modeling-kernel"
     },
     {
       "path": "../pack"
@@ -30,7 +28,5 @@
       "path": "../types"
     }
   ],
-  "exclude": [
-    "src/**/__tests__/**/*.ts"
-  ]
+  "exclude": ["src/**/__tests__/**/*.ts"]
 }

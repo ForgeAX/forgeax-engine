@@ -49,7 +49,6 @@ import {
 } from '../temporal/gpu';
 import { recordContext } from '../world/view-record-context';
 import { buildPerFrameBindGroups } from './frame-lighting';
-import type { RenderFrameState } from './frame-snapshot';
 import { resolveReflectionProbeAtmosphereBindings } from './reflection-probe-atmosphere-bindings';
 import { encodeProbeFaceDraws } from './reflection-probe-face';
 import { addReflectionProbePmremPasses } from './reflection-probe-pmrem';
@@ -240,9 +239,8 @@ function importCloudHistoryTarget(
   label: string,
   kind: CloudHistoryKind,
   role: 'read' | 'write',
-  transportFormat: CloudTransportFormat,
+  format: CloudTransportFormat,
 ): import('../render-pipeline').RenderPipelineTarget {
-  const format = kind === 'depth' ? CLOUD_HISTORY_FORMATS.depth : transportFormat;
   const resolveSurface = (frame: RenderPipelineFrame) => {
     const state = cloudHistoryState(frame as _InternalRenderPipelineContext);
     const index = role === 'read' ? temporalReadIndex(state) : temporalWriteIndex(state);
@@ -278,6 +276,7 @@ function importCloudHistoryTarget(
 export function importCloudHistoryTargets(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   transportFormat: CloudTransportFormat,
+  depthFormat: CloudTransportFormat = CLOUD_HISTORY_FORMATS.depth,
 ): NonNullable<
   import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['cloudHistory']
 > {
@@ -315,14 +314,14 @@ export function importCloudHistoryTargets(
       'cloud-history-depth-current',
       'depth',
       'write',
-      transportFormat,
+      depthFormat,
     ),
     previousDepth: importCloudHistoryTarget(
       graph,
       'cloud-history-depth-previous',
       'depth',
       'read',
-      transportFormat,
+      depthFormat,
     ),
   };
 }
@@ -362,101 +361,39 @@ export function importWaterSsrInputParams(
   return params;
 }
 
-/** Borrow accepted scene color; both producer shapes use the same submission owner. */
-export function importSsrSceneColorHistoryTarget(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  frameState: RenderFrameState,
-  width: number,
-  height: number,
-  sceneColorOnly = false,
-): Result<RenderPipelineTarget, RenderGraphError> {
-  const accepted = frameState.activeTemporalGpuState;
-  const size = sceneColorOnly
-    ? { width, height }
-    : { width: accepted?.width ?? width, height: accepted?.height ?? height };
-  const halfSize = ssrColorExtent(size);
-  const mipLevelCount = 1;
-  const resolve = (frame: RenderPipelineFrame) => {
-    const internal = frame as _InternalRenderPipelineContext;
-    const active = internal.frameState.activeTemporalGpuState;
-    const mode = sceneColorOnly
-      ? 'scene-color'
-      : internal.camera.antialias === 'tsr'
-        ? 'tsr'
-        : 'taa';
-    const state =
-      active?.device === internal.runtime.device &&
-      active.mode === mode &&
-      active.width === size.width &&
-      active.height === size.height
-        ? active
-        : getTemporalGpuState(
-            internal.frameState,
-            internal.runtime.device,
-            recordContext(internal.runtime).deviceScope,
-            frame.targetW,
-            frame.targetH,
-            false,
-            internal.camera,
-            mode,
-          );
-    return state.color[temporalReadIndex(state)];
-  };
-  const texture = graph.importTexture(
-    sceneColorOnly ? 'ssr-hit-color-history' : 'ssr-temporal-color-history',
-    {
-      format: 'rgba16float',
-      size: sceneColorOnly ? halfSize : size,
-      mipLevelCount,
-      usage:
-        GPU_TEXTURE_USAGE_COPY_SRC |
-        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        GPU_TEXTURE_USAGE_TEXTURE_BINDING,
-      domain: 'linear-hdr',
-    },
-    (frame) => resolve(frame).texture,
-  );
-  if (!texture.ok) return texture;
-  const viewDescriptor = {
-    dimension: '2d',
-    label: sceneColorOnly ? 'ssr-hit-color-history.view' : 'ssr-temporal-color-history.view',
-    mipLevelCount,
-  } as const;
-  const view = graph.importView(texture.value, viewDescriptor, (frame) => resolve(frame).view);
-  if (!view.ok) return view;
-  const history = {
-    texture: texture.value,
-    view: view.value,
-    format: 'rgba16float',
-    sampleCount: 1,
-    domain: 'linear-hdr',
-  } as const;
-  return ok(history);
-}
-
-export function importSsrSceneColorOutput(
+/** Forward without temporal AA keeps only the half-resolution opaque hit colors. */
+export function importSsrSceneColorTargets(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   width: number,
   height: number,
-): RenderPipelineTarget {
-  const resolve = (frame: RenderPipelineFrame) => {
-    const internal = frame as _InternalRenderPipelineContext;
-    const state = getTemporalGpuState(
-      internal.frameState,
-      internal.runtime.device,
-      recordContext(internal.runtime).deviceScope,
-      frame.targetW,
-      frame.targetH,
-      false,
-      internal.camera,
-      'scene-color',
-    );
-    return state.color[temporalWriteIndex(state)];
-  };
+): Result<
+  {
+    readonly ssrSceneColorHistory: RenderPipelineTarget;
+    readonly ssrSceneColorOutput: RenderPipelineTarget;
+  },
+  RenderGraphError
+> {
   const size = ssrColorExtent({ width, height });
-  const texture = graph
-    .importTexture(
-      'ssr-scene-color-output',
+  const bind = (
+    label: string,
+    indexOf: typeof temporalReadIndex,
+  ): Result<RenderPipelineTarget, RenderGraphError> => {
+    const resolve = (frame: RenderPipelineFrame) => {
+      const internal = frame as _InternalRenderPipelineContext;
+      const state = getTemporalGpuState(
+        internal.frameState,
+        internal.runtime.device,
+        recordContext(internal.runtime).deviceScope,
+        frame.targetW,
+        frame.targetH,
+        false,
+        internal.camera,
+        'scene-color',
+      );
+      return state.color[indexOf(state)];
+    };
+    const texture = graph.importTexture(
+      label,
       {
         format: 'rgba16float',
         size,
@@ -468,16 +405,29 @@ export function importSsrSceneColorOutput(
         domain: 'linear-hdr',
       },
       (frame) => resolve(frame).texture,
-    )
-    .unwrap();
-  const view = graph
-    .importView(
-      texture,
-      { label: 'ssr-scene-color-output.view', dimension: '2d', mipLevelCount: 1 },
+    );
+    if (!texture.ok) return texture;
+    const view = graph.importView(
+      texture.value,
+      { dimension: '2d', label: `${label}.view`, mipLevelCount: 1 },
       (frame) => resolve(frame).view,
-    )
-    .unwrap();
-  return { texture, view, format: 'rgba16float', sampleCount: 1, domain: 'linear-hdr' };
+    );
+    return view.ok
+      ? ok({
+          texture: texture.value,
+          view: view.value,
+          format: 'rgba16float',
+          sampleCount: 1,
+          domain: 'linear-hdr',
+        })
+      : view;
+  };
+  const read = bind('ssr-hit-color-history', temporalReadIndex);
+  if (!read.ok) return read;
+  const write = bind('ssr-scene-color-output', temporalWriteIndex);
+  return write.ok
+    ? ok({ ssrSceneColorHistory: read.value, ssrSceneColorOutput: write.value })
+    : write;
 }
 
 export function shouldUseTemporalFrameTransaction(

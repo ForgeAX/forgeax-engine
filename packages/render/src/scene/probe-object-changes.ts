@@ -1,6 +1,4 @@
-import { slotPoseColumn, slotPoseOffset } from './mesh-draw';
 import type { ProbeSceneDirtyReason, ProbeSceneObjectInput } from './probe-blend';
-import type { RenderSceneSlot } from './render-scene-types';
 import { SceneSlotFrame } from './scene-slots';
 
 export type ProbeObjects = SceneSlotFrame | readonly ProbeSceneObjectInput[];
@@ -39,22 +37,24 @@ export function captureProbeObjects(
   );
 }
 
-function objectAt(row: RenderSceneSlot): ProbeSceneObjectInput {
-  const pose = slotPoseColumn(row);
-  const at = slotPoseOffset(row) + 12;
-  return {
-    objectKey: row.slot,
-    generation: row.generation,
-    position: [pose[at] ?? 0, pose[at + 1] ?? 0, pose[at + 2] ?? 0],
-  };
-}
-
 function forEachProbeObject(
   objects: ProbeObjects,
   visit: (object: ProbeSceneObjectInput) => void,
 ): void {
   if (objects instanceof SceneSlotFrame) {
-    for (const slot of objects) visit(objectAt(slot));
+    objects.visitPoses(
+      (objectKey, _version, _content, column, offset, _rank, _entity, generation) => {
+        visit({
+          objectKey,
+          generation,
+          position: [
+            column[offset + 12] as number,
+            column[offset + 13] as number,
+            column[offset + 14] as number,
+          ],
+        });
+      },
+    );
   } else for (const object of objects) visit(object);
 }
 
@@ -64,6 +64,7 @@ export function probeObjectChanges(
   previous: ProbeObjects | undefined,
   global: boolean,
   reasons: Set<ProbeSceneDirtyReason>,
+  translations: Float32Array,
 ) {
   const affected = new Map<number, ProbeSceneObjectInput>();
   const removed = new Set<number>();
@@ -97,18 +98,42 @@ export function probeObjectChanges(
     forEachProbeObject(current, (object) => affected.set(object.objectKey, object));
   } else if (current === previous) {
     if (global) forEachProbeObject(current, (object) => affected.set(object.objectKey, object));
-  } else if (
-    current instanceof SceneSlotFrame &&
-    previous instanceof SceneSlotFrame &&
-    current.changesSince(previous, (key) => {
-      const before = previous.slotAt(key);
-      const after = current.slotAt(key);
-      compare(
-        before === undefined ? undefined : objectAt(before),
-        after === undefined ? undefined : objectAt(after),
-      );
-    })
-  ) {
+  } else if (current instanceof SceneSlotFrame && previous instanceof SceneSlotFrame) {
+    const compareSlot = (key: number): void => {
+      const before = previous.writeTranslation(key, translations);
+      const after = current.writeTranslation(key, translations, 3);
+      if (after === undefined) {
+        if (before !== undefined) {
+          removed.add(key);
+          reasons.add('object-boundary');
+        }
+        return;
+      }
+      if (before === undefined) reasons.add('object-boundary');
+      else {
+        const differentPose =
+          translations[0] !== translations[3] ||
+          translations[1] !== translations[4] ||
+          translations[2] !== translations[5];
+        if (differentPose) reasons.add('object-position');
+        if (before !== after) reasons.add('generation');
+        if (!global && !differentPose && before === after) return;
+      }
+      if (affected.has(key)) return;
+      affected.set(key, {
+        objectKey: key,
+        generation: after,
+        position: [translations[3] as number, translations[4] as number, translations[5] as number],
+      });
+    };
+    if (!current.changesSince(previous, compareSlot)) {
+      current.visitPoses(compareSlot);
+      previous.visitPoses((key) => {
+        if (current.generationAt(key) !== undefined) return;
+        removed.add(key);
+        reasons.add('object-boundary');
+      });
+    }
     if (global) forEachProbeObject(current, (object) => affected.set(object.objectKey, object));
   } else {
     const old = new Map<number, ProbeSceneObjectInput>();

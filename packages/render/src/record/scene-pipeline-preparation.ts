@@ -51,6 +51,8 @@ export type ScenePipelinePreparation = ((
   readonly kind?: 'utility';
   /** Request CPU work before building the native scene pipelines or bindings. */
   readonly prepareSource?: (context: ScenePipelineSourceContext) => void;
+  /** Start the current visible requests without affecting capture encoding. */
+  readonly prepareVisible?: (context: _InternalRenderPipelineContext) => void;
 };
 
 // Metadata belongs to this exact graph build, alongside its actual raster declarations.
@@ -63,7 +65,10 @@ export function registerScenePipelinePreparation(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   prepare: ScenePipelinePreparation,
   demand?: ScenePipelineDemand | 'utility',
+  prepareVisible?: ScenePipelinePreparation['prepareVisible'],
 ): void {
+  if (prepareVisible !== undefined)
+    Object.defineProperty(prepare, 'prepareVisible', { value: prepareVisible });
   if (demand === 'utility') Object.defineProperty(prepare, 'kind', { value: 'utility' });
   else if (demand !== undefined)
     Object.defineProperty(prepare, 'demand', {

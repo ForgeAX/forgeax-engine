@@ -14,6 +14,8 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
 }));
 
 import { createApp } from '../browser';
+// Load the local fixture graph before the runner starts the assertions.
+import '../browser-local';
 
 function rendererStub() {
   const lease = {};
@@ -63,7 +65,10 @@ describe('app GPU pass timing forwarding', () => {
   });
 
   it('does not create a second timing owner in App', () => {
-    const source = readFileSync(fileURLToPath(new URL('../browser.ts', import.meta.url)), 'utf8');
+    const source = readFileSync(
+      fileURLToPath(new URL('../browser-local.ts', import.meta.url)),
+      'utf8',
+    );
     expect(source).toContain('gpuPassTiming: opts.gpuPassTiming');
     expect(source).not.toContain('createGpuPassTimingSession');
     expect(source).not.toContain('frameLatency');

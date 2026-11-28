@@ -66,17 +66,56 @@ interface ResolvedSsaoParameters {
   readonly quality: NonNullable<SsaoParameterConfig['quality']>;
 }
 
+export const GTAO_DEFAULTS = {
+  useNormals: false,
+  downsample: false,
+  spatialFilter: true,
+  temporalFilter: true,
+  filterWidth: 5,
+  numAngles: 2,
+  thicknessBlend: 0.5,
+  falloffEnd: 2,
+  temporalBlendWeight: 0.1,
+} as const satisfies ResolvedSsaoParameters['gtao'];
+
+export const AO_APPEARANCE_DEFAULTS = {
+  intensity: SSAO_DEFAULT_INTENSITY,
+  power: 2,
+  fadeDistance: 80,
+  fadeRadius: 50,
+} as const;
+
+const GTAO_PARAMETER_KEYS = Object.keys(GTAO_DEFAULTS) as (keyof typeof GTAO_DEFAULTS)[];
+const AO_APPEARANCE_KEYS = Object.keys(
+  AO_APPEARANCE_DEFAULTS,
+) as (keyof typeof AO_APPEARANCE_DEFAULTS)[];
+
+export const GTAO_HISTORY_PARAMETER_COUNT =
+  1 + AO_APPEARANCE_KEYS.length + GTAO_PARAMETER_KEYS.length;
+
+export function writeGtaoHistoryParameters(
+  out: Float64Array,
+  settings: AmbientOcclusionSettings | undefined,
+): void {
+  out[0] = ssaoQualityPermutation(settings);
+  let index = 1;
+  for (const key of AO_APPEARANCE_KEYS)
+    out[index++] = settings?.[key] ?? AO_APPEARANCE_DEFAULTS[key];
+  for (const key of GTAO_PARAMETER_KEYS)
+    out[index++] = Number(settings?.gtao?.[key] ?? GTAO_DEFAULTS[key]);
+}
+
 function getGtaoParameters(config: SsaoParameterConfig['gtao']): ResolvedSsaoParameters['gtao'] {
   return {
-    useNormals: config?.useNormals ?? false,
-    downsample: config?.downsample ?? false,
-    spatialFilter: config?.spatialFilter ?? true,
-    temporalFilter: config?.temporalFilter ?? true,
-    filterWidth: config?.filterWidth ?? 5,
-    numAngles: config?.numAngles ?? 2,
-    thicknessBlend: config?.thicknessBlend ?? 0.5,
-    falloffEnd: config?.falloffEnd ?? 2,
-    temporalBlendWeight: config?.temporalBlendWeight ?? 0.1,
+    useNormals: config?.useNormals ?? GTAO_DEFAULTS.useNormals,
+    downsample: config?.downsample ?? GTAO_DEFAULTS.downsample,
+    spatialFilter: config?.spatialFilter ?? GTAO_DEFAULTS.spatialFilter,
+    temporalFilter: config?.temporalFilter ?? GTAO_DEFAULTS.temporalFilter,
+    filterWidth: config?.filterWidth ?? GTAO_DEFAULTS.filterWidth,
+    numAngles: config?.numAngles ?? GTAO_DEFAULTS.numAngles,
+    thicknessBlend: config?.thicknessBlend ?? GTAO_DEFAULTS.thicknessBlend,
+    falloffEnd: config?.falloffEnd ?? GTAO_DEFAULTS.falloffEnd,
+    temporalBlendWeight: config?.temporalBlendWeight ?? GTAO_DEFAULTS.temporalBlendWeight,
   };
 }
 
@@ -102,9 +141,9 @@ export function getSsaoParameters(config: SsaoProgramConfig | undefined): Resolv
     levels: config?.levels,
     gtao: getGtaoParameters(config?.gtao),
     maxQuality: config?.maxQuality ?? 100,
-    power: config?.power ?? 2,
-    fadeDistance: config?.fadeDistance ?? 80,
-    fadeRadius: config?.fadeRadius ?? 50,
+    power: config?.power ?? AO_APPEARANCE_DEFAULTS.power,
+    fadeDistance: config?.fadeDistance ?? AO_APPEARANCE_DEFAULTS.fadeDistance,
+    fadeRadius: config?.fadeRadius ?? AO_APPEARANCE_DEFAULTS.fadeRadius,
     radiusInWorldSpace: config?.radiusInWorldSpace ?? false,
     mipBlend: config?.mipBlend ?? 0.6,
     mipScale: config?.mipScale ?? 1.7,
@@ -112,7 +151,7 @@ export function getSsaoParameters(config: SsaoProgramConfig | undefined): Resolv
     sampleCount: resolveLegacySampleCount(config, method, quality),
     radius: config?.radius ?? SSAO_DEFAULT_RADIUS,
     bias: config?.bias ?? SSAO_DEFAULT_BIAS,
-    intensity: config?.intensity ?? SSAO_DEFAULT_INTENSITY,
+    intensity: config?.intensity ?? AO_APPEARANCE_DEFAULTS.intensity,
     thickness: config?.thickness ?? SSAO_DEFAULT_THICKNESS,
     distanceExponent: config?.distanceExponent ?? SSAO_DEFAULT_DISTANCE_EXPONENT,
     distanceFallOff: config?.distanceFallOff ?? SSAO_DEFAULT_DISTANCE_FALL_OFF,
@@ -275,24 +314,34 @@ export function ssaoUsesLighting(
   return config?.enabled === true && config.levels !== 0 && config.intensity !== 0;
 }
 
-/** Shader permutation, spatial level count and graphics preset limit are distinct. */
-export function resolveSsaoQuality(config: SsaoParameterConfig | undefined) {
+function effectiveSsaoQuality(config: SsaoParameterConfig | undefined): number {
   const authored = config?.quality ?? 50;
   const quality =
     typeof authored === 'number' ? authored : { low: 20, medium: 50, high: 100 }[authored];
   const ceiling = config?.maxQuality ?? 100;
-  const effective = ceiling < 0 ? -ceiling : Math.min(quality, ceiling);
+  return ceiling < 0 ? -ceiling : Math.min(quality, ceiling);
+}
+
+function permutationForQuality(effective: number): number {
+  return (
+    Number(effective > 5) + Number(effective > 25) + Number(effective > 55) + Number(effective > 75)
+  );
+}
+
+export function ssaoQualityPermutation(config: SsaoParameterConfig | undefined): number {
+  return permutationForQuality(effectiveSsaoQuality(config));
+}
+
+/** Shader permutation, spatial level count and graphics preset limit are distinct. */
+export function resolveSsaoQuality(config: SsaoParameterConfig | undefined) {
+  const effective = effectiveSsaoQuality(config);
   return {
-    permutation:
-      Number(effective > 5) +
-      Number(effective > 25) +
-      Number(effective > 55) +
-      Number(effective > 75),
+    permutation: permutationForQuality(effective),
     levels: config?.levels ?? 1 + Number(effective > 35) + Number(effective > 70),
   };
 }
 
-const STANDARD_AO_KEYS = new Set<string>([
+const STANDARD_AO_FIELDS = [
   'enabled',
   'method',
   'radius',
@@ -309,19 +358,29 @@ const STANDARD_AO_KEYS = new Set<string>([
   'mipScale',
   'mipThreshold',
   'gtao',
-]);
+] as const satisfies readonly (keyof AmbientOcclusionSettings)[];
+const STANDARD_AO_KEYS = new Set<string>(STANDARD_AO_FIELDS);
 
-const GTAO_KEYS = new Set<string>([
-  'useNormals',
-  'downsample',
-  'spatialFilter',
-  'temporalFilter',
-  'filterWidth',
-  'numAngles',
-  'thicknessBlend',
-  'falloffEnd',
-  'temporalBlendWeight',
-]);
+export function sameAmbientOcclusionSettings(
+  previous: AmbientOcclusionSettings | undefined,
+  current: AmbientOcclusionSettings | undefined,
+): boolean {
+  if (previous === current) return true;
+  if (previous === undefined || current === undefined) return false;
+  for (const key of STANDARD_AO_FIELDS) {
+    if (key !== 'gtao' && previous[key] !== current[key]) return false;
+  }
+  const before = previous.gtao;
+  const after = current.gtao;
+  if (before === after) return true;
+  if (before === undefined || after === undefined) return false;
+  for (const key of GTAO_PARAMETER_KEYS) {
+    if (before[key] !== after[key]) return false;
+  }
+  return true;
+}
+
+const GTAO_KEYS = new Set<string>(GTAO_PARAMETER_KEYS);
 
 export function hasStandardAoKeys(config: AmbientOcclusionSettings): boolean {
   return (
@@ -376,5 +435,9 @@ export function hasScreenAoPrograms(
   pipeline: Pick<import('./record/render-context').PipelineState, 'perPassResources'> | null,
   depth: import('./record/render-context').RenderSystemInternals['depthPyramidShaders'],
 ): boolean {
-  return pipeline?.perPassResources?.ssaoScreenPipeline !== undefined && depth?.seed !== undefined;
+  return (
+    pipeline?.perPassResources?.ssaoScreenPipeline !== undefined &&
+    depth !== undefined &&
+    'seed' in depth
+  );
 }

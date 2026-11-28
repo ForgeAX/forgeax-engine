@@ -3,10 +3,11 @@ import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import { setSceneRow } from '../../scene/__tests__/scene-row-writes';
+import { RecordingScenePose } from '../../scene/captured-transform';
 import { SceneDrawSlot, slotDrawSnapshot } from '../../scene/mesh-draw';
 import { MeshFrame } from '../../scene/mesh-frame';
 import { SceneSlots } from '../../scene/scene-slots';
-import { flushMeshDrawUploads, prepareMeshDraw, uploadMeshSsboBatch } from '../mesh-ssbo';
+import { flushMeshDrawUploads, MeshDrawUploads, uploadMeshSsboBatch } from '../mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../render-context';
 
 it('retries an unchanged mesh after its preceding upload was rejected', () => {
@@ -114,6 +115,41 @@ it('records the fixed material version after the shared resource advances', () =
   }
 });
 
+it('reads the pass ABI once and stages a repeated address into its replacement buffer', () => {
+  const row = { ...receiptRow(), meshSlot: 0 };
+  const first = {} as Buffer;
+  const replacement = {} as Buffer;
+  const storage = { buffer: first };
+  const writeBuffer = vi.fn().mockReturnValue(ok(undefined));
+  const queue = { writeBuffer } as unknown as RhiQueue;
+  const readCaps = vi.fn(() => ({ storageBuffer: true }));
+  const c = {
+    runtime: {
+      device: {
+        get caps() {
+          return readCaps();
+        },
+      },
+    },
+    pipelineState: { meshStorageBuffer: storage },
+  } as _InternalRenderPipelineContext;
+
+  const uploads = MeshDrawUploads.forPass(c);
+  uploads.stage(row);
+  expect(flushMeshDrawUploads(queue, storage)).toBe(1);
+  for (let index = 0; index < 128; index++) uploads.stage(row);
+  expect(flushMeshDrawUploads(queue, storage)).toBe(0);
+
+  storage.buffer = replacement;
+  uploads.stage(row);
+  expect(flushMeshDrawUploads(queue, storage)).toBe(1);
+  expect(writeBuffer.mock.calls.map(([buffer]) => buffer)).toEqual([first, replacement]);
+  storage.buffer = first;
+  uploads.stage(row);
+  expect(flushMeshDrawUploads(queue, storage)).toBe(0);
+  expect(readCaps).toHaveBeenCalledTimes(1);
+});
+
 it('does no Mesh packing or upload for a shared material edit across 10000 actual draws', () => {
   const source = receiptRow().source;
   const matrix = source.transform.world;
@@ -135,7 +171,8 @@ it('does no Mesh packing or upload for a shared material edit across 10000 actua
     runtime: { device: { queue, caps: { storageBuffer: true } } },
     pipelineState: { meshStorageBuffer: { buffer } },
   } as _InternalRenderPipelineContext;
-  for (const row of rows) prepareMeshDraw(c, row);
+  const uploads = MeshDrawUploads.forPass(c);
+  for (const row of rows) uploads.stage(row);
   expect(flushMeshDrawUploads(queue, { buffer })).toBe(1);
   expect(readMatrix).toHaveBeenCalledTimes(10000);
   const resource = source.material;
@@ -150,14 +187,14 @@ it('does no Mesh packing or upload for a shared material edit across 10000 actua
   readMatrix.mockClear();
   writeBuffer.mockClear();
   try {
-    for (const row of rows) prepareMeshDraw(c, row);
+    for (const row of rows) uploads.stage(row);
     expect(flushMeshDrawUploads(queue, { buffer })).toBe(0);
     expect(readMatrix).not.toHaveBeenCalled();
     expect(writeBuffer).not.toHaveBeenCalled();
     // Actual source replacement is the falsifier: its changed transform still uploads.
     const changed = new Float32Array(matrix);
     changed[12] = 3;
-    prepareMeshDraw(c, {
+    uploads.stage({
       meshSlot: 0,
       source: { ...source, transform: { world: changed }, spriteRegion },
     });
@@ -204,7 +241,8 @@ it.each([true, false])('uploads draw parameters by physical slot (storage=%s)', 
     },
   } as _InternalRenderPipelineContext;
   const row = { meshSlot: 1, source };
-  prepareMeshDraw(c, row);
+  const uploads = MeshDrawUploads.forPass(c);
+  uploads.stage(row);
   expect(flushMeshDrawUploads(queue, buffer)).toBe(1);
   const bytes = writeBuffer.mock.calls[0]?.[2] as Uint8Array;
   expect(writeBuffer.mock.lastCall?.[1]).toBe(256);
@@ -214,16 +252,16 @@ it.each([true, false])('uploads draw parameters by physical slot (storage=%s)', 
   );
   const offset = storageBuffer ? 44 : 24;
   expect(Array.from(floats.subarray(offset, offset + 8))).toEqual(values);
-  prepareMeshDraw(c, row);
+  uploads.stage(row);
   expect(flushMeshDrawUploads(queue, buffer)).toBe(0);
   supplied[0] = 2.5;
   supplied[7] = -0;
-  prepareMeshDraw(c, row);
+  uploads.stage(row);
   expect(flushMeshDrawUploads(queue, buffer)).toBe(1);
   expect(floats[offset]).toBe(2.5);
   expect(Object.is(floats[offset + 7], -0)).toBe(true);
   values = undefined;
-  prepareMeshDraw(c, row);
+  uploads.stage(row);
   expect(flushMeshDrawUploads(queue, buffer)).toBe(1);
   expect(Array.from(floats.subarray(offset, offset + 8))).toEqual(Array(8).fill(0));
 });
@@ -265,8 +303,8 @@ it('uploads changing captured poses straight from their columns and opens public
   setSceneRow(slots, 1, { snapshot: source, entityKey: 5, generation: 0 });
   let currentColumn: Float32Array | undefined;
   let windows = 0;
-  const original = Float32Array.prototype.subarray;
-  const subarray = vi.spyOn(Float32Array.prototype, 'subarray').mockImplementation(function (
+  const original = Float32Array.prototype.slice;
+  const slice = vi.spyOn(Float32Array.prototype, 'slice').mockImplementation(function (
     this: Float32Array,
     start,
     end,
@@ -274,8 +312,10 @@ it('uploads changing captured poses straight from their columns and opens public
     if (this === currentColumn) windows++;
     return original.call(this, start, end);
   });
+  const transform = vi.spyOn(SceneDrawSlot.prototype, 'transform', 'get');
   try {
     let inspected: typeof source | undefined;
+    let first: { meshSlot: number; sceneSlot: SceneDrawSlot; source: typeof source } | undefined;
     for (let frame = 1; frame <= 60; frame++) {
       pose[0] = frame % 2 ? -1 : 1;
       pose[12] = frame;
@@ -294,16 +334,28 @@ it('uploads changing captured poses straight from their columns and opens public
         frame,
       ]);
       expect(uploadMeshSsboBatch(queue, buffer, [row], null)).toBe(0);
+      first ??= row;
       if (frame === 60) inspected = draw;
       slots.capture();
     }
+    expect(transform).not.toHaveBeenCalled();
     expect(windows).toBe(0);
+    if (first === undefined) throw new Error('expected an issued draw');
+    expect(uploadMeshSsboBatch(queue, buffer, [first], null)).toBe(1);
+    const bytes = writeBuffer.mock.lastCall?.[2] as Uint8Array;
+    expect(new Float32Array(bytes.buffer, bytes.byteOffset)[12]).toBe(1);
+    expect(transform).not.toHaveBeenCalled();
+    expect({ ...first.source }.transform.world[12]).toBe(1);
+    expect(transform).toHaveBeenCalledTimes(1);
     expect(Object.keys(inspected?.transform ?? {})).toEqual(['world']);
-    expect({ ...inspected?.transform }.world?.[12]).toBe(60);
-    expect(inspected?.transform.world[12]).toBe(60);
+    const matrix = { ...inspected?.transform }.world;
+    expect(matrix?.[12]).toBe(60);
+    expect(inspected?.transform.world).toBe(matrix);
+    expect(matrix?.buffer).not.toBe(currentColumn?.buffer);
     expect(windows).toBe(1);
   } finally {
-    subarray.mockRestore();
+    transform.mockRestore();
+    slice.mockRestore();
   }
 });
 
@@ -342,4 +394,46 @@ it('stages replacement scenes and view-owned surface overrides at a reused mesh 
     expect(floats[12]).toBe(row.source.transform.world[12]);
     expect(bits[38]).toBe(row.source.lightingChannels ?? 0xffffffff);
   }
+});
+
+it('shares the physical upload stamp between borrowed poses and retained Scene draws', () => {
+  const { source } = receiptRow();
+  const slots = new SceneSlots();
+  const placed = setSceneRow(slots, 67, {
+    snapshot: source,
+    entityKey: source.entityKey,
+    generation: 0,
+  });
+  if (!(placed instanceof SceneDrawSlot)) throw Error('Missing placed Scene row');
+  slots.capture();
+  const placedDraw = placed.authoredSnapshot();
+  const borrowed = new RecordingScenePose();
+  const matrix = source.transform.world.slice();
+  const buffer = { buffer: {} as Buffer };
+  const writeBuffer = vi.fn().mockReturnValue(ok(undefined));
+  const queue = { writeBuffer } as unknown as RhiQueue;
+  for (let revision = 1; revision <= 48; revision++) {
+    matrix[0] = revision % 2 === 0 ? 1 : -1;
+    matrix[12] = revision;
+    slots.writePreparedPose(67, matrix, 0, 1);
+    const current = slots.capture();
+    expect(current.borrowReplacementPose(placed, borrowed)).toBe(true);
+    const row = { meshSlot: 0, sceneSlot: placed, source: placedDraw, recordingPose: borrowed };
+    expect(uploadMeshSsboBatch(queue, buffer, [row], null)).toBe(1);
+    const bytes = writeBuffer.mock.lastCall?.[2] as Uint8Array;
+    const values = new Float32Array(bytes.buffer, bytes.byteOffset);
+    expect([values[0], values[12], values[16], values[28]]).toEqual([
+      matrix[0],
+      revision,
+      matrix[0],
+      revision,
+    ]);
+    const record = current.slotAt(67);
+    if (!(record instanceof SceneDrawSlot)) throw Error('Missing materialized Scene row');
+    const retained = { meshSlot: 0, sceneSlot: record, source: record.authoredSnapshot() };
+    expect(uploadMeshSsboBatch(queue, buffer, [retained], null)).toBe(0);
+  }
+  slots.remove(67);
+  setSceneRow(slots, 67, { snapshot: source, entityKey: source.entityKey, generation: 1 });
+  expect(slots.capture().borrowReplacementPose(placed, borrowed)).toBe(false);
 });

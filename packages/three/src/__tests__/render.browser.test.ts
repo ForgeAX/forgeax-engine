@@ -31,16 +31,25 @@ it('runs 60 native frames, matches original Three and replays its actual GPU cap
   vi.spyOn(renderer, 'captureFrame').mockImplementation((...args) =>
     measure('capture', () => captureFrame(...args)),
   );
+  const compile = vi.spyOn(GPUDevice.prototype, 'createShaderModule');
+  const labels = () => compile.mock.calls.map(([descriptor]) => descriptor.label);
   try {
     expect(() => renderer.render(undefined as never, undefined as never)).toThrow(
       'renderer-not-ready',
     );
+    await renderer.init();
+    expect(labels()).not.toContain('unlit');
+    expect(labels()).not.toContain('module-forgeax::points-lines');
     await verifyRender(
       renderer,
       (...args) => measure('oracle', () => renderReference(...args)),
       (...args) => measure(`evidence:${args[0]}`, () => saveBrowserEvidence(...args)),
     );
+    expect(labels().some((label) => label?.startsWith('module-forgeax::default-unlit#'))).toBe(
+      true,
+    );
   } finally {
+    compile.mockRestore();
     await renderer.dispose();
     canvas.remove();
   }

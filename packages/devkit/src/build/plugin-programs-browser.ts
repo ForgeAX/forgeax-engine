@@ -200,9 +200,14 @@ export class BrowserPluginProgramArchive {
 
   /**
    * Coalesce only modules with identical static entry reachability; lazy boundaries survive.
-   * `facades` are public Engine facade entries: addresses for programs, not load roots.
+   * Runtime Pack facades are independent entry graphs in the executing task realm.
+   * Other emitted facades provide addresses without partitioning host groups.
    */
-  prepareGroups(context: Rolldown.PluginContext, facades: ReadonlySet<string> = new Set()): void {
+  prepareGroups(
+    context: Rolldown.PluginContext,
+    facades: ReadonlySet<string> = new Set(),
+    runtimeFacades: ReadonlySet<string> = new Set(),
+  ): void {
     const graph = new Map<string, ReturnType<ReadModule>>();
     const read: ReadModule = (id) => {
       if (!graph.has(id)) graph.set(id, context.getModuleInfo(id));
@@ -225,16 +230,18 @@ export class BrowserPluginProgramArchive {
       this.groups.set(id, `program-group-${sha256(JSON.stringify(entries)).slice(0, 16)}`);
 
     const reach = (roots: Iterable<string>) => reachableModules(read, roots, true);
-    const graphs = new Map([...hostEntries, ...lazyHost].map((root) => [root, reach([root])]));
+    const graphs = new Map(
+      [...hostEntries, ...lazyHost, ...runtimeFacades].map((root) => [root, reach([root])]),
+    );
     pruneLoadedLazyTargets(read, hostEntries, lazyHost, graphs);
     const shared = reach(programModules);
-    // Programs load facade code in every realm; host-only code stays apart.
-    const facadeReach = reach(facades);
+    // A facade also supplies its implementation to any entry that imports it.
+    // Group those modules by the entries that use them. Facade-only modules
+    // retain Rolldown's natural groups and stay out of the startup closures.
     const memberships = new Map<string, string[]>();
-    for (const id of facadeReach) if (!program(id) && !shared.has(id)) memberships.set(id, []);
     for (const [root, graph] of [...graphs].sort(([a], [b]) => a.localeCompare(b)))
       for (const id of graph) {
-        if (program(id) || shared.has(id) || facadeReach.has(id)) continue;
+        if (program(id) || shared.has(id)) continue;
         addMembership(memberships, id, root);
       }
     this.hostGroups.clear();

@@ -1,4 +1,5 @@
 import type { RhiCaps } from '@forgeax/engine-rhi';
+import { CLOUD_SHADOW_SPATIAL_PASSES } from '../cloud/lighting/shadow-spatial-layout';
 import { SkyPass } from '../record/gpu-pass-timing/sky-pass-names';
 
 /** Closed prepared-resource kinds owned by the RenderFeature vocabulary. */
@@ -21,13 +22,12 @@ export type RenderFeatureRecovery = 'next-frame' | 'renderer-recover' | 'registr
 /** Standard splits these named feature passes across target initialization stages. */
 export const STANDARD_FEATURE_PRE_OPAQUE_PASSES = Object.freeze([
   SkyPass.cloudShadow,
-  SkyPass.cloudShadowFilter,
+  ...CLOUD_SHADOW_SPATIAL_PASSES,
 ] as const);
 export const STANDARD_FEATURE_SCENE_COMPOSITE_PASSES = Object.freeze([
   SkyPass.cloudAnalyticTrace,
   SkyPass.cloudSampledTrace,
   SkyPass.cloudProbe,
-  SkyPass.cloudHistoryClear,
   SkyPass.cloudReconstruction,
   SkyPass.cloudResolve,
 ] as const);

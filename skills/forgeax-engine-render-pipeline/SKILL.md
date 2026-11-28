@@ -52,6 +52,19 @@ with the HUD notice in the browser.
 
 ## Water
 
+Animated `before-medium` color features can use the optional
+`temporal-reactivity` MRT alias when temporal AA exposes it. Load the existing
+attachment, write alpha only (`writeMask: 8`) and merge with alpha `max`;
+geometry retains velocity/depth RGB. Keep responsiveness bounded to the animated
+receiver domain, including its dark samples. Preserve a single-color entry when
+the alias is absent. See [receiver composition](../../packages/render/README.md#opaque-receiver-composition-before-media).
+
+For shared Gerstner surface reads in a graphics RenderFeature, use
+`waterGerstnerSurfaceBindings` with a Water source identity and the selected
+cooked program contract. The receiving renderer qualifies actual fixed native
+geometry and current buffers; do not copy private slots or wave clocks.
+See [shared fixed Gerstner input](../../packages/render/README.md#shared-fixed-gerstner-input).
+
 For a lake with waves, surface queries or buoyancy, start at the Water package's
 [Lake Starter](../../packages/water/README.md#start-with-a-lake). It ships with
 the matching SDK and npm package. Select it explicitly for
@@ -110,6 +123,11 @@ See [target lifecycle](../../packages/render/README.md#explicit-ordered-target-s
 and [Three initialization](../../packages/three/README.md#ordered-hdr-targets-and-cube-environments).
 
 ## Quick contract
+
+Graphics producers that use only `vertex_index` select `vertexLayout: 'none'`.
+Their material pipeline retains View and Material bindings without inventing a
+mesh input. Declare every sampled graph target, including depth, in the pass's
+`sampledTargets`; a binding declaration alone does not grant a graph read.
 
 Standard Deferred is single-sample. Explicit Deferred with MSAA returns a structured
 admission error; `auto` selects real Forward unless Deferred-only work forbids it.
@@ -448,10 +466,12 @@ the `TRANSMISSION_SHARED_SLOTS` variant; see the material skill for the budget e
 
 `Camera.transparency: TRANSPARENCY_WEIGHTED_BLENDED` replaces the sorted pass for eligible draws
 with `oit-accumulate` (rgba16float accum + r16float weight, shared additive/revealage blend) and
-`oit-composite` over scene color; ineligible draws keep the sorted `transparent` pass after the
-composite. `addStandardTransparentPasses` builds this for forward and deferred alike. MSAA
-accumulates into 4x targets with 1x resolves; TAA, fog, DoF and outline treat the composite as the
-transparent pass; planar/target captures stay sorted; the GPU-driven lane carries no transparents.
+`oit-composite` over scene color. Ineligible draws run in the sorted `transparent` pass before
+OIT, matching three.js r187. `addStandardTransparentPasses` builds this for forward and deferred alike.
+MSAA accumulates into 4x targets with 1x resolves. The composite targets resolved scene color
+when no later scene-stage feature can write the multisampled color. TAA, fog, DoF and outline
+treat the composite as the transparent pass. Planar/target captures stay sorted. The GPU-driven
+lane carries no transparents.
 Read `renderer.inspect().transparency` for requested/resolved mode, draw counts, closed ineligible
 reasons, and the `capability-absent` fallback. Contract:
 [render README](../../packages/render/README.md#order-independent-transparency).
@@ -1232,3 +1252,13 @@ CameraView isolation and successful-submit advancement share one temporal owner.
 Inspect `renderer.inspect().temporal` and each view's temporal projection; a
 Browser test using WebGPU alone does not qualify the WebGL lane. See the
 TSR guide.
+
+For an effect that modifies lit opaque receivers before Water/transparency,
+use the generic `before-medium` placement. Keep source and destination textures
+distinct while sampling scene color, then copy the result to the declared scene
+attachment. Fullscreen reads accept exact SceneData and feature-texture tokens;
+put them in `sampledTargets`, use explicit `uint` reads for packed normal inputs,
+and let prepared bindings retain token authority. Canonical Terrain requires
+its selected Deferred GBuffer writer receipt; never patch derived section
+materials to bypass Terrain's closed material contract. See Render README's
+Opaque receiver composition before media contract.

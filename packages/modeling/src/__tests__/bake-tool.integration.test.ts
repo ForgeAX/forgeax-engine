@@ -19,10 +19,10 @@ export default definePack({
   packageId: definePackageId('01900000-0000-7000-8000-00000000b20b'),
   build() {
     const low = model();
-    low.sphere({ radius: 0.5, widthSegments: 16, heightSegments: 8 });
+    low.sphere({ radius: 0.5, widthSegments: 16, heightSegments: 8, tag: 'group:low' });
     low.uv.auto({ resolution: 64, padding: 2 });
     const high = model();
-    high.sphere({ radius: 0.5, widthSegments: 96, heightSegments: 48 });
+    high.sphere({ radius: 0.5, widthSegments: 96, heightSegments: 48, tag: 'group:high' });
     const plate = model();
     plate.plane({ width: 1, height: 1, widthSegments: 4, heightSegments: 4 });
     plate.uv.project({ mode: 'planar', axis: 'z', scale: 1 });
@@ -82,6 +82,67 @@ describe('model.bake', () => {
       'grazing',
     ]);
     expect(report.compare?.[0]?.high.session).toBe(1);
+  });
+
+  it('preserves an authored mip protection level in diagnostics', { timeout: 120000 }, async () => {
+    const result = await bake({ base: 0, detail: 1, resolution: 64, protectMip: 2 });
+    expect(result.ok).toBe(true);
+    expect(result.value?.settings.protectMip).toBe(2);
+    expect(result.value?.metrics.protectMip).toBe(2);
+  });
+
+  it('bakes a named receiver checkpoint instead of later display geometry', {
+    timeout: 120000,
+  }, async () => {
+    const checkpointSource = join(directory, 'checkpoint.pack.ts');
+    await writeFile(
+      checkpointSource,
+      PACK.replace(
+        "return low.finish({ key: 'low' });",
+        "low.checkpoint('receiver'); low.translate(sel.all(), [0, 5, 0]); return low.finish({ key: 'low' });",
+      ),
+    );
+    const result = await bake({
+      source: relative(root, checkpointSource),
+      base: 0,
+      detail: 1,
+      resolution: 64,
+      baseCheckpoint: 'receiver',
+      compare: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.value?.base.checkpoint).toBe('receiver');
+    expect(result.value?.metrics.rayHitRatio).toBe(1);
+    expect(
+      result.value?.compare?.every(
+        (view) => 'checkpoint' in view.low && view.low.checkpoint === 'receiver',
+      ),
+    ).toBe(true);
+  });
+
+  it('uses authored material slots for color and packed roughness/metalness', {
+    timeout: 120000,
+  }, async () => {
+    const result = await bake({
+      base: 0,
+      detail: 1,
+      resolution: 32,
+      maps: ['baseColor', 'ormh'],
+      slots: { '*': { baseColor: [1, 0, 0, 1], metallic: 1, roughness: 0.12 } },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.value?.maps.baseColor?.mean.slice(0, 3)).toEqual([1, 0, 0]);
+    expect(result.value?.maps.ormh?.mean[1]).toBeCloseTo(0.12, 2);
+    expect(result.value?.maps.ormh?.mean[2]).toBe(1);
+  });
+  it('keeps differently tagged bake groups isolated', { timeout: 120000 }, async () => {
+    const result = await bake({
+      base: 0,
+      detail: 1,
+      resolution: 16,
+      tags: { groupPrefix: 'group:' },
+    });
+    expect(result).toMatchObject({ ok: false, error: { code: 'model-precondition' } });
   });
 
   it('fails the report on a base finding: a hard edge without a UV seam (V1)', {

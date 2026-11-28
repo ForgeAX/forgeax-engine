@@ -77,7 +77,7 @@ try {
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  browser = await chromium.launch({ executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE, headless: false,
+  browser = await chromium.launch({ ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }), headless: false,
     args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist'], chromiumSandbox: true });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
   page.on('pageerror', error => errors.push(String(error)));

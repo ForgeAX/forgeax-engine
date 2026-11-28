@@ -803,14 +803,37 @@ function validateTypecheckOnlyOptions(options) {
   }
 }
 
+// Packages removed after the recorded Coverage receipts keep their roster slot,
+// so the chunks and timing identities of the eighty-project prefix stay stable.
+// They have no Vitest project and are dropped from every command line.
+export const retiredCoverageProjects = Object.freeze([
+  '@forgeax/engine-dsh',
+  '@forgeax/engine-intelligence',
+  '@forgeax/engine-intelligence-dsh',
+  '@forgeax/engine-intelligence-fake',
+  '@forgeax/engine-npc',
+]);
+
+/** Roster names that still own a Vitest project. */
+export function runnableProjects(projects) {
+  return projects.filter((project) => !retiredCoverageProjects.includes(project));
+}
+
 function packageProjectNames() {
-  return readdirSync(path.join(rootDir, 'packages'), { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => path.join(rootDir, 'packages', entry.name, 'package.json'))
-    .filter((manifestPath) => existsSync(manifestPath))
-    .map((manifestPath) => JSON.parse(readFileSync(manifestPath, 'utf8')).name)
-    .filter((name) => typeof name === 'string' && name.startsWith('@forgeax/'))
-    .sort();
+  return [
+    ...readdirSync(path.join(rootDir, 'packages'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(rootDir, 'packages', entry.name, 'package.json'))
+      .filter((manifestPath) => existsSync(manifestPath))
+      .map((manifestPath) => JSON.parse(readFileSync(manifestPath, 'utf8')).name)
+      .filter(
+        (name) =>
+          typeof name === 'string' &&
+          name !== '@forgeax/engine-render-kernel' &&
+          (name === '@forgeax/engine' || name.startsWith('@forgeax/engine-')),
+      ),
+    ...retiredCoverageProjects,
+  ].sort();
 }
 
 // These registered Node app projects cook ordinary CPU assets or exercise DOM
@@ -1254,21 +1277,51 @@ function coverageModel(groups, shardCount, typecheck) {
     exclusive: groups.map(isExclusiveCoverageGroup),
     shardCount,
     typecheck,
+    groupCount: groups.length,
+    parallelGroups: new Int32Array(shardCount * groups.length),
+    exclusiveGroups: new Int32Array(shardCount * groups.length),
+    parallelCounts: new Int32Array(shardCount),
+    exclusiveCounts: new Int32Array(shardCount),
     scratch: new Float64Array(shardCount * 3),
   };
 }
 
-// Synchronous call-local scratch; neither assignment nor recorded costs change.
-function evaluateCoverageLanes(model, assignment, weights) {
-  const lanes = model.scratch;
-  lanes.fill(0);
-  if (model.typecheck && model.shardCount > 1) lanes[0] = lanes[1] = typecheckSeconds;
+// All retained timing scenarios use the same ordered children for this candidate.
+function orderCoverageLanes(model, assignment) {
+  model.parallelCounts.fill(0);
+  model.exclusiveCounts.fill(0);
   for (const index of model.order) {
     const shard = assignment[index];
     if (shard < 0) continue;
+    const laneStart = shard * model.groupCount;
+    if (model.exclusive[index]) {
+      model.exclusiveGroups[laneStart + model.exclusiveCounts[shard]++] = index;
+    } else {
+      model.parallelGroups[laneStart + model.parallelCounts[shard]++] = index;
+    }
+  }
+}
+
+function evaluateCoverageLanes(model, weights) {
+  const lanes = model.scratch;
+  for (let shard = 0; shard < model.shardCount; shard++) {
+    const start = shard * model.groupCount;
+    const preflight = shard === 0 && model.typecheck && model.shardCount > 1 ? typecheckSeconds : 0;
+    let first = preflight;
+    let second = preflight;
+    let exclusive = 0;
+    for (let slot = start; slot < start + model.parallelCounts[shard]; slot++) {
+      const seconds = weights[model.parallelGroups[slot]];
+      if (first <= second) first += seconds;
+      else second += seconds;
+    }
+    for (let slot = start; slot < start + model.exclusiveCounts[shard]; slot++) {
+      exclusive += weights[model.exclusiveGroups[slot]];
+    }
     const base = shard * 3;
-    const slot = model.exclusive[index] ? 2 : lanes[base] <= lanes[base + 1] ? 0 : 1;
-    lanes[base + slot] += weights[index];
+    lanes[base] = first;
+    lanes[base + 1] = second;
+    lanes[base + 2] = exclusive;
   }
   return lanes;
 }
@@ -1296,7 +1349,8 @@ export function coverageAssignmentLaneFinishes(
     useReservation,
     reservationMode,
   );
-  const lanes = evaluateCoverageLanes(model, assignment, weights);
+  orderCoverageLanes(model, assignment);
+  const lanes = evaluateCoverageLanes(model, weights);
   return Array.from({ length: shardCount }, (_, shard) => coverageModelFinish(lanes, shard));
 }
 
@@ -1634,8 +1688,9 @@ function coverageAssignmentMetrics(groups, assignment, shardCount, typecheck) {
   let finish = 0,
     spread = 0;
   const violations = [];
+  orderCoverageLanes(model, assignment);
   for (const scenario of inputs.scenarios) {
-    const lanes = evaluateCoverageLanes(model, assignment, scenario.weights);
+    const lanes = evaluateCoverageLanes(model, scenario.weights);
     for (let shard = 0; shard < shardCount; shard++) {
       const seconds = coverageModelFinish(lanes, shard) * scenario.scale;
       finish = Math.max(finish, seconds);
@@ -1643,7 +1698,7 @@ function coverageAssignmentMetrics(groups, assignment, shardCount, typecheck) {
       if (seconds > 2300) violations.push(seconds - 2300);
     }
   }
-  const reserved = evaluateCoverageLanes(model, assignment, inputs.reservation);
+  const reserved = evaluateCoverageLanes(model, inputs.reservation);
   const reservation = Math.max(
     ...Array.from({ length: shardCount }, (_, shard) => coverageModelFinish(reserved, shard)),
   );
@@ -2295,7 +2350,7 @@ export function buildTypecheckArgs({ cliPath, projects, maxWorkers }) {
   return [
     cliPath,
     'run',
-    ...projects.flatMap((project) => ['--project', project]),
+    ...runnableProjects(projects).flatMap((project) => ['--project', project]),
     `--maxWorkers=${maxWorkers}`,
     '--typecheck.only',
     '--reporter=default',
@@ -2416,7 +2471,7 @@ export function buildGroupArgs({
   const args = [
     cliPath,
     'run',
-    ...group.projects.flatMap((project) => ['--project', project]),
+    ...runnableProjects(group.projects).flatMap((project) => ['--project', project]),
     ...group.files,
     ...(group.shard ? [`--shard=${group.shard}`] : []),
     `--maxWorkers=${maxWorkers}`,

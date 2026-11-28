@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+import { selectBrowserExecutable } from '../scripts/ci/browser-executable.mjs';
 import browserLaunch from '../scripts/ci/browser-launch.json' with { type: 'json' };
 import { playwrightWithBackgroundPages } from './vitest-browser-provider';
 import { createRenderSourceAliases } from './vitest-render-source-alias';
@@ -73,7 +74,7 @@ export default defineConfig({
             ui: false,
             provider: playwrightWithBackgroundPages({
               launchOptions: {
-                ...browserLaunch,
+                ...selectBrowserExecutable(browserLaunch),
                 args: [
                   ...browserLaunch.args,
                   ...(process.env.CI ? ['--use-angle=swiftshader', '--disable-gpu-watchdog'] : []),

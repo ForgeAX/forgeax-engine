@@ -1,6 +1,8 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { sha256 } from './compute/sha256';
 import { cos, sin } from './dmath';
 import { type ModelingError, modelingError } from './errors';
+import { type Region2, region2d } from './region2d';
 import { textRegion } from './text';
 import { coverage } from './texture';
 import type { TrimAnalyticSource, TrimSignature, TrimTiling } from './trim';
@@ -756,6 +758,94 @@ export function weldBead(options: WeldBeadOptions): Result<Stamp, ModelingError>
   });
 }
 
+/** A region's coverage raster in the module plane, read bilinearly (1 at filled texels). */
+interface Raster {
+  readonly size: readonly [number, number];
+  readonly sample: (s: number, t: number) => number;
+}
+
+/** Centered box filter of `width` samples per row and column (zero beyond the raster). */
+function boxBlur(src: Float32Array, w: number, h: number, width: number): Float32Array {
+  const back = Math.floor(width / 2);
+  const ahead = width - 1 - back;
+  const mid = new Float32Array(w * h);
+  const out = new Float32Array(w * h);
+  const pre = new Float64Array(Math.max(w, h) + 1);
+  const pass = (
+    count: number,
+    read: (k: number) => number,
+    write: (k: number, v: number) => void,
+  ) => {
+    pre[0] = 0;
+    for (let k = 0; k < count; k++) pre[k + 1] = (pre[k] as number) + read(k);
+    for (let k = 0; k < count; k++) {
+      const lo = Math.max(0, k - back);
+      const hi = Math.min(count, k + ahead + 1);
+      write(k, ((pre[hi] as number) - (pre[lo] as number)) / width);
+    }
+  };
+  for (let j = 0; j < h; j++) {
+    pass(
+      w,
+      (i) => src[j * w + i] as number,
+      (i, v) => {
+        mid[j * w + i] = v;
+      },
+    );
+  }
+  for (let i = 0; i < w; i++) {
+    pass(
+      h,
+      (j) => mid[j * w + i] as number,
+      (j, v) => {
+        out[j * w + i] = v;
+      },
+    );
+  }
+  return out;
+}
+
+/**
+ * The coverage raster of a region, padded by `margin` and sampled at `samplesPerMeter`
+ * (the one raster behind `text` and `outline`). `edgeSamples` > 1 box-filters the raster,
+ * so a step becomes a sloped edge that many samples wide.
+ */
+function rasterize(
+  region: Region2,
+  samplesPerMeter: number,
+  margin: number,
+  edgeSamples = 1,
+): Raster {
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const shape of region) {
+    for (const [x, y] of shape.outer) {
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
+    }
+  }
+  const size: [number, number] = [x1 - x0 + 2 * margin, y1 - y0 + 2 * margin];
+  const w = Math.max(2, Math.min(4096, Math.ceil(size[0] * samplesPerMeter)));
+  const h = Math.max(2, Math.min(4096, Math.ceil(size[1] * samplesPerMeter)));
+  let raster = coverage(region, w, h, [x0 - margin, y0 - margin, x1 + margin, y1 + margin]);
+  if (edgeSamples > 1) raster = boxBlur(raster, w, h, edgeSamples);
+  const sample = (s: number, t: number) => {
+    const fx = Math.max(0, Math.min(w - 1, (s / size[0]) * w - 0.5));
+    const fy = Math.max(0, Math.min(h - 1, (t / size[1]) * h - 0.5));
+    const ix = Math.min(w - 2, Math.floor(fx));
+    const iy = Math.min(h - 2, Math.floor(fy));
+    const ax = fx - ix;
+    const ay = fy - iy;
+    const at = (i: number, j: number) => raster[j * w + i] as number;
+    return (
+      (at(ix, iy) * (1 - ax) + at(ix + 1, iy) * ax) * (1 - ay) +
+      (at(ix, iy + 1) * (1 - ax) + at(ix + 1, iy + 1) * ax) * ay
+    );
+  };
+  return { size, sample };
+}
+
 export interface TextStampOptions {
   readonly text: string;
   /** Cap height in meters. */
@@ -792,38 +882,7 @@ export function text(options: TextStampOptions): Result<Stamp, ModelingError> {
   });
   if (!region.ok) return region;
   const margin = (options.margin ?? 0.25) * options.height;
-  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
-  for (const shape of region.value.region) {
-    for (const [x, y] of shape.outer) {
-      x0 = Math.min(x0, x);
-      y0 = Math.min(y0, y);
-      x1 = Math.max(x1, x);
-      y1 = Math.max(y1, y);
-    }
-  }
-  const size: [number, number] = [x1 - x0 + 2 * margin, y1 - y0 + 2 * margin];
-  const per = 64 / options.height;
-  const w = Math.max(2, Math.min(4096, Math.ceil(size[0] * per)));
-  const h = Math.max(2, Math.min(4096, Math.ceil(size[1] * per)));
-  const raster = coverage(region.value.region, w, h, [
-    x0 - margin,
-    y0 - margin,
-    x1 + margin,
-    y1 + margin,
-  ]);
-  const sample = (s: number, t: number) => {
-    const fx = Math.max(0, Math.min(w - 1, (s / size[0]) * w - 0.5));
-    const fy = Math.max(0, Math.min(h - 1, (t / size[1]) * h - 0.5));
-    const ix = Math.min(w - 2, Math.floor(fx));
-    const iy = Math.min(h - 2, Math.floor(fy));
-    const ax = fx - ix;
-    const ay = fy - iy;
-    const at = (i: number, j: number) => raster[j * w + i] as number;
-    return (
-      (at(ix, iy) * (1 - ax) + at(ix + 1, iy) * ax) * (1 - ay) +
-      (at(ix, iy + 1) * (1 - ax) + at(ix + 1, iy + 1) * ax) * ay
-    );
-  };
+  const { size, sample } = rasterize(region.value.region, 64 / options.height, margin);
   const material = options.material;
   return ok({
     size,
@@ -844,6 +903,135 @@ export function text(options: TextStampOptions): Result<Stamp, ModelingError> {
   });
 }
 
+export interface OutlineStampOptions {
+  /** Filled shapes in meters, as `textRegion` returns them: outer loops with their holes. */
+  readonly region: Region2;
+  /** Positive embosses, negative engraves (meters). */
+  readonly depth: number;
+  /** Border around the outline in meters (default 10 % of the larger extent). */
+  readonly margin?: number;
+  /** Width of the sloped edge between the plane and the plateau, in meters (default one raster sample). */
+  readonly edge?: number;
+  /** Raster density (default 256 samples across the larger extent, finer for small features). */
+  readonly samplesPerMeter?: number;
+  readonly material?: string;
+}
+
+const RASTER_CAP = 4096;
+
+/** A stable 16-hex digest of the region's rings, so the trim dedupe key follows the geometry. */
+function regionDigest(region: Region2): string {
+  const values: number[] = [region.length];
+  for (const shape of region) {
+    values.push(shape.outer.length);
+    for (const [x, y] of shape.outer) values.push(x, y);
+    values.push(shape.holes?.length ?? 0);
+    for (const hole of shape.holes ?? []) {
+      values.push(hole.length);
+      for (const [x, y] of hole) values.push(x, y);
+    }
+  }
+  const bytes = new Uint8Array(values.length * 8);
+  const view = new DataView(bytes.buffer);
+  for (const [i, v] of values.entries()) view.setFloat64(i * 8, v, true);
+  return sha256(bytes).slice(0, 16);
+}
+
+/**
+ * Any filled outline as a stamp. Height is depth x coverage of the region, rastered like
+ * `text`; the sloped edge is a box filter `edge` wide. Coverage fills by even-odd parity,
+ * so a hole's winding does not matter; a hole outside its outer loop would fill as an
+ * island, so it is rejected.
+ */
+export function outline(options: OutlineStampOptions): Result<Stamp, ModelingError> {
+  const { region } = options;
+  const bad = (message: string, detail: Record<string, unknown>) =>
+    err(modelingError('model-invalid-argument', message, detail));
+  if (!Array.isArray(region) || region.length === 0) {
+    return bad('region has at least one filled shape', { shapes: 0 });
+  }
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const shape of region) {
+    for (const ring of [shape.outer, ...(shape.holes ?? [])]) {
+      if (ring.length < 3) {
+        return bad('every outline and hole has at least 3 points', { points: ring.length });
+      }
+      for (const [x, y] of ring) {
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return bad('region coordinates are finite lengths in meters', { x, y });
+        }
+      }
+    }
+    for (const [x, y] of shape.outer) {
+      x0 = Math.min(x0, x);
+      y0 = Math.min(y0, y);
+      x1 = Math.max(x1, x);
+      y1 = Math.max(y1, y);
+    }
+  }
+  const [ex, ey] = [x1 - x0, y1 - y0];
+  if (!(ex > 0 && ey > 0)) {
+    return bad('region has a nonzero extent in both directions', { width: ex, height: ey });
+  }
+  if (!Number.isFinite(options.depth) || options.depth === 0) {
+    return bad('depth is a nonzero length (negative engraves)', { depth: options.depth });
+  }
+  for (const [index, shape] of region.entries()) {
+    for (const [hi, hole] of (shape.holes ?? []).entries()) {
+      for (const p of hole) {
+        if (!region2d.contains(shape.outer, p)) {
+          return bad('every hole lies inside its outer loop', { shape: index, hole: hi });
+        }
+      }
+    }
+  }
+  const margin = options.margin ?? 0.1 * Math.max(ex, ey);
+  const checked = check({
+    margin,
+    ...(options.edge === undefined ? {} : { edge: options.edge }),
+    ...(options.samplesPerMeter === undefined ? {} : { samplesPerMeter: options.samplesPerMeter }),
+  });
+  if (!checked.ok) return checked;
+  let fine = Infinity;
+  for (const shape of region) {
+    for (const ring of [shape.outer, ...(shape.holes ?? [])]) {
+      let [rx0, ry0, rx1, ry1] = [Infinity, Infinity, -Infinity, -Infinity];
+      for (const [x, y] of ring) {
+        rx0 = Math.min(rx0, x);
+        ry0 = Math.min(ry0, y);
+        rx1 = Math.max(rx1, x);
+        ry1 = Math.max(ry1, y);
+      }
+      const small = Math.min(rx1 - rx0, ry1 - ry0);
+      if (small > 0) fine = Math.min(fine, small);
+    }
+  }
+  const cap = RASTER_CAP / Math.max(ex + 2 * margin, ey + 2 * margin);
+  const base = Math.max(256 / Math.max(ex, ey), Number.isFinite(fine) ? 16 / fine : 0);
+  const samplesPerMeter = Math.min(options.samplesPerMeter ?? base, cap);
+  const edge = options.edge ?? 1 / samplesPerMeter;
+  const edgeSamples = Math.max(1, Math.round(edge * samplesPerMeter));
+  const { size, sample } = rasterize(region, samplesPerMeter, margin, edgeSamples);
+  const { depth } = options;
+  const material = options.material;
+  return ok({
+    size,
+    source: {
+      kind: 'analytic',
+      height: (s, t) => depth * sample(s, t),
+      material: (s, t) => (material !== undefined && sample(s, t) >= 0.5 ? material : BASE),
+    },
+    signature: signature('outline', {
+      region: regionDigest(region),
+      depth,
+      margin,
+      edge,
+      samplesPerMeter,
+      material,
+    }),
+  });
+}
+
 /** The stamp library. */
 export const stamp = {
   boltHex,
@@ -856,4 +1044,5 @@ export const stamp = {
   knurl,
   weldBead,
   text,
+  outline,
 } as const;

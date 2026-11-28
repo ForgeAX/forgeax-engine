@@ -4,9 +4,9 @@ import { decodeSnapshot, encodeSnapshot } from './fxem';
 import {
   cross,
   dot,
-  faceArea,
   faceCentroid,
   faceNormal,
+  facesArea,
   length,
   sub,
   type Tuple3,
@@ -133,7 +133,7 @@ function delta(a: number, b: number): Delta {
 }
 
 function tagNames(mesh: EditMesh, f: number): string[] {
-  return mesh.tagNames.filter((_, t) => mesh.hasTag(f, t));
+  return mesh.tagNames.filter((_, t) => mesh.hasTag(f, t)).sort();
 }
 
 function provenanceOf(mesh: EditMesh, f: number): { label: string; role: string; tags: string[] } {
@@ -434,10 +434,7 @@ export function diffMeshes(
   };
   if (closed.a !== closed.b) differences.push({ reason: 'closed', detail: closed });
   const volume = delta(signedVolume(a), signedVolume(b));
-  const area = delta(
-    a.faces().reduce((s, f) => s + faceArea(a, f), 0),
-    b.faces().reduce((s, f) => s + faceArea(b, f), 0),
-  );
+  const area = delta(facesArea(a, a.faces()), facesArea(b, b.faces()));
   if (Math.abs(volume.delta) > tolerance * Math.max(area.a, area.b, 1e-300)) {
     differences.push({ reason: 'volume', detail: { ...volume, area } });
   }

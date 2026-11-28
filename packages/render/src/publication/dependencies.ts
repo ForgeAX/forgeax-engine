@@ -144,7 +144,18 @@ export function forEachLightAsset(
 }
 
 /** Binding roots; transitive resource holds belong to the asset owner graph. */
-export function renderableAssetRoots(row: RenderableSnapshot): readonly number[] {
+export function renderableAssetRoots(
+  row: Pick<
+    RenderableSnapshot,
+    | 'glyph'
+    | 'tilemap'
+    | 'terrain'
+    | 'assetHandle'
+    | 'skinBinding'
+    | 'materialOverrides'
+    | 'materials'
+  >,
+): readonly number[] {
   if (row.glyph !== undefined) return [row.glyph.font];
   if (row.tilemap !== undefined) return [row.tilemap.tileset];
   if (row.terrain !== undefined) return [row.terrain.handle];

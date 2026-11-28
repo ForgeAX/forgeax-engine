@@ -31,7 +31,7 @@ const STAGES = [1 / 8, 1 / 4, 1 / 2, 1] as const;
 const DISK_ROUNDS = 8;
 
 /** Binary min-heap of (key, id), ties settled by the lower id. */
-class Heap {
+export class Heap {
   private readonly keys: number[] = [];
   private readonly ids: number[] = [];
   get size(): number {

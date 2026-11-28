@@ -14,7 +14,6 @@ it('constructs the complete Water roster at the shared source and renderer owner
       'water-advanced-producer',
       'water-fluid-simulation',
       'water-underwater-post-process',
-      'forgeax.motion-blur',
       'forgeax.editor-assistance',
     ]),
   );

@@ -6,9 +6,52 @@ import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
 import { DynamicGeometryReceipt } from '../record/dynamic-geometry-receipt';
 import { emitGpuDrivenDrawReceipts, summarizeGpuDrivenDraws } from '../record/gpu-draw-receipts';
+import type { GpuOwnedFrame, RenderableSnapshot } from '../render-system-extract';
+import { presentedRenderableRecorder } from '../render-system-record';
+import type { RecordAttempt } from '../render-system-record-attempt';
+import type { ViewSettlementOwner } from '../world/view-settlement';
 import { receiptRow, receiptSelection } from './gpu-draw-selection-fixture';
 
 describe('shared GPU draw selection and submitted receipts', () => {
+  it('reads mixed section and terrain evidence directly from the submitted GPU selection', () => {
+    const row = receiptRow();
+    const source = {
+      ...row.source,
+      terrainSection: { index: 5 } as NonNullable<RenderableSnapshot['terrainSection']>,
+    };
+    const owned = {
+      row: vi.fn((key: number) => (key === source.entityKey ? source : undefined)),
+    } satisfies Pick<GpuOwnedFrame, 'row'>;
+    const world = new World();
+    const owner = { internals: { renderWorld: world } } as ViewSettlementOwner;
+    const attempt = { sourceScope: worldRenderResources(world) } as RecordAttempt;
+    const frame = presentedRenderableRecorder(owner, attempt, owned);
+    const next = receiptSelection([row], (batch) => batch.binding?.drawItemIndex === 7);
+    const material = row.source.material.snapshot;
+    expect(frame.markPresentedRenderable.needsMaterialReceipt?.(material)).toBe(true);
+    frame.markPresentedRenderable(row, 2);
+    expect(frame.markPresentedRenderable.needsMaterialReceipt?.(material)).toBe(false);
+    expect(frame.drawObservation.commit(true)).toEqual({
+      status: 'unavailable',
+      reason: 'source-unavailable',
+      draws: [],
+    });
+    expect(frame.presentedDraws.hasSubmesh(source.entityKey, 7)).toBe(false);
+    expect(frame.presentedDraws.hasTerrain(source.entityKey, 5)).toBe(false);
+    expect(owned.row).not.toHaveBeenCalled();
+    frame.publishGpuSelection?.(next);
+    expect(frame.presentedDraws.hasSubmesh(source.entityKey, 7)).toBe(true);
+    expect(frame.presentedDraws.hasSubmesh(source.entityKey, 2)).toBe(true);
+    expect(frame.presentedDraws.hasSubmesh(source.entityKey, 0)).toBe(false);
+    expect(frame.presentedDraws.hasEntity(99)).toBe(false);
+    expect(frame.presentedDraws.hasTerrain(source.entityKey, 5)).toBe(true);
+    expect(frame.presentedDraws.hasTerrain(source.entityKey, 6)).toBe(false);
+    for (const section of [0, 1, 3, 4, 5, 6]) frame.markPresentedRenderable(row, section);
+    owned.row.mockClear();
+    expect(frame.presentedDraws.firstMissingSubmesh(source.entityKey, 9)).toBe(8);
+    expect(owned.row).toHaveBeenCalledExactlyOnceWith(source.entityKey);
+  });
+
   it('queries one shared execution per draw and emits the exact submitted source index', () => {
     const rows = [receiptRow()];
     const selection = receiptSelection(rows, (batch) => batch.binding?.drawItemIndex === 7);

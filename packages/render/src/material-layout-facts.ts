@@ -1,4 +1,4 @@
-import type { ParamSchemaEntry } from '@forgeax/engine-types';
+import { getAdmittedParamSchemaInterface, type ParamSchemaEntry } from '@forgeax/engine-types';
 import { isEngineOwnedMaterialShader } from './assembly/material/pipeline-helpers';
 import {
   isStandardPbrMaterialShader,
@@ -13,7 +13,8 @@ export function prepareMaterialLayoutIdentity(
   shader: string,
   schema: readonly ParamSchemaEntry[] | undefined,
 ): void {
-  if (schema === undefined) return;
+  // Admitted layouts need a diagnostic label only when the recorded draw is inspected.
+  if (schema === undefined || getAdmittedParamSchemaInterface(schema) !== undefined) return;
   let byShader = layouts.get(schema);
   if (byShader === undefined) {
     // The layout descriptor reads only own fields of the admitted schema.

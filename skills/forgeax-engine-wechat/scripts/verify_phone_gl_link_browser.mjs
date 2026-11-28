@@ -48,7 +48,7 @@ try {
     });
     ready();
   });
-  browser = await chromium.launch({ channel: 'chrome-beta', headless: true,
+  browser = await chromium.launch({ channel: 'chrome', headless: true,
     args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'], chromiumSandbox: true });
   const page = await browser.newPage();
   // Same-origin page permits the browser transport without disabling CORS or sandboxing.

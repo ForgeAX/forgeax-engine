@@ -16,9 +16,9 @@ function bindJoints(skin: SkinInputs, source: SkinInputSlot, entities: number[])
   const skeleton = skin.skeleton(1, world(0));
   for (const entity of entities) skin.bind(entity, source, skeleton, [entity]);
 }
-const readInverse = mat4.create();
+
 const readJoint = (frame: SkinInputFrame, entity: number, out: Mat4) =>
-  frame.matrix(entity, 0, out, readInverse);
+  frame.matrix(entity, 0, out);
 const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => from + i);
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -84,18 +84,17 @@ it('resolves equal full entity identities in separate source namespaces from one
   skin.bind(27, other, skeleton, new Uint32Array([7]));
   const frame = skin.capture();
   try {
-    const out = mat4.create(),
-      inverse = mat4.create();
+    const out = mat4.create();
     expect(frame.available(11)).toBe(true);
     expect(frame.available(27)).toBe(true);
-    expect(frame.matrix(11, 0, out, inverse)).toBe(true);
+    expect(frame.matrix(11, 0, out)).toBe(true);
     expect(out[12]).toBe(4);
-    expect(frame.matrix(27, 0, out, inverse)).toBe(true);
+    expect(frame.matrix(27, 0, out)).toBe(true);
     expect(out[12]).toBe(10);
     expect(() => Object.defineProperty(frame, 'root', { value: 0 })).toThrow();
     expect(() => Object.defineProperty(source, 'id', { value: other.id })).toThrow();
     expect(() => skin.setJoint({ id: source.id, kind: 'source' }, 7, world(0))).toThrow();
-    expect(() => frame.matrix(11, 0, out, out)).toThrow();
+    expect(() => frame.matrix(11, 0, out.subarray(0, 15) as typeof out)).toThrow();
   } finally {
     frame.release();
     skin.dispose();
@@ -116,11 +115,10 @@ it('owns unqueried Binding and Skeleton bytes through removal and Scene-slot reu
   skin.bind(11, source, nextSkeleton, new Uint32Array([7]));
   const next = skin.capture();
   try {
-    const out = mat4.create(),
-      inverse = mat4.create();
-    expect(old.matrix(11, 0, out, inverse)).toBe(true);
+    const out = mat4.create();
+    expect(old.matrix(11, 0, out)).toBe(true);
     expect(out[12]).toBe(4);
-    expect(next.matrix(11, 0, out, inverse)).toBe(true);
+    expect(next.matrix(11, 0, out)).toBe(true);
     expect(out[12]).toBe(12);
     expect(next.historyCompatible(old, 11)).toBe(false);
     expect(nextSkeleton.id).not.toBe(skeleton.id);
@@ -156,12 +154,11 @@ it.each([
     // All consumers of this ordered source roster share one raw pose row.
     expect(allocate.mock.calls.filter(([words]) => words === 17)).toHaveLength(1);
     expect(query).not.toHaveBeenCalled();
-    const out = mat4.create(),
-      inverse = mat4.create();
+    const out = mat4.create();
     for (let slot = 0; slot < count; slot++) {
-      expect(old.matrix(slot, 0, out, inverse)).toBe(true);
+      expect(old.matrix(slot, 0, out)).toBe(true);
       expect(out[12]).toBe(4);
-      expect(next.matrix(slot, 0, out, inverse)).toBe(true);
+      expect(next.matrix(slot, 0, out)).toBe(true);
       expect(out[12]).toBe(7);
     }
     next.release();
@@ -194,11 +191,10 @@ it('shares raw ordered poses across Skeletons while preserving source, duplicate
   skin.bind(6, other, identity, [7, 8]);
   const held = skin.capture();
   const allocate = vi.spyOn(arena, 'allocateDescriptor');
-  const out = mat4.create(),
-    inverse = mat4.create();
+  const out = mat4.create();
   const check = (frame: SkinInputFrame, slot: number, a: number, b: number) => {
     for (const [index, value] of [a, b].entries()) {
-      expect(frame.matrix(slot, index, out, inverse)).toBe(true);
+      expect(frame.matrix(slot, index, out)).toBe(true);
       expect(out[12]).toBe(value);
     }
   };
@@ -431,12 +427,11 @@ it('retains complete ordered duplicate influences and recovers without rebinding
   skin.setJoint(source, 7, world(3));
   skin.bind(0, source, skeleton, new Uint32Array([7, 7]));
   const old = skin.capture();
-  const out = mat4.create(),
-    inverse = mat4.create();
+  const out = mat4.create();
   try {
-    expect(old.matrix(0, 0, out, inverse)).toBe(true);
+    expect(old.matrix(0, 0, out)).toBe(true);
     expect(out[12]).toBe(4);
-    expect(old.matrix(0, 1, out, inverse)).toBe(true);
+    expect(old.matrix(0, 1, out)).toBe(true);
     expect(out[12]).toBe(5);
     skin.removeJoint(source, 7);
     const missing = skin.capture();
@@ -445,7 +440,7 @@ it('retains complete ordered duplicate influences and recovers without rebinding
     skin.setJoint(source, 7, world(9));
     const next = skin.capture();
     expect(next.available(0)).toBe(true);
-    expect(next.matrix(0, 1, out, inverse)).toBe(true);
+    expect(next.matrix(0, 1, out)).toBe(true);
     expect(out[12]).toBe(11);
     expect(next.historyCompatible(old, 0)).toBe(true);
     next.release();
@@ -700,6 +695,10 @@ it('rejects foreign sources and incomplete or non-finite facts without replacing
     const invalid = world(2);
     invalid[3] = Infinity;
     expect(() => skin.setJoint(source, 7, invalid)).toThrow();
+    const badWords = new Int32Array(new ArrayBuffer(4 * 20), 0, 20);
+    badWords.set(new Int32Array(invalid.buffer, invalid.byteOffset, 16), 4);
+    expect(() => skin.setPublishedJoint(source, 7, badWords, 4)).toThrow();
+    expect(() => skin.setPublishedJoint(source, 7, badWords, 5)).toThrow();
     expect(() => skin.updateSkeleton(skeleton, 1, invalid)).toThrow();
     expect(() => skin.bind(0, source, skeleton, new Uint32Array())).toThrow();
     const next = skin.capture();
@@ -768,12 +767,11 @@ it('reads retained numeric rows after owner retirement and rejects all demand af
   skin.setJoint(source, 7, world(3));
   skin.bind(0, source, skeleton, new Uint32Array([7]));
   const held = skin.capture(),
-    out = mat4.create(),
-    inverse = mat4.create();
+    out = mat4.create();
   try {
     skin.dispose();
     expect(held.available(0)).toBe(true);
-    expect(held.matrix(0, 0, out, inverse)).toBe(true);
+    expect(held.matrix(0, 0, out)).toBe(true);
     expect(out[12]).toBe(4);
     expect(empty.available(0)).toBe(false);
     arena.dispose();
@@ -781,7 +779,7 @@ it('reads retained numeric rows after owner retirement and rejects all demand af
       expect(() => frame.available(0)).toThrow();
       expect(() => frame.jointCount(0)).toThrow();
       expect(() => readJoint(frame, 7, out)).toThrow();
-      expect(() => frame.matrix(0, 0, out, inverse)).toThrow();
+      expect(() => frame.matrix(0, 0, out)).toThrow();
       expect(() => frame.historyCompatible(held, 0)).toThrow();
     }
     expect(() => skin.capture()).toThrow();
@@ -966,11 +964,10 @@ it('retains the exact submitted root independently of newer Scene facts and orig
     expect(allocate).not.toHaveBeenCalled();
     submitted.release();
     skin.dispose();
-    const out = mat4.create(),
-      inverse = mat4.create();
-    expect(history.matrix(0, 0, out, inverse)).toBe(true);
+    const out = mat4.create();
+    expect(history.matrix(0, 0, out)).toBe(true);
     expect(out[12]).toBe(4);
-    expect(latest.matrix(0, 0, out, inverse)).toBe(true);
+    expect(latest.matrix(0, 0, out)).toBe(true);
     expect(out[12]).toBe(10);
     const completion = history.retain();
     try {
@@ -1069,19 +1066,20 @@ it('writes actual-demand current/history outputs without visiting other bindings
   const current = skin.capture();
   const a = new Float32Array(32).fill(-9),
     b = new Float32Array(32).fill(-7);
-  const matrix = mat4.create(),
-    inverse = mat4.create();
   const allocate = vi.spyOn(arena, 'allocateDescriptor');
   const subarray = vi.spyOn(Float32Array.prototype, 'subarray');
   try {
-    expect(current.palettes(0, previous, a, b, matrix, inverse)).toBe(3);
+    expect(current.palettes(0, previous, a, b)).toBe(3);
     expect(a[12]).toBe(5);
     expect(b[12]).toBe(3);
     expect(a[31]).toBe(-9);
     expect(b[31]).toBe(-7);
-    expect(current.palettes(0, undefined, a, b, matrix, inverse)).toBe(1);
+    expect(current.palettes(0, undefined, a, b)).toBe(1);
     expect(b[12]).toBe(5);
-    expect(current.palettes(999, previous, a, b, matrix, inverse)).toBe(0);
+    expect(current.palettes(999, previous, a, b)).toBe(0);
+    expect(current.palettes(0, previous, a, undefined)).toBe(3);
+    expect(a[12]).toBe(5);
+    expect(a[28]).toBe(3);
     expect(allocate).not.toHaveBeenCalled();
     expect(subarray).not.toHaveBeenCalled();
   } finally {
@@ -1111,20 +1109,18 @@ it('seeds the complete previous pose on static rebind, unavailable previous and 
   const current = skin.capture();
   const a = new Float32Array(32),
     b = new Float32Array(32);
-  const matrix = mat4.create(),
-    inverse = mat4.create();
   try {
-    expect(current.palettes(0, missing, a, b, matrix, inverse)).toBe(1);
+    expect(current.palettes(0, missing, a, b)).toBe(1);
     expect(b).toEqual(a);
     b.fill(-7);
-    expect(current.palettes(0, overflow, a, b, matrix, inverse)).toBe(1);
+    expect(current.palettes(0, overflow, a, b)).toBe(1);
     expect(b).toEqual(a); // no compatible prefix survives previous overflow
     // A current-pose overflow omits only this actual draw, as GPU resolution does.
-    expect(overflow.palettes(0, current, a, b, matrix, inverse)).toBe(0);
+    expect(overflow.palettes(0, current, a, b)).toBe(0);
     skin.bind(0, source, skeleton, [8, 7]);
     const rebound = skin.capture();
     try {
-      expect(rebound.palettes(0, current, a, b, matrix, inverse)).toBe(1);
+      expect(rebound.palettes(0, current, a, b)).toBe(1);
       expect(a[12]).toBe(4);
       expect(a[28]).toBe(2);
       expect(b).toEqual(a);
@@ -1149,17 +1145,14 @@ it('rejects overlapping or undersized actual-demand outputs before any write', a
   const frame = skin.capture();
   const a = new Float32Array(32).fill(-5),
     b = new Float32Array(16).fill(-7);
-  const matrix = mat4.create(),
-    inverse = mat4.create();
   try {
-    expect(() => frame.palettes(0, undefined, a, a.subarray(16), matrix, inverse)).toThrow();
-    expect(() => frame.palettes(0, undefined, a, b.subarray(1), matrix, inverse)).toThrow();
-    expect(() => frame.palettes(0, undefined, a, matrix, matrix, inverse)).toThrow();
+    expect(() => frame.palettes(0, undefined, a, a.subarray(16))).toThrow();
+    expect(() => frame.palettes(0, undefined, a, b.subarray(1))).toThrow();
     expect(a.every((value) => value === -5)).toBe(true);
     expect(b.every((value) => value === -7)).toBe(true);
     const prior = frame.retain();
     prior.release();
-    expect(() => frame.palettes(0, prior, a, b, matrix, inverse)).toThrow();
+    expect(() => frame.palettes(0, prior, a, b)).toThrow();
     expect(a.every((value) => value === -5)).toBe(true);
   } finally {
     frame.release();

@@ -459,7 +459,7 @@ it.each([
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
     temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
-    compiledFrameGraphGeneration: 0,
+    graphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     meshBindGroupCache: new WeakMap(),
@@ -541,7 +541,7 @@ it.each([
     expect(current.selection.has(selectedSource.snapshot, 0)).toBe(true);
     expect(errors).toHaveLength(0);
     expect(next).toBe(first);
-    expect(state.compiledFrameGraphGeneration).toBe(1);
+    expect(state.graphGeneration).toBe(1);
     expect(afterInfo.resources).toEqual(firstInfo.resources);
     expect(afterInfo.passes).toEqual(firstInfo.passes);
     // Retiring either graph must not own or destroy either asset texture.
@@ -829,7 +829,7 @@ it.each([
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
     temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
-    compiledFrameGraphGeneration: 0,
+    graphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     meshBindGroupCache: new WeakMap(),
@@ -839,13 +839,14 @@ it.each([
   const errors: unknown[] = [];
   const errorRegistry = new RhiErrorListenerRegistry();
   errorRegistry.add((error) => errors.push(error));
+  const internals = {
+    device,
+    errorRegistry,
+    deviceScope: DeviceScope.create(0, 'view-graph-test'),
+  } as unknown as RenderSystemInternals;
   const compile = () => {
     const graph = compileAndAdoptViewGraph({
-      internals: {
-        device,
-        errorRegistry,
-        deviceScope: DeviceScope.create(0, 'view-graph-test'),
-      } as unknown as RenderSystemInternals,
+      internals,
       frameState: state,
       pipelineState: { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
       camera: makeZeroCameraFallbackSnapshot(),
@@ -894,7 +895,7 @@ it.each([
       current = prepare();
       const next = compile();
       encode(next);
-      expect(state.compiledFrameGraphGeneration).toBe(1);
+      expect(state.graphGeneration).toBe(1);
       expect(next).toBe(first);
       // The first Deferred draw may lazily create its PSO; subsequent route
       // changes must reuse the graph's already selected pipeline closures.
@@ -917,7 +918,7 @@ it.each([
     const changedLayout = compile();
     encode(changedLayout);
     expect(changedLayout).not.toBe(first);
-    expect(state.compiledFrameGraphGeneration).toBe(2);
+    expect(state.graphGeneration).toBe(2);
     const changedVertexLayout = pipelines.mock.calls.at(-1)?.[0].vertex.buffers;
     expect(changedVertexLayout).not.toEqual(initialVertexLayout);
 
@@ -929,7 +930,7 @@ it.each([
     const changedAbi = compile();
     encode(changedAbi);
     expect(changedAbi).not.toBe(changedLayout);
-    expect(state.compiledFrameGraphGeneration).toBe(3);
+    expect(state.graphGeneration).toBe(3);
     expect(pipelines.mock.calls.at(-1)?.[0].vertex.buffers).not.toEqual(changedVertexLayout);
   } finally {
     draws.mockRestore();
@@ -1035,7 +1036,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
     temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
-    compiledFrameGraphGeneration: 0,
+    graphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     meshBindGroupCache: new WeakMap(),
@@ -1127,7 +1128,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     expect(replacement.mesh.indexBuffer?.isDestroyed).toBe(false);
     encode(replacementGraph);
     store.trackMeshSubmission(newCompleted);
-    expect(state.compiledFrameGraphGeneration).toBe(1);
+    expect(state.graphGeneration).toBe(1);
     expect(replacementGraph.inspect().passes.map((pass) => pass.name)).toEqual(
       beforeInfo.passes.map((pass) => pass.name),
     );

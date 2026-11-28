@@ -13,6 +13,10 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { type RenderError, RenderFeatureStageFailedError } from '../errors/render';
 import { currentRenderFeaturePass } from './frame-execution';
 import type { RenderFeaturePlanExecutionPass } from './host';
+import {
+  motionBlurFeatureEntry,
+  recordMotionBlurFeatureDispatch,
+} from './motion-blur/motion-blur-execution';
 import type { RenderFeatureComputeTarget } from './prepared-gpu-work';
 import {
   encodeRenderFeatureGpuComputePass,
@@ -340,6 +344,7 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
     const first = logicalPasses[0];
     if (first === undefined) return ok(undefined);
     const { name, featureIdentity, order } = first;
+    const motionBlurEntry = motionBlurFeatureEntry(featureIdentity, name);
     const work = first.resolvedGpuCompute;
     if (work === undefined)
       return err(new RenderFeatureStageFailedError(featureIdentity, order, 'plan', 'next-frame'));
@@ -467,6 +472,8 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
               if (!view.ok) throw view.error;
               return view.value;
             });
+            if (motionBlurEntry !== undefined)
+              recordMotionBlurFeatureDispatch(frame, motionBlurEntry, currentWork);
           } catch (failure) {
             throwFeatureRecordingFailure(
               failure,

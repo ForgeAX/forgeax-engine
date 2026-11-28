@@ -56,6 +56,7 @@ function loadEngineImports(): Record<string, string> {
     'forgeax_cloud::shadow': read('cloud/shadow.wgsl'),
     'forgeax_standard::cluster_texture_data': read('cluster-texture-data.wgsl'),
     'forgeax_standard::cluster': read('standard-cluster.wgsl'),
+    'forgeax_standard::cluster_layout': read('standard-cluster-layout.wgsl'),
     'forgeax_pbr::brdf': read('brdf.wgsl'),
     'forgeax_pbr::specular_aa': read('specular-aa.wgsl'),
     'forgeax_material::alpha_hash': read('alpha-hash.wgsl'),

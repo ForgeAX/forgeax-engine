@@ -1,4 +1,5 @@
 import { type Buffer, err, ok, type Result, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
+import { dynamicCapacity, shouldShrinkCapacity } from './dynamic-capacity';
 import {
   BatchSources,
   MEMBER_PAGE,
@@ -291,6 +292,9 @@ export class GpuSceneInputs {
   private upload: GpuInputUpload;
   private previousUploadBytes = 0;
   private preparingBuffer: PreparingInputBuffer | undefined;
+  private reducing: GpuSceneInputPreparation | undefined;
+  private failedReductionBytes = 0;
+  private reductionLag = 0;
   private readonly ownsArena: boolean;
   readonly arena: GpuInputArena;
   private buffer: Buffer | undefined;
@@ -393,7 +397,7 @@ export class GpuSceneInputs {
   uploadedBuffer(): { readonly buffer: Buffer; readonly byteLength: number } | undefined {
     const buffer = this.buffer;
     return this.isLiveOn(this.device) &&
-      this.preparingBuffer === undefined &&
+      (this.preparingBuffer === undefined || this.preparingBuffer.api === this.reducing) &&
       buffer !== undefined &&
       this.bufferBytes >= this.arena.byteLength &&
       this.upload.isCurrent(this.device.queue, buffer)
@@ -757,9 +761,7 @@ export class GpuSceneInputs {
   }
 
   private resourceWord(page: ResourcePage, index: number): number {
-    return page.prepared === undefined
-      ? this.arena.readWord(page.address + index)
-      : page.prepared.descriptor.readWord(index);
+    return this.arena.readWord(page.address + index);
   }
 
   private copyResourcePath(
@@ -767,7 +769,6 @@ export class GpuSceneInputs {
     slot: number,
     descriptor: number,
     shift: number,
-    pages?: PrivateResourcePages,
   ): ResourcePage | undefined {
     const children = new Map<number, ResourcePage>();
     try {
@@ -784,7 +785,6 @@ export class GpuSceneInputs {
           slot,
           descriptor,
           shift - 8,
-          pages,
         );
         const old = children.get(key);
         try {
@@ -811,7 +811,6 @@ export class GpuSceneInputs {
         occupied,
         key,
         shift === 0 ? descriptor : (children.get(key)?.address ?? ABSENT_RESOURCE),
-        pages,
       );
     } catch (cause) {
       this.rollbackResourceChildren(children, cause);
@@ -837,27 +836,7 @@ export class GpuSceneInputs {
     occupied: number,
     key: number,
     value: number,
-    pages: PrivateResourcePages | undefined,
   ): ResourcePage {
-    if (pages !== undefined) {
-      const descriptor = this.arena.reserveDescriptor(
-        RESOURCE_PAGE_WORDS,
-        (_address, target) => {
-          for (let index = 0; index < RESOURCE_PAGE_WORDS; index++)
-            target.setUint32(
-              index * 4,
-              previous === undefined ? ABSENT_RESOURCE : this.resourceWord(previous, index),
-              true,
-            );
-          target.setUint32(key * 4, value, true);
-        },
-        (captured) => pages.set(captured, undefined),
-      );
-      this.resourcePagesWritten++;
-      const page = new ResourcePage(descriptor.address, children, occupied, { descriptor, pages });
-      pages.set(descriptor, page);
-      return page;
-    }
     const address = this.arena.allocateDescriptor(RESOURCE_PAGE_WORDS);
     try {
       if (previous === undefined)
@@ -878,6 +857,81 @@ export class GpuSceneInputs {
       }
       throw cause;
     }
+  }
+
+  /** Copy each touched radix page once. The descriptor map owns a lease until transfer. */
+  private *prepareResourcePages(
+    previous: ResourcePage | undefined,
+    reservations: readonly GpuSceneResourceReservation[],
+    first: number,
+    end: number,
+    shift: number,
+    pages: PrivateResourcePages,
+  ): Generator<void, ResourcePage> {
+    const children = new Map(previous?.children);
+    const updates = new Map<number, number>();
+    let occupied = previous?.occupied ?? 0;
+    for (let index = first; index < end; ) {
+      const reservation = reservations[index] as GpuSceneResourceReservation;
+      const key = (reservation.logicalSlot >>> shift) & 255;
+      if (shift === 0) {
+        updates.set(key, reservation.descriptor);
+        if (previous === undefined || this.resourceWord(previous, key) === ABSENT_RESOURCE)
+          occupied++;
+        index++;
+      } else {
+        let next = index + 1;
+        while (
+          next < end &&
+          (((reservations[next] as GpuSceneResourceReservation).logicalSlot >>> shift) & 255) ===
+            key
+        )
+          next++;
+        const child = yield* this.prepareResourcePages(
+          children.get(key),
+          reservations,
+          index,
+          next,
+          shift - 8,
+          pages,
+        );
+        children.set(key, child);
+        updates.set(key, child.address);
+        index = next;
+      }
+    }
+    for (const child of children.values()) child.holders++;
+    let page: ResourcePage;
+    try {
+      const descriptor = this.arena.reserveDescriptor(
+        RESOURCE_PAGE_WORDS,
+        (_address, target) => {
+          for (let index = 0; index < RESOURCE_PAGE_WORDS; index++)
+            target.setUint32(
+              index * 4,
+              previous === undefined ? ABSENT_RESOURCE : this.resourceWord(previous, index),
+              true,
+            );
+          for (const [index, word] of updates) target.setUint32(index * 4, word, true);
+        },
+        (captured) => pages.set(captured, undefined),
+      );
+      page = new ResourcePage(
+        descriptor.address,
+        children,
+        shift === 0 ? occupied : children.size,
+        {
+          descriptor,
+          pages,
+        },
+      );
+      pages.set(descriptor, page);
+      this.resourcePagesWritten++;
+    } catch (cause) {
+      this.rollbackResourceChildren(children, cause);
+    }
+    yield;
+    return page;
   }
 
   private *releasePages(root: ResourcePage | undefined): Generator<void> {
@@ -1271,6 +1325,7 @@ export class GpuSceneInputs {
     capture?: (preparation: GpuSceneInputPreparation) => void,
   ): Result<GpuSceneInputPreparation, RhiError> {
     this.assertLive();
+    this.reducing?.release();
     if (
       this.preparingBuffer !== undefined ||
       !Number.isSafeInteger(capacityBytes) ||
@@ -1296,10 +1351,11 @@ export class GpuSceneInputs {
     current: () => boolean,
     capture: (preparation: GpuSceneInputPreparation) => void,
   ): Generator<void, GpuSceneInputPreparation> {
+    this.reducing?.release();
     const resources: PrivateResources = {
       root: undefined,
       revision: this.resourceRevision,
-      reservations: [...new Set(reservations)],
+      reservations: [...new Set(reservations)].sort((a, b) => a.logicalSlot - b.logicalSlot),
       pages: new Map(),
       current,
     };
@@ -1311,29 +1367,31 @@ export class GpuSceneInputs {
         throw invalid('the original private resource constructor');
       resources.root = this.resources;
       if (resources.root !== undefined) resources.root.holders++;
-      for (const reservation of resources.reservations) {
-        if (!this.bufferPreparationLive(role))
-          throw invalid('current Source resource reservations');
-        const descriptor = this.privateResources.get(reservation)?.descriptor;
-        if (
-          descriptor === undefined ||
-          !reservation.isCurrent() ||
-          !this.arena.ownsDescriptorReservation(descriptor)
-        )
-          throw invalid('exact resource reservations issued by these Inputs');
+      if (resources.reservations.length > 0) {
         const previous = resources.root;
-        resources.root = this.copyResourcePath(
+        const pages = this.prepareResourcePages(
           previous,
-          reservation.logicalSlot,
-          reservation.descriptor,
+          resources.reservations,
+          0,
+          resources.reservations.length,
           24,
           resources.pages,
         );
-        role.resourceRoot = resources.root?.address ?? ABSENT_RESOURCE;
+        for (;;) {
+          if (!this.bufferPreparationLive(role, false))
+            throw invalid('current Source resource reservations');
+          const step = pages.next();
+          if (step.done) {
+            resources.root = step.value;
+            resources.root.holders++;
+            role.resourceRoot = resources.root.address;
+            break;
+          }
+          role.busy = false;
+          yield;
+          role.busy = true;
+        }
         this.releasePage(previous);
-        role.busy = false;
-        yield;
-        role.busy = true;
       }
       const descriptors = [...resources.pages.keys()];
       for (const reservation of resources.reservations) {
@@ -1341,7 +1399,21 @@ export class GpuSceneInputs {
         if (descriptor === undefined) throw invalid('retained private descriptor custody');
         descriptors.push(descriptor);
       }
-      role.bytes = this.arena.preparationByteLength(descriptors);
+      const required = this.arena.preparationByteLength(descriptors);
+      const currentBytes = this.arena.byteLength;
+      // A private handoff that grows the arena also reserves room for the
+      // ordinary View descriptors which are admitted after the Source mappings.
+      role.bytes =
+        required > currentBytes
+          ? Math.max(
+              required,
+              4 *
+                Math.min(
+                  Math.floor(Math.min(this.byteLimit, this.arena.byteLimit) / 4),
+                  dynamicCapacity(currentBytes / 4),
+                ),
+            )
+          : required;
       return this.createPreparedBuffer(role, descriptors).unwrap();
     } finally {
       role.busy = false;
@@ -1366,13 +1438,13 @@ export class GpuSceneInputs {
     role.originalBuffer = created.value;
     if (!this.bufferPreparationLive(role))
       return err(invalid('the original live Inputs owner after buffer creation'));
-    const prepared = role.upload.prepare(this.device.queue, created.value, descriptors);
+    const prepared = role.upload.prepare(this.device.queue, created.value, descriptors, role.bytes);
     if (!prepared.ok) return prepared;
     role.numeric = prepared.value;
     return ok(role.api);
   }
 
-  private bufferPreparationLive(role: PreparingInputBuffer): boolean {
+  private bufferPreparationLive(role: PreparingInputBuffer, validateReservations = true): boolean {
     return (
       role.state === 'preparing' &&
       this.preparingBuffer === role &&
@@ -1381,13 +1453,16 @@ export class GpuSceneInputs {
       this.arena.live &&
       this.upload === role.parentUpload &&
       this.buffer === role.parentBuffer &&
-      this.privateResourcesLive(role.resources) &&
+      this.privateResourcesLive(role.resources, validateReservations) &&
       role.state === 'preparing' &&
       this.preparingBuffer === role
     );
   }
 
-  private privateResourcesLive(resources: PrivateResources | undefined): boolean {
+  private privateResourcesLive(
+    resources: PrivateResources | undefined,
+    validateReservations: boolean,
+  ): boolean {
     if (resources === undefined) return true;
     if (
       resources.failure !== undefined ||
@@ -1395,10 +1470,12 @@ export class GpuSceneInputs {
       resources.current?.() !== true
     )
       return false;
-    for (const reservation of resources.reservations)
-      if (!this.privateResources.has(reservation) || !reservation.isCurrent()) return false;
-    for (const descriptor of resources.pages.keys())
-      if (!this.arena.ownsDescriptorReservation(descriptor)) return false;
+    if (validateReservations) {
+      for (const reservation of resources.reservations)
+        if (!this.privateResources.has(reservation) || !reservation.isCurrent()) return false;
+      for (const descriptor of resources.pages.keys())
+        if (!this.arena.ownsDescriptorReservation(descriptor)) return false;
+    }
     return resources.revision === this.resourceRevision;
   }
 
@@ -1587,6 +1664,7 @@ export class GpuSceneInputs {
       this.buffer = buffer;
       this.bufferBytes = role.bytes;
       this.preparingBuffer = undefined;
+      if (this.reducing === role.api) this.reducing = undefined;
       role.state = 'committed';
       if (previous !== undefined) this.deferBufferRetirement(previous);
       if (role.resources !== undefined) this.deferResourceRootRetirement(previousRoot);
@@ -1608,7 +1686,11 @@ export class GpuSceneInputs {
     for (const reservation of resources.reservations)
       if (!this.privateResources.has(reservation) || !reservation.isCurrent()) return false;
     for (const [descriptor, page] of resources.pages)
-      if (page?.prepared?.descriptor !== descriptor || page.prepared.pages !== resources.pages)
+      if (
+        page?.prepared?.descriptor !== descriptor ||
+        page.prepared.pages !== resources.pages ||
+        page.holders < 2
+      )
         return false;
     return true;
   }
@@ -1624,6 +1706,7 @@ export class GpuSceneInputs {
     for (const page of resources.pages.values()) {
       if (page === undefined) throw invalid('a fully constructed private resource page');
       delete page.prepared;
+      page.holders--;
     }
     if (this.resources !== resources.root) this.resourceRevision++;
     this.resources = resources.root;
@@ -1667,6 +1750,7 @@ export class GpuSceneInputs {
       role.numeric?.release();
       role.upload.release();
       if (this.preparingBuffer === role) this.preparingBuffer = undefined;
+      if (this.reducing === role.api) this.reducing = undefined;
     }
     if (role.busy) return;
     if (!role.accounted) {
@@ -1687,16 +1771,9 @@ export class GpuSceneInputs {
     if (role.busy) return false;
     try {
       if (resources.retirement === undefined) {
-        resources.retirement = this.releasePages(resources.root);
-        resources.root = undefined;
+        resources.retirement = this.releaseResourcePreparation(resources);
       }
       if (!resources.retirement.next().done) return false;
-      const orphan = resources.pages.keys().next().value;
-      if (orphan !== undefined) {
-        orphan.release();
-        resources.pages.delete(orphan);
-        return false;
-      }
       resources.reservations = [];
       resources.current = undefined;
       return true;
@@ -1704,6 +1781,56 @@ export class GpuSceneInputs {
       resources.failure = { cause };
       throw this.unconfirmedRetirement(0, undefined, cause);
     }
+  }
+
+  private *releaseResourcePreparation(resources: PrivateResources): Generator<void> {
+    const root = resources.root;
+    resources.root = undefined;
+    yield* this.releasePages(root);
+    for (const [descriptor, page] of resources.pages) {
+      if (page === undefined) {
+        descriptor.release();
+        resources.pages.delete(descriptor);
+      } else yield* this.releasePages(page);
+      yield;
+    }
+  }
+
+  /** The existing private upload path keeps old read domains alive through a smaller buffer handoff. */
+  reclaimSubmittedCapacity(): void {
+    if (!this.isLiveOn(this.device)) return;
+    const reducing = this.reducing;
+    if (reducing !== undefined) {
+      const step = reducing.step(64 * 1024);
+      if (!step.ok || !this.followCapacityReduction(reducing, step.value)) {
+        if (this.reducing === reducing) this.failedReductionBytes = reducing.byteLength;
+        reducing.release();
+      }
+      return;
+    }
+    if (this.preparingBuffer !== undefined || this.nativeInputWrites !== 0) return;
+    this.arena.reclaimTail();
+    const bytes = this.arena.byteLength;
+    if (!shouldShrinkCapacity(bytes, this.bufferBytes)) {
+      this.failedReductionBytes = 0;
+      return;
+    }
+    if (bytes === this.failedReductionBytes) return;
+    const prepared = this.prepareBuffer(bytes, (preparation) => {
+      this.reducing = preparation;
+      this.reductionLag = 0;
+    });
+    if (!prepared.ok) this.failedReductionBytes = bytes;
+  }
+
+  private followCapacityReduction(
+    reduction: GpuSceneInputPreparation,
+    status: GpuInputPreparationStatus,
+  ): boolean {
+    if (status.phase === 'current') return reduction.commitPrepared().ok;
+    // A dirty population that stays above the upload budget must not keep a
+    // private physical buffer resident indefinitely.
+    return status.copiedBytes < status.extentBytes || ++this.reductionLag < 32;
   }
 
   private flush(): Result<GpuInputBuffer, RhiError> {

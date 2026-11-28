@@ -173,6 +173,38 @@ function radianceAtlasExtent(probes: number) {
   return { width: columns * 11, height: Math.ceil(probes / columns) * 20 };
 }
 
+function selectScreenProbeIntegrateStage(
+  hasPixelMoving: boolean,
+  useBentNormal: boolean,
+):
+  | 'integrateScreenProbes'
+  | 'integrateScreenSpaceScreenProbesBent'
+  | 'integrateScreenSpaceScreenProbesWithMotion'
+  | 'integrateScreenSpaceScreenProbesBentWithMotion' {
+  if (hasPixelMoving) {
+    return useBentNormal
+      ? 'integrateScreenSpaceScreenProbesBentWithMotion'
+      : 'integrateScreenSpaceScreenProbesWithMotion';
+  }
+  return useBentNormal ? 'integrateScreenSpaceScreenProbesBent' : 'integrateScreenProbes';
+}
+
+function selectScreenProbeTemporalStage(
+  hasPixelMoving: boolean,
+  hasMotionWithDepth: boolean,
+  accumulateAo: boolean,
+) {
+  if (hasPixelMoving) {
+    return accumulateAo ? 'temporalScreenProbesWithAoAndMotion' : 'temporalScreenProbesWithMotion';
+  }
+  if (!hasMotionWithDepth) {
+    return accumulateAo ? 'temporalScreenProbesWithAo' : 'temporalScreenProbes';
+  }
+  return accumulateAo
+    ? 'temporalScreenProbesWithAoAndVelocity'
+    : 'temporalScreenProbesWithVelocity';
+}
+
 function addProbePasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   prepared: PreparedScreenProbe,
@@ -429,7 +461,9 @@ function addProbePasses(
       stage === 'beginTraceResolve' ||
       stage === 'scatterProbeTraces' ||
       stage === 'scatterProbeTracesWithMotion' ||
+      stage === 'integrateScreenSpaceScreenProbesBent' ||
       stage === 'integrateScreenSpaceScreenProbesWithMotion' ||
+      stage === 'integrateScreenSpaceScreenProbesBentWithMotion' ||
       stage === 'resetTraceList' ||
       stage === 'prepareScreenProbeReceiverMotion' ||
       stage === 'computeScreenProbeShortRangeAo'
@@ -472,6 +506,8 @@ function addProbePasses(
   const probeCount = (value: PreparedScreenProbe) => value.extent().layout.probeCount;
   const pixels = (value: PreparedScreenProbe) =>
     value.extent().layout.width * value.extent().layout.height;
+  const liveProbeWork: ProbeWork =
+    trace === undefined ? probeCount : { args: trace.dispatch, offset: 0 };
   function addProbePlacement() {
     if (atlas !== undefined) {
       const packed = stagePass('pack-radiance-atlas', 'packRadianceAtlas', () => fieldProbeCount);
@@ -510,6 +546,14 @@ function addProbePasses(
           'compactAdaptiveProbes',
           (value) => value.extent().layout.uniformCount * value.extent().layout.adaptiveSlots,
         ),
+      ...(trace === undefined
+        ? []
+        : [
+            // Placement owns the live probe count. Populate trace.dispatch(0)
+            // immediately so generate-rays, screen-trace, scatter, temporal,
+            // spatial filter, and preintegration all skip unused adaptive slots.
+            () => stagePass('trace-resolve-args', 'beginTraceResolve', () => 1),
+          ]),
       () =>
         trace === undefined
           ? stagePass('generate-rays', 'generateProbeRays', probeCount)
@@ -518,7 +562,7 @@ function addProbePasses(
               atlas === undefined || far === undefined
                 ? 'generateHistoryProbeRays'
                 : 'generateHardwareCacheProbeRays',
-              probeCount,
+              liveProbeWork,
               {
                 // Temporal starts at B; each spatial filter swaps. Preintegration
                 // writes its projection to the opposite buffer, keeping this radiance.
@@ -535,12 +579,6 @@ function addProbePasses(
   const probePlacement = addProbePlacement();
   if (!probePlacement.ok) return probePlacement;
   function addScreenTrace() {
-    if (trace !== undefined) {
-      // Placement owns the live probe count. Each screen workgroup traces the
-      // same 64-slot probe consumed by the existing compact and scatter passes.
-      const args = stagePass('trace-resolve-args', 'beginTraceResolve', () => 1);
-      if (!args.ok) return args;
-    }
     if (receiverMotion !== undefined) {
       const motion = stagePass('receiver-motion', 'prepareScreenProbeReceiverMotion', probeCount);
       if (!motion.ok) return motion;
@@ -676,7 +714,7 @@ function addProbePasses(
     const accumulated = stagePass(
       'probe-temporal',
       trace === undefined ? 'temporalProbeRadiance' : 'temporalTraceRadiance',
-      probeCount,
+      liveProbeWork,
       { radianceIn: radianceA, radianceOut: radianceB },
     );
     if (!accumulated.ok) return accumulated;
@@ -687,7 +725,7 @@ function addProbePasses(
   let radiance = radianceB;
   for (let i = 0; i < prepared.profile.probes.filterPasses; i++) {
     const out = radiance === radianceA ? radianceB : radianceA;
-    const filtered = stagePass(`filter-${i}`, 'filterProbeRadiance', probeCount, {
+    const filtered = stagePass(`filter-${i}`, 'filterProbeRadiance', liveProbeWork, {
       radianceIn: radiance,
       radianceOut: out,
     });
@@ -710,27 +748,22 @@ function addProbePasses(
   }
   const accumulateAo =
     shortRangeAo !== undefined && prepared.profile.probes.history?.pixel !== false;
-  const temporalStage =
-    pixelMoving !== undefined
-      ? accumulateAo
-        ? 'temporalScreenProbesWithAoAndMotion'
-        : 'temporalScreenProbesWithMotion'
-      : target.motionWithDepth === undefined
-        ? accumulateAo
-          ? 'temporalScreenProbesWithAo'
-          : 'temporalScreenProbes'
-        : accumulateAo
-          ? 'temporalScreenProbesWithAoAndVelocity'
-          : 'temporalScreenProbesWithVelocity';
+  const temporalStage = selectScreenProbeTemporalStage(
+    pixelMoving !== undefined,
+    target.motionWithDepth !== undefined,
+    accumulateAo,
+  );
+  const integrateStage = selectScreenProbeIntegrateStage(
+    pixelMoving !== undefined,
+    aoMode === 'full-bent' && prepared.profile.probes.integration === 'screen-space',
+  );
   const later: (() => ReturnType<typeof stagePass>)[] = [
     () =>
       stagePass(
         prepared.profile.probes.integration === 'screen-space'
           ? 'integrate-screen-space'
           : 'integrate',
-        pixelMoving === undefined
-          ? 'integrateScreenProbes'
-          : 'integrateScreenSpaceScreenProbesWithMotion',
+        integrateStage,
         pixels,
         { probeRadiance: radiance },
       ),

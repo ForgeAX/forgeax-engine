@@ -1,10 +1,13 @@
 #define_import_path forgeax_ray::irradiance_field
-#import forgeax_view::common::{View, hash32}
+#import forgeax_view::common::{View}
 #import forgeax_pbr::ibl_shared::{importanceSampleGGX}
 #import forgeax_pbr::gbuffer::{loadStandardGBufferNormalRoughness, loadStandardGBufferValid}
 #import forgeax_scene_temporal::{unpackSceneTemporalV1}
 #import forgeax_pbr::lighting_attenuation::{evalDistanceAttenuation, evalSpotAttenuation, decodeSpotDecay}
 #import forgeax_ray::irradiance_field_sample::{sampleIrradianceField, irradianceFieldSpacing, sampleRadianceCacheAt, radianceCacheConeAngle}
+#ifdef IRRADIANCE_FIELD_VISIBILITY
+#import forgeax_ray::field_visibility::{fieldCanonicalValidateStride, fieldCanonicalSetReady}
+#endif
 
 // Must match packIrradianceFieldFrame() in render/raytracing/irradiance-field.ts.
 struct FieldFrame { schedule: vec4u, cards: vec4u, atlas: vec4u, environment: vec4f, trace: vec4f, gather: vec4u, query: vec4u }
@@ -197,13 +200,32 @@ fn receiverPosition(pixel: vec2u, depth: f32, extent: vec2u) -> vec3f {
   upsampled[i] = select(vec4f(0.0), vec4f(value.xyz, 1.0), value.w > 0.0);
 }
 
-#ifdef IRRADIANCE_FIELD_VISIBILITY
 // UE LumenCombineReflectionsAlpha: the traced share of the reflection signal.
 fn reflectionTracedFraction(roughness: f32) -> f32 {
   let limit = bitcast<f32>(fieldFrame.query.z);
   let fade = max(bitcast<f32>(fieldFrame.query.w), 1e-3);
   return clamp((limit - roughness) / fade, 0.0, 1.0);
 }
+
+// UE LumenReflections GGXSamplingBias trims the extreme grazing GGX tail to
+// suppress 1-spp fireflies without distorting the core specular lobe.
+const REFLECTION_GGX_SAMPLING_BIAS = 0.1;
+
+// Spatially blue Interleaved Gradient Noise + temporal R2 quasi-random sequence.
+fn reflectionBlueSample(pixel: vec2u, frameIndex: u32, attempt: u32) -> vec2f {
+  let p = vec2f(pixel);
+  let spatial = vec2f(
+    fract(52.9829189 * fract(dot(p, vec2f(0.06711056, 0.00583715)))),
+    fract(52.9829189 * fract(dot(p + vec2f(17.0, 59.0), vec2f(0.06711056, 0.00583715)))),
+  );
+  let idx = f32((frameIndex * 4u + attempt) & 1023u);
+  let r2 = fract(vec2f(0.7548776662, 0.5698402910) * idx);
+  return fract(spatial + r2);
+}
+
+#ifdef IRRADIANCE_FIELD_VISIBILITY
+var<workgroup> reflectionCanonicalValid: atomic<u32>;
+#endif
 
 // Lite reflections from the radiance cache (UE LumenReflectionsCombine split).
 // Above maxRoughnessToTrace the cosine lobe around the Frostbite dominant
@@ -213,8 +235,24 @@ fn reflectionTracedFraction(roughness: f32) -> f32 {
 // the radiance cache filtered over the GGX lobe cone. fieldFrame.query.zw carry
 // the trace limit and fade length (f32 bits). The signal is radiance only; the
 // composite applies the split-sum response.
+#ifdef IRRADIANCE_FIELD_VISIBILITY
 @compute @workgroup_size(64) fn generateFieldReflections(@builtin(global_invocation_id) gid: vec3u,
+    @builtin(local_invocation_index) lid: u32,
     @builtin(num_workgroups) groups: vec3u) {
+  // Cooperatively validate canonical visibility source readiness once per
+  // workgroup (64x less work than validating every row per pixel per corner).
+  if (lid == 0u) { atomicStore(&reflectionCanonicalValid, 1u); }
+  workgroupBarrier();
+  if (!fieldCanonicalValidateStride(lid, 64u)) { atomicStore(&reflectionCanonicalValid, 0u); }
+  workgroupBarrier();
+  fieldCanonicalSetReady(atomicLoad(&reflectionCanonicalValid) != 0u);
+#else
+// Chebyshev-visibility reflection generator for hardware ray-query lanes: avoids
+// per-pixel software interval-BVH visibility walks while preserving exact HWRT
+// probe depth/variance occlusion and traced reflection rays.
+@compute @workgroup_size(64) fn generateReflectionsChebyshev(@builtin(global_invocation_id) gid: vec3u,
+    @builtin(num_workgroups) groups: vec3u) {
+#endif
   let i = fieldLinearId(gid, groups);
   let extent = fieldFrame.gather.zw;
   if (i >= extent.x * extent.y || i >= arrayLength(&reflectionSignal) ||
@@ -237,36 +275,58 @@ fn reflectionTracedFraction(roughness: f32) -> f32 {
   let lerpFactor = (1.0 - alpha) * (sqrt(1.0 - alpha) + alpha);
   let dominant = normalize(mix(n, mirror, lerpFactor));
   let traced = reflectionTracedFraction(roughness);
-  var rough = vec3f(0.0);
-  if (traced < 1.0) {
-    // Any cone at or beyond the cosine lobe reads the irradiance level.
-    let value = sampleRadianceCacheAt(position, n, v, dominant, 3.14159265);
-    if (value.w < 0.0) { return; }
-    rough = value.xyz * value.w * (1.0 - traced);
-  }
-  reflectionSignal[i] = vec4f(rough, 1.0);
+  var rayDirection = dominant;
   if (traced > 0.0) {
     // One GGX lobe sample per pixel and frame (split-sum convention: the
     // response owns DFG, so the signal is the lobe-averaged radiance).
-    var direction = dominant;
-    var seed = hash32(i ^ hash32(fieldFrame.schedule.w * 0x9e3779b9u));
     for (var attempt = 0u; attempt < 4u; attempt++) {
-      let a = f32(seed & 0xffffu) / 65536.0;
-      let b = f32(seed >> 16u) / 65536.0;
-      seed = hash32(seed + 0x85ebca6bu);
-      let l = reflect(-v, importanceSampleGGX(vec2f(a, b), n, roughness));
-      if (dot(l, n) > 0.0) { direction = l; break; }
+      let u = reflectionBlueSample(pixel, fieldFrame.schedule.w, attempt);
+      let biased = vec2f(u.x * (1.0 - REFLECTION_GGX_SAMPLING_BIAS), u.y);
+      let l = reflect(-v, importanceSampleGGX(biased, n, roughness));
+      if (dot(l, n) > 0.0) { rayDirection = l; break; }
     }
-    let fallback = sampleRadianceCacheAt(position, n, v, direction, radianceCacheConeAngle(roughness));
-    if (fallback.w < 0.0) { reflectionSignal[i] = vec4f(0.0); return; }
+  }
+  // Keep a single sampleRadianceCacheAt call site so GPU shader compilers do not
+  // duplicate the inlined visibility marcher and stall PSO creation.
+  var rough = vec3f(0.0);
+  var fallback = vec3f(0.0);
+  let firstQuery = select(1u, 0u, traced < 1.0);
+  let lastQuery = select(0u, 1u, traced > 0.0);
+  for (var queryPass = firstQuery; queryPass <= lastQuery; queryPass++) {
+    let queryDirection = select(rayDirection, dominant, queryPass == 0u);
+    let queryCone = select(radianceCacheConeAngle(roughness), 3.14159265, queryPass == 0u);
+    let value = sampleRadianceCacheAt(position, n, v, queryDirection, queryCone);
+    if (value.w < 0.0) { return; }
+    if (queryPass == 0u) {
+      rough = value.xyz * value.w * (1.0 - traced);
+    } else {
+      fallback = value.xyz * value.w;
+    }
+  }
+  reflectionSignal[i] = vec4f(rough, 1.0);
+  if (traced > 0.0) {
     reflectionRays[i] = FieldReflectionRay(vec4f(position + n * fieldFrame.trace.y, traced),
-      vec4f(direction, fieldFrame.trace.x), vec4f(fallback.xyz * fallback.w, 0.0));
+      vec4f(rayDirection, fieldFrame.trace.x), vec4f(fallback, 0.0));
   }
 }
+
+#ifdef IRRADIANCE_FIELD_VISIBILITY
 
 const REFLECTION_MAX_HISTORY = 8.0;
 // History clamp half-width in neighborhood standard deviations.
 const REFLECTION_CLAMP_SIGMA = 1.5;
+
+fn reflectionRgbToYCoCg(rgb: vec3f) -> vec3f {
+  let y = 0.25 * rgb.r + 0.5 * rgb.g + 0.25 * rgb.b;
+  let co = 0.5 * rgb.r - 0.5 * rgb.b;
+  let cg = -0.25 * rgb.r + 0.5 * rgb.g - 0.25 * rgb.b;
+  return vec3f(y, co, cg);
+}
+
+fn reflectionYCoCgToRgb(ycocg: vec3f) -> vec3f {
+  let tmp = ycocg.x - ycocg.z;
+  return vec3f(tmp + ycocg.y, ycocg.x + ycocg.z, tmp - ycocg.y);
+}
 
 // Hard admission shared by reprojection and the spatial filter: same plane,
 // same orientation, same lobe. No weight floor may admit another surface.
@@ -275,6 +335,47 @@ fn sameReflector(position: vec3f, surface: vec4f, other: ReflectionHistory) -> b
   return other.position.w == 1.0 && dot(other.normalRoughness.xyz, surface.xyz) > 0.9 &&
     abs(other.normalRoughness.w - surface.w) < 0.1 &&
     abs(dot(other.position.xyz - position, surface.xyz)) < tolerance;
+}
+
+fn sameReflectorSurface(position: vec3f, surface: vec4f, otherPosition: vec3f, otherSurface: vec4f) -> bool {
+  let tolerance = max(1e-3, 0.02 * length(view.cameraPos - position));
+  return dot(otherSurface.xyz, surface.xyz) > 0.9 &&
+    abs(otherSurface.w - surface.w) < 0.1 &&
+    abs(dot(otherPosition - position, surface.xyz)) < tolerance;
+}
+
+struct ReflectionHistoryTap {
+  radiance: vec3f,
+  age: f32,
+  support: f32,
+}
+
+fn sampleReflectionHistoryAt(uv: vec2f, extent: vec2u, position: vec3f,
+    surface: vec4f) -> ReflectionHistoryTap {
+  if (any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) {
+    return ReflectionHistoryTap(vec3f(0.0), 0.0, 0.0);
+  }
+  let coordinate = uv * vec2f(extent) - vec2f(0.5);
+  let origin = vec2i(floor(coordinate));
+  let f = fract(coordinate);
+  var sum = vec3f(0.0);
+  var ages = 0.0;
+  var support = 0.0;
+  for (var tap = 0u; tap < 4u; tap++) {
+    let offset = vec2u(tap & 1u, tap >> 1u);
+    let q = origin + vec2i(offset);
+    if (any(q < vec2i(0)) || any(q >= vec2i(extent))) { continue; }
+    let axis = select(vec2f(1.0) - f, f, offset > vec2u(0u));
+    let w = axis.x * axis.y;
+    if (!(w > 0.0)) { continue; }
+    let old = reflectionPrevious[u32(q.y) * extent.x + u32(q.x)];
+    if (!sameReflector(position, surface, old)) { continue; }
+    sum += old.radiance.xyz * w;
+    ages += old.radiance.w * w;
+    support += w;
+  }
+  if (!(support > 0.0)) { return ReflectionHistoryTap(vec3f(0.0), 0.0, 0.0); }
+  return ReflectionHistoryTap(sum / support, ages / support, support);
 }
 // Denoiser strength. Near-mirror lobes are sub-pixel: they keep the raw ray, like
 // the exact lane. The cache column is deterministic, so only the traced share
@@ -302,11 +403,11 @@ fn reflectionHistoryUv(position: vec3f, distance: f32, surfaceUv: vec2f) -> vec2
   return clip.xy / clip.w * vec2f(0.5, -0.5) + vec2f(0.5);
 }
 
-// Temporal accumulation (UE LumenReflectionsTemporal): reproject the traced
-// lobe through its reflection hit distance and the rough lobe through the
-// scene motion vector, admit bilinear history taps on the same reflector only,
-// clamp the admitted history to the current 3x3 neighborhood distribution and
-// blend with a bounded running mean. Rejected pixels restart at one frame.
+// Temporal accumulation (UE LumenReflectionsTemporal): sample surface-motion
+// and virtual-hit-distance history separately (never interpolating unrelated
+// UVs), admit bilinear taps on the same reflector only, clamp admitted history
+// against normal-gated 3x3 YCoCg neighborhood moments, and blend with a bounded
+// running mean. Rejected pixels restart at one frame.
 @compute @workgroup_size(64) fn accumulateFieldReflections(@builtin(global_invocation_id) gid: vec3u,
     @builtin(num_workgroups) groups: vec3u) {
   let i = fieldLinearId(gid, groups);
@@ -334,6 +435,17 @@ fn reflectionHistoryUv(position: vec3f, distance: f32, surfaceUv: vec2f) -> vec2
       let q = pixel + vec2i(x, y);
       if (any(q < vec2i(0)) || any(q >= vec2i(extent))) { continue; }
       let j = u32(q.y) * extent.x + u32(q.x);
+      let isCenter = x == 0 && y == 0;
+      var compatible = isCenter;
+      if (!isCenter && loadStandardGBufferValid(gbufferNormal, q)) {
+        let qDepth = textureLoad(gbufferDepth, q, 0);
+        if (qDepth > 0.0 && qDepth <= 1.0) {
+          let qPos = receiverPosition(vec2u(q), qDepth, extent);
+          let qSurface = loadStandardGBufferNormalRoughness(gbufferNormal, q);
+          compatible = sameReflectorSurface(position, surface, qPos, qSurface);
+        }
+      }
+      if (!compatible) { continue; }
       if (rays) {
         let d = reflectionTracedRays[j].fallback.w;
         if (d > 0.0 && (closest <= 0.0 || d < closest)) { closest = d; }
@@ -341,46 +453,55 @@ fn reflectionHistoryUv(position: vec3f, distance: f32, surfaceUv: vec2f) -> vec2
       }
       let s = reflectionTraced[j];
       if (s.w != 1.0) { continue; }
-      m1 += s.xyz;
-      m2 += s.xyz * s.xyz;
+      let yc = reflectionRgbToYCoCg(s.xyz);
+      m1 += yc;
+      m2 += yc * yc;
       taps += 1.0;
     }
   }
-  let mean = m1 / taps;
-  let sigma = sqrt(max(m2 / taps - mean * mean, vec3f(0.0)));
+  let mean = m1 / max(taps, 1.0);
+  let sigma = sqrt(max(m2 / max(taps, 1.0) - mean * mean, vec3f(0.0)));
   var radiance = current.xyz;
   var age = 1.0;
   let temporal = unpackSceneTemporalV1(textureLoad(gbufferMotion, pixel, 0));
   if (temporal.motionValid && all(abs(temporal.motionUv) < vec2f(4.0))) {
-    var uv = (vec2f(pixel) + vec2f(0.5)) / vec2f(extent) - temporal.motionUv;
-    if (rays) {
-      uv = mix(uv, reflectionHistoryUv(position, closest, uv),
-        reflectionTracedRays[i].originWeight.w);
+    let surfaceUv = (vec2f(pixel) + vec2f(0.5)) / vec2f(extent) - temporal.motionUv;
+    let tracedWeight = select(0.0, clamp(reflectionTracedRays[i].originWeight.w, 0.0, 1.0), rays);
+    var surfaceTap = ReflectionHistoryTap(vec3f(0.0), 0.0, 0.0);
+    var virtualTap = ReflectionHistoryTap(vec3f(0.0), 0.0, 0.0);
+    if (tracedWeight < 1.0) {
+      surfaceTap = sampleReflectionHistoryAt(surfaceUv, extent, position, surface);
     }
-    let coordinate = uv * vec2f(extent) - vec2f(0.5);
-    let origin = vec2i(floor(coordinate));
-    let f = fract(coordinate);
-    var sum = vec3f(0.0);
-    var ages = 0.0;
-    var support = 0.0;
-    for (var tap = 0u; tap < 4u; tap++) {
-      let offset = vec2u(tap & 1u, tap >> 1u);
-      let q = origin + vec2i(offset);
-      if (any(q < vec2i(0)) || any(q >= vec2i(extent))) { continue; }
-      let axis = select(vec2f(1.0) - f, f, offset > vec2u(0u));
-      let w = axis.x * axis.y;
-      if (!(w > 0.0)) { continue; }
-      let old = reflectionPrevious[u32(q.y) * extent.x + u32(q.x)];
-      if (!sameReflector(position, surface, old)) { continue; }
-      sum += old.radiance.xyz * w;
-      ages += old.radiance.w * w;
-      support += w;
+    if (tracedWeight > 0.0) {
+      let virtualUv = reflectionHistoryUv(position, closest, surfaceUv);
+      virtualTap = sampleReflectionHistoryAt(virtualUv, extent, position, surface);
+      // Fall back to surface motion when virtual parallax steps off-screen or disoccludes.
+      if (!(virtualTap.support > 0.0) && !(surfaceTap.support > 0.0)) {
+        surfaceTap = sampleReflectionHistoryAt(surfaceUv, extent, position, surface);
+      }
     }
-    if (support > 0.0) {
+    var historyRgb = vec3f(0.0);
+    var historyAge = 0.0;
+    var combinedWeight = 0.0;
+    if (virtualTap.support > 0.0 && surfaceTap.support > 0.0) {
+      historyRgb = mix(surfaceTap.radiance, virtualTap.radiance, tracedWeight);
+      historyAge = mix(surfaceTap.age, virtualTap.age, tracedWeight);
+      combinedWeight = 1.0;
+    } else if (virtualTap.support > 0.0) {
+      historyRgb = virtualTap.radiance;
+      historyAge = virtualTap.age;
+      combinedWeight = 1.0;
+    } else if (surfaceTap.support > 0.0) {
+      historyRgb = surfaceTap.radiance;
+      historyAge = surfaceTap.age;
+      combinedWeight = 1.0;
+    }
+    if (combinedWeight > 0.0) {
       let spread = sigma * REFLECTION_CLAMP_SIGMA;
-      let history = clamp(sum / support, mean - spread, mean + spread);
+      let clampedYCoCg = clamp(reflectionRgbToYCoCg(historyRgb), mean - spread, mean + spread);
+      let history = max(reflectionYCoCgToRgb(clampedYCoCg), vec3f(0.0));
       let limit = mix(1.0, REFLECTION_MAX_HISTORY, reflectionLobeBlend(surface.w));
-      let n = min(ages / support, limit - 1.0);
+      let n = min(historyAge, limit - 1.0);
       radiance = mix(history, current.xyz, 1.0 / (n + 1.0));
       age = n + 1.0;
     }

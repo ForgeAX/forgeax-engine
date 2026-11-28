@@ -11,7 +11,7 @@ function setup() {
   const frameState = { frameOutputs: { sceneSubmitted: false } } as unknown as RenderFrameState;
   const completion = Promise.resolve();
   const attempt = {
-    captureFrames: [],
+    captureBatch: undefined,
     completion,
     captureCompletion: undefined,
   } as unknown as FrameRecordingAttempt;

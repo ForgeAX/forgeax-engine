@@ -9,6 +9,7 @@ import {
   ANTIALIAS_MSAA,
   ANTIALIAS_NONE,
   buildCubeCameraFaceViews,
+  DEFAULT_STANDARD_PROFILE,
   type FrameReceipt,
   type FrameReceiptObservation,
   MeshRenderer,
@@ -117,6 +118,11 @@ const configureOutline = Symbol('configureOutline');
 const configurePlanarReflection = Symbol('configurePlanarReflection');
 const readFrame = Symbol('readFrame');
 const readFrameReceipt = Symbol('readFrameReceipt');
+
+const THREE_STANDARD_PROFILE = {
+  ...DEFAULT_STANDARD_PROFILE,
+  ambientOcclusion: { enabled: false },
+};
 
 export interface ThreeFrameObservation {
   readonly receipt: FrameReceipt;
@@ -419,6 +425,7 @@ export class WebGPURenderer {
           {
             ...options?.renderer,
             features: [...(options?.renderer?.features ?? []), ...this.fullscreenPrograms.features],
+            standardProfile: options?.renderer?.standardProfile ?? THREE_STANDARD_PROFILE,
             pipeline: createThreePipeline(format),
             rhi: this.recorder.backend.rhi,
             rhiInstrumentation: createRhiInstrumentation(this.recorder),

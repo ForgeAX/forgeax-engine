@@ -86,9 +86,16 @@ const ueCvars = freeze({
   'r.MotionBlurQuality': 0,
 });
 
+export const DEFAULT_CLOUD_BOUNDS = {
+  bottomMeters: 1_000,
+  thicknessMeters: 9_000,
+  entryLimitMeters: 50_000,
+  traceLimitMeters: 50_000,
+} as const;
+
 const wind = ueCloudWindOffset(1);
 const common = freeze({
-  bottomMeters: 5000, thicknessMeters: 10000,
+  ...DEFAULT_CLOUD_BOUNDS,
   layoutWeight: 1, maskWeight: 0, profileWeight: 1, bodyWeight: 1, erosionWeight: 1,
   useDetail: false, skipEmpty: false,
   windX: wind[0], windY: wind[1], windZ: wind[2],
@@ -100,8 +107,8 @@ const common = freeze({
   groundShadowEnabled: true, atmosphereShadowEnabled: true, surfaceShadowStrength: 1, atmosphereShadowStrength: 1,
   shadowSamples: 10, shadowDistanceMeters: 15000, shadowExtentMeters: 160000,
   shadowLightDistanceMeters: 80000, shadowFarDepthMeters: 160000, shadowDepthBiasMeters: 0,
-  shadowStrength: 1, shadowResolution: 128, shadowMapSamples: 64,
-  entryLimitMeters: 350000, traceLimitMeters: 50000, viewSampleCountScale: 1, stopTransmittance: 0.005,
+  shadowStrength: 1, shadowResolution: 128, shadowMapSamples: 64, shadowMapUe5Reference: false, shadowMapSpatialPasses: 1,
+  viewSampleCountScale: 1, stopTransmittance: 0.005,
 } satisfies CloudEdit);
 
 const sky = freeze({ planetRadiusMeters: 6_360_000, layerBottomMeters: common.bottomMeters, layerThicknessMeters: common.thicknessMeters });

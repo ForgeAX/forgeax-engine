@@ -12,6 +12,7 @@ import {
 import { tapeArtifact } from '@forgeax/engine-rhi-debug';
 import { ok } from '@forgeax/engine-types';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { resolveEngineStartup } from '../configuration';
 import type { RenderWorkerInput } from '../execution/render-worker-protocol';
 
 const mocks = vi.hoisted(() => ({
@@ -32,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   prepareMesh: vi.fn(),
   attachment: undefined as unknown,
   onFrameBoundary: undefined as (() => void) | undefined,
+  admittedBackend: undefined as 'webgpu' | 'wgpu-webgl2' | undefined,
   state: vi.fn(),
   turn: vi.fn(),
   listener: undefined as ((event: RendererEvent) => void) | undefined,
@@ -42,6 +44,15 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
     mocks.onFrameBoundary = (
       args[1] as { readonly rhiInstrumentation?: { readonly onFrameBoundary?: () => void } }
     ).rhiInstrumentation?.onFrameBoundary;
+    if (mocks.admittedBackend !== undefined) {
+      const options = args[2] as {
+        readonly onDeviceAdmitted?: (device: unknown) => void;
+      };
+      options.onDeviceAdmitted?.({
+        caps: { backendKind: mocks.admittedBackend, storageBuffer: true },
+        limits: { maxSampledTexturesPerShaderStage: 32 },
+      });
+    }
     return Promise.resolve({
       ok: true,
       value: {
@@ -83,6 +94,7 @@ beforeEach(() => {
   mocks.listener = undefined;
   mocks.attachment = undefined;
   mocks.onFrameBoundary = undefined;
+  mocks.admittedBackend = undefined;
   mocks.subscribe.mockImplementation((listener: (event: RendererEvent) => void) => {
     mocks.listener = listener;
     return mocks.unsubscribe;
@@ -123,6 +135,7 @@ async function start(
     readonly renderTaskYield?: 'none' | 'completion' | 'features';
     readonly renderPipelineCapacity?: 2 | 3 | 4;
     readonly renderBackend?: 'auto' | 'webgpu' | 'webgl2';
+    readonly startup?: Extract<RenderWorkerInput, { kind: 'init' }>['startup'];
   } = {},
   ready = true,
 ) {
@@ -148,6 +161,36 @@ async function start(
   );
   return { post, receive, initMessage };
 }
+
+it.each([
+  'webgpu',
+  'wgpu-webgl2',
+] as const)('publishes early material capabilities only for an admitted native device (%s)', async (backend) => {
+  mocks.admittedBackend = backend;
+  const plan = resolveEngineStartup({}, { platform: 'unknown' }).unwrap();
+  const startup = {
+    ...plan,
+    rendering: {
+      ...plan.rendering,
+      profile: { ...plan.rendering.profile, renderPath: 'forward' as const },
+    },
+  };
+  const { post } = await start({ startup });
+  const startupMessages = post.mock.calls
+    .map(([message]) => message)
+    .filter(({ kind }) => kind === 'device-admitted' || kind === 'ready');
+  if (backend === 'webgpu')
+    expect(startupMessages).toEqual([
+      {
+        kind: 'device-admitted',
+        identity: { source: 'test', epoch: 1 },
+        capabilities: { backendKind: 'webgpu', storageBuffer: true },
+        maxSampledTexturesPerShaderStage: 32,
+      },
+      expect.objectContaining({ kind: 'ready' }),
+    ]);
+  else expect(startupMessages).toEqual([expect.objectContaining({ kind: 'ready' })]);
+});
 
 /** A hand-built empty protocol record; the Renderer is mocked, so no column is decoded. */
 function publicationMessage(revision: number, side?: Record<string, unknown>) {

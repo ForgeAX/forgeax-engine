@@ -29,7 +29,6 @@ import {
   RenderEncoderOpenOrder,
   RenderFeatureGraphCompileOrder,
   RenderFeatureGraphRetireOrder,
-  RenderGraphCompileOrder,
   RenderSubmissionRetireOrder,
 } from '../system-order';
 import type { WaterFluidGraphFrame } from '../water/fluid-graph';
@@ -389,7 +388,6 @@ export function registerFeatureGraphSystems(world: World): void {
         commands: 'none',
         name: RENDER_FEATURE_GRAPH_COMPILE_SYSTEM,
         after: [RenderEncoderOpenOrder],
-        before: [RenderGraphCompileOrder],
         queries: [],
         fn: (world) => {
           const state = sharedGraphOf(world);

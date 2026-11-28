@@ -110,9 +110,17 @@ export function materialSourceScope(
   resolveVersion?: (handle: number, revision: number) => Asset | undefined,
 ): RenderResourceScope {
   if (source === undefined) return scope;
-  let owners = scopes.get(source);
-  const previous = owners?.get(scope);
-  if (previous !== undefined) return previous;
+  return (
+    scopes.get(source)?.get(scope) ?? installMaterialSourceScope(scope, source, resolveVersion)
+  );
+}
+
+/** The complete scope's closures refer only to its accepted assets and owner. */
+function installMaterialSourceScope(
+  scope: RenderResourceScope,
+  source: MaterialSourceSnapshot,
+  resolveVersion: ((handle: number, revision: number) => Asset | undefined) | undefined,
+): RenderResourceScope {
   type SourceAsset = MaterialSourceSnapshot['assets'][number];
   let single: SourceAsset | undefined;
   const assets = source.assets.length > 1 ? new Map<number, SourceAsset>() : undefined;
@@ -174,7 +182,7 @@ export function materialSourceScope(
   };
   if (complete) {
     // Source lookup can reenter; publish into the current owner table.
-    owners = scopes.get(source);
+    let owners = scopes.get(source);
     if (owners === undefined) {
       owners = new WeakMap();
       scopes.set(source, owners);

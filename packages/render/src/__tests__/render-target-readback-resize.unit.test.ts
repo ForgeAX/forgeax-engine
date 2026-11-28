@@ -35,7 +35,8 @@ it('rejects an unsubmitted old-extent readback after resize before encoding an i
   if (physical === undefined) throw new Error('Missing resized candidate');
   const encoder = device.createCommandEncoder({}).unwrap();
   const copy = vi.spyOn(encoder, 'copyTextureToBuffer');
-  host.encodePendingReadbacks(encoder, [{ target, layer: 0 }]);
+  host.stageRenderTargetWrite({ target, physical, layer: 0 });
+  host.encodePendingReadbacks(encoder);
   expect(copy).not.toHaveBeenCalled();
   host.markTargetSubmitted(target, physical);
   host.onFrameSubmitted(Promise.resolve({ ok: true, value: undefined }), {
@@ -47,7 +48,8 @@ it('rejects an unsubmitted old-extent readback after resize before encoding an i
   expect(rejected.ok).toBe(false);
   if (!rejected.ok) expect(rejected.error.code).toBe('render-target-operation-failed');
   const fresh = value(host.requestTargetReadback(target, { mipLevel: 0, layer: 0 }));
-  host.encodePendingReadbacks(encoder, [{ target, layer: 0 }]);
+  host.stageRenderTargetWrite({ target, physical, layer: 0 });
+  host.encodePendingReadbacks(encoder);
   expect(copy).toHaveBeenCalledTimes(1);
   expect(copy.mock.calls[0]?.[2]).toEqual([32, 32, 1]);
   host.onFrameSubmitted(Promise.resolve({ ok: true, value: undefined }), {
@@ -78,7 +80,8 @@ it('reads the matching accepted target while a differently sized candidate is wr
   if (candidate === undefined) throw new Error('Missing resized candidate');
   const encoder = device.createCommandEncoder({}).unwrap();
   const copy = vi.spyOn(encoder, 'copyTextureToBuffer');
-  host.encodePendingReadbacks(encoder, [{ target, layer: 0 }]);
+  host.stageRenderTargetWrite({ target, physical: candidate, layer: 0 });
+  host.encodePendingReadbacks(encoder);
   expect(copy.mock.calls[0]?.[0].texture).toBe(accepted.resolveTexture ?? accepted.texture);
   expect(copy.mock.calls[0]?.[2]).toEqual([64, 64, 1]);
   host.markTargetSubmitted(target, candidate);
@@ -93,6 +96,34 @@ it('reads the matching accepted target while a differently sized candidate is wr
   host.dispose();
 });
 
+it('reads the accepted layer when an encoded physical target is replaced before readback', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const host = createRenderTargetHost({ getDevice: () => device });
+  try {
+    const target = value(host.createRenderTarget(descriptor));
+    host.beginFrame();
+    const accepted = host.getPhysicalTarget(target);
+    if (accepted === undefined) throw new Error('Missing original candidate');
+    host.markTargetSubmitted(target, accepted);
+    host.onFrameSubmitted();
+    await Promise.resolve();
+
+    host.beginFrame();
+    host.stageRenderTargetWrite({ target, physical: accepted, layer: 0 });
+    value(host.resizeRenderTarget(target, descriptor));
+    const replacement = host.getPhysicalTarget(target);
+    expect(replacement).not.toBe(accepted);
+    value(host.requestTargetReadback(target, { mipLevel: 0, layer: 0 }));
+    const encoder = device.createCommandEncoder({}).unwrap();
+    const copy = vi.spyOn(encoder, 'copyTextureToBuffer');
+    host.encodePendingReadbacks(encoder);
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(copy.mock.calls[0]?.[0].texture).toBe(accepted.resolveTexture ?? accepted.texture);
+  } finally {
+    host.dispose();
+  }
+});
+
 it('admits only completed current physical cube faces for environment preparation', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const host = createRenderTargetHost({ getDevice: () => device });
@@ -100,11 +131,13 @@ it('admits only completed current physical cube faces for environment preparatio
   host.beginFrame();
   const physical = host.getPhysicalTarget(target);
   if (physical === undefined) throw new Error('Missing cube candidate');
-  host.encodePendingReadbacks(
-    device.createCommandEncoder({}).unwrap(),
-    Array.from({ length: 6 }, (_, layer) => ({ target, layer })),
-  );
-  host.markTargetSubmitted(target, physical);
+  for (let layer = 0; layer < 6; layer++) host.stageRenderTargetWrite({ target, physical, layer });
+  host.onFrameSubmitted(Promise.resolve({ ok: true, value: undefined }), undefined, false);
+  await Promise.resolve();
+  expect(host.environmentTarget(target)).toBeUndefined();
+
+  host.beginFrame();
+  for (let layer = 0; layer < 6; layer++) host.stageRenderTargetWrite({ target, physical, layer });
   expect(host.environmentTarget(target)).toBeUndefined();
   host.onFrameSubmitted(Promise.resolve({ ok: true, value: undefined }));
   await Promise.resolve();
@@ -131,8 +164,7 @@ it('admits a capture round by submitted face receipts before any face fence reso
     host.beginFrame();
     const physical = host.getPhysicalTarget(target);
     if (physical === undefined) throw new Error('Missing cube candidate');
-    host.encodePendingReadbacks(device.createCommandEncoder({}).unwrap(), [{ target, layer }]);
-    host.markTargetSubmitted(target, physical);
+    host.stageRenderTargetWrite({ target, physical, layer });
     host.onFrameSubmitted(fence, receipt);
   };
   try {

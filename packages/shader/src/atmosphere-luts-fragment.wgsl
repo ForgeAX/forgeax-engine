@@ -1,6 +1,6 @@
 #define_import_path forgeax_atmosphere::luts_fragment
 #import forgeax_view::common::{View, FullscreenOutput, fullscreen_triangle, view_atmosphere_fast_ap, view_atmosphere_fast_ap_samples}
-#import forgeax_atmosphere::table_kernels::{atmosphere_transmittance_texel, atmosphere_multiple_scattering_texel, atmosphere_sky_view_texel, atmosphere_aerial_texel, atmosphere_distant_sky_sample}
+#import forgeax_atmosphere::table_kernels::{atmosphere_transmittance_texel, atmosphere_multiple_scattering_texel, atmosphere_sky_view_texel, atmosphere_aerial_texel, atmosphere_distant_sky_sample, atmosphere_transmittance_steps, atmosphere_ue5_multiple_texel, atmosphere_ue5_sky_texel}
 
 @group(0) @binding(0) var<uniform> parameters: View;
 @group(0) @binding(1) var transmittance: texture_2d<f32>;
@@ -52,4 +52,20 @@ fn atmosphere_packed_aerial_fragment(input:FullscreenOutput)->@location(0) vec4<
   let ray=atmosphere_aerial_texel(parameters,id,vec3<u32>(32u,32u,depth),transmittance,multiple,filtering,samples);
   let extinction=select(ray.transmittance,vec3<f32>(dot(ray.transmittance,vec3<f32>(1.0/3.0))),fast);
   return vec4<u32>(pack2x16float(ray.luminance.rg),pack2x16float(vec2<f32>(ray.luminance.b,extinction.r)),pack2x16float(extinction.gb),0u);
+}
+
+@fragment
+fn atmosphere_ue5_transmittance_fragment(@builtin(position) point: vec4f) -> @location(0) vec4f {
+  return atmosphere_transmittance_steps(parameters.atmosphere, point.xy / vec2f(256.0, 64.0), 10u, 0.3);
+}
+
+@fragment
+fn atmosphere_ue5_multiple_scattering_fragment(@builtin(position) point: vec4f) -> @location(0) vec4f {
+  return atmosphere_ue5_multiple_texel(parameters.atmosphere, point.xy / 32.0, transmittance, filtering);
+}
+
+@fragment
+fn atmosphere_ue5_sky_view_fragment(@builtin(position) point: vec4f) -> @location(0) vec4f {
+  let size = vec2f(192.0, 104.0);
+  return atmosphere_ue5_sky_texel(parameters, point.xy / size, size, transmittance, multiple, filtering);
 }

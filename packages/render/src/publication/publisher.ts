@@ -35,6 +35,7 @@ import type {
   RenderFeatureExtractContext,
   RenderFeatureSubmission,
 } from '../features/types';
+import type { SourceMaterialProgramDemand } from '../material-program-selection';
 import { MaterialResource, materialResource } from '../material-resource';
 import { materialSourceReferences } from '../material-source';
 import type { FeatureTextureReadbackResult } from '../render-contract';
@@ -237,6 +238,74 @@ export interface RenderPublicationCandidate {
   discard(): void;
 }
 
+interface SourceFeatureRoster {
+  readonly sources: readonly RenderFeature<unknown>[];
+  readonly sharedView: readonly boolean[];
+}
+
+interface RequestedSourceFeature {
+  readonly feature: RenderFeature<unknown>;
+  readonly identity: string;
+  readonly source: RenderFeature<unknown> | undefined;
+}
+
+function sameRequestedSourceFeatures(
+  requested: readonly RenderFeature<unknown>[],
+  admitted: readonly RequestedSourceFeature[],
+): boolean {
+  if (requested.length !== admitted.length) return false;
+  for (let index = 0; index < admitted.length; index++) {
+    const row = admitted[index] as RequestedSourceFeature;
+    const input = requested[index];
+    if (input !== row.feature || input.identity !== row.identity || input.source !== row.source)
+      return false;
+  }
+  return true;
+}
+
+/** Keep the installed producer order. Later edits replace the roster, while
+ * accepted flights keep the original owners for callbacks and retirement. */
+function sourceFeatureRoster(requested: readonly RenderFeature<unknown>[]) {
+  const initial = withBuiltinRenderFeatures(requested);
+  const defaults = new Map<
+    string,
+    { readonly source: RenderFeature<unknown>; readonly sharedView: boolean }
+  >();
+  for (const feature of initial) {
+    const source = feature.source ?? feature;
+    if (!defaults.has(source.identity))
+      defaults.set(source.identity, {
+        source,
+        sharedView: !requested.some((author) => author.identity === feature.identity),
+      });
+  }
+
+  let admitted: readonly RequestedSourceFeature[];
+  function select(installed: readonly RenderFeature<unknown>[]): SourceFeatureRoster {
+    admitted = requested.map((feature) => ({
+      feature,
+      identity: feature.identity,
+      source: feature.source,
+    }));
+    const sources: RenderFeature<unknown>[] = [];
+    const sharedView: boolean[] = [];
+    for (const feature of installed) {
+      const authored = admitted.some(({ identity }) => identity === feature.identity);
+      const fallback = authored ? undefined : defaults.get(feature.identity);
+      sources.push(authored ? (feature.source ?? feature) : (fallback?.source ?? feature));
+      sharedView.push(!authored && (fallback?.sharedView ?? true));
+    }
+    return { sources, sharedView };
+  }
+
+  let roster = select(initial);
+  return (): SourceFeatureRoster => {
+    if (!sameRequestedSourceFeatures(requested, admitted))
+      roster = select(withBuiltinRenderFeatures(requested));
+    return roster;
+  };
+}
+
 /** Source indices and asset dependencies only; the receiver owns the RenderScene. */
 export function createRenderPublisher(
   world: World,
@@ -260,6 +329,8 @@ export function createRenderPublisher(
   preparingMesh?: (handle: number) => boolean,
   /** These newly materialized renderables are owned by the closed Level lane. */
   ownsClosedLevelRow?: (entity: number) => boolean,
+  /** Program families selected by the managed renderer's initial profile. */
+  materialProgramDemand?: SourceMaterialProgramDemand,
 ) {
   world.bindAssets(assets).unwrap();
   const assetObserver = assets.observe().unwrap();
@@ -288,6 +359,7 @@ export function createRenderPublisher(
   const source = createRenderSourceState(world);
   const transforms = createGlobalTransformChangeQuery(world);
   const caches: MaterialSnapshotContexts = new Map();
+  let pendingProgramDemand: SourceMaterialProgramDemand | undefined;
   const changedMaterialSources = new Set<number>();
   // A capture demand flip re-routes cached planar receivers.
   let planarDemand: boolean | undefined;
@@ -329,9 +401,8 @@ export function createRenderPublisher(
   let revision = 0,
     disposed = false,
     failed = false;
-  const builtinFeatureSources = withBuiltinRenderFeatures(features, capabilities).map(
-    (feature) => feature.source ?? feature,
-  );
+  const resolveFeatureRoster = sourceFeatureRoster(features);
+  const receiverSession = `${identity.source}:${identity.epoch}`;
   let preparationPhase: 'idle' | 'preparing' | 'candidate' | 'settling' = 'idle';
   const phaseIs = (phase: typeof preparationPhase): boolean => preparationPhase === phase;
   let lastScannedRows = 0,
@@ -396,13 +467,7 @@ export function createRenderPublisher(
    * the packet and the deferred acceptance that commits its publisher state.
    */
   class PublicationPreparation {
-    readonly featureSources = withBuiltinRenderFeatures(features, capabilities).map((feature) => {
-      if (features.some((requested) => requested.identity === feature.identity))
-        return feature.source ?? feature;
-      return (
-        builtinFeatureSources.find((builtin) => builtin.identity === feature.identity) ?? feature
-      );
-    });
+    private readonly featureRoster = resolveFeatureRoster();
     readonly sourceChanges: RenderSourceChanges;
     get batch() {
       return this.sourceChanges.batch;
@@ -639,6 +704,7 @@ export function createRenderPublisher(
       environmentGate.assetsChanged = this.baseline || this.assetBatch.changes.length > 0;
       const frame = extractSource(world, assets, caches, {
         ...(capabilities === undefined ? {} : renderMaterialContext(capabilities, limits)),
+        materialProgramDemand,
         cull: 'none',
         retainHidden: true,
         renderables: extracted.size ? { kind: 'partial', entities: extracted } : 'none',
@@ -812,7 +878,7 @@ export function createRenderPublisher(
             acceptedMetadata = packet.metadata;
             flights.set(revision, {
               features: featureRows,
-              owners: this.featureSources,
+              owners: this.featureRoster.sources,
               phase: 'accepted',
             });
             storage = spareStorage.pop();
@@ -845,7 +911,7 @@ export function createRenderPublisher(
           try {
             for (const row of featureRows) {
               if (row.failure !== undefined) continue;
-              this.featureSources
+              this.featureRoster.sources
                 .find((feature) => feature.identity === row.identity)
                 ?.onSourceFrameDiscarded?.(row.data);
             }
@@ -917,6 +983,8 @@ export function createRenderPublisher(
               context === undefined ? undefined : { ...context, geometry },
               undefined,
               vertexColor,
+              geometry,
+              materialProgramDemand,
             );
             const resource = MaterialResource.from(snapshot);
             const id = materialIds.get(resource);
@@ -1326,12 +1394,19 @@ export function createRenderPublisher(
     private extractFeatureRows(
       frame: ReturnType<typeof extractSource>,
     ): RenderPublication['features'] {
-      return this.featureSources.flatMap((feature, order) => {
-        const captured = captureRenderFeatureSource(
-          feature,
-          this.featureExtractContext(frame),
-          order,
-        );
+      const { sources, sharedView } = this.featureRoster;
+      const rows: RenderPublication['features'][number][] = [];
+      let sharedContext: RenderFeatureExtractContext | undefined;
+      for (let order = 0; order < sources.length; order++) {
+        const feature = sources[order] as RenderFeature<unknown>;
+        // Authored Feature inputs stay detached. The Engine's built-ins read
+        // the same camera facts for this publication.
+        let context: RenderFeatureExtractContext;
+        if (sharedView[order]) {
+          sharedContext ??= this.featureExtractContext(frame);
+          context = sharedContext;
+        } else context = this.featureExtractContext(frame);
+        const captured = captureRenderFeatureSource(feature, context, order);
         const data = captured.result.ok ? captured.result.value : undefined;
         if (
           captured.result.ok &&
@@ -1339,32 +1414,31 @@ export function createRenderPublisher(
           Object.hasOwn(feature, 'inactiveSourceData') &&
           data === feature.inactiveSourceData
         )
-          return [];
+          continue;
         const fullscreen = fullscreenRenderFeatureDeclaration(feature);
-        return [
-          {
-            identity: feature.identity,
-            data,
-            ...(captured.result.ok
-              ? {}
-              : { failure: renderFeatureSourceFailure(captured.result.error) }),
-            ...(captured.hiddenEntities.length === 0
-              ? {}
-              : { hiddenEntities: captured.hiddenEntities }),
-            ...(fullscreen === undefined ||
-            publishedFullscreenFeatures.get(feature.identity) === fullscreen
-              ? {}
-              : { fullscreen }),
-          },
-        ];
-      });
+        rows.push({
+          identity: feature.identity,
+          data,
+          ...(captured.result.ok
+            ? {}
+            : { failure: renderFeatureSourceFailure(captured.result.error) }),
+          ...(captured.hiddenEntities.length === 0
+            ? {}
+            : { hiddenEntities: captured.hiddenEntities }),
+          ...(fullscreen === undefined ||
+          publishedFullscreenFeatures.get(feature.identity) === fullscreen
+            ? {}
+            : { fullscreen }),
+        });
+      }
+      return rows;
     }
 
     private featureExtractContext(
       frame: ReturnType<typeof extractSource>,
     ): RenderFeatureExtractContext {
       return renderFeatureSourceContext(world, frame, revision + 1, {
-        receiverSession: `${identity.source}:${identity.epoch}`,
+        receiverSession,
         ...(capabilities === undefined
           ? {}
           : {
@@ -1429,7 +1503,7 @@ export function createRenderPublisher(
       featureRows: RenderPublication['features'],
     ): Set<number> {
       const nextFrameDependencies = new Set(publicationFrameDependencies(frame));
-      for (const feature of this.featureSources) {
+      for (const feature of this.featureRoster.sources) {
         const row = featureRows.find((row) => row.identity === feature.identity);
         if (row === undefined || row.failure !== undefined) continue;
         for (const identity of feature.assetDependencies?.(row.data) ?? []) {
@@ -1584,6 +1658,10 @@ export function createRenderPublisher(
               capabilities === undefined
                 ? undefined
                 : renderMaterialContext(capabilities, limits).materialContext,
+              undefined,
+              false,
+              'mesh',
+              materialProgramDemand,
             ),
           ]);
         }
@@ -1796,6 +1874,22 @@ export function createRenderPublisher(
 
   return {
     identity,
+    get materialProgramDemand() {
+      return pendingProgramDemand ?? materialProgramDemand;
+    },
+    get materialProgramExpansionPending() {
+      return pendingProgramDemand !== undefined;
+    },
+    requireMaterialPrograms(demand: SourceMaterialProgramDemand | undefined) {
+      const current = pendingProgramDemand ?? materialProgramDemand;
+      if (current === undefined) return false;
+      const deferred = current.deferred || demand?.deferred !== false;
+      const ray = current.ray || demand?.ray !== false;
+      const sceneIndex = current.sceneIndex || demand?.sceneIndex !== false;
+      if (deferred !== current.deferred || ray !== current.ray || sceneIndex !== current.sceneIndex)
+        pendingProgramDemand = { deferred, ray, sceneIndex };
+      return pendingProgramDemand !== undefined;
+    },
     /** A successful candidate preparation ACK proves these programs reached this receiver. */
     acknowledgePrograms,
     unpublishedPrograms: (programs: RenderPublication['programs']) =>
@@ -1822,6 +1916,14 @@ export function createRenderPublisher(
         return fail('disposed', 'publisher retired or failed; start a new source epoch');
       if (!phaseIs('idle') || flights.size >= maxInFlight)
         return fail('in-flight', 'publication slots are occupied');
+      if (pendingProgramDemand !== undefined) {
+        materialProgramDemand = pendingProgramDemand;
+        pendingProgramDemand = undefined;
+        // The accepted material rows stay live until their replacement packet.
+        // Re-extract them once against the widened view demand.
+        caches.clear();
+        for (const entity of members) pending.add(entity);
+      }
       materialRows.clear();
       materialSources.clear();
       nextMaterialDependencies.clear();

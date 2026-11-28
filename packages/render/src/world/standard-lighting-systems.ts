@@ -1,6 +1,8 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { RendererOperationError } from '../errors/render';
+import { resetViewFeatures } from '../features/view-feature-work';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
+import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { resolveFrameMaterials } from '../record/frame-admission';
 import {
   prepareFrameLighting,
@@ -16,8 +18,8 @@ import {
   recordProfileRunner,
   runRecordProfilePhase,
 } from '../record/render-context';
-import { resetRenderFeatureGraphState } from '../record/typed-frame-graph';
 import type { CameraSnapshot } from '../render-contract';
+import { sameAmbientOcclusionSettings } from '../ssao-config';
 import {
   RenderCascadeFitOrder,
   RenderEnvironmentAdmitOrder,
@@ -151,6 +153,59 @@ export function consumeViewStandardLighting(
  * brands a new installed pipeline and re-contributes its Feature graph state;
  * the prior compiled graph remains last-known-good until compilation.
  */
+function resolveCameraViewportOutput(
+  frameState: RenderFrameState,
+  internals: RenderSystemInternals,
+  camera: CameraSnapshot | undefined,
+) {
+  const install = frameState.standardInstall;
+  const vpExt = internals.viewportOutput;
+  const previousVpBucket = frameState.viewportOutputResolution?.topologyBucket;
+  const isCaptureView = recordContext(internals).captureView !== undefined;
+  let vpResolution: import('../viewport-output-contract').ViewportOutputResolution | undefined;
+  if (vpExt !== undefined && !isCaptureView && vpExt.getMode() !== 'lit') {
+    const baseAo =
+      camera?.ambientOcclusion !== undefined
+        ? camera.ambientOcclusion.enabled
+        : (install.configured?.ambientOcclusion?.enabled ??
+          internals.standardProfile?.ambientOcclusion?.enabled ??
+          false);
+    vpResolution = vpExt.resolveView({
+      deviceCaps: internals.device.caps,
+      deviceLimits: internals.device.limits,
+      antialias: camera?.antialias,
+      profile: internals.standardProfile,
+      ambientOcclusionEnabled: baseAo,
+      compactGbuffer: internals.standardProfile?.gbufferFormat === 'default',
+      hasReceiverGeometry: internals.standardProfile?.gbufferFormat !== 'default',
+    });
+  }
+  frameState.viewportOutputResolution = vpResolution;
+  const forceDeferredForDebug = vpResolution?.activePath === 'gbuffer-visualizer';
+  const effectiveCamera =
+    forceDeferredForDebug &&
+    camera !== undefined &&
+    (vpResolution?.suspendMsaa || vpResolution?.suspendTemporalAa)
+      ? { ...camera, antialias: 'none' as const }
+      : camera;
+  const effectiveProfile = forceDeferredForDebug
+    ? {
+        ...(internals.standardProfile ?? DEFAULT_STANDARD_PROFILE),
+        renderPath: 'deferred' as const,
+      }
+    : internals.standardProfile;
+  const effectiveRequestedPath = forceDeferredForDebug
+    ? ('deferred' as const)
+    : internals.requestedStandardProfile?.renderPath;
+  return {
+    previousVpBucket,
+    vpResolution,
+    effectiveCamera,
+    effectiveProfile,
+    effectiveRequestedPath,
+  };
+}
+
 function admitCameraConfiguration(
   { frameState, internals }: ViewSettlementOwner,
   camera: CameraSnapshot | undefined,
@@ -162,13 +217,20 @@ function admitCameraConfiguration(
     maxColorAttachments: internals.device.caps.maxColorAttachments,
     maxColorAttachmentBytesPerSample: internals.device.limits.maxColorAttachmentBytesPerSample,
   };
+  const {
+    previousVpBucket,
+    vpResolution,
+    effectiveCamera,
+    effectiveProfile,
+    effectiveRequestedPath,
+  } = resolveCameraViewportOutput(frameState, internals, camera);
   let configuration = deriveCameraStandardConfiguration(
-    internals.standardProfile,
+    effectiveProfile,
     install.configured,
-    camera,
+    effectiveCamera,
     lane,
     singleLayerWater,
-    internals.requestedStandardProfile?.renderPath,
+    effectiveRequestedPath,
   );
   if (!configuration.ok) {
     const failureKey = JSON.stringify([configuration.error.code, configuration.error.detail]);
@@ -179,27 +241,36 @@ function admitCameraConfiguration(
     if (configuration.error.code === 'resource-descriptor-invalid') return false;
     // Invalid AO cannot prevent independently required material or SSR work.
     configuration = deriveCameraStandardConfiguration(
-      internals.standardProfile,
+      effectiveProfile,
       install.configured,
-      { antialias: camera?.antialias, screenSpaceReflection: camera?.screenSpaceReflection },
+      {
+        antialias: effectiveCamera?.antialias,
+        screenSpaceReflection: effectiveCamera?.screenSpaceReflection,
+      },
       lane,
       singleLayerWater,
-      internals.requestedStandardProfile?.renderPath,
+      effectiveRequestedPath,
     );
   } else {
     install.cameraFailure = '';
   }
   if (!configuration.ok) return false;
-  const signature = JSON.stringify([
-    configuration.value.profile?.renderPath,
-    configuration.value.config?.ambientOcclusion,
-  ]);
-  frameState.cameraStandardProfile = configuration.value.profile;
-  frameState.installedPipelineConfig = configuration.value.config;
-  if (signature !== install.cameraSignature) {
-    install.cameraSignature = signature;
+  const previousProfile = frameState.cameraStandardProfile ?? internals.standardProfile;
+  const previousPath = previousProfile?.renderPath;
+  const previousAo = frameState.installedPipelineConfig?.ambientOcclusion;
+  const { profile, config } = configuration.value;
+  const changed =
+    !install.cameraConfigured ||
+    profile?.renderPath !== previousPath ||
+    profile?.cloudMode0Model !== previousProfile?.cloudMode0Model ||
+    !sameAmbientOcclusionSettings(previousAo, config?.ambientOcclusion) ||
+    vpResolution?.topologyBucket !== previousVpBucket;
+  frameState.cameraStandardProfile = profile;
+  frameState.installedPipelineConfig = config;
+  if (changed) {
+    install.cameraConfigured = true;
     frameState.installedPipelineHandle += 1;
-    resetRenderFeatureGraphState(internals);
+    resetViewFeatures(frameState);
     install.built = frameState.installedPipelineHandle;
   }
   return true;

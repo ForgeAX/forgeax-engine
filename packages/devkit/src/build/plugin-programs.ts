@@ -568,6 +568,7 @@ export function pluginProgramsBuild(
     : '.programs.json';
   let engineIdentity = '';
   let facades: ReadonlySet<string> = new Set();
+  let runtimeFacades: ReadonlySet<string> = new Set();
   let session = '';
   const sessionModules = new Set<string>();
   const hasRoots = options.roots.engine !== undefined || options.roots.frontend !== undefined;
@@ -628,7 +629,9 @@ export function pluginProgramsBuild(
     configResolved(config) {
       command = config.command;
       const workers = config.plugins.find((plugin) => plugin.name === executionWorkerEntriesName);
-      facades = (workers?.api as ExecutionWorkerEntriesApi | undefined)?.facadeModules ?? new Set();
+      const workerEntries = workers?.api as ExecutionWorkerEntriesApi | undefined;
+      facades = workerEntries?.facadeModules ?? new Set();
+      runtimeFacades = workerEntries?.runtimeFacadeModules ?? new Set();
       // A restarted standalone Vite Host can reuse its root. Its previous
       // frozen graph must retire, while all namespaces share the current Host.
       const identity = devProgramSessions.get(config) ?? randomUUID();
@@ -908,7 +911,7 @@ export function pluginProgramsBuild(
       if (error || command !== 'build' || options.delivery === 'native') return;
       // Complete the incremental walk using the compiler's final module facts.
       archive.preserveModules(this);
-      archive.prepareGroups(this, facades);
+      archive.prepareGroups(this, facades, runtimeFacades);
       if (archive.entries.size === 0) return;
       const engineManifest = await this.resolve('@forgeax/engine/package.json', undefined, {
         skipSelf: true,

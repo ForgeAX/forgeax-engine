@@ -18,6 +18,7 @@ import {
 } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { MaterialFrame } from '../scene/material-dispatch';
+import { SceneDrawSlot } from '../scene/mesh-draw';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import { SceneSlotFrame, SceneSlotPage, SceneSlots } from '../scene/scene-slots';
@@ -413,6 +414,41 @@ test('SceneData-only contributor reads leave pose, Mesh draw and temporal rows l
     expect(counters.misses).toBe(1);
   } finally {
     read.mockRestore();
+  }
+});
+
+test('temporal draws consume the captured Mesh fields without issuing ordinary draw snapshots', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const materials = new MaterialFrame(undefined).with(material);
+  const scene = new RenderScene();
+  scene.setTemporalTracking(true);
+  update(scene, { ...source(7, 3, material), materialOverrides: [material] });
+  scene.adoptMesh(1, createBoxGeometry(2, 2, 2).unwrap());
+  const roster = scene.slotsSnapshot();
+  scene.commitSubmission(scene.captureSubmission([], roster));
+  const draw = vi.spyOn(SceneDrawSlot.prototype, 'draw');
+  try {
+    for (let frame = 1; frame <= 8; frame++) {
+      scene.apply([
+        { kind: 'update', entityKey: 7, world: source(7, frame + 3, material).transform.world },
+      ]);
+      const slot = required(scene.slot(7)).slot;
+      const before = required(scene.drawFrame(materials)(slot));
+      const held = scene.materializeTemporal({ hits: 0, misses: 0 }, materials);
+      expect(held.at(0)).toBe(before);
+      expect(scene.drawSnapshotAt(slot)).toBe(before);
+      expect(before.temporal?.previousTransform.world[12]).toBe(frame + 2);
+      expect(before.transform.world[12]).toBe(frame + 3);
+      expect(before.localAabb?.[0]).toBe(-1);
+      scene.adoptMesh(1, createBoxGeometry(4, 2, 2).unwrap());
+      expect(scene.drawFrame(materials)(slot)?.localAabb?.[0]).toBe(-2);
+      expect(held.at(0)?.localAabb?.[0]).toBe(-1);
+      scene.commitSubmission(scene.captureSubmission([], scene.slotsSnapshot()));
+      scene.adoptMesh(1, createBoxGeometry(2, 2, 2).unwrap());
+    }
+    expect(draw).not.toHaveBeenCalled();
+  } finally {
+    draw.mockRestore();
   }
 });
 

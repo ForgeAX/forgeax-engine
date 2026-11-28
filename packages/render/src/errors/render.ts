@@ -1675,7 +1675,12 @@ export interface RendererOperationDetailByCode {
     readonly cause: RendererOperationCause;
   };
   readonly 'frame-input-invalid': {
-    readonly operation: 'draw' | 'set-profile' | 'set-output-color-space' | 'request-observation';
+    readonly operation:
+      | 'draw'
+      | 'set-profile'
+      | 'set-output-color-space'
+      | 'set-viewport-output'
+      | 'request-observation';
     readonly cause: RendererOperationCause;
   };
   readonly 'scene-projection-failed': {
@@ -1709,6 +1714,7 @@ export interface RendererOperationDetailByCode {
       | 'draw'
       | 'set-profile'
       | 'set-output-color-space'
+      | 'set-viewport-output'
       | 'request-observation'
       | 'recover'
       | 'dispose';

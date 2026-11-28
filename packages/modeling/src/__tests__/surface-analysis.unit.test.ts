@@ -84,6 +84,21 @@ describe('surface field', () => {
     expect(checked).toBeGreaterThan(20);
   });
 
+  it('reads the patch domain from the named attribute (BK56 carrier)', () => {
+    const uv1 = mesh.attributes.uv1 as Float32Array;
+    const moved = {
+      ...mesh,
+      attributes: { ...mesh.attributes, uv2: uv1, uv1: new Float32Array(uv1.length) },
+    };
+    const exact = surfaceField(mesh, [surface]);
+    const viaUv2 = surfaceField(moved, [surface], { domain: 'uv2' });
+    const viaUv1 = surfaceField(moved, [surface]);
+    if (!exact.ok || !viaUv2.ok || !viaUv1.ok) throw new Error('surfaceField failed');
+    expect(exact.value.exactVertices).toBeGreaterThan(0);
+    expect(viaUv2.value.exactVertices).toBe(exact.value.exactVertices);
+    expect(viaUv1.value.exactVertices).toBeLessThan(exact.value.exactVertices);
+  });
+
   it('rejects a mesh without triangles and a bad tolerance', () => {
     expect(surfaceField(mesh, [surface], { tolerance: 0 }).ok).toBe(false);
     const lines = surfaceField({ ...mesh, submeshes: [] });

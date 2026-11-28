@@ -18,27 +18,23 @@ interface SourceBindings {
 class FrameBindings {
   private generation = 1;
   private frameToken: object = {};
-  private source: WeakRef<RenderResourceScope> | undefined;
-  // One weak epoch cell allows its entity table to retire with the source.
-  private current = new WeakMap<RenderResourceScope, SourceBindings>();
-  private previousSource: WeakRef<RenderResourceScope> | undefined;
+  // Submitted tables are weakly owned by the scope. Only the recording attempt
+  // holds a direct scope and table so individual draws avoid weak lookups.
+  private current: WeakMap<RenderResourceScope, SourceBindings> | undefined;
   private previous: WeakMap<RenderResourceScope, SourceBindings> | undefined;
-  private hotTable: SourceBindings | undefined;
+  private recordingScope: RenderResourceScope | undefined;
+  private recordingTable: SourceBindings | undefined;
 
   begin(): void {
     // Recycle only the previous source epoch; cold entities need no per-frame sweep.
-    this.previousSource = this.source;
     this.previous = this.generation === 0x3fffffff ? undefined : this.current;
-    this.source = undefined;
-    this.current = new WeakMap();
+    this.current = undefined;
     this.seal();
     this.generation = this.generation === 0x3fffffff ? 1 : this.generation + 1;
   }
 
   clear(): void {
-    this.source = undefined;
-    this.current = new WeakMap();
-    this.previousSource = undefined;
+    this.current = undefined;
     this.previous = undefined;
     this.seal();
     this.generation = 1;
@@ -47,7 +43,8 @@ class FrameBindings {
   /** Submitted facts stay readable, but callbacks and strong lookup hints end here. */
   seal(): void {
     this.frameToken = {};
-    this.hotTable = undefined;
+    this.recordingScope = undefined;
+    this.recordingTable = undefined;
   }
 
   get token(): object {
@@ -64,21 +61,10 @@ class FrameBindings {
     // A callback from an older use must never write into the recycled pending side.
     if (token !== this.frameToken) return;
     const generation = this.generation;
-    let table =
-      world === this.source?.deref() ? (this.hotTable ?? this.current.get(world)) : undefined;
-    if (table === undefined) {
-      table = (world === this.previousSource?.deref() ? this.previous?.get(world) : undefined) ?? {
-        values: new Map(),
-        active: 0,
-      };
-      if (table.values.size > table.active * 2) table.values.clear();
-      table.active = 0;
-      this.source = new WeakRef(world);
-      this.current = new WeakMap([[world, table]]);
-      this.hotTable = table;
-      this.previousSource = undefined;
-      this.previous = undefined;
-    }
+    const table =
+      world === this.recordingScope && this.recordingTable !== undefined
+        ? this.recordingTable
+        : this.recordSource(world);
     let binding = table.values.get(entity);
     if (binding === undefined) {
       binding = { meshHandle, lane, generation };
@@ -95,9 +81,24 @@ class FrameBindings {
     } else if (binding.lane !== lane) binding.lane = 'mixed';
   }
 
+  private recordSource(world: RenderResourceScope): SourceBindings {
+    const previous = this.previous;
+    const reusable = previous?.get(world);
+    const table = reusable ?? { values: new Map(), active: 0 };
+    if (table.values.size > table.active * 2) table.values.clear();
+    table.active = 0;
+    if (reusable === undefined) {
+      this.current = new WeakMap();
+      this.current.set(world, table);
+    } else this.current = previous;
+    this.recordingScope = world;
+    this.recordingTable = table;
+    this.previous = undefined;
+    return table;
+  }
+
   get(world: RenderResourceScope, entity: number): RecordedBinding | undefined {
-    const binding =
-      this.source?.deref() === world ? this.current.get(world)?.values.get(entity) : undefined;
+    const binding = this.current?.get(world)?.values.get(entity);
     return binding?.generation === this.generation ? binding : undefined;
   }
 }

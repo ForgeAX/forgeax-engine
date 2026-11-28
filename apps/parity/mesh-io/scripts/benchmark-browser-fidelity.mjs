@@ -11,7 +11,7 @@ const destination = resolve(root, 'artifacts/asset-format-fidelity/browser-scale
 await mkdir(destination, { recursive: true });
 const url = process.env.MESH_IO_URL;
 if (url === undefined) throw new Error('MESH_IO_URL must name a prepared development server with MESH_IO_SCALE_ASSETS=1; prepare and Cook before acquiring the GPU performance lock');
-const browser = await chromium.launch({ channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome-beta', headless: true, args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'], chromiumSandbox: true});
+const browser = await chromium.launch({ channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome', headless: true, args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits'], chromiumSandbox: true});
 const browserSession = await browser.newBrowserCDPSession();
 const raw = [], warmup = [];
 const sourceHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();

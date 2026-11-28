@@ -1,0 +1,62 @@
+{
+  "tests": [
+    "src/quad/__tests__/quad-remesh.unit.test.ts"
+  ],
+  "mutations": [
+    {
+      "id": "l3-unresolved-report-empty",
+      "file": "src/quad/remesh.ts",
+      "old": "    unresolvedFeatures: unresolved,\n    residualTriangles:",
+      "new": "    unresolvedFeatures: [],\n    residualTriangles:",
+      "survives": "The report is returned only on success, and success is gated on unresolved being empty; failures return the constraint ids through model-partial detail instead. Therefore this report-only field replacement is observationally equivalent across the public result surface."
+    },
+    {
+      "id": "l3-model-partial-dropped",
+      "file": "src/quad/remesh.ts",
+      "old": "if (unresolved.length > 0) {",
+      "new": "if (false) {"
+    },
+    {
+      "id": "l3-candidate-aabb-half-tolerance",
+      "file": "src/quad/features.ts",
+      "old": "edges.intersecting(expandedSegmentBounds(a, b, tolerance), (edge) => {",
+      "new": "edges.intersecting(expandedSegmentBounds(a, b, tolerance * 0.5), (edge) => {"
+    },
+    {
+      "id": "l3-chain-proof-off",
+      "file": "src/quad/features.ts",
+      "old": "const chain = chainCovers(a, b, candidates, tolerance, featureMagnitude);",
+      "new": "const chain = undefined;"
+    },
+    {
+      "id": "l3-chain-far-endpoint-unchecked",
+      "file": "src/quad/features.ts",
+      "old": "if (!(highDistance <= limit)) continue;",
+      "new": "if (false) continue;"
+    },
+    {
+      "id": "l3-rounding-slack-zero",
+      "file": "src/quad/features.ts",
+      "old": "const ROUNDING_SLACK = 256 * Number.EPSILON;",
+      "new": "const ROUNDING_SLACK = 0;"
+    },
+    {
+      "id": "l3-lipschitz-half-chord-dropped",
+      "file": "src/quad/features.ts",
+      "old": "if (bound + half <= tolerance) {",
+      "new": "if (bound <= tolerance) {"
+    },
+    {
+      "id": "l3-range-upper-unbounded",
+      "file": "src/quad/features.ts",
+      "old": "const MAX_ORDINARY = 1e30;",
+      "new": "const MAX_ORDINARY = Infinity;"
+    },
+    {
+      "id": "l3-range-lower-unbounded",
+      "file": "src/quad/features.ts",
+      "old": "const MIN_ORDINARY = 1e-30;",
+      "new": "const MIN_ORDINARY = 0;"
+    }
+  ]
+}

@@ -2,6 +2,7 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { teardownDawnInstance } from '../lib/dawn-teardown.mjs';
+import { selectBrowserExecutable } from './browser-executable.mjs';
 import browserLaunch from './browser-launch.json' with { type: 'json' };
 
 // This function also runs in the browser realm; keep its inputs POD and WebGPU.
@@ -115,7 +116,7 @@ try {
     });
     await once(server.listen(0, '127.0.0.1'), 'listening');
     browser = await chromium.launch({
-      ...browserLaunch,
+      ...selectBrowserExecutable(browserLaunch),
       headless: true,
       args: [...browserLaunch.args, '--use-angle=swiftshader'],
       chromiumSandbox: true,
@@ -144,7 +145,7 @@ try {
       status: 'failed',
       stage: 'runtime',
       message: error.message,
-      hint: 'Install the checkout dependencies, system Vulkan loader and Chrome Beta; run pnpm ci:graphics setup. This is not a rendering-test PASS.',
+      hint: 'Install the checkout dependencies, system Vulkan loader and Chrome; run pnpm ci:graphics setup. This is not a rendering-test PASS.',
     }),
   );
   process.exitCode = 1;

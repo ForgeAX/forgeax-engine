@@ -1,5 +1,5 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { minOf } from './arrays';
+import { maxOf, minOf } from './arrays';
 import { fillBoundaryLoops, nonplanarCaps } from './connect';
 import { type ModelingError, modelingError } from './errors';
 import { dot, faceNormal, facesVolume, sub, type Tuple3, triangulateLoop } from './geom';
@@ -445,7 +445,7 @@ export function fillHoles(
   repair({
     op: 'fillHoles',
     ...repairBase(filled.value.caps),
-    largestLoop: Math.max(0, ...loops.map((l) => l.length)),
+    largestLoop: Math.max(0, maxOf(loops.map((l) => l.length))),
     nonplanar: nonplanarCaps(filled.value.caps, tolerance),
   });
   return ok(filled.value.counts);

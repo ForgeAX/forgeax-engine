@@ -302,8 +302,10 @@ it('sorts only culled transparent members and counts their accepted pass across 
         projection,
         tick,
         undefined,
-        (row, out) => {
-          const x = (row.entityKey + tick) % 3 === 0 ? 150 : 0;
+        (slot, _version, _content, _column, _offset, out) => {
+          const entity = projection.slotsSnapshot().readContentSlot(slot, (_row, key) => key);
+          if (entity === undefined) throw Error('missing row');
+          const x = (entity + tick) % 3 === 0 ? 150 : 0;
           out.set([x, 0, -9, x + 1, 1, -8]);
           return true;
         },

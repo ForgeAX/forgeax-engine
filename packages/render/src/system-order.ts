@@ -11,7 +11,6 @@ export const RenderCaptureGraphCompileOrder = defineSystemSet({
   name: 'render-capture-graph-compile',
 });
 export const RenderEncoderOpenOrder = defineSystemSet({ name: 'render-encoder-open' });
-export const RenderGraphCompileOrder = defineSystemSet({ name: 'render-graph-compile' });
 export const RenderGraphSealOrder = defineSystemSet({ name: 'render-graph-seal' });
 export const RenderScenePublishOrder = defineSystemSet({ name: 'render-scene-publish' });
 export const GiSubmissionCommitOrder = defineSystemSet({ name: 'gi-submission-commit' });
@@ -28,9 +27,7 @@ export const RenderViewTopologyOrder = defineSystemSet({ name: 'render-view-topo
 export const RenderFeatureGraphCompileOrder = defineSystemSet({
   name: 'render-feature-graph-compile',
 });
-export const RenderGraphCompileReleaseOrder = defineSystemSet({
-  name: 'render-graph-compile-release',
-});
+
 export const RenderRecordCommitOrder = defineSystemSet({ name: 'render-record-commit' });
 export const RenderCascadeFitOrder = defineSystemSet({ name: 'render-cascade-fit' });
 export const RenderEnvironmentAdmitOrder = defineSystemSet({ name: 'render-environment-admit' });

@@ -12,7 +12,9 @@ if (!rootArg || !url || !sourceArg) throw new Error('Usage: reveal-browser.mjs <
 const root = resolve(rootArg);
 const sourcePath = resolve(sourceArg);
 const browser = await chromium.launch({
-  ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
+  ...(process.env.FORGEAX_BROWSER_EXECUTABLE
+    ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
+    : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
   headless: true,
   args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist',
     '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--use-vulkan=swiftshader',

@@ -225,6 +225,11 @@ describe('model.* tools', () => {
       'model interference',
       'model synthesize',
       'model bake',
+      'model compare',
+      'model microscope',
+      'model turntable',
+      'model converge',
+      'model accept',
     ]);
   });
 

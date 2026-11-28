@@ -28,7 +28,7 @@ try {
     id: 'view-page-lifecycle', name: 'Page lifecycle proof', schemaVersion: '3.0.0', roots: {},
   }));
   browser = await chromium.launch({
-    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}),
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: false,
     args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist',
       '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer', '--use-vulkan=swiftshader',

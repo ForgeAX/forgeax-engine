@@ -242,9 +242,35 @@ export async function createShaderModule(
   device: RhiDevice,
   desc: { label?: string | undefined; code: string },
 ): Promise<Result<ShaderModule, RhiError>> {
+  const prepared = prepareShaderModule(device, desc);
+  return prepared.ok ? prepared.value.completion : prepared;
+}
+
+/** Start native validation while the caller prepares independent modules. */
+export function prepareShaderModule(
+  device: RhiDevice,
+  desc: { label?: string | undefined; code: string },
+): Result<
+  {
+    readonly module: ShaderModule;
+    readonly completion: Promise<Result<ShaderModule, RhiError>>;
+  },
+  RhiError
+> {
   const rawResult = createRawShaderModule(device, desc);
   if (!rawResult.ok) return rawResult;
   const handle = rawResult.value;
+  return ok({
+    module: handle as unknown as ShaderModule,
+    completion: validateRawShaderModule(device, handle, desc),
+  });
+}
+
+async function validateRawShaderModule(
+  device: RhiDevice,
+  handle: GPUShaderModule,
+  desc: { label?: string | undefined; code: string },
+): Promise<Result<ShaderModule, RhiError>> {
   const handleWithInfo = handle as GPUShaderModule & {
     // forgeax-async-whitelist: dom-native — spec `GPUShaderModule.getCompilationInfo()`
     getCompilationInfo?: () => Promise<GPUCompilationInfo>;
@@ -487,11 +513,13 @@ export function acquireCanvasContext(canvas: RhiCanvasTarget): Result<RhiCanvasC
  */
 export const rhi: RhiInstance & {
   createShaderModule: typeof createShaderModule;
+  prepareShaderModule: typeof prepareShaderModule;
   createShaderModuleImmediate: typeof createShaderModuleImmediate;
   acquireCanvasContext: typeof acquireCanvasContext;
 } = {
   requestAdapter,
   createShaderModule,
+  prepareShaderModule,
   createShaderModuleImmediate,
   acquireCanvasContext,
 };

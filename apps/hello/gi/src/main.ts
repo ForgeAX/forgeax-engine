@@ -6,6 +6,7 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { Time, Update } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
+  ANTIALIAS_TSR,
   DEFAULT_STANDARD_PROFILE,
   type FrameReceipt,
   parseDiffuseGiTier,
@@ -104,7 +105,7 @@ if (sceneId === 'sponza') {
   assets.instantiate(scene, world).unwrap();
   const light = spawnLight(world, SPONZA.light);
   spawnSponzaSky(world);
-  const camera = spawnCamera(world, SPONZA.camera, 1);
+  const camera = spawnCamera(world, SPONZA.camera, 1, ANTIALIAS_TSR);
   controls = {
     setLight: (on, moved = false) => setLightState(world, light, SPONZA.light, on, moved),
     setEmissive: () => {},

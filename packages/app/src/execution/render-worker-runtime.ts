@@ -1301,6 +1301,22 @@ async function receiveInit(message: InitMessage): Promise<void> {
     {
       ...initBundlerOptions(message),
       ...(admittedShaderCatalog === undefined ? {} : { admittedShaderCatalog }),
+      ...(message.startup?.rendering.profile.renderPath !== 'forward'
+        ? {}
+        : {
+            onDeviceAdmitted({ caps, limits }) {
+              if (caps.backendKind !== 'webgpu' || failed || shuttingDown) return;
+              const maxSampledTexturesPerShaderStage = limits.maxSampledTexturesPerShaderStage;
+              scope.postMessage({
+                kind: 'device-admitted',
+                identity: message.identity,
+                capabilities: caps,
+                ...(maxSampledTexturesPerShaderStage === undefined
+                  ? {}
+                  : { maxSampledTexturesPerShaderStage }),
+              });
+            },
+          }),
     },
   );
   if (!constructed.ok) throw constructed.error;
@@ -1437,6 +1453,7 @@ function publishedFrameInput(
   onFeatureSourceCompleted: NonNullable<PublishedRenderFrameInput['onFeatureSourceCompleted']>,
   onPublicationAccepted: PublishedRenderFrameInput['onPublicationAccepted'],
 ): PublishedRenderFrameInput {
+  let sceneIndexDemandSent = false;
   return {
     publication: adoptWorkerPublicationMaterials(message.publication),
     displayFrameId: message.frameId,
@@ -1447,6 +1464,19 @@ function publishedFrameInput(
         }
       : {}),
     ...(geometryLane === undefined ? {} : { geometryLane }),
+    ...(message.sourceSceneIndexDeferred !== true
+      ? {}
+      : {
+          onSourceSceneIndexDemand: () => {
+            if (sceneIndexDemandSent) return;
+            sceneIndexDemandSent = true;
+            scope.postMessage({
+              kind: 'scene-index-demand',
+              identity: { source: message.publication.source, epoch: message.publication.epoch },
+              worldIdentity: message.worldIdentity,
+            } satisfies RenderWorkerOutput);
+          },
+        }),
     onFeatureSourceSubmitted: (identity, feedback, submission) =>
       features.push({ identity, feedback, ...(submission === undefined ? {} : { submission }) }),
     onFeatureSourceCompleted,

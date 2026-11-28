@@ -13,6 +13,11 @@ import {
 } from '../temporal/gpu';
 import { inspectTemporal } from '../temporal/inspection';
 import { createTemporalView } from '../temporal/view';
+import {
+  TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL,
+  TSR_RASTER_ATTACHMENT_BYTES_PER_SAMPLE,
+} from '../tsr/layout';
+import { TSR_RESURRECTION_SLOTS } from '../tsr/resurrection';
 
 it.each([
   false,
@@ -35,7 +40,7 @@ it.each([
   try {
     const analysis = state.tsr;
     if (!analysis) throw new Error('missing raster TSR state');
-    expect(state.childScope.resourceDelta()).toBe(10);
+    expect(state.childScope.resourceDelta()).toBe(16);
     expect(textures.mock.calls.every(([descriptor]) => ((descriptor.usage ?? 0) & 8) === 0)).toBe(
       true,
     );
@@ -59,16 +64,13 @@ it('keeps TSR histories on input-only DRS changes and publishes analysis extents
   } as CameraSnapshot;
   const state = getTemporalGpuState(frame, device, scope, 64, 64, false, camera);
   try {
-    expect(state.childScope.resourceDelta()).toBe(10);
+    expect(state.childScope.resourceDelta()).toBe(16);
+    // Guide and Moire histories are FP16 (UE GCS guide), then the two resurrection snapshots (guide,
+    // color, RGBA8 stability each), then color, temporal and the RGBA8 stability.
     expect(textures.mock.calls.map(([d]) => d.format)).toEqual([
-      'rgba8unorm',
-      'rgba8unorm',
-      'rgba16float',
-      'rgba16float',
-      'rgba16float',
-      'rgba16float',
-      'rgba16float',
-      'rgba16float',
+      ...Array(4).fill('rgba16float'),
+      ...Array(2).fill(['rgba16float', 'rgba16float', 'rgba8unorm']).flat(),
+      ...Array(4).fill('rgba16float'),
       'rgba8unorm',
       'rgba8unorm',
     ]);
@@ -100,8 +102,11 @@ it('keeps TSR histories on input-only DRS changes and publishes analysis extents
       undefined,
       { active: state },
     );
-    expect(inspected.historyBytes).toBe((40 + 24) * 64 * 64);
-    expect(inspected.resources.active).toBe(10);
+    // Two resurrection snapshots hold an FP16 guide, FP16 color and RGBA8 stability per pixel each.
+    expect(inspected.historyBytes).toBe(
+      (40 + TSR_ANALYSIS_HISTORY_BYTES_PER_PIXEL + TSR_RESURRECTION_SLOTS * 20) * 64 * 64,
+    );
+    expect(inspected.resources.active).toBe(16);
     expect(
       getTemporalGpuState(frame, device, scope, 64, 64, false, { ...camera, antialias: 'taa' }),
     ).not.toBe(state);
@@ -154,7 +159,7 @@ it('isolates two TSR views and a TAA view, including an aborted write and owner 
     expect(b.readIndex).toBe(1);
     expect(c.readIndex).toBe(0);
     retireTemporalGpuState(a);
-    expect(b.childScope.resourceDelta()).toBe(10);
+    expect(b.childScope.resourceDelta()).toBe(16);
     // TAA adds the flickering history pair; TSR does not allocate it.
     expect(c.childScope.resourceDelta()).toBe(8);
   } finally {
@@ -258,7 +263,8 @@ it('allocates the full authored upper bound even when a fixed scale is between c
 });
 
 it.each([
-  23, 24,
+  TSR_RASTER_ATTACHMENT_BYTES_PER_SAMPLE - 1,
+  TSR_RASTER_ATTACHMENT_BYTES_PER_SAMPLE,
 ])('uses the actual %s-byte MRT limit before allocating raster TSR', async (bytes) => {
   const device = (await new RhiNullAdapter().requestDevice()).unwrap();
   Object.defineProperty(device, 'caps', {
@@ -278,7 +284,7 @@ it.each([
       false,
       { antialias: 'tsr' } as CameraSnapshot,
     );
-  if (bytes < 24) {
+  if (bytes < TSR_RASTER_ATTACHMENT_BYTES_PER_SAMPLE) {
     expect(create).toThrow('TSR requires compute/storage textures or three HDR raster attachments');
     expect(textures).not.toHaveBeenCalled();
   } else {

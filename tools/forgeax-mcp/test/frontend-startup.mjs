@@ -46,7 +46,9 @@ try {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   browser = await chromium.launch({
-    executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE,
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE
+      ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
+      : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }),
     headless: true,
     chromiumSandbox: true,
   });

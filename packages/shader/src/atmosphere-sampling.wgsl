@@ -1,5 +1,5 @@
 #define_import_path forgeax_atmosphere::sampling
-#import forgeax_view::common::{View, view_atmosphere_aerial_enabled, view_atmosphere_fast_ap}
+#import forgeax_view::common::{View, view_atmosphere_aerial_enabled, view_atmosphere_fast_ap, view_atmosphere_ue5}
 #import forgeax_atmosphere::optics::{AtmosphereTransport, atmosphere_integrate, atmosphere_sun_luminance}
 #import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_view_ray}
 
@@ -97,6 +97,20 @@ fn atmosphere_fast_aerial_sample(v:View, world:vec3<f32>, lut:texture_3d<f32>, f
   if point.weight==0.0 {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
   return atmosphere_fast_finish(v,textureSampleLevel(lut,filtering,point.uvw,0.0),point.weight);
 }
+fn atmosphere_ue5_sample_ap(v: View, worldPosition: vec3f, volume: texture_3d<f32>,
+  filtering: sampler) -> AtmosphereTransport {
+  let clip = v.worldViewProj * vec4f(worldPosition, 1.0);
+  let uv = clip.xy / clip.w * vec2f(0.5, -0.5) + 0.5;
+  let ray = atmosphere_view_ray(v, uv);
+  let depthKm = length(worldPosition - ray.origin) * 0.001 - v.atmosphere.geometry.z;
+  if depthKm <= 0.0 { return AtmosphereTransport(vec3f(0.0), vec3f(1.0)); }
+  let w = sqrt(depthKm / v.atmosphereControl.z);
+  let slice = w * f32(textureDimensions(volume).z);
+  let weight = clamp(2.0 * slice * slice, 0.0, 1.0) * clamp(depthKm * 100000.0, 0.0, 1.0);
+  let sample = textureSampleLevel(volume, filtering, vec3f(uv, min(w, 1.0)), 0.0);
+  return AtmosphereTransport(sample.rgb * weight, vec3f(mix(1.0, sample.a, weight)));
+}
+
 fn atmosphere_aerial_sample(v:View, worldPosition:vec3<f32>, transmittance:
 #ifdef STORAGE_BUFFER_AVAILABLE
 texture_2d<f32>
@@ -119,6 +133,7 @@ texture_2d<f32>
 #endif
 , luminance:texture_3d<f32>, extinction:texture_3d<f32>, filtering:sampler)->AtmosphereTransport {
   if !view_atmosphere_aerial_enabled(v) {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  if view_atmosphere_ue5(v) { return atmosphere_ue5_sample_ap(v, worldPosition, luminance, filtering); }
   if view_atmosphere_fast_ap(v) {return atmosphere_fast_aerial_sample(v,worldPosition,luminance,filtering);}
   let point=atmosphere_aerial_coordinate(v,worldPosition,vec3<f32>(textureDimensions(luminance)));
   if point.distance<=v.atmosphere.geometry.z {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}

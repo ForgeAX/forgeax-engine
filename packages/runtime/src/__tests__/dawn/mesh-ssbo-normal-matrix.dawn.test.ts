@@ -9,7 +9,7 @@ import {
   flushMeshDrawUploads,
   MESH_SSBO_BYTES,
   MESH_UBO_FULL_ARRAY_BYTES,
-  prepareMeshDraw,
+  MeshDrawUploads,
 } from '../../../../render/src/record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../../../../render/src/record/render-context';
 
@@ -119,7 +119,7 @@ it.each([
         pipelineState: { meshStorageBuffer },
         world: { drawParameters: () => parameters },
       } as _InternalRenderPipelineContext;
-      prepareMeshDraw(context, entry);
+      MeshDrawUploads.forPass(context).stage(entry);
       flushMeshDrawUploads(queue, meshStorageBuffer);
       const encoder = device.createCommandEncoder();
       const pass = encoder.beginComputePass();

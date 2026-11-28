@@ -759,3 +759,12 @@ declare `'all'`: they draw again in each recorded face, costing one extra
 particle draw per face at the face resolution. Opt out with
 `createGpuParticleFeature({ capture: 'display-only' })`. Post effects stay
 display-only. See `packages/vfx-render/README.md`.
+
+## Water caustics
+
+Use `@forgeax/engine/water/caustics` for the optional shared field/producer and
+receiver implementation. Keep source selection, light selection and scene-specific
+projection in the consumer; keep field storage, accumulation, numerical policy
+and stock receiving in Water. Declare relative versus light-scaled irradiance
+explicitly. Register Water's shipped shader directory through normal shader and
+material-cooker source roots; see [Water caustics](../../packages/water/README.md#optional-caustics).

@@ -93,8 +93,9 @@ export const viewWorkspaceCoreFrontendPlugin: Plugin.Object<CoreFrontendConfig> 
       });
       ctx.effect(() => dispose);
       if (role === 'shell' && rawClient && window.location && !new URL(window.location.href).searchParams.has('forgeaxWorkspaceTarget')) {
-        const present = () => {
-          if (lifetime.signal.aborted || (config.document ?? window.document)?.visibilityState === 'hidden') return;
+        const present = (event?: PointerEvent) => {
+          if (event?.isTrusted === false || lifetime.signal.aborted
+            || (config.document ?? window.document)?.visibilityState === 'hidden') return;
           void rawClient.presentProject({ signal: lifetime.signal }).catch(error => {
             if (!lifetime.signal.aborted) console.error('View project presentation failed', error);
           });

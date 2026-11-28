@@ -1,5 +1,7 @@
 import { assert, expect, test, vi } from 'vitest';
 import { sceneSnapshot, setSceneRow } from '../scene/__tests__/scene-row-writes';
+import { type Node, nodes, put, replaceOrdered, treeKind } from '../scene/frame-tree';
+import { slotPoseColumn } from '../scene/mesh-draw';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { SceneRows } from '../scene/scene-rows';
 import { SceneSlotFrame, SceneSlotPage, SceneSlots } from '../scene/scene-slots';
@@ -103,7 +105,7 @@ test('cycling pose edits keep current row observations within a bounded matrix b
   const held = old.slotAt(0)?.snapshot.transform.world;
   const retainedBytes = () => {
     const buffers = new Set<ArrayBufferLike>();
-    for (const row of slots.capture()) buffers.add(row.snapshot.transform.world.buffer);
+    for (const row of slots.capture()) buffers.add(slotPoseColumn(row).buffer);
     return [...buffers].reduce((sum, buffer) => sum + buffer.byteLength, 0);
   };
   expect(retainedBytes()).toBe(64 * 16 * 4);
@@ -131,8 +133,12 @@ test('eight edits at scattered addresses issue one packed pose backing and leave
     const columns = new Set<ArrayBufferLike>();
     for (const slot of addresses) {
       pose[12] = frame * 1024 + slot;
-      const matrix = slots.writePose(slot, pose).snapshot.transform.world;
-      columns.add(matrix.buffer);
+      const row = slots.writePose(slot, pose);
+      const column = slotPoseColumn(row);
+      columns.add(column.buffer);
+      const matrix = row.snapshot.transform.world;
+      expect(matrix.buffer).not.toBe(column.buffer);
+      expect(matrix.buffer.byteLength).toBe(16 * Float32Array.BYTES_PER_ELEMENT);
       if (frame === 1) held.push(matrix);
     }
     expect(columns.size).toBe(1);
@@ -144,6 +150,128 @@ test('eight edits at scattered addresses issue one packed pose backing and leave
   slots.clear();
   expect(held.map((matrix) => matrix[12])).toEqual(addresses.map((slot) => 1024 + slot));
   for (const slot of addresses) expect(original.slotAt(slot)?.snapshot.transform.world[12]).toBe(0);
+});
+
+test('dense admissions share native pages and retain a compact matrix across subsequent edits', () => {
+  const rows = new SceneRows();
+  const entities = Uint32Array.from({ length: 128 }, (_, index) => index + 1);
+  const worlds = new Float32Array(entities.length * 16);
+  rows.apply(
+    Array.from(entities, (entityKey) => ({
+      kind: 'update' as const,
+      entityKey,
+      snapshot: sceneSnapshot(entityKey, new Float32Array(16)),
+    })),
+  );
+  const before = rows.capture();
+  const start = rows.inspectPages().posePageAllocations;
+  for (let index = 0; index < entities.length; index++) worlds[index * 16 + 12] = index + 1;
+  const first = rows.commitDistinctTransformSpans([{ worlds, entities }]);
+  expect(first.updated).toBe(128);
+  expect(rows.inspectPages().posePageAllocations - start).toBe(2);
+  const heldRow = rows.capture().slotAt(65);
+  assert(heldRow);
+  const matrix = heldRow.snapshot.transform.world;
+  expect(matrix.buffer.byteLength).toBe(16 * 4);
+  expect(matrix[12]).toBe(66);
+  expect(before.slotAt(65)?.snapshot.transform.world[12]).toBe(0);
+  expect(first.previous.size).toBe(0);
+
+  for (let index = 0; index < entities.length; index++) worlds[index * 16 + 12] = 129 + index;
+  rows.commitDistinctTransformSpans([{ worlds, entities }]);
+  expect(rows.capture().slotAt(65)?.snapshot.transform.world[12]).toBe(194);
+  expect(heldRow.snapshot.transform.world).toBe(matrix);
+  expect(matrix[12]).toBe(66);
+  expect(before.slotAt(65)?.snapshot.transform.world[12]).toBe(0);
+});
+
+test('one ordered replacement copies only the union of dirty paths', () => {
+  const Base = treeKind();
+  let allocated = 0;
+  class Counted<T> extends Base<T> {
+    constructor(
+      value: T,
+      queue: number,
+      key: number,
+      weight: number,
+      left?: Node<T>,
+      right?: Node<T>,
+    ) {
+      super(value, queue, key, weight, left, right);
+      allocated++;
+    }
+  }
+  let root: Node<number> | undefined;
+  for (let key = 0; key < 128; key++) root = put(root, 1, 0, key, 1, Counted);
+  const keys = Float64Array.from({ length: 64 }, (_, i) => i * 2);
+  const replacements = new Map(Array.from(keys, (key) => [key, 2]));
+  allocated = 0;
+  let individual = root;
+  for (const key of keys) individual = put(individual, 2, 0, key, 2);
+  const individualCount = allocated;
+  allocated = 0;
+  const batch = replaceOrdered(root, keys, 0, keys.length, replacements, (value) => value);
+  expect(allocated).toBeLessThan(individualCount / 2);
+  expect(batch?.count).toBe(192);
+  expect(root?.count).toBe(128);
+  const baselineNodes = Array.from(nodes(root));
+  const publishedNodes = Array.from(nodes(batch));
+  const controlNodes = Array.from(nodes(individual));
+  expect(publishedNodes.map(({ key, value }) => [key, value])).toEqual(
+    controlNodes.map(({ key, value }) => [key, value]),
+  );
+  expect(publishedNodes.filter((node, i) => node !== baselineNodes[i])).toHaveLength(allocated);
+});
+
+test('publishes shuffled moved pages alongside insertion and removal without changing retained rows', () => {
+  const slots = new SceneSlots();
+  for (let page = 0; page < 24; page++) setSceneRow(slots, page * 64, record(page * 64));
+  const previous = slots.capture();
+  const pose = new Float32Array(16);
+  for (let page = 22; page >= 0; page -= 2) {
+    pose[12] = page + 1;
+    slots.writePose(page * 64, pose);
+  }
+  slots.remove(23 * 64);
+  setSceneRow(slots, 100 * 64, record(100 * 64));
+  const next = slots.capture();
+  expect(next.length).toBe(previous.length);
+  expect(next.at(-1)?.slot).toBe(100 * 64);
+  expect(next.slotAt(23 * 64)).toBeUndefined();
+  expect(next.slotAt(7 * 64)).toBe(previous.slotAt(7 * 64));
+  expect(next.slotAt(22 * 64)?.snapshot.transform.world[12]).toBe(23);
+  expect(previous.slotAt(22 * 64)?.snapshot.transform.world[12]).toBe(0);
+  expect(previous.slotAt(23 * 64)?.slot).toBe(23 * 64);
+  const touched: number[] = [];
+  expect(next.visitChangedVersions(previous, (slot) => touched.push(slot))).toBe(true);
+  expect(touched).toEqual([
+    ...Array.from({ length: 12 }, (_, i) => (22 - 2 * i) * 64),
+    23 * 64,
+    100 * 64,
+  ]);
+  const reserved = slots.inspect();
+  expect(reserved.replacementKeyBackingBytes).toBeGreaterThanOrEqual(12 * 8);
+  expect(reserved.pendingPageCapacity).toBeGreaterThanOrEqual(24);
+  expect(reserved.pendingPageGrowths).toBeGreaterThan(0);
+  for (let frame = 1; frame <= 48; frame++) {
+    for (let i = 0; i < 12; i++) {
+      const page = ((i * 7 + frame) % 12) * 2;
+      pose[12] = 1000 * frame + page;
+      slots.writePose(page * 64, pose);
+    }
+    const published = slots.capture();
+    expect(published.slotAt(22 * 64)?.snapshot.transform.world[12]).toBe(1000 * frame + 22);
+  }
+  expect(slots.inspect().replacementKeyAllocations).toBe(reserved.replacementKeyAllocations);
+  expect(slots.inspect().replacementKeyBackingBytes).toBe(reserved.replacementKeyBackingBytes);
+  expect(slots.inspect()).toMatchObject({
+    pendingPageCapacity: reserved.pendingPageCapacity,
+    pendingPageGrowths: reserved.pendingPageGrowths,
+  });
+  for (const row of slots.capture()) slots.remove(row.slot);
+  expect(slots.capture()).toHaveLength(0);
+  expect(slots.inspect().pendingPageCapacity).toBe(0);
+  expect(previous.slotAt(22 * 64)?.snapshot.transform.world[12]).toBe(0);
 });
 
 test('removal drops the issued row from the current page while preserving held roots', () => {
@@ -353,10 +481,10 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
     worlds[64 * 16 + 12] = 7;
     const changed = rows.apply([], [{ entities, worlds }], true);
     expect(changed.updated).toBe(1);
-    expect(changed.updatedSlots[0]?.entityKey).toBe(64);
     expect(changed.contentUpdatedSlots).toHaveLength(0);
-    // Admission reads the prior row. The writer returns the row it just issued.
-    expect(read).toHaveBeenCalledTimes(1);
+    // Admission and publication keep coordinates until an explicit row read.
+    expect(read).not.toHaveBeenCalled();
+    expect(changed.updatedSlots.at(0)?.entityKey).toBe(64);
     expect(old?.snapshot.transform.world[12]).toBe(0);
     expect(rows.capture().slotAt(64)?.snapshot.transform.world[12]).toBe(7);
   } finally {
@@ -381,7 +509,7 @@ test('numeric pose admission respects prior staged edits, selected offsets and l
   try {
     const staged = rows.apply([{ kind: 'update', entityKey: 5, world: moved }], selected, true);
     expect(staged).toMatchObject({ updated: 1, ignoredLateUpdates: 1 });
-    expect(staged.updatedSlots[0]?.snapshot.transform.world[12]).toBe(0);
+    expect(staged.updatedSlots.at(0)?.snapshot.transform.world[12]).toBe(0);
     const repeated = rows.apply(
       [],
       [
@@ -391,7 +519,7 @@ test('numeric pose admission respects prior staged edits, selected offsets and l
       true,
     );
     expect(repeated.updated).toBe(1);
-    expect(repeated.updatedSlots[0]?.snapshot.transform.world[12]).toBe(0);
+    expect(repeated.updatedSlots.at(0)?.snapshot.transform.world[12]).toBe(0);
     const recreated = rows.apply(
       [
         { kind: 'remove', entityKey: 5 },
@@ -468,7 +596,7 @@ test('numeric pose admission consumes a borrowed source window once and leaves a
       true,
     );
     expect(reads).toBe(1);
-    expect(changed.updatedSlots[0]?.snapshot.transform.world[12]).toBe(9);
+    expect(changed.updatedSlots.at(0)?.snapshot.transform.world[12]).toBe(9);
     const missing = rows.apply(
       [],
       [

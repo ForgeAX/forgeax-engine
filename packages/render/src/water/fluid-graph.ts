@@ -102,15 +102,46 @@ export interface WaterFluidMaterialPublication {
   readonly render: WaterFluidRenderFrame;
   readonly waterInfo: WaterInfoFramePublication | undefined;
 }
-export function waterFluidMaterialTopology(publication: WaterFluidMaterialPublication | undefined) {
-  return publication === undefined
-    ? undefined
-    : [
-        Math.max(1, publication.waterInfo?.waveUploadPlan.bodyData.length ?? 0),
-        publication.render.simulations.length,
-        publication.render.contactFoam !== undefined,
-        publication.render.deviceGeneration,
-      ];
+export type WaterFluidMaterialTopology = readonly [
+  bodyCapacity: number,
+  simulations: number,
+  hasFoam: boolean,
+  deviceGeneration: number,
+  hasWaterInfo: boolean,
+];
+
+function waterFluidBodyCapacity(publication: WaterFluidMaterialPublication): number {
+  return Math.max(1, publication.waterInfo?.waveUploadPlan.bodyData.length ?? 0);
+}
+
+export function waterFluidMaterialTopology(
+  publication: WaterFluidMaterialPublication | undefined,
+): WaterFluidMaterialTopology | undefined {
+  if (publication === undefined) return undefined;
+  const { render, waterInfo } = publication;
+  return [
+    waterFluidBodyCapacity(publication),
+    render.simulations.length,
+    render.contactFoam !== undefined,
+    render.deviceGeneration,
+    waterInfo !== undefined,
+  ];
+}
+
+export function matchesWaterFluidMaterialTopology(
+  shape: WaterFluidMaterialTopology | undefined,
+  publication: WaterFluidMaterialPublication | undefined,
+): boolean {
+  if (shape === undefined || publication === undefined)
+    return shape === undefined && publication === undefined;
+  const { render, waterInfo } = publication;
+  return (
+    shape[0] === waterFluidBodyCapacity(publication) &&
+    shape[1] === render.simulations.length &&
+    shape[2] === (render.contactFoam !== undefined) &&
+    shape[3] === render.deviceGeneration &&
+    shape[4] === (waterInfo !== undefined)
+  );
 }
 export interface WaterFluidBodyDescriptorInspection {
   readonly viewIdentity: string;
@@ -1392,8 +1423,7 @@ export function addWaterFluidGraph(
   const source = context.waterFluid;
   const initial = source?.publication;
   const read = source?.read;
-  const requiresWaterInfo = initial?.waterInfo !== undefined;
-  const topology = JSON.stringify(waterFluidMaterialTopology(initial));
+  const topology = waterFluidMaterialTopology(initial);
   let fields = context.getSharedGraphTextureBinding?.('water-fluid-material-fields')?.view;
   if (fields === undefined) {
     if ((initial?.render.simulations.length ?? 0) > 0)
@@ -1406,7 +1436,7 @@ export function addWaterFluidGraph(
     if (!array.ok) return array;
     fields = array.value;
   }
-  const count = Math.max(1, initial?.waterInfo?.waveUploadPlan.bodyData.length ?? 0);
+  const count = topology?.[0] ?? 1;
   const table = new Float32Array(count * STRIDE_FLOATS);
   let encoded: WaterFluidMaterialPublication | undefined;
   const descriptorResource = `water-fluid-material-descriptors-${viewIdentity}`;
@@ -1419,8 +1449,7 @@ export function addWaterFluidGraph(
       if (
         read !== undefined &&
         (current === undefined ||
-          JSON.stringify(waterFluidMaterialTopology(current)) !== topology ||
-          (requiresWaterInfo && current.waterInfo === undefined) ||
+          !matchesWaterFluidMaterialTopology(topology, current) ||
           (current.waterInfo !== undefined &&
             (current.waterInfo.frameGeneration !== current.render.frameNumber ||
               current.waterInfo.deviceGeneration !== current.render.deviceGeneration ||

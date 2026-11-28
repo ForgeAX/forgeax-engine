@@ -79,7 +79,7 @@ describe('GPU-driven baseline characterization', () => {
 
   it('keeps CPU shadow caster enumeration on admitted drawing rows', () => {
     expect(shadowPass).toContain('shadowValidatedOrdered ?? mainValidatedOrdered');
-    expect(shadowPass).toContain('visitSubmittedDrawRows(validatedOrdered, (entry, i)');
+    expect(shadowPass).toMatch(/visitRecordingDrawRows\(\s*validatedOrdered,\s*\(entry, i\)/);
     expect(shadowPass).toContain('recordShadowCasterDraws');
     expect(read('../record/draw-row-pages.ts')).toContain('consume(row, start + index)');
   });

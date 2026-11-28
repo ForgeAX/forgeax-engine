@@ -12,13 +12,21 @@ import { MATERIAL_RASTER_ALPHA_MASK, ownedMaterialRasterFlags } from '../materia
 import { materialRasterSource } from '../pipeline-builder';
 import { pipelineStripIndexFormat, renderStateHash } from '../pipeline-spec';
 import { createPrimitiveBindGroup, primitiveForPipeline } from '../reflection/primitive-bindings';
-import { CapturedSceneTransform } from '../scene/captured-transform';
-import { visitSubmittedDrawRows } from './draw-row-pages';
+import {
+  RecordingDrawRow,
+  recordingDrawPose,
+  recordingDrawReflected,
+  recordingDrawRowAt,
+  visitRecordingDrawRows,
+  visitSubmittedDrawRows,
+} from './draw-row-pages';
 import type { DrawRows } from './frame-snapshot';
 import { PassMeshBindGroup, rasterMaterialOffset } from './geometry-bind-offsets';
+import { GeometryDrawOrder } from './geometry-draw-order';
 import {
   createGeometryPipelineRequests,
   drawVertexLayout,
+  type GeometryPipelineRequestOptions,
   geometryPipelineRequestContext,
   prepareGeometryPipelineRequests,
 } from './geometry-pipeline-requests';
@@ -42,7 +50,6 @@ import {
   includeMaterialPass,
   type MaterialHandles,
   MaterialPasses,
-  type MaterialPassLookup,
   type MaterialSelectionRows,
   type PreparedGeometryMaterialPasses,
 } from './material-pass-groups';
@@ -85,7 +92,7 @@ import type {
   InstanceBufferCacheKey,
   InstanceBufferChunkKey,
 } from '../instance-buffer-cache';
-import { sameInstanceOrdinal } from '../instance-generations';
+import { type InstanceOrdinalOrder, SAME_INSTANCE_ORDINALS } from '../instance-generations';
 import {
   type InstanceCollectionFailureCode,
   type InstanceSubmissionLane,
@@ -135,29 +142,32 @@ import { countDirectGeometry } from './geometry-recording';
 import { type RenderableDrawReceipt, selectSubmittedMaterialProgram } from './gpu-draw-receipts';
 import {
   type MainPassMaterialBindingResolver,
-  type RasterMaterialAddress,
+  type MaterialBindingAddress,
   selectMaterialGroup2,
 } from './main-pass-material';
 import { materialFromSubmittedSlots, submittedMaterialRow } from './material-pass-selection';
 import {
   bindGroupChainLeaf2,
   bindGroupChainLeaf3,
-  type FoldBucket,
+  type FoldDraw,
   getOrCreateFromChain,
   INSTANCE_STORAGE_STRIDE_FLOATS,
   INSTANCE_UBO_FULL_ARRAY_BYTES,
-  type InstanceRowLookup,
   instanceStoragePairing,
   MAX_UNIFORM_INSTANCES,
   MESH_PER_ENTITY_STRIDE,
   MESH_UBO_FULL_ARRAY_BYTES,
+  MeshDrawUploads,
   meshDrawSlot,
   packInstanceStorageRange,
-  prepareMeshDraw,
   rememberBindGroup,
 } from './mesh-ssbo';
 import { ensureProbeBlendRecordBuffer } from './probe-blend-buffer';
-import type { _InternalRenderPipelineContext, MaterialShaderPipelineEntry } from './render-context';
+import type {
+  _InternalRenderPipelineContext,
+  MaterialShaderPipelineEntry,
+  RecordProfileRunner,
+} from './render-context';
 import type { SkinTaskBinding } from './skin-tasks';
 import { resolveSpriteInstanceDraws } from './sprite-instance-buffer';
 import { submeshRange } from './submesh-range';
@@ -267,25 +277,24 @@ export function recordIblPipelineBinding(
 ): void {
   const observation = c.frameState.iblBindings;
   if (observation === undefined || !isStandardPbrMaterialShader(material.materialShaderId)) return;
+  const shader = material.materialShaderId ?? 'forgeax::default-standard-pbr';
+  const selectedRaster = raster?.shader === shader ? raster : undefined;
   const materialBgl =
-    (raster !== undefined && raster.shader === material.materialShaderId
-      ? raster.layout
-      : undefined) ??
+    selectedRaster?.layout ??
     projectedStandardMaterialLayout(
       c.pipelineState.materialBindGroupLayout,
       layoutIndex ?? standardPipelineMaterialLayoutIndex(pipeline),
     ) ??
-    c.runtime.getMaterialBindGroupLayout?.(
-      material.materialShaderId ?? 'forgeax::default-standard-pbr',
-    ) ??
+    c.runtime.getMaterialBindGroupLayout?.(shader) ??
     c.pipelineState.materialBindGroupLayout;
   observation.draw(
     getOpaqueResourceIdentity(pipeline),
-    getOpaqueResourceIdentity(materialBgl as object),
+    getOpaqueResourceIdentity(materialBgl),
     getOpaqueResourceIdentity(materialGroup),
-    material.materialShaderId ?? 'forgeax::default-standard-pbr',
+    shader,
     material.materialParamSchema,
     c.frameState.frameNumber,
+    selectedRaster?.schema,
   );
 }
 
@@ -458,9 +467,6 @@ export function waterGeometryGroup2(
   };
 }
 
-/** Cached answer for a draw class that the pass never shades. */
-const SKIPPED_DRAW = Symbol('skipped-draw');
-
 interface DrawPipelineSelection {
   readonly pipeline: RenderPipeline | null;
   readonly material: MaterialShaderPipelineEntry | null;
@@ -472,14 +478,88 @@ interface DrawPipelineSelection {
   viewGroup: BindGroup | null | undefined;
 }
 
+/** Classes beyond the ordinary high-water budget are owned by the current pass. */
+const RETAINED_PASS_PIPELINE_CLASSES = 128;
+type MutableDrawPipelineSelection = {
+  -readonly [K in keyof DrawPipelineSelection]: DrawPipelineSelection[K];
+};
+
+export class GeometryPassWorkspace {
+  inUse = false;
+  readonly drawOrder = new GeometryDrawOrder();
+  readonly recordingRow = new RecordingDrawRow();
+  readonly drawPipelines = new MaterialPipelineRequestCache<DrawPipelineSelection | false>(
+    Infinity,
+    RETAINED_PASS_PIPELINE_CLASSES,
+  );
+  readonly drawFacts: MaterialPipelineRequestFacts = [];
+  readonly materialPipelines = new MaterialPipelineRequestCache<MaterialShaderPipelineEntry>(
+    Infinity,
+    RETAINED_PASS_PIPELINE_CLASSES,
+  );
+  readonly materialFacts: MaterialPipelineRequestFacts = [];
+  readonly bindOffsetWord = new Uint32Array(1);
+  readonly pointsLinesOffsets = new Uint32Array(2);
+  readonly meshGroup2DynamicOffsets = [0];
+  readonly materialAddress: MaterialBindingAddress = {
+    byteOffset: 0,
+    dynamicOffsetCount: 1,
+    reflection: undefined,
+  };
+  private readonly selections: MutableDrawPipelineSelection[] = [];
+  private used = 0;
+
+  selection(source: Omit<DrawPipelineSelection, 'viewGroup'>): DrawPipelineSelection {
+    const index = this.used;
+    if (index >= RETAINED_PASS_PIPELINE_CLASSES) return { ...source, viewGroup: undefined };
+    this.used++;
+    const held = this.selections[index];
+    if (held === undefined) {
+      const created = { ...source, viewGroup: undefined };
+      this.selections[index] = created;
+      return created;
+    }
+    held.pipeline = source.pipeline;
+    held.material = source.material;
+    held.probeBlend = source.probeBlend;
+    held.viewOffset = source.viewOffset;
+    held.shader = source.shader;
+    held.sceneDirect = source.sceneDirect;
+    held.viewGroup = undefined;
+    return held;
+  }
+
+  release(): void {
+    this.recordingRow.clear();
+    this.drawPipelines.clear();
+    this.materialPipelines.clear();
+    this.drawFacts.fill(undefined);
+    this.materialFacts.fill(undefined);
+    delete this.materialAddress.capture;
+    this.materialAddress.reflection = undefined;
+    this.materialAddress.byteOffset = 0;
+    this.materialAddress.dynamicOffsetCount = 1;
+    for (let i = 0; i < this.used; i++) {
+      const held = this.selections[i] as MutableDrawPipelineSelection;
+      held.pipeline = null;
+      held.material = null;
+      held.shader = undefined;
+      held.viewGroup = undefined;
+    }
+    this.used = 0;
+    this.inUse = false;
+  }
+}
+
 const REFLECTED_DRAW = 4;
 
 /** These pipeline axes belong to the row and apply to every issued submesh pass. */
-function rowPipelineFlags(source: ValidatedRenderable['source']): number {
+function rowPipelineFlags(entry: ValidatedRenderable): number {
+  const source = entry.source;
   return (
     (source.skinBinding !== undefined ? 1 : 0) |
     (source.probeBlendRecord !== undefined ? 2 : 0) |
-    (CapturedSceneTransform.reflected(source.transform) ? REFLECTED_DRAW : 0) |
+    (recordingDrawReflected(entry) ? REFLECTED_DRAW : 0) |
     (source.spriteInstances !== undefined ? 8 : 0)
   );
 }
@@ -494,6 +574,110 @@ function profileGeometrySegment<T>(
   return profilePhase === undefined
     ? action()
     : profilePhase(geometryRecordPhase(passKind, segment), action);
+}
+
+/** Each recording owns the operands of its synchronous profiling action. */
+function profiledMaterialBinding(
+  resolve: MainPassMaterialBindingResolver,
+  profile: RecordProfileRunner | undefined,
+  passKind: PassKind,
+): MainPassMaterialBindingResolver {
+  if (profile === undefined) return resolve;
+  const phase = geometryRecordPhase(passKind, 'material-bind-groups');
+  let slot: number;
+  let material: MaterialSnapshot;
+  let entity: number | undefined;
+  let world: Parameters<MainPassMaterialBindingResolver>[3];
+  let address: MaterialBindingAddress;
+  let shader: string | undefined;
+  let layoutIndex: number | undefined;
+  let layout: MaterialShaderPipelineEntry['rasterMaterialLayout'];
+  const action = () => resolve(slot, material, entity, world, address, shader, layoutIndex, layout);
+  return (
+    nextSlot,
+    nextMaterial,
+    nextEntity,
+    nextWorld,
+    nextAddress,
+    nextShader,
+    nextIndex,
+    nextLayout,
+  ) => {
+    slot = nextSlot;
+    material = nextMaterial;
+    entity = nextEntity;
+    world = nextWorld;
+    address = nextAddress;
+    shader = nextShader;
+    layoutIndex = nextIndex;
+    layout = nextLayout;
+    return profile(phase, action);
+  };
+}
+
+type WaterBakedSubmission = {
+  readonly sourceBodyIndices: readonly number[];
+  readonly bakedSources: readonly import('../world/view-draw-receipt').WaterBakedSourceDrawReceipt[];
+  readonly viewIdentity: string;
+  readonly frameGeneration: number;
+  readonly deviceGeneration: number;
+  readonly drawBinding: import('../world/view-draw-receipt').WaterBakedDrawBindingReceipt;
+};
+
+/** An actual Water draw owns the exact submitted baked source lineage. */
+function waterBakedDrawFact(
+  entry: ValidatedRenderable,
+  submesh: number,
+  material: MaterialSnapshot,
+  shader: string | undefined,
+  passIndex: number | undefined,
+  baked: WaterBakedSubmission,
+  graphGeneration: number,
+): NonNullable<RenderableDrawReceipt['waterBaked']> {
+  const source = entry.source;
+  const publication = material.materialPublication;
+  const identity = publication?.identity;
+  const selectedProgram = selectSubmittedMaterialProgram(
+    publication?.programs,
+    passIndex !== undefined,
+    passIndex ?? 0,
+    shader,
+  );
+  return Object.freeze({
+    entityKey: source.entityKey,
+    submeshIndex: submesh,
+    materialSlot: entry.mesh.submeshes[submesh]?.materialSlot ?? -1,
+    viewIdentity: baked.viewIdentity,
+    frameId: baked.frameGeneration,
+    deviceGeneration: baked.deviceGeneration,
+    graphGeneration,
+    drawKey: source.waterOwner?.drawKey ?? source.waterMeshTiles?.drawKey ?? '',
+    ownerWorldIdentity:
+      source.waterOwner?.worldIdentity ?? source.waterMeshTiles?.worldIdentity ?? '',
+    drawBinding: baked.drawBinding,
+    materialIdentity: Object.freeze({
+      materialGuid: identity?.materialGuid ?? '',
+      publicationGeneration: identity?.publicationGeneration ?? -1,
+      ...(identity?.specializationKey === undefined
+        ? {}
+        : { specializationKey: identity.specializationKey }),
+      ...(identity?.artifactHash === undefined ? {} : { artifactHash: identity.artifactHash }),
+      ...(selectedProgram === undefined ? {} : { programKey: selectedProgram.specializationKey }),
+    }),
+    ...(selectedProgram === undefined
+      ? {}
+      : {
+          programIdentity: Object.freeze({
+            pass: selectedProgram.pass,
+            context: Object.freeze({ ...selectedProgram.context }),
+            address: selectedProgram.address,
+            specializationKey: selectedProgram.specializationKey,
+            artifactHash: selectedProgram.artifactHash,
+          }),
+        }),
+    sourceBodyIndices: baked.sourceBodyIndices,
+    sources: baked.bakedSources,
+  });
 }
 
 function submitSubmeshDraws(
@@ -690,6 +874,32 @@ function geometryViewportHit(
  */
 export function recordGeometryDraws(
   c: _InternalRenderPipelineContext,
+  ...args: GeometryRecordArguments
+): void {
+  c.frameState.geometryPassWorkspace ??= new GeometryPassWorkspace();
+  const idle = c.frameState.geometryPassWorkspace;
+  const workspace = idle.inUse ? new GeometryPassWorkspace() : idle;
+  workspace.inUse = true;
+  try {
+    workspace.drawOrder.admitPass(c.frameState.frameNumber, c.validatedOrdered.length);
+    recordGeometryDrawsWithWorkspace(workspace, c, ...args);
+  } finally {
+    workspace.release();
+  }
+}
+
+type GeometryRecordArguments =
+  Parameters<typeof recordGeometryDrawsWithWorkspace> extends [
+    GeometryPassWorkspace,
+    _InternalRenderPipelineContext,
+    ...infer Rest,
+  ]
+    ? Rest
+    : never;
+
+function recordGeometryDrawsWithWorkspace(
+  workspace: GeometryPassWorkspace,
+  c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder | undefined,
   matchedMaterials: MaterialSelectionRows | null,
   materialSlotIndices: FrameList<readonly number[]>,
@@ -767,10 +977,7 @@ export function recordGeometryDraws(
           instanceCount: 0,
         }
       : undefined;
-  let pointsLinesDynamicOffsets: Uint32Array | undefined;
-  const bindOffsetWord = new Uint32Array(1);
-  const materialAddress: RasterMaterialAddress = { byteOffset: 0, dynamicOffsetCount: 1 };
-  const meshGroup2DynamicOffsets = [0];
+  const { bindOffsetWord, materialAddress, meshGroup2DynamicOffsets } = workspace;
   let lastStencilReference: number | null = null;
   let lastViewOffset = viewBindGroupDynamicOffset;
   // feat-20260625-refactor-sprite-as-transparent-mesh M3 / w14 (D-7):
@@ -798,15 +1005,78 @@ export function recordGeometryDraws(
       ...(surfacePass === undefined ? {} : { surfacePass }),
       oit,
     },
-    (action) => profileGeometrySegment(c, passKind, 'pipeline-selection', action),
+    c.profilePhase,
+    geometryRecordPhase(passKind, 'pipeline-selection'),
+    workspace,
   );
   const { resolvePointsLinesPipeline, resolveDrawPipeline, pipelineSelection, viewOffsetForBlend } =
     pipelineRequests;
-  // This index dies with the pass and has at most one leaf per occupied draw class.
-  const drawPipelines = new MaterialPipelineRequestCache<
-    DrawPipelineSelection | typeof SKIPPED_DRAW
-  >(Infinity);
-  const drawFacts: MaterialPipelineRequestFacts = [];
+  // The index answers only this pass; its owner reuses the empty storage.
+  const { drawPipelines, drawFacts } = workspace;
+  let previousDrawFacts: Readonly<MaterialPipelineRequestFacts> = drawFacts;
+  let previousDrawMaterial: MaterialSnapshot | undefined;
+  let previousDrawState: MaterialSnapshot['renderState'];
+  let previousDrawSelection: DrawPipelineSelection | false | undefined;
+  // Continue a run from the previous draw's exact inputs. The class index
+  // still shares selections across distinct material handles and draw runs.
+  const adjacentDrawSelection = (
+    material: MaterialSnapshot,
+    state: MaterialSnapshot['renderState'],
+    flags: number,
+    stripFormat: GPUIndexFormat | undefined,
+    topology: PrimitiveTopology,
+    shaderId: string | undefined,
+    vertexEntry: string | undefined,
+    fragmentEntry: string | undefined,
+    variantSet: string | undefined,
+  ) =>
+    previousDrawMaterial === material &&
+    previousDrawState === state &&
+    previousDrawFacts[1] === flags &&
+    previousDrawFacts[2] === rowLayout &&
+    previousDrawFacts[3] === stripFormat &&
+    previousDrawFacts[4] === topology &&
+    previousDrawFacts[5] === shaderId &&
+    previousDrawFacts[7] === vertexEntry &&
+    previousDrawFacts[8] === fragmentEntry &&
+    previousDrawFacts[9] === variantSet
+      ? previousDrawSelection
+      : undefined;
+  const rememberDrawSelection = (
+    facts: Readonly<MaterialPipelineRequestFacts>,
+    material: MaterialSnapshot,
+    state: MaterialSnapshot['renderState'],
+    selection: DrawPipelineSelection | false,
+  ) => {
+    previousDrawFacts = facts;
+    previousDrawMaterial = material;
+    previousDrawState = state;
+    previousDrawSelection = selection;
+    return selection;
+  };
+  const publishDrawSelection = (
+    resolved: boolean,
+    issued: MaterialPipelineRequestFacts | undefined,
+    material: MaterialSnapshot,
+    state: MaterialSnapshot['renderState'],
+  ): DrawPipelineSelection | boolean => {
+    // A nested callback may have used the adjacent selection while resolving.
+    previousDrawSelection = undefined;
+    if (issued === undefined || pipelineRequests.reported) return resolved;
+    // A pass that never shades this program skips every draw of the class alike.
+    if (!resolved) {
+      if (pipelineSelection.skipped) {
+        drawPipelines.set(issued, false);
+        rememberDrawSelection(issued, material, state, false);
+      }
+      return false;
+    }
+    // A fallback without a material pipeline entry may still be pending.
+    if (pipelineSelection.pipeline === null || pipelineSelection.material === null) return true;
+    const selection = workspace.selection(pipelineSelection);
+    drawPipelines.set(issued, selection);
+    return rememberDrawSelection(issued, material, state, selection);
+  };
   let rowLayout: ValidatedRenderable['mesh']['layoutProjection'] | undefined;
   let rowFlags = 0;
   const resolveSharedDrawPipeline = (
@@ -823,22 +1093,36 @@ export function recordGeometryDraws(
     sceneDirect: boolean,
   ): DrawPipelineSelection | boolean => {
     const source = entry.source;
-    const materialFlags =
-      prepared === undefined ? undefined : ownedMaterialRasterFlags(submeshMaterial);
     if (rowLayout === undefined) {
       rowLayout = drawVertexLayout(entry);
-      rowFlags = rowPipelineFlags(source);
+      rowFlags = rowPipelineFlags(entry);
     }
     const flags =
       rowFlags | (oitAccumulateDraw ? 16 : 0) | (sceneDirect ? 32 : 0) | (selectedPass ? 64 : 0);
+    let materialFlags: number | undefined;
     let issued: MaterialPipelineRequestFacts | undefined;
     if (source.waterOwner === undefined) {
+      const stripFormat = pipelineStripIndexFormat(smTopology, entry.mesh.indexFormat);
+      const adjacent = adjacentDrawSelection(
+        submeshMaterial,
+        selectedRenderState,
+        flags,
+        stripFormat,
+        smTopology,
+        selectedShaderId,
+        vertexEntry,
+        fragmentEntry,
+        authoredVariantSet,
+      );
+      if (adjacent !== undefined) return adjacent;
+      materialFlags =
+        prepared === undefined ? undefined : ownedMaterialRasterFlags(submeshMaterial);
       // Captured draws share the selected program and its raster inputs, across material
       // handles and uniform values. Borrowed snapshots retain their own identity.
       drawFacts[0] = materialFlags === undefined ? submeshMaterial : undefined;
       drawFacts[1] = flags;
       drawFacts[2] = rowLayout;
-      drawFacts[3] = pipelineStripIndexFormat(smTopology, entry.mesh.indexFormat);
+      drawFacts[3] = stripFormat;
       drawFacts[4] = smTopology;
       drawFacts[5] = selectedShaderId;
       drawFacts[6] =
@@ -854,10 +1138,12 @@ export function recordGeometryDraws(
         drawFacts[12] = materialFlags;
       } else drawFacts.length = 10;
       const selection = drawPipelines.get(drawFacts);
-      if (selection !== undefined) return selection === SKIPPED_DRAW ? false : selection;
+      if (selection !== undefined)
+        return rememberDrawSelection(drawFacts, submeshMaterial, selectedRenderState, selection);
       // Nested device callbacks may issue another draw before this request returns.
-      issued = drawFacts.slice();
-    }
+      issued = drawPipelines.captureFacts(drawFacts);
+    } else if (prepared !== undefined) materialFlags = ownedMaterialRasterFlags(submeshMaterial);
+    previousDrawSelection = undefined;
     pipelineRequests.reported = false;
     const resolved = resolveDrawPipeline(
       entry,
@@ -876,32 +1162,7 @@ export function recordGeometryDraws(
       sceneDirect,
       materialFlags === undefined ? undefined : (materialFlags & MATERIAL_RASTER_ALPHA_MASK) !== 0,
     );
-    // A pass that never shades this program skips every draw of the class alike.
-    if (!resolved && pipelineSelection.skipped && !pipelineRequests.reported) {
-      if (issued !== undefined) drawPipelines.set(issued, SKIPPED_DRAW);
-      return false;
-    }
-    // A fallback without a material pipeline entry may still be pending.
-    if (
-      !resolved ||
-      pipelineRequests.reported ||
-      pipelineSelection.pipeline === null ||
-      pipelineSelection.material === null
-    )
-      return resolved;
-    // Each water body resolves its own pipeline selection.
-    if (issued === undefined) return true;
-    const selection: DrawPipelineSelection = {
-      pipeline: pipelineSelection.pipeline,
-      material: pipelineSelection.material,
-      probeBlend: pipelineSelection.probeBlend,
-      viewOffset: pipelineSelection.viewOffset,
-      shader: pipelineSelection.shader,
-      sceneDirect: pipelineSelection.sceneDirect,
-      viewGroup: undefined,
-    };
-    drawPipelines.set(issued, selection);
-    return selection;
+    return publishDrawSelection(resolved, issued, submeshMaterial, selectedRenderState);
   };
 
   if (preparationPassMatches !== undefined)
@@ -945,6 +1206,11 @@ export function recordGeometryDraws(
       hint: 'use preparation-only mode without a render pass or supply the draw material resolver',
     });
 
+  const resolveSubmeshBinding = profiledMaterialBinding(
+    resolveMaterialBinding,
+    c.profilePhase,
+    passKind,
+  );
   const directInstanceDraw: SceneDirectDraw[] = [];
 
   // Rebuilt per source and owned by this invocation, including nested recording.
@@ -955,8 +1221,9 @@ export function recordGeometryDraws(
   let entityMeshSlot = 0;
   let entityMaterialSlots: readonly number[] | undefined;
   let entityBindingSlots: readonly number[] | undefined;
+  const meshUploads = MeshDrawUploads.forPass(c);
   let entityMeshStaged = false;
-  let entityFold: FoldBucket | undefined;
+  let entityFold: FoldDraw | undefined;
   let entityDrawIndices: readonly (number | undefined)[] | undefined;
   let addressedEntityDraws = false;
   const compactDrawAt = (entry: ValidatedRenderable, submesh: number) => {
@@ -986,7 +1253,7 @@ export function recordGeometryDraws(
   // submeshes. Other rows and passes still consult the actual slot mirror.
   const stageEntityMesh = (entry: ValidatedRenderable): void => {
     if (prepared !== undefined && entityMeshStaged) return;
-    prepareMeshDraw(c, entry, entityFold !== undefined, entityMeshSlot);
+    meshUploads.stage(entry, entityFold !== undefined, entityMeshSlot);
     entityMeshStaged = true;
   };
 
@@ -1039,12 +1306,11 @@ export function recordGeometryDraws(
       c.camera,
       c.targetW,
       c.targetH,
-      entry.source.transform.world,
+      recordingDrawPose(entry),
       style,
       pointsLinesOffset,
     );
-    pointsLinesDynamicOffsets ??= new Uint32Array(2);
-    const offsets = pointsLinesDynamicOffsets;
+    const offsets = workspace.pointsLinesOffsets;
     offsets[0] = viewOffsetForBlend(
       pointsLinesMaterial.renderState?.blend,
       pointsLinesMaterial.renderState?.fog,
@@ -1165,30 +1431,16 @@ export function recordGeometryDraws(
     selectedLayout: MaterialShaderPipelineEntry['rasterMaterialLayout'],
   ): BindGroup => {
     const materialSlot = entityBindingSlots?.[sourceSlot] ?? entityBindingSlots?.[0] ?? 0;
-    const binding =
-      c.profilePhase === undefined
-        ? resolveMaterialBinding(
-            materialSlot,
-            submeshMaterial,
-            entry.source.entityKey,
-            entry.world ?? c.world,
-            materialAddress,
-            selectedShaderId,
-            standardMaterialLayoutIndex,
-            selectedLayout,
-          )
-        : profileGeometrySegment(c, passKind, 'material-bind-groups', () =>
-            resolveMaterialBinding(
-              materialSlot,
-              submeshMaterial,
-              entry.source.entityKey,
-              entry.world ?? c.world,
-              materialAddress,
-              selectedShaderId,
-              standardMaterialLayoutIndex,
-              selectedLayout,
-            ),
-          );
+    const binding = resolveSubmeshBinding(
+      materialSlot,
+      submeshMaterial,
+      entry.source.entityKey,
+      entry.world ?? c.world,
+      materialAddress,
+      selectedShaderId,
+      standardMaterialLayoutIndex,
+      selectedLayout,
+    );
     const offset = rasterMaterialOffset(
       materialAddress.byteOffset,
       materialAddress.dynamicOffsetCount,
@@ -1326,7 +1578,7 @@ export function recordGeometryDraws(
   let submittedPipeline: RenderPipeline;
   let submittedMaterialPipeline: MaterialShaderPipelineEntry | null;
   let submittedShader: string | undefined;
-  let submittedFold: FoldBucket | undefined;
+  let submittedFold: FoldDraw | undefined;
   const rangeScratch = { first: 0, count: 0, baseVertex: 0 };
   let submittedRange: ReturnType<typeof submeshRange>;
   let submittedInstances: readonly GeometryInstanceDraw[];
@@ -1336,16 +1588,7 @@ export function recordGeometryDraws(
     | Pick<ViewportHitDraw, 'pipeline' | 'state'>
     | Omit<ViewportHitDraw, 'first' | 'count' | 'baseVertex' | 'instanceCount' | 'firstInstance'>
     | undefined;
-  let submittedWaterBaked:
-    | {
-        readonly sourceBodyIndices: readonly number[];
-        readonly bakedSources: readonly import('../world/view-draw-receipt').WaterBakedSourceDrawReceipt[];
-        readonly viewIdentity: string;
-        readonly frameGeneration: number;
-        readonly deviceGeneration: number;
-        readonly drawBinding: import('../world/view-draw-receipt').WaterBakedDrawBindingReceipt;
-      }
-    | undefined;
+  let submittedWaterBaked: WaterBakedSubmission | undefined;
   let presentedFacts: RenderableDrawReceipt | undefined;
   let presentedHasPass = false;
   const recordViewportHit = (
@@ -1368,18 +1611,13 @@ export function recordGeometryDraws(
       } else viewportHit.recordPipeline(hitDraw);
     }
   };
-  const recordPreparedSubmesh = (
-    draw: GeometryInstanceDraw,
-    command: 'draw' | 'draw-indexed',
-    range: import('../device/gpu-residency').MeshGpuRange,
-    firstInstance: number,
-  ): void => {
+  const capturePresentedFacts = (instanceCount: number): RenderableDrawReceipt => {
     const unsupportedLineage =
       passKind !== 'forward' ||
       submittedFold !== undefined ||
       submittedEntry.source.instances !== undefined ||
       submittedEntry.source.skinBinding !== undefined ||
-      draw.instanceCount !== 1;
+      instanceCount !== 1;
     const hasPass = submittedPass !== undefined;
     const passIndex = submittedPass === undefined ? 0 : submittedPass.passIndex;
     if (
@@ -1403,61 +1641,38 @@ export function recordGeometryDraws(
       };
       if (hasPass) facts.passIndex = passIndex;
       if (submittedShader !== undefined) facts.programKey = submittedShader;
-      if (submittedWaterBaked !== undefined) {
-        const source = submittedEntry.source;
-        const publication = submittedMaterial.materialPublication;
-        const identity = publication?.identity;
-        const selectedProgram = selectSubmittedMaterialProgram(
-          publication?.programs,
-          hasPass,
-          passIndex,
+      if (submittedWaterBaked !== undefined)
+        facts.waterBaked = waterBakedDrawFact(
+          submittedEntry,
+          submittedSubmesh,
+          submittedMaterial,
           submittedShader,
+          hasPass ? passIndex : undefined,
+          submittedWaterBaked,
+          c.runtime.observationGraphGeneration ?? -1,
         );
-        facts.waterBaked = Object.freeze({
-          entityKey: source.entityKey,
-          submeshIndex: submittedSubmesh,
-          materialSlot: submittedEntry.mesh.submeshes[submittedSubmesh]?.materialSlot ?? -1,
-          viewIdentity: submittedWaterBaked.viewIdentity,
-          frameId: submittedWaterBaked.frameGeneration,
-          deviceGeneration: submittedWaterBaked.deviceGeneration,
-          graphGeneration: c.runtime.observationGraphGeneration ?? -1,
-          drawKey: source.waterOwner?.drawKey ?? source.waterMeshTiles?.drawKey ?? '',
-          ownerWorldIdentity:
-            source.waterOwner?.worldIdentity ?? source.waterMeshTiles?.worldIdentity ?? '',
-          drawBinding: submittedWaterBaked.drawBinding,
-          materialIdentity: Object.freeze({
-            materialGuid: identity?.materialGuid ?? '',
-            publicationGeneration: identity?.publicationGeneration ?? -1,
-            ...(identity?.specializationKey === undefined
-              ? {}
-              : { specializationKey: identity.specializationKey }),
-            ...(identity?.artifactHash === undefined
-              ? {}
-              : { artifactHash: identity.artifactHash }),
-            ...(selectedProgram === undefined
-              ? {}
-              : { programKey: selectedProgram.specializationKey }),
-          }),
-          ...(selectedProgram === undefined
-            ? {}
-            : {
-                programIdentity: Object.freeze({
-                  pass: selectedProgram.pass,
-                  context: Object.freeze({ ...selectedProgram.context }),
-                  address: selectedProgram.address,
-                  specializationKey: selectedProgram.specializationKey,
-                  artifactHash: selectedProgram.artifactHash,
-                }),
-              }),
-          sourceBodyIndices: submittedWaterBaked.sourceBodyIndices,
-          sources: submittedWaterBaked.bakedSources,
-        });
-      }
       presentedFacts = Object.freeze(facts);
       presentedHasPass = hasPass;
     }
+    return presentedFacts;
+  };
+
+  const recordPreparedSubmesh = (
+    draw: GeometryInstanceDraw,
+    command: 'draw' | 'draw-indexed',
+    range: import('../device/gpu-residency').MeshGpuRange,
+    firstInstance: number,
+  ): void => {
     if (recordingPass !== undefined) recordedDraws++;
-    recordPresented(submittedEntry, submittedSubmesh, presentedFacts, submittedFold);
+    const drawConsumer = c.onRenderableDraw;
+    if (drawConsumer !== undefined) {
+      const facts =
+        submittedWaterBaked !== undefined ||
+        drawConsumer.needsMaterialReceipt?.(submittedMaterial) !== false
+          ? capturePresentedFacts(draw.instanceCount)
+          : undefined;
+      recordPresented(submittedEntry, submittedSubmesh, facts, submittedFold);
+    }
     recordViewportHit(draw, range, firstInstance);
     if (surfacePass !== undefined && draw.surfaceFrameBase !== undefined) {
       c.frameState.surfaceSubmissionObservation?.record(surfacePass, {
@@ -1924,18 +2139,117 @@ export function recordGeometryDraws(
   // while retaining the original row index for material slots and GPU payloads.
   const drawOrder =
     selectedDispatch !== undefined && c.foldDispatchPlan == null && prepared?.ordered !== true
-      ? dispatchDrawOrder(validatedOrdered, materialPasses)
+      ? workspace.drawOrder.prepare(validatedOrdered, materialPasses)
       : undefined;
-  if (drawOrder === undefined) visitSubmittedDrawRows(validatedOrdered, recordEntry);
-  else {
-    for (let ordinal = 0; ordinal < validatedOrdered.length; ordinal++) {
-      const index = drawOrder[ordinal] ?? ordinal;
-      const entry = validatedOrdered.at(index);
-      if (entry !== undefined) recordEntry(entry, index);
-    }
-  }
+  visitGeometryDrawOrder(
+    validatedOrdered,
+    drawOrder,
+    c.onRenderableDraw,
+    workspace.recordingRow,
+    recordEntry,
+  );
   if (recordingPass !== undefined)
     countDirectGeometry(c.frameState.renderBundleCounters, recordingPass, recordedDraws);
+}
+
+/** Request the currently selected ordinary mesh programs without recording or binding a view. */
+export function requestVisibleMeshPipelines(
+  c: _InternalRenderPipelineContext,
+  matchedMaterials: MaterialSelectionRows | null,
+  selectedDispatch: DispatchList | undefined,
+  options: GeometryPipelineRequestOptions & { readonly fragmentEntryPoint?: string | undefined },
+): void {
+  const { resolveDrawPipeline } = createGeometryPipelineRequests(
+    geometryPipelineRequestContext(c),
+    options,
+  );
+  const passes =
+    admittedGeometryMaterialPasses(c, selectedDispatch, false)?.groups ??
+    selectedMaterialPasses(selectedDispatch, false);
+  visitSubmittedDrawRows(c.validatedOrdered, (entry, index) => {
+    // These paths require draw-time geometry or resource admission.
+    if (
+      entry.source.waterOwner !== undefined ||
+      entry.source.pointsLines !== undefined ||
+      entry.source.gpuVertexSource !== undefined ||
+      entry.source.instances !== undefined ||
+      c.foldDispatchPlan?.skipIndices.has(index) === true
+    )
+      return;
+    const allowed = matchedMaterials?.get(entry.renderableIndex);
+    if (matchedMaterials !== null && allowed === undefined) return;
+    const slots = submittedMaterialRow(c.materialSlotIndices, index);
+    const byMaterial = passes.get(entry.renderableIndex);
+    const layout = drawVertexLayout(entry);
+    const reflected = recordingDrawReflected(entry);
+    const requestSubmesh = (submeshIndex: number) => {
+      const section = entry.mesh.submeshes[submeshIndex];
+      if (section === undefined) return;
+      const material = materialFromSubmittedSlots(c.materialSlots, slots, section.materialSlot);
+      const handle = material.materialHandle ?? 0;
+      if (allowed !== undefined && !allowed.has(handle)) return;
+      const request = (draw: DispatchEntry | undefined) => {
+        if (
+          c.splitLdrSprite &&
+          (draw === undefined
+            ? material.transparent === true
+            : draw.renderState?.blend !== undefined)
+        )
+          return;
+        resolveDrawPipeline(
+          entry,
+          section.topology,
+          material,
+          draw,
+          draw === undefined ? material.materialShaderId : draw.materialShaderId,
+          draw === undefined ? material.renderState : draw.renderState,
+          draw?.vertexEntry,
+          selectStandardForwardScreenEntry(options.fragmentEntryPoint, draw?.fragmentEntry),
+          false,
+          entry.variantSet,
+          layout,
+          reflected,
+        );
+      };
+      const draws = submeshMaterialDraws(
+        selectedDispatch,
+        byMaterial,
+        material,
+        handle,
+        allowed !== undefined,
+      );
+      if (isMaterialDrawList(draws)) {
+        for (const draw of draws) request(draw);
+      } else request(draws);
+    };
+    if (entry.submeshIndices !== undefined) {
+      for (const ordinal of entry.submeshIndices) requestSubmesh(ordinal);
+    } else {
+      for (let ordinal = 0; ordinal < entry.mesh.submeshes.length; ordinal++)
+        requestSubmesh(ordinal);
+    }
+  });
+}
+
+function visitGeometryDrawOrder(
+  rows: DrawRows,
+  order: GeometryDrawOrder | undefined,
+  consumer: _InternalRenderPipelineContext['onRenderableDraw'],
+  scratch: RecordingDrawRow,
+  record: (entry: ValidatedRenderable, index: number) => void,
+): void {
+  const borrowed = consumer === undefined || consumer.borrowsRows === true;
+  const numeric = consumer === undefined || consumer.readsCurrentPose === false;
+  if (order === undefined) {
+    if (borrowed) visitRecordingDrawRows(rows, record, numeric ? 'pose' : 'source', 0, scratch);
+    else visitSubmittedDrawRows(rows, record);
+    return;
+  }
+  for (let ordinal = 0; ordinal < rows.length; ordinal++) {
+    const index = order.at(ordinal);
+    const entry = borrowed ? recordingDrawRowAt(rows, index, scratch, numeric) : rows.at(index);
+    if (entry !== undefined) record(entry, index);
+  }
 }
 
 /** Overrides keep ordinary selection and order reads unless every actual owner key agrees. */
@@ -1968,36 +2282,6 @@ export function selectedMaterialPasses(
     includeMaterialPass(byMaterial, dispatch, temporal);
   }
   return materialPasses;
-}
-
-/** Selected-dispatch order first, then the remaining rows in validated order. */
-function dispatchDrawOrder(
-  validatedOrdered: DrawRows,
-  materialPasses: Pick<MaterialPassLookup, 'size' | 'keys'>,
-): number[] | undefined {
-  // The retained phase normally publishes rows in this exact dispatch order.
-  // Equal complete keys prove the ordinal loop already follows the selected
-  // commands; no reverse index or second draw-order array is required.
-  if (materialPasses.size === validatedOrdered.length) {
-    let ordinal = 0;
-    for (const key of materialPasses.keys()) {
-      if (validatedOrdered.at(ordinal)?.renderableIndex !== key) break;
-      ordinal += 1;
-    }
-    if (ordinal === validatedOrdered.length) return undefined;
-  }
-  const remaining = new Map<number, number>();
-  for (let index = 0; index < validatedOrdered.length; index++)
-    remaining.set((validatedOrdered.at(index) as ValidatedRenderable).renderableIndex, index);
-  const drawOrder: number[] = [];
-  for (const renderableIndex of materialPasses.keys()) {
-    const index = remaining.get(renderableIndex);
-    if (index === undefined) continue;
-    drawOrder.push(index);
-    remaining.delete(renderableIndex);
-  }
-  for (const index of remaining.values()) drawOrder.push(index);
-  return drawOrder;
 }
 
 function everyMaterialSlotTransparent(
@@ -2067,7 +2351,7 @@ function isMaterialDrawList(
 /** One instanced draw of a fold bucket's head over its renderer-owned transforms. */
 function foldInstanceDraws(
   c: _InternalRenderPipelineContext,
-  fold: FoldBucket,
+  fold: FoldDraw,
   renderableIndex: number,
 ): readonly GeometryInstanceDraw[] | null {
   const foldBuffer = resolveFoldInstanceBuffer(c, fold, renderableIndex);
@@ -2080,7 +2364,7 @@ type InstancePose = NonNullable<RenderableSnapshot['instances']>;
 function instanceUploadRows(
   current: InstancePose,
   previous: InstancePose | undefined,
-): InstanceRowLookup | undefined {
+): InstanceOrdinalOrder | undefined {
   if (previous === undefined) return undefined;
   return instanceStoragePairing(
     Math.floor(current.transforms.length / 16),
@@ -2099,7 +2383,7 @@ function uploadInstanceRanges(
   storageBacked: boolean,
   sourceOffsetInstances: number,
   previousInst?: InstancePose,
-  previousRows?: InstanceRowLookup,
+  previousRows?: InstanceOrdinalOrder,
 ): InstanceUploadResult {
   const world = renderWorldFor(c.runtime);
   if (!world.frameArena.isActive)
@@ -2136,8 +2420,8 @@ function uploadInstanceRanges(
     const first = sourceOffsetInstances + start;
     const count = end - start;
     // Legacy untagged inputs can pair by ordinal when the submitted range is complete.
-    const lookup =
-      untagged && (first + count) * 16 <= previous.length ? sameInstanceOrdinal : previousRows;
+    const order =
+      untagged && (first + count) * 16 <= previous.length ? SAME_INSTANCE_ORDINALS : previousRows;
     const written = storageBacked
       ? c.runtime.device.queue.writeBuffer(
           buffer,
@@ -2148,7 +2432,8 @@ function uploadInstanceRanges(
             previous,
             first,
             count,
-            lookup,
+            order,
+            inst.generations,
           ),
         )
       : c.runtime.device.queue.writeBuffer(
@@ -2481,8 +2766,8 @@ function resolveSceneDirectInstanceDraws(
 ): readonly GeometryInstanceDraw[] {
   const { scene, layout, slot, firstInstance, instanceCount } = address;
   const inst = entry.source.instances;
-  const upload = scene.takeInstanceUpload(slot);
-  if (inst?.collectionId !== undefined && c.frameState.instanceCollections !== undefined)
+  if (inst?.collectionId !== undefined && c.frameState.instanceCollections !== undefined) {
+    const upload = scene.takeInstanceUpload(slot);
     reportInstanceResidency(c, inst, {
       lane: 'gpu-scene',
       requestedBytes: instanceCount * GPU_SCENE_LAYOUTS.transform.stride,
@@ -2490,6 +2775,7 @@ function resolveSceneDirectInstanceDraws(
       uploadRanges: upload.ranges,
       uploadedBytes: upload.bytes,
     });
+  }
   const textures = scene.tableTextures;
   const instanceBuffer =
     textures === undefined ? scene.instanceBuffer : c.pipelineState.identityInstanceBuffer;

@@ -4,7 +4,6 @@ import { MeshChanges, ShadowMeshReads } from '../../device/mesh-changes';
 import { worldRenderResources } from '../../publication/resource-scope';
 import { prepareDirectionalShadowCache } from '../../record/directional-shadow-cache';
 import type { DirectionalShadowCache, RenderFrameState } from '../../record/frame-snapshot';
-import type { RenderSystemInternals } from '../../record/render-context';
 import type { CameraSnapshot } from '../../render-contract';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
 import type { FrameList } from '../../scene/frame-list';
@@ -64,10 +63,6 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
       dispatch: [],
       worldBoundsOf: () => false,
     }) satisfies PersistentShadowCasterProjection;
-  const internals = {
-    assets: { catalogEpoch: 1 },
-    gpuStore: { meshResidencyEpoch: 1 },
-  } as unknown as RenderSystemInternals;
   const state = {
     compiledFrameGraph: { topologyKey: 'same-light-graph' },
     installedPipelineHandle: 9,
@@ -85,7 +80,6 @@ it('invalidates real cache decisions for only fractional or neighbor geometry wh
   reads.add(changes.create());
   const decide = (sections: FrameList<RenderableSnapshot>) =>
     prepareDirectionalShadowCache(
-      internals,
       state,
       worldRenderResources(world),
       lease,

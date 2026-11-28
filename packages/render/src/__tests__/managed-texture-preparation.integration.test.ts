@@ -114,6 +114,7 @@ it('keeps one pending allocation and shares one mip pipeline while repeated uplo
   try {
     expect(create).toHaveBeenCalledTimes(32);
     expect(destroy).toHaveBeenCalledTimes(31);
+    await Promise.resolve();
     expect(shader).toHaveBeenCalledTimes(1);
     finish();
     const results = await Promise.all(pending);

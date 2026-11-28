@@ -54,6 +54,68 @@ for the selected configuration. Report version 2 describes runtime support and
 requirements. An absent CPU mesh publication is `unavailable`; registration does
 not establish a completed mesh publication.
 
+## Optional caustics
+
+Import `@forgeax/engine/water/caustics` for the optional rendering entry. Core
+Water state keeps no Render dependency. This entry's Render/AssetRegistry peers
+are optional; its separate TypeScript project is built after those peers.
+
+`createWaterGerstnerCausticsFeature` selects an explicit accepted Body snapshot,
+cooked material, mode and sun availability. `createWaterCausticsReceiverFeature`
+consumes its field before media, with named `WaterCausticsReceiverSettings` for
+gain, projection scale, line width, filtering, depth/distance, light and encoding.
+The scene supplies composed receiver shaders through its normal shader build.
+The receiver advances its previous source clock only after actual submission.
+Frozen light inputs preserve temporal accumulation; changing light marks a bounded
+local relative contribution instead of disabling history across the submerged
+domain. Texture mode includes its prior submitted projection so a vacated bright
+sample remains responsive. Dynamic fields use current local concentration and
+ordinary temporal neighborhood rejection; no scene-wide history or field copy
+is retained. Geometry velocity/depth and stronger existing reactivity are preserved.
+Custom sources/receivers can use `waterCausticsFieldResource`,
+`waterCausticsFieldPass` and the shipped WGSL modules directly. All field storage,
+additive work, numeric policies, FP32 height interpolation and stock receiving
+logic live under `src/caustics/`; Render retains generic device/graph ownership.
+
+Add the resolved Water `src/caustics/shaders` directory to the ordinary shader
+plugin and material cooker's source roots. Source assets are exported through
+`@forgeax/engine-water/caustics/shaders/*`. The shader plugin's `engineShaderRoots`
+replaces its defaults: retain `...materialShaderSourceRoots()` before appending
+the Water directory so Engine imports remain available. The material cooker
+adds its Engine roots automatically. See the R3 app's `vite.config.ts` for the
+complete registration. `gerstner-field.wgsl` takes explicit
+source span, receiving extent, normal stencil, peak limit and field resolution
+material parameters. Its single-plane projection is an approximation; caustics
+on arbitrary-depth geometry still need an appropriate source/receiving model.
+
+Fields explicitly declare `relative-irradiance` or `light-scaled-irradiance`.
+The stock Gerstner shader/default uses the latter; the heightfield pool uses the
+former. A flat admitted interface has relative concentration one. Disabled
+production clears storage; callers retain the effect enable state. The R3 and
+interactive pool apps demonstrate the stock and custom paths respectively.
+
+## Shared Gerstner geometry
+
+`waterGerstnerSurfaceSource(world.identity, bodySnapshot)` returns a read-only
+`gerstner-fixed/1` source identity and accepted WaveSet digest, without copying
+wave state or a clock. Render's `waterGerstnerSurfaceBindings` creates a
+declarative feature binding for a cooked `water-frame/3` program. The receiving
+view qualifies the actual native deformation branch, Body/Zone generations,
+WaveSet digest, frame and device before binding the existing Water buffers.
+The initial model is a fixed-height/depth Lake or Ocean with native Gerstner
+deformation. WaterInfo/Baked mapping, transitions, shallow/FFT residuals, far or
+custom deformation are outside that model and remain unavailable. The fixed
+model refers to the accepted Body upload; retaining the original material
+WaterInfo switch does not turn a fixed upload into a mapped source.
+
+In WGSL, `sampleWaterGerstnerSurface` from `forgeax_material::water_waves`
+samples the pre-horizontal-displacement parameter domain. Supply world XZ of
+the base plane, its matching origin-relative wave phase and a positive metre
+normal stencil. The result contains position, geometric normal, tangents and
+validity. It calls the same wave evaluator and current Body time as the draw;
+its geometric normal is independent of the material's optical detail normal.
+This is not an inverse query at displaced world XZ.
+
 ## Local Fluid Simulation
 
 `WaterFluidSimulation` binds a Scene-local Body to a saved `water-simulation-recipe`

@@ -506,3 +506,41 @@ fn applyWaterWavesToVertexWithHeightSample(bodyIndex: u32, currentWorld: vec3<f3
 fn applyWaterWavesToVertex(bodyIndex: u32, currentWorld: vec3<f32>, previousWorld: vec3<f32>, tileOffsetXZ: vec2<f32>) -> WaterWaveVertexState {
   return applyWaterWavesToVertexWithHeightSample(bodyIndex, currentWorld, previousWorld, tileOffsetXZ, vec3<f32>(0.0));
 }
+
+// Pre-horizontal-displacement parameter domain, never an inverse world-XZ query.
+// The render owner qualifies gerstner-fixed/1 and binds the exact draw's Body,
+// WaveSet and time. Geometry uses the SAME evaluation as applyWaterWavesToVertex.
+struct WaterGerstnerSurfaceSample {
+  positionM: vec3<f32>,
+  geometricNormal: vec3<f32>,
+  tangentU: vec3<f32>,
+  tangentV: vec3<f32>,
+  valid: bool,
+};
+
+fn sampleWaterGerstnerSurface(bodyIndex: u32, parameterWorldXZ: vec2<f32>,
+    parameterPhaseXZ: vec2<f32>, normalStepM: f32) -> WaterGerstnerSurfaceSample {
+  let invalid = WaterGerstnerSurfaceSample(vec3<f32>(0.0), vec3<f32>(0.0, 1.0, 0.0),
+    vec3<f32>(0.0), vec3<f32>(0.0), false);
+  if (bodyIndex >= arrayLength(&waterBodyData) || normalStepM <= 0.0 ||
+      !(normalStepM <= 3.402823e38) || !all(abs(parameterWorldXZ) <= vec2<f32>(3.402823e38)) ||
+      !all(abs(parameterPhaseXZ) <= vec2<f32>(3.402823e38))) { return invalid; }
+  let body = waterBodyData[bodyIndex];
+  if ((body.modeZoneSlice.x >> 1u) != 0u || (body.waveRange.w & 2u) == 0u) { return invalid; }
+  let depth = body.fixedHeightDepthVelocity.y;
+  let now = body.timeAndMask.x;
+  let wave = evaluateWaterWavesForward(bodyIndex, parameterPhaseXZ, depth, now);
+  let du = vec2<f32>(normalStepM, 0.0);
+  let dv = vec2<f32>(0.0, normalStepM);
+  let u0 = evaluateWaterWavesForward(bodyIndex, parameterPhaseXZ - du, depth, now).displacement;
+  let u1 = evaluateWaterWavesForward(bodyIndex, parameterPhaseXZ + du, depth, now).displacement;
+  let v0 = evaluateWaterWavesForward(bodyIndex, parameterPhaseXZ - dv, depth, now).displacement;
+  let v1 = evaluateWaterWavesForward(bodyIndex, parameterPhaseXZ + dv, depth, now).displacement;
+  let tangentU = vec3<f32>(1.0, 0.0, 0.0) + (u1 - u0) / (2.0 * normalStepM);
+  let tangentV = vec3<f32>(0.0, 0.0, 1.0) + (v1 - v0) / (2.0 * normalStepM);
+  let normal = cross(tangentV, tangentU);
+  let position = vec3<f32>(parameterWorldXZ.x, body.fixedHeightDepthVelocity.x, parameterWorldXZ.y) + wave.displacement;
+  if (!all(abs(position) <= vec3<f32>(3.402823e38)) ||
+      !all(abs(normal) <= vec3<f32>(3.402823e38)) || dot(normal, normal) <= 0.0) { return invalid; }
+  return WaterGerstnerSurfaceSample(position, normalize(normal), tangentU, tangentV, true);
+}

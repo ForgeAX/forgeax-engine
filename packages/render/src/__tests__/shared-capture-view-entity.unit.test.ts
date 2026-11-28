@@ -21,14 +21,12 @@ import * as graphs from '../record/typed-frame-graph';
 import {
   RenderCaptureGraphCompileOrder,
   RenderEncoderOpenOrder,
-  RenderGraphCompileOrder,
   RenderGraphSealOrder,
 } from '../system-order';
-
-import { ViewGraphSeal, viewGraphSealOutcome } from '../world/graph-seal-systems';
-
+import { viewGraphSealOutcome } from '../world/graph-seal-systems';
 import { RenderView, RenderViewInput, ViewSubmission } from '../world/render-views';
 import { RenderRecord, renderSubmission } from '../world/render-world';
+import { ViewRecordAttempt } from '../world/view-record-attempt';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 it("records the multi-view shared capture attempt on the primary recorder's view entity", async () => {
@@ -104,7 +102,7 @@ it("records the multi-view shared capture attempt on the primary recorder's view
     const systemToken2 = defineSystem({
       name: 'test-capture-compile-leave',
       after: [RenderCaptureGraphCompileOrder],
-      before: [RenderGraphCompileOrder],
+      before: [RenderGraphSealOrder],
       queries: [],
       fn: () => {
         compilingCaptures = false;
@@ -115,7 +113,7 @@ it("records the multi-view shared capture attempt on the primary recorder's view
     const systemToken3 = defineSystem({
       name: 'test-capture-seal-product',
       after: [RenderGraphSealOrder],
-      queries: [{ read: [ViewGraphSeal] }],
+      queries: [{ read: [ViewRecordAttempt] }],
       fn: (world, [rows]) => {
         for (const row of rows) sealed.push(viewGraphSealOutcome(world, row.entity).kind);
       },

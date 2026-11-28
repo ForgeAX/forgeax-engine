@@ -11,6 +11,7 @@ import {
   type Sampler,
 } from '@forgeax/engine-rhi';
 import { err, ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { stockUtilityShaderFactory } from '../assembly/utility-shader-prewarm';
 import type { AtmosphereTextureContent } from '../hdrp-buffers';
 import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
@@ -168,7 +169,7 @@ export function addAtmospherePackedLuts(
         const device = frame.runtime.device;
         if (state === undefined) {
           const source = frame.atmosphereShaders?.lutsFragment;
-          const factory = frame.runtime.shaderModuleFactory;
+          const factory = stockUtilityShaderFactory(frame.runtime);
           if (source === undefined || factory === undefined)
             throw new RhiError({
               code: 'shader-compile-failed',

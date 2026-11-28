@@ -16,7 +16,7 @@ import { testPlatform } from '../src/__tests__/platform-fixture';
 //       dawn-node-incompatible GL adapter (no panic hook registration),
 //   (b) the engine-input probe moves off addEventListener wrapping
 //       (intercept at the EventTarget descriptor level instead).
-// Local chrome-beta does NOT trigger this (no lavapipe ICD); ubuntu CI
+// Local chrome does NOT trigger this (no lavapipe ICD); ubuntu CI
 // runner with VK_ICD_FILENAMES=lvp_icd does.
 
 // input-attach.browser.test.ts -- M3 (w6) acceptanceCheck: 5-path coverage

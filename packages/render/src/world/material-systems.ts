@@ -3,6 +3,7 @@ import { defineSystem } from '@forgeax/engine-ecs';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
 import type { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { SceneDrawSlot } from '../scene/mesh-draw';
 import type { RenderSceneApplyResult, RenderSceneSlot } from '../scene/render-scene-types';
 import type { CompositionEntry } from '../scene/scene-composition';
 import { RenderScenePublishOrder } from '../system-order';
@@ -66,7 +67,10 @@ export function* publishedRows(delta: RenderSceneApplyResult): Iterable<RenderSc
 export function adoptSceneMaterials(entry: CompositionEntry, change: SceneMaterialChange): void {
   const dispatch = entry.materialDispatch;
   for (const { slot } of change.retired) dispatch.remove(slot);
-  for (const { slot, snapshot } of change.bound) dispatch.bind(slot, snapshot);
+  for (const row of change.bound) {
+    if (row instanceof SceneDrawSlot) dispatch.bindContent(row.slot, row.entityKey, row.content);
+    else dispatch.bind(row.slot, row.snapshot);
+  }
   if (change.topology !== undefined) entry.topology.apply(change.topology);
   for (const material of change.materialUpdates) dispatch.adopt(material);
   dispatch.prepare(entry.projection.meshFrame());

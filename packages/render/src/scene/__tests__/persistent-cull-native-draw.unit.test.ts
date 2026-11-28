@@ -4,15 +4,72 @@ import { expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../../record/frame-snapshot';
+import { createRenderKernelBridge } from '../../record/render-kernel-bridge';
 import type { ExtractedFrame, RenderableSnapshot } from '../../render-system-extract';
 import { defaultMaterialSnapshot } from '../../render-system-extract';
 import * as displacement from '../../standard-displacement-bounds';
+import { FrameSet } from '../frame-set';
 import { MaterialFrame } from '../material-dispatch';
 import { SceneDrawSlot } from '../mesh-draw';
 import { MeshFrame } from '../mesh-frame';
-import { cullPersistentFrame, type ViewCullStorage } from '../persistent-cull';
+import { cullPersistentFrame, cullSceneSlots, type ViewCullStorage } from '../persistent-cull';
 import type { RenderSceneSlot } from '../render-scene-types';
 import { RenderScene } from '../render-scene-view';
+import { SceneSlotPage } from '../scene-slots';
+
+it('tests moving residual rows without publishing unchanged membership maps', () => {
+  const scene = new RenderScene();
+  const source = receiptRow().source;
+  const keys = Array.from({ length: 128 }, (_, key) => key);
+  scene.apply(
+    keys.map((entityKey) => ({ kind: 'update', entityKey, snapshot: { ...source, entityKey } })),
+  );
+  const materials = new MaterialFrame(undefined);
+  const candidates = FrameSet.from([0, 63, 127]);
+  const boundsOfSlot = vi.fn((row: RenderSceneSlot, out: box3.Box3) => {
+    const x = row.snapshot.transform.world[12] as number;
+    out[0] = x;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = x + 0.1;
+    out[4] = 1;
+    out[5] = 1;
+    return true;
+  });
+  const read = () => ({
+    candidates,
+    planes: [Float32Array.of(-1, 0, 0, 5)],
+    slots: scene.slotsSnapshot(),
+    materials,
+    meshes: scene.meshFrame(),
+    skin: undefined,
+    unavailable: new FrameSet(),
+    boundsOf: () => false,
+    boundsOfSlot,
+    records: () => [...candidates].map((slot) => scene.slotAt(slot) as RenderSceneSlot),
+  });
+  const before = cullSceneSlots(read());
+  const writes = vi.spyOn(FrameSet.prototype, 'edit');
+  try {
+    const pose = source.transform.world.slice();
+    pose[12] = 1;
+    scene.apply(keys.map((entityKey) => ({ kind: 'update', entityKey, world: pose })));
+    boundsOfSlot.mockClear();
+    const next = cullSceneSlots(read(), before);
+    expect(boundsOfSlot.mock.calls.map(([row]) => row.slot)).toEqual([0, 63, 127]);
+    expect(writes).not.toHaveBeenCalled();
+    expect(next.admission).toBe(before.admission);
+
+    pose[12] = 7;
+    scene.apply([{ kind: 'update', entityKey: 63, world: pose }]);
+    const changed = cullSceneSlots(read(), next);
+    expect([...changed.admission.hidden]).toEqual([63]);
+    expect(next.admission.hidden.size).toBe(0);
+    expect(writes).toHaveBeenCalledTimes(1);
+  } finally {
+    writes.mockRestore();
+  }
+});
 
 it('tests moving scene slot bounds before projecting rejected draw and temporal rows', () => {
   const source = receiptRow().source;
@@ -30,22 +87,29 @@ it('tests moving scene slot bounds before projecting rejected draw and temporal 
     })),
   );
   const draw = vi.spyOn(SceneDrawSlot.prototype, 'draw');
-  const write = (row: RenderSceneSlot, out: box3.Box3) =>
-    projection.writeCullingWorldBoundsAt(row, out);
+  const read = vi.spyOn(SceneSlotPage.prototype, 'read');
+  const entities = Uint32Array.from({ length: count }, (_, entity) => entity);
+  const worlds = new Float32Array(count * 16);
+  const write = projection.writeCullingPoseBounds.bind(projection);
+  let retained: ExtractedFrame | undefined;
+  let retainedVisible = -1;
   try {
     for (let tick = 1; tick <= 60; tick++) {
       const visible = tick % count;
       for (let entity = 0; entity < count; entity++) {
         pose[12] = entity === visible ? 0 : 100 + tick + entity;
-        projection.apply([{ kind: 'update', entityKey: entity, world: pose }]);
+        worlds.set(pose, entity * 16);
       }
-      const sequence = projection.materializeTemporal({ hits: 0, misses: 0 }, materials);
+      projection.apply([], [{ entities, worlds }]);
+      const temporalReads = { hits: 0, misses: 0 };
+      const sequence = projection.materializeTemporal(temporalReads, materials);
       const frame = {
         cameras: [makeZeroCameraFallbackSnapshot()],
         renderables: sequence,
         dispatch: [],
       } as unknown as ExtractedFrame;
       draw.mockClear();
+      read.mockClear();
       const result = cullPersistentFrame(
         frame,
         materials,
@@ -60,11 +124,21 @@ it('tests moving scene slot bounds before projecting rejected draw and temporal 
       ).frame;
       // Culling publishes slot addresses. Reading a requested visible row is the first pose consumer.
       expect(draw).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+      expect(temporalReads.misses).toBe(0);
       expect(result.renderables.map((row) => row.entityKey)).toEqual([visible]);
       expect(result.frustumStats).toMatchObject({ total: count, culled: count - 1 });
-      expect(draw).toHaveBeenCalledTimes(1);
+      expect(temporalReads.misses).toBe(1);
+      expect(draw).not.toHaveBeenCalled();
+      if (retained === undefined) {
+        retained = result;
+        retainedVisible = visible;
+      }
     }
+    expect(retained?.renderables.at(0)?.entityKey).toBe(retainedVisible);
+    expect(retained?.renderables.at(0)?.transform.world[12]).toBe(0);
   } finally {
+    read.mockRestore();
     draw.mockRestore();
   }
 });
@@ -75,9 +149,7 @@ it('honors the current frustum opt-out before testing a native slot on consecuti
   const materials = new MaterialFrame(undefined).with(source.material);
   const memo: ViewCullStorage = { value: undefined };
   const outside = Float32Array.of(100, -1, -10, 102, 1, -8);
-  const bounds = vi.fn((row: RenderSceneSlot, out: box3.Box3) =>
-    scene.writeCullingWorldBoundsAt(row, out),
-  );
+  const bounds = vi.fn(scene.writeCullingPoseBounds.bind(scene));
   for (let tick = 0; tick < 12; tick++) {
     const optOut = (tick & 1) === 0;
     const snapshot = {
@@ -344,8 +416,8 @@ it('publishes changing camera membership and dense dispatch ranks across physica
       scene,
       0,
       undefined,
-      (row, out) => {
-        const x = inside(row.entityKey) ? 0 : 100;
+      (slot, _version, _content, _column, _offset, out) => {
+        const x = inside(slot) ? 0 : 100;
         out.set([x, -0.1, -8, x + 0.1, 0.1, -7]);
         return true;
       },
@@ -364,4 +436,89 @@ it('publishes changing camera membership and dense dispatch ranks across physica
   }
   expect(first?.renderables.map((row) => row.entityKey)).toEqual(firstKeys);
   expect(first?.cameraAdmission?.hidden.has(31)).toBe(true);
+});
+
+it('preserves exact monotonic rank order for interleaved bounded and unbounded rows under RenderKernel batch cull', () => {
+  const source = receiptRow().source;
+  const scene = new RenderScene();
+  const material = new MaterialFrame(undefined).with(source.material);
+  const keys = Array.from({ length: 64 }, (_, key) => key);
+  scene.apply(
+    keys.map((entityKey) => ({
+      kind: 'update',
+      entityKey,
+      snapshot: {
+        ...source,
+        entityKey,
+        frustumCulled: entityKey % 5 !== 0,
+      },
+    })),
+  );
+  const dispatch = keys.map((entityIndex, renderableIndex) => ({
+    entityIndex,
+    renderableIndex,
+    tags: { LightMode: 'Forward' },
+  }));
+  const sequence = scene.materializeTemporal({ hits: 0, misses: 0 }, material);
+  const frame = {
+    cameras: [makeZeroCameraFallbackSnapshot()],
+    renderables: sequence,
+    dispatch,
+  } as unknown as ExtractedFrame;
+  const inside = (key: number) => key % 3 === 0;
+  const writeBounds = (
+    slot: number,
+    _version: number,
+    _content: unknown,
+    _column: Float32Array,
+    _offset: number,
+    out: box3.Box3,
+  ): boolean => {
+    const x = inside(slot) ? 0 : 100;
+    out.set([x, -0.1, -8, x + 0.1, 0.1, -7]);
+    return true;
+  };
+  const reference = cullPersistentFrame(
+    frame,
+    material,
+    undefined,
+    { value: undefined },
+    undefined,
+    undefined,
+    scene,
+    0,
+    undefined,
+    writeBounds,
+  ).frame;
+  const bridge = createRenderKernelBridge('ts', 64);
+  try {
+    const batched = cullPersistentFrame(
+      frame,
+      material,
+      undefined,
+      { value: undefined },
+      undefined,
+      undefined,
+      scene,
+      0,
+      undefined,
+      writeBounds,
+      bridge,
+    ).frame;
+    expect(batched.renderables.map((row) => row.entityKey)).toEqual(
+      reference.renderables.map((row) => row.entityKey),
+    );
+    expect(
+      Array.from(batched.dispatch, (entry) => [entry.entityIndex, entry.renderableIndex]),
+    ).toEqual(
+      Array.from(reference.dispatch, (entry) => [entry.entityIndex, entry.renderableIndex]),
+    );
+    expect(Array.from(batched.cameraAdmission?.hidden ?? [])).toEqual(
+      Array.from(reference.cameraAdmission?.hidden ?? []),
+    );
+    expect(batched.frustumStats).toEqual(reference.frustumStats);
+    expect(bridge.inspect().batchCullCalls).toBe(1);
+  } finally {
+    bridge.dispose();
+  }
 });

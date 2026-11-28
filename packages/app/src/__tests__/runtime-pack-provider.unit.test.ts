@@ -96,6 +96,62 @@ it('captures a shared delivered dependency once across all admission roots', asy
   }
 });
 
+it('shares an in-flight delivered Pack read between generation and an ordinary load', async () => {
+  const guid = '01900000-0000-7000-8000-000000000b11';
+  const packageUrl = 'https://delivered.invalid/sampler.pack.json';
+  const { pack, publication } = createRuntimePackPublication({
+    scopeId: 'test',
+    sourcePath: 'sampler',
+    sourceRevision: 'sampler',
+    packageUrl,
+    pack: {
+      assets: [{ guid, kind: 'sampler', payload: { kind: 'sampler' }, refs: [], artifacts: {} }],
+    },
+  });
+  const entered = Promise.withResolvers<void>();
+  const response = Promise.withResolvers<void>();
+  let reads = 0;
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
+  const assembly = createAssetRuntimeAssembly(assets, {
+    catalogSource: createCatalogSource({
+      entries: [{ guid, kind: 'sampler', sourcePath: 'sampler', packageUrl, publication }],
+      expectedScope: { scopeId: 'test', generation: 0 },
+    }),
+    fetcher: async (input) => {
+      if (String(input) !== packageUrl) return new Response('', { status: 404 });
+      reads++;
+      entered.resolve();
+      await response.promise;
+      return Response.json(pack);
+    },
+  }).unwrap();
+  const context = await createWorldContext(new World(), []);
+  const runtime = assembleRuntimePacks(context, assembly, { scopeId: 'test' });
+  const admitted = runtime.producer.admit({
+    source: {
+      schemaVersion: '3.0.0',
+      packageId: '01900000-0000-7000-8000-000000000b12',
+      assets: { sampler: { kind: 'sampler', payload: { kind: 'sampler' }, refs: [guid] } },
+    },
+    dependencies: { [guid]: defined(publication.outputs[0]).digest },
+  });
+  let loaded: ReturnType<typeof assets.load<'sampler'>> | undefined;
+  try {
+    await Promise.race([entered.promise, admitted.then((result) => result.unwrap())]);
+    loaded = assets.load(guid, 'sampler');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(reads).toBe(1);
+    response.resolve();
+    (await admitted).unwrap();
+    assets.release((await loaded).unwrap()).unwrap();
+  } finally {
+    response.resolve();
+    await Promise.allSettled([admitted, loaded]);
+    await context.fiber.dispose();
+    assembly.dispose();
+  }
+});
+
 it.each([
   false,
   true,

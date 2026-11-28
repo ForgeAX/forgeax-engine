@@ -15,7 +15,7 @@ import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { buildEngineShaderManifest, publishShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { PNG } from 'pngjs';
 import { it } from 'vitest';
-import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import { drawSceneFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 
 type V3 = [number, number, number];
 const CASE = process.env.C410_CASE_DIR ?? '';
@@ -182,7 +182,7 @@ it.skipIf(!CASE)('C-410 case render', async () => {
     world.update(1 / 60).unwrap();
     device?.pushErrorScope('validation');
     const t0 = performance.now();
-    for (let i = 0; i < 3; i++) await drawReadyFrame(renderer, { source: lease });
+    for (let i = 0; i < 3; i++) await drawSceneFrame(renderer, lease);
     timing[job.out] = Math.round((performance.now() - t0) / 3);
     if (!device || !target) throw new Error('device not captured');
     const buffer = device.createBuffer({ size: bytesPerRow * H, usage: 0x0001 | 0x0008 });

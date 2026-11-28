@@ -251,6 +251,17 @@ it.each([
   const settleCaptures = async () => {
     for (let frame = 0; frame < 120; frame++) {
       await draw();
+      const probes = renderer.inspect({ fields: ['reflectionProbes'] }).reflectionProbes;
+      // After the first request, let the async shader factory finish before
+      // issuing more of the fixed frame budget for probe capture and filtering.
+      if (probes.pipelineWarmupAttempts > 0 && !probes.pipelineReady) {
+        const deadline = Date.now() + 10_000;
+        while (!renderer.inspect({ fields: ['reflectionProbes'] }).reflectionProbes.pipelineReady) {
+          if (Date.now() >= deadline)
+            throw new Error('Reflection probe shader preparation stalled');
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      }
       if (
         frame + 1 >= minimumCaptureFrames &&
         renderer.inspect().reflectionProbes.activeCount === 3

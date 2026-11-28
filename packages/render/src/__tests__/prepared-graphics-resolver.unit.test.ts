@@ -44,6 +44,76 @@ function failure<T>(result: Result<T, unknown>): {
 }
 
 describe('prepared graphics resolver', () => {
+  it('forwards inline fullscreen attachment write masks and blend state to its pipeline owner', async () => {
+    const currentDevice = await device();
+    const store = createPreparedGraphicsStore();
+    const transaction = store.beginFrame('resolver.mrt-state', 1);
+    const state = {
+      outputs: [
+        { name: 'color', format: 'rgba16float' as const },
+        {
+          name: 'metadata',
+          format: 'rgba16float' as const,
+          writeMask: 8,
+          blend: {
+            color: {
+              operation: 'add' as const,
+              srcFactor: 'zero' as const,
+              dstFactor: 'one' as const,
+            },
+            alpha: {
+              operation: 'max' as const,
+              srcFactor: 'one' as const,
+              dstFactor: 'one' as const,
+            },
+          },
+        },
+      ],
+    };
+    const pipeline = transaction
+      .prepare('pipeline', 'receiver', {
+        shader: 'receiver',
+        vertexLayout: 'none',
+        colorFormats: ['rgba16float', 'rgba16float'],
+        renderState: state,
+      })
+      .unwrap();
+    transaction.commit().unwrap();
+    const items = resultMap(store.snapshot('resolver.mrt-state').items);
+    const getPostProcessPipeline = vi.fn<
+      NonNullable<RenderSystemInternals['getPostProcessPipeline']>
+    >(() => ({}) as RenderPipeline);
+    const runtime = {
+      device: currentDevice,
+      getPostProcessPipeline,
+    } as unknown as RenderSystemInternals;
+    const entry = {
+      source:
+        '@vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0); } @fragment fn fs_main() -> @location(0) vec4f { return vec4f(1); }',
+    };
+    const scope = worldRenderResources(new World());
+    const resolver = createPreparedResolver(
+      {
+        runtime,
+        caches: createPreparedResolverCaches(),
+        gpuWork: {} as never,
+        builtinPostProcessEntries: new Map(),
+        skylightResources: () => undefined,
+      },
+      {
+        featureIdentity: 'resolver.mrt-state',
+        order: 0,
+        generation: 1,
+        transaction,
+        fullscreenEffects: new Map([['receiver', entry]]),
+        lookup: (ref) => items.get(ref),
+      },
+      scope,
+    );
+    resolver.resolve(pipeline).unwrap();
+    expect(getPostProcessPipeline.mock.calls[0]?.[5]).toEqual(state);
+    resolver.release().unwrap();
+  });
   it.each([
     ['forgeax::vfx-render.particles.mesh', true],
     ['forgeax::vfx-render.particles.mesh-inputs', true],
@@ -564,7 +634,10 @@ describe('prepared graphics resolver', () => {
   });
 });
 
-async function preparedWaterOwner(format: 'rgba16float' | 'rgba32float' = 'rgba16float') {
+async function preparedWaterOwner(
+  format: 'rgba16float' | 'rgba32float' = 'rgba16float',
+  surface = false,
+) {
   const store = createPreparedGraphicsStore();
   const transaction = store.beginFrame('resolver.water-system', 1);
   const pipeline = transaction
@@ -585,6 +658,14 @@ async function preparedWaterOwner(format: 'rgba16float' | 'rgba32float' = 'rgba1
         group: 2,
         waterMaterial: {
           bodyKey: 'body',
+          ...(surface
+            ? {
+                surfaceSource: {
+                  model: 'gerstner-fixed/1' as const,
+                  waveSetDigest: 'a'.repeat(64),
+                },
+              }
+            : {}),
           viewIdentity: 'view',
           bodyGeneration: 3,
           zoneGeneration: 4,
@@ -654,6 +735,7 @@ async function preparedWaterOwner(format: 'rgba16float' | 'rgba32float' = 'rgba1
       gpuWork: {} as never,
       builtinPostProcessEntries: new Map(),
       skylightResources: () => undefined,
+      waterSurfaceBodyKeys: () => new Set(),
     },
     input,
     worldRenderResources(new World()),
@@ -661,6 +743,7 @@ async function preparedWaterOwner(format: 'rgba16float' | 'rgba32float' = 'rgba1
   return {
     resolver,
     pipeline,
+    bindings,
     prepare,
     getPublication,
     setContract(next: RenderFeatureMaterialShaderContract) {
@@ -676,6 +759,26 @@ async function preparedWaterOwner(format: 'rgba16float' | 'rgba32float' = 'rgba1
 }
 
 describe('prepared Water system input', () => {
+  it('waits for the current surface branch to be admitted during a Body replacement', async () => {
+    const owner = await preparedWaterOwner('rgba16float', true);
+    const pending = owner.resolver.resolve(owner.pipeline);
+    expect(failure(pending)).toMatchObject({
+      code: 'render-feature-preparation-failed',
+      detail: { reason: 'pipeline-pending' },
+    });
+    expect(owner.prepare).not.toHaveBeenCalled();
+    owner.resolver.release().unwrap();
+  });
+  it('defers a certified graphics Water group to the frame owner beyond post-processing', async () => {
+    const owner = await preparedWaterOwner();
+    owner.setContract({
+      bindings: 'render-material',
+      systemInputs: { water: 'water-frame/3' },
+      entryPoints: [{ name: 'vs_main', stage: 'vertex', bindings: [{ group: 2, binding: 16 }] }],
+    });
+    expect(owner.resolver.resolve(owner.bindings).ok).toBe(true);
+    owner.resolver.release().unwrap();
+  });
   it.each([
     'rgba16float',
     'rgba32float',

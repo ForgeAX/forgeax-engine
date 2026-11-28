@@ -21,13 +21,13 @@ const sunk = (dx: number) =>
   });
 
 describe('interference suggestedMove', () => {
-  it('moves the second part out along the least-overlap axis by depth plus tolerance', () => {
+  it('moves the second part out along the least-overlap axis until the boxes separate', () => {
     const pair = sunk(0);
     expect(pair?.status).toBe('confirmed');
     const move = pair?.suggestedMove;
     expect(move?.[0]).toBe(0);
     expect(move?.[2]).toBe(0);
-    expect(move?.[1]).toBeCloseTo((pair?.depth ?? 0) + 0.001, 12);
+    expect(move?.[1]).toBeCloseTo(0.131, 12);
     expect(move?.[1]).toBeGreaterThan(0);
   });
 
@@ -36,7 +36,7 @@ describe('interference suggestedMove', () => {
       m.box({ size: [0.4, 0.2, 0.4], center: [0, 0, 0], label: 'a' });
       m.box({ size: [0.2, 0.2, 0.2], center: [0, -0.07, 0], label: 'b' });
     });
-    expect(pair?.suggestedMove?.[1]).toBeCloseTo(-((pair?.depth ?? 0) + 0.001), 12);
+    expect(pair?.suggestedMove?.[1]).toBeCloseTo(-0.131, 12);
   });
 
   it('mirrors across x: x component flips, the rest is unchanged', () => {

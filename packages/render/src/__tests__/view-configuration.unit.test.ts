@@ -16,7 +16,12 @@ function owner(builtins: Map<string, PostProcessShaderEntry> = new Map()) {
       installedPipelineHandle: 0,
       installedPipelineConfig: undefined,
       cameraStandardProfile: 'stale',
-      standardInstall: { configured: undefined, built: 0, cameraSignature: '', cameraFailure: '' },
+      standardInstall: {
+        configured: undefined,
+        built: 0,
+        cameraConfigured: false,
+        cameraFailure: '',
+      },
     },
     internals: { device, standardProfile: undefined },
     ssrFormats: new WeakMap(),

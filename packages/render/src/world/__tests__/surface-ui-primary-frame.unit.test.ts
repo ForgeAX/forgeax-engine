@@ -1,10 +1,10 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import type { RenderSystemInternals } from '../../record/render-context';
-import { ViewGraphSeal, type ViewGraphSealState } from '../graph-seal-systems';
 import { createRenderWorld, renderSubmission, runRenderRecord } from '../render-world';
 import * as surfaceUi from '../surface-ui-systems';
 import { viewComposition } from '../view-output-systems';
+import { ViewRecordAttempt, type ViewRecordAttemptState } from '../view-record-attempt';
 
 it.each([
   {
@@ -83,11 +83,11 @@ it.each([
     prepared: undefined,
     outcome: undefined,
     encoding: { kind: 'encoded', value: { kind: scenario.kind } },
-  } as unknown as ViewGraphSealState;
+  } as unknown as ViewRecordAttemptState;
   const entity = world
     .spawn({
-      component: ViewGraphSeal,
-      data: { state: world.allocUniqueRef('ViewGraphSeal', state) },
+      component: ViewRecordAttempt,
+      data: { state: world.allocUniqueRef('ViewRecordAttempt', state) },
     })
     .unwrap();
   // The primary fast path has no composed ViewRecorder in this list.

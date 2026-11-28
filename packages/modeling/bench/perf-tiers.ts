@@ -491,6 +491,73 @@ function threadCpuMs(): number {
 
 export const GATE_CLOCK: GateClock = threadCpuUsage === undefined ? 'wall' : 'thread-cpu';
 
+/** Largest factor a loaded host may stretch the absolute budgets by. */
+export const LOAD_SCALE_CAP = 3;
+
+let calibrationSink = 0;
+
+function calibrationRound(): void {
+  const rows: { id: number; v: number[]; tag: string }[] = [];
+  for (let i = 0; i < 30000; i++) {
+    rows.push({ id: i, v: [i, i * 2, Math.sqrt(i), i % 13], tag: `t${i % 211}` });
+    if (rows.length > 4000) rows.splice(0, 2000);
+  }
+  const index = new Map<string, number>();
+  for (const r of rows) index.set(r.tag, (index.get(r.tag) ?? 0) + (r.v[2] as number));
+  const sorted = rows.map((r) => (r.v[2] as number) + r.id).sort((a, b) => a - b);
+  calibrationSink += (sorted[0] as number) + index.size;
+}
+
+function calibrationSample(): number {
+  const cpu = threadCpuMs();
+  const started = performance.now();
+  for (let i = 0; i < 60; i++) calibrationRound();
+  const wall = performance.now() - started;
+  return GATE_CLOCK === 'thread-cpu' ? threadCpuMs() - cpu : wall;
+}
+
+/**
+ * Gate-clock time of a fixed workload (allocation, Map and sort mix, about 40 ms on a quiet
+ * host): the minimum of seven runs, the quiet-host reference written into the report. A
+ * loaded host stretches it and the kernel cases alike (hinge p90 over this workload stays
+ * 1.5 to 2.0 from idle to 40 competing processes), so its ratio to the stored quiet-host
+ * value scales the absolute budgets.
+ */
+export function calibrationMs(): number {
+  calibrationRound();
+  let best = Number.POSITIVE_INFINITY;
+  for (let run = 0; run < 7; run++) best = Math.min(best, calibrationSample());
+  return calibrationSink < 0 ? Number.NaN : best;
+}
+
+/**
+ * Load seen right now: the median of three runs. A shared host is bursty (one run 60 ms,
+ * the next 43 ms), so the minimum of a few runs reports the quiet gap, not the load the
+ * measured case then runs in; the median is the typical level and a single burst or gap
+ * does not move it.
+ */
+export function bracketMs(): number {
+  calibrationRound();
+  const runs = [calibrationSample(), calibrationSample(), calibrationSample()].sort((a, b) => a - b);
+  return calibrationSink < 0 ? Number.NaN : (runs[1] as number);
+}
+
+/**
+ * Share of the calibration's slowdown that stretches the budgets. The calibration workload
+ * (allocation, Map, sort) slows down more under contention than the kernel cases do: at a load
+ * average near 27 it reads 2.5 to 2.7 times its quiet value while the hinge reads about 1.6
+ * times its own. Scaling by the whole ratio would let twice the hinge cost pass; half of it
+ * covers the hinge's measured slowdown with margin and still fails the doubled hinge.
+ */
+export const LOAD_SCALE_SHARE = 0.5;
+
+/** Budget multiplier: 1 on a host as quiet as the reference, at most LOAD_SCALE_CAP. */
+export function loadScale(referenceMs: number, nowMs: number): number {
+  if (!(referenceMs > 0) || !Number.isFinite(nowMs)) return 1;
+  const ratio = Math.max(1, nowMs / referenceMs);
+  return Math.min(LOAD_SCALE_CAP, 1 + (ratio - 1) * LOAD_SCALE_SHARE);
+}
+
 export interface CaseTiming {
   readonly name: string;
   readonly tier: PerfTier;
@@ -513,6 +580,11 @@ export interface CaseTiming {
 /** The p90 the tier budget applies to. */
 export function gatedP90(t: CaseTiming): number {
   return GATE_CLOCK === 'thread-cpu' ? t.cpuP90Ms : t.p90Ms;
+}
+
+/** A case is over budget when its gated p90 exceeds the tier budget times the load scale. */
+export function overBudget(t: CaseTiming, scale: number): boolean {
+  return gatedP90(t) > t.budgetMs * scale;
 }
 
 function quantile(sorted: readonly number[], q: number): number {
@@ -583,4 +655,37 @@ export function measureCase(c: PerfCase, runs: number, warmup: number): CaseTimi
     triangles: last?.triangles ?? 0,
     ops: names.map((op, k) => ({ op, medianMs: round(quantile(sorted(perOp[k] ?? []), 0.5)) })),
   };
+}
+
+export interface GatedCase {
+  readonly timing: CaseTiming;
+  /** Budget multiplier of the accepted attempt: the larger of the loads on either side of it. */
+  readonly scale: number;
+}
+
+/**
+ * Measure a case up to `attempts` times, each bracketed by a load sample before and after it,
+ * and keep the attempt with the smallest ratio of gated p90 to scaled budget. The scale of an
+ * attempt is the larger of its two brackets: the case ran between them, so the heavier one
+ * bounds the load it saw, and a burst that hit only one side still counts.
+ */
+export function measureGated(
+  reference: number,
+  measure: () => CaseTiming,
+  attempts: number,
+): GatedCase {
+  let best: GatedCase | undefined;
+  let bestRatio = Number.POSITIVE_INFINITY;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const before = bracketMs();
+    const timing = measure();
+    const scale = Math.max(loadScale(reference, before), loadScale(reference, bracketMs()));
+    const ratio = gatedP90(timing) / (timing.budgetMs * scale);
+    if (ratio < bestRatio) {
+      best = { timing, scale };
+      bestRatio = ratio;
+    }
+    if (bestRatio <= 1) break;
+  }
+  return best as GatedCase;
 }

@@ -7,7 +7,6 @@ import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
 import { RENDER_CAPTURE_GRAPH_COMPILE_SYSTEM } from '../capture-graph-systems';
 import { RENDER_FEATURE_GRAPH_COMPILE_SYSTEM } from '../feature-graph-systems';
 import { RENDER_GRAPH_SEAL_SYSTEM } from '../graph-seal-systems';
-import { RENDER_GRAPH_COMPILE_SYSTEM } from '../graph-systems';
 import {
   closeFrameEncoder,
   RENDER_ENCODER_OPEN_SYSTEM,
@@ -26,7 +25,6 @@ describe('RenderRecord', () => {
     const record = schedules.find((schedule) => schedule.name === 'RenderRecord');
     expect(record?.systems.map((system) => system.name)).toEqual([
       RENDER_ENCODER_OPEN_SYSTEM,
-      RENDER_GRAPH_COMPILE_SYSTEM,
       RENDER_CAPTURE_GRAPH_COMPILE_SYSTEM,
       RENDER_GRAPH_SEAL_SYSTEM,
       'render-capture-graph-encode',

@@ -99,11 +99,32 @@ export function equals(a: Mat4Like, b: Mat4Like, epsilon = 1e-6): boolean {
 }
 
 /**
- * out = a * b (column-major matrix multiply). bOffset and aOffset address the source matrices in packed storage.
- *
- * Aliasing-safe: out may equal a or b; reads all 32 source elements into locals first.
+ * out = a * b (column-major matrix multiply). Offsets are float indices in packed storage.
+ * Aliasing-safe: reads all 32 source elements before writing any output.
  */
-export function multiply(out: Mat4, a: Mat4Like, b: Mat4Like, bOffset = 0, aOffset = 0): Mat4 {
+export function multiply(
+  out: Float32Array,
+  a: Mat4Like,
+  b: Mat4Like,
+  bOffset: number,
+  aOffset: number,
+  outOffset: number,
+): Float32Array;
+export function multiply(
+  out: Mat4,
+  a: Mat4Like,
+  b: Mat4Like,
+  bOffset?: number,
+  aOffset?: number,
+): Mat4;
+export function multiply(
+  out: Float32Array,
+  a: Mat4Like,
+  b: Mat4Like,
+  bOffset = 0,
+  aOffset = 0,
+  outOffset = 0,
+): Float32Array {
   const a00 = a[aOffset + 0] as number;
   const a01 = a[aOffset + 1] as number;
   const a02 = a[aOffset + 2] as number;
@@ -136,22 +157,22 @@ export function multiply(out: Mat4, a: Mat4Like, b: Mat4Like, bOffset = 0, aOffs
   const b31 = b[bOffset + 13] as number;
   const b32 = b[bOffset + 14] as number;
   const b33 = b[bOffset + 15] as number;
-  out[0] = a00 * b00 + a10 * b01 + a20 * b02 + a30 * b03;
-  out[1] = a01 * b00 + a11 * b01 + a21 * b02 + a31 * b03;
-  out[2] = a02 * b00 + a12 * b01 + a22 * b02 + a32 * b03;
-  out[3] = a03 * b00 + a13 * b01 + a23 * b02 + a33 * b03;
-  out[4] = a00 * b10 + a10 * b11 + a20 * b12 + a30 * b13;
-  out[5] = a01 * b10 + a11 * b11 + a21 * b12 + a31 * b13;
-  out[6] = a02 * b10 + a12 * b11 + a22 * b12 + a32 * b13;
-  out[7] = a03 * b10 + a13 * b11 + a23 * b12 + a33 * b13;
-  out[8] = a00 * b20 + a10 * b21 + a20 * b22 + a30 * b23;
-  out[9] = a01 * b20 + a11 * b21 + a21 * b22 + a31 * b23;
-  out[10] = a02 * b20 + a12 * b21 + a22 * b22 + a32 * b23;
-  out[11] = a03 * b20 + a13 * b21 + a23 * b22 + a33 * b23;
-  out[12] = a00 * b30 + a10 * b31 + a20 * b32 + a30 * b33;
-  out[13] = a01 * b30 + a11 * b31 + a21 * b32 + a31 * b33;
-  out[14] = a02 * b30 + a12 * b31 + a22 * b32 + a32 * b33;
-  out[15] = a03 * b30 + a13 * b31 + a23 * b32 + a33 * b33;
+  out[outOffset] = a00 * b00 + a10 * b01 + a20 * b02 + a30 * b03;
+  out[outOffset + 1] = a01 * b00 + a11 * b01 + a21 * b02 + a31 * b03;
+  out[outOffset + 2] = a02 * b00 + a12 * b01 + a22 * b02 + a32 * b03;
+  out[outOffset + 3] = a03 * b00 + a13 * b01 + a23 * b02 + a33 * b03;
+  out[outOffset + 4] = a00 * b10 + a10 * b11 + a20 * b12 + a30 * b13;
+  out[outOffset + 5] = a01 * b10 + a11 * b11 + a21 * b12 + a31 * b13;
+  out[outOffset + 6] = a02 * b10 + a12 * b11 + a22 * b12 + a32 * b13;
+  out[outOffset + 7] = a03 * b10 + a13 * b11 + a23 * b12 + a33 * b13;
+  out[outOffset + 8] = a00 * b20 + a10 * b21 + a20 * b22 + a30 * b23;
+  out[outOffset + 9] = a01 * b20 + a11 * b21 + a21 * b22 + a31 * b23;
+  out[outOffset + 10] = a02 * b20 + a12 * b21 + a22 * b22 + a32 * b23;
+  out[outOffset + 11] = a03 * b20 + a13 * b21 + a23 * b22 + a33 * b23;
+  out[outOffset + 12] = a00 * b30 + a10 * b31 + a20 * b32 + a30 * b33;
+  out[outOffset + 13] = a01 * b30 + a11 * b31 + a21 * b32 + a31 * b33;
+  out[outOffset + 14] = a02 * b30 + a12 * b31 + a22 * b32 + a32 * b33;
+  out[outOffset + 15] = a03 * b30 + a13 * b31 + a23 * b32 + a33 * b33;
   return out;
 }
 

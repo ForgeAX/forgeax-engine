@@ -49,7 +49,7 @@ function fixture() {
   const slot = required(scene.slotsSnapshot().lookup(17)).slot;
   const x = (root: ReturnType<SkinSceneInputs['capture']>) => {
     const out = mat4.create();
-    expect(root.matrix(slot, 0, out, mat4.create())).toBe(true);
+    expect(root.matrix(slot, 0, out)).toBe(true);
     return out[12];
   };
   return { arena, scene, skin, frames: new SkinFrames(skin), slot, x };

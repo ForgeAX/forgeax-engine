@@ -1295,6 +1295,13 @@ admit content, generate parameter instances, save snapshots or restore them.
 Frontend's five-action reader consumes that provider's combined Catalog and
 fetcher. The frontend and Engine producers remain independent.
 
+Published browser projects load a shipped Runtime Pack generator from its
+build's module graph when the module bytes, selected entry and declared Engine
+bindings match. Generation and publication still run on demand. Programs
+admitted from new source use the browser Pack Service Worker. A Task Worker
+that began loading before that service worker took control can request a claim
+before it first imports a dynamically published module.
+
 An embedded frontend may lend `FrontendPlatform.createPackProgramHost`, typed by
 DevKit's `PackProgramHostFactory` augmentation. Generated document providers use
 that native host before browser ServiceWorker delivery and pass lazy imports from
@@ -2646,7 +2653,7 @@ smoke gates.
 On a Linux host with software WebGPU, run under a task-owned display:
 
 ```bash
-FORGEAX_BROWSER_EXECUTABLE=/opt/google/chrome-beta/chrome \
+FORGEAX_BROWSER_EXECUTABLE=/opt/google/chrome/chrome \
 FORGEAX_RUNTIME_PACK_EVIDENCE=/tmp/runtime-pack-worker-evidence \
 xvfb-run -a pnpm --dir packages/devkit test:runtime-browser
 ```

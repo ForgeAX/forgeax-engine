@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 import { compileShader } from '../../../../shader-compiler/src/index';
 import { loadEngineShaderEntries } from '../../../../vite-plugin-shader/src/engine-inputs/load-engine-shader-entries';
 import { SCREEN_PROBE_BINDINGS, SCREEN_PROBE_STAGES } from '../../raytracing/screen-probe-kernels';
+import { SCREEN_PROBE_FRAME_BYTES } from '../../raytracing/screen-probe-plan';
 
 it('validates the current viewport owner through six production temporal and gather configurations', async () => {
   const current = await readFile(
@@ -48,7 +49,9 @@ it('validates the current viewport owner through six production temporal and gat
       const slots = SCREEN_PROBE_STAGES[entry].slots.map((slot) => SCREEN_PROBE_BINDINGS[slot][0]);
       for (const global of active.filter((global) => global.group === 0))
         expect(slots).toContain(global.binding);
-      expect(active.find((global) => global.group === 0 && global.binding === 0)?.span).toBe(192);
+      expect(active.find((global) => global.group === 0 && global.binding === 0)?.span).toBe(
+        SCREEN_PROBE_FRAME_BYTES,
+      );
     }
   }
 });

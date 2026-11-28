@@ -7,7 +7,6 @@ import { standardBloomAdmitted } from './bloom-admission';
 import { ProjectedDecalInvalidError } from './decals/component';
 import { RenderFeatureInputUnavailableError } from './errors/render';
 import { reportPendingRenderFeatureErrors } from './features/error-reporting';
-import type { RenderFeatureFrameInput } from './features/host';
 import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from './gpu-driven/draw-selection';
 import { materialUsesLitSceneInputs } from './pbr-pipeline';
 import { hasForwardShadowCoverage } from './pipeline/forward-shadow-admission';
@@ -27,7 +26,7 @@ import {
 import { resolveFrameMaterials } from './record/frame-admission';
 import { buildPerFrameBindGroups } from './record/frame-lighting';
 import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from './record/frame-snapshot';
-import type { RenderableDrawReceipt } from './record/gpu-draw-receipts';
+import type { RenderableDrawReceipt, RenderableDrawRecorder } from './record/gpu-draw-receipts';
 import {
   type PipelineState,
   type RenderSystemInternals,
@@ -41,23 +40,30 @@ import type {
   DispatchList,
   ExtractedFrame,
   GpuOwnedFrame,
+  MaterialSnapshot,
 } from './render-system-extract';
 import {
   createPresentationDraws,
   initialFramePresentation,
   markPipelinePreparationPending,
-  projectDisplayRenderables,
+  type PresentationDrawEvidence,
+  submittedDrawEvidence,
+  submittedDrawRows,
 } from './render-system-presentation';
 import {
   featurePreparationPendingReason,
   type RecordAttempt,
-  type RecordFeatures,
   recordFailureError,
 } from './render-system-record-attempt';
 import { FrameProjection } from './scene/frame-list';
 import { culledViewDemand, someCapturedMaterialPass } from './scene/material-dispatch';
 import type { PersistentGpuDrivenState } from './scene/render-scene';
-import { recordsViewWork, type ViewCaptureFrame, viewCaptureWorkOf } from './world/capture-systems';
+import {
+  RENDER_CAPTURE_SCHEDULE_SYSTEM,
+  recordsViewWork,
+  type ViewCaptureFrame,
+  viewCaptureWorkOf,
+} from './world/capture-systems';
 import { consumeViewEnvironment } from './world/environment-systems';
 import {
   RENDER_FEATURE_PLAN_SYSTEM,
@@ -90,13 +96,6 @@ import type { ViewSettlementOwner } from './world/view-settlement';
 /** A view `render-capture-fit` did not run for fits no face. */
 const NO_CAPTURE_FITS: ReadonlyMap<object, ViewLights> = new Map();
 
-/** A view `render-capture-schedule` did not prepare records no captures. */
-const EMPTY_VIEW_CAPTURES: ViewCaptureFrame = Object.freeze({
-  cube: [],
-  sceneInputs: [],
-  auxiliaryCameras: [],
-  faces: [],
-});
 export type RecordView = NonNullable<ReturnType<typeof selectRecordView>>;
 export type RecordScene = NonNullable<ReturnType<typeof prepareRecordScene>>;
 export type RecordQueue = {
@@ -229,16 +228,6 @@ export function prepareRecordScene(
     owner.internals.viewEntity,
   );
   owner.recorded.camera = cameras[0];
-  // Feature, queue and temporal work all read this same extracted view. Only GPU
-  // raster admission consumes stable entity membership and its revision.
-  const presentationRenderables =
-    cameras.length === 0 || frame.gpuOwned !== undefined
-      ? []
-      : projectDisplayRenderables(
-          frame.renderables,
-          frame.dispatch,
-          attempt.mode === 'capture' ? undefined : cameras[0],
-        );
   owner.frameState.pipelinePreparationPending = false;
   delete owner.frameState.pipelinePreparationPendingReason;
   const presentation = initialFramePresentation(
@@ -271,7 +260,6 @@ export function prepareRecordScene(
     shadowCasterProjection,
     reflectionProbes,
     ssrDependencies,
-    presentationRenderables,
     presentation,
     lodFrameId,
     lodCandidateCount,
@@ -306,31 +294,36 @@ export function observationFrameId(owner: ViewSettlementOwner): number {
 /**
  * Bind groups, then the feature host frame over the Feature input
  * `render-feature-views` prepared, and the plan `render-feature-plan`
- * planned from it. `undefined` rejects the frame.
+ * planned from it. A rejected Feature input stops the attempt.
  */
-export function prepareRecordFeatures(
+export function admitRecordFeatures(
   owner: ViewSettlementOwner,
   attempt: RecordAttempt,
   frame: ExtractedFrame,
   view: RecordView,
-): RecordFeatures | undefined {
+): boolean {
   owner.recorded.bindGroups.createBindGroup = 0;
   owner.recorded.bindGroups.keys = [];
+  const runtime = recordContext(owner.internals);
   buildFrameBindGroups(
     owner,
     attempt.profileSession,
-    recordContext(owner.internals).getPipelineState(),
+    runtime.getPipelineState(),
     frame.cameras.length,
   );
   retainFrameInspection(owner, frame);
   const prepared = consumeViewFeatureInput(owner, attempt.mode, view.cameras[0]);
-  if (prepared === undefined) return undefined;
-  const host = prepareFeatureHostFrame(owner, prepared.input);
-  if (host === undefined) return undefined;
-  const plan = runProfiledRenderPhase(attempt.profileSession, 'features', () =>
-    admitViewFeaturePlan(owner, host.featureFrame),
+  if (prepared === undefined) return false;
+  const usesHost = runtime.featureHost !== undefined && prepared.input !== undefined;
+  const featureFrame = usesHost
+    ? sealedViewFeatureResult(owner, prepared.input.identity)
+    : undefined;
+  if (usesHost && featureFrame === undefined) return false;
+  return (
+    runProfiledRenderPhase(attempt.profileSession, 'features', () =>
+      admitViewFeaturePlan(owner, featureFrame),
+    ) !== undefined
   );
-  return plan === undefined ? undefined : { ...host, plan };
 }
 
 /**
@@ -403,41 +396,6 @@ export function retainFrameInspection(owner: ViewSettlementOwner, frame: Extract
     sourceFieldsVisited: frame.materialTextureSources.sourceFieldsVisited,
     producerRoutes: Object.freeze({ ...frame.materialTextureSources.producerRoutes }),
   });
-}
-
-/**
- * This view's capture work `render-capture-schedule` prepared, then the
- * shared Feature work its sealed Feature frame joins. `undefined` means the
- * host rejected the frame.
- */
-export function prepareFeatureHostFrame(
-  owner: ViewSettlementOwner,
-  input: RenderFeatureFrameInput | undefined,
-): Omit<RecordFeatures, 'plan'> | undefined {
-  const captures = consumeViewCaptureWork(owner);
-  let featureFrame: import('./features/host').RenderFeatureFrameResult | undefined;
-  if (recordContext(owner.internals).featureHost !== undefined && input !== undefined) {
-    featureFrame = sealedViewFeatureResult(owner, input.identity);
-    if (featureFrame === undefined) return undefined;
-  }
-  return {
-    scheduledCaptureWork: captures.cube,
-    sceneInputWork: captures.sceneInputs,
-    auxiliaryCameras: captures.auxiliaryCameras,
-    faces: captures.faces,
-    featureFrame,
-  };
-}
-
-/**
- * The capture work `render-capture-schedule` prepared for this view. A view
- * it did not prepare records no captures; a failure rethrows inside the
- * recording's own recovery.
- */
-export function consumeViewCaptureWork(owner: ViewSettlementOwner): ViewCaptureFrame {
-  const outcome = viewCaptureWorkOf(renderWorldFor(owner.internals), owner.internals.viewEntity);
-  if (outcome?.kind === 'failed') throw outcome.cause;
-  return outcome?.value ?? EMPTY_VIEW_CAPTURES;
 }
 
 /**
@@ -518,6 +476,7 @@ export function stageRecordQueue(
   readonly gpuDriven: GpuDrivenRecordInput;
   readonly records: boolean;
   readonly sorted: boolean;
+  readonly captures: ViewCaptureFrame;
 } {
   const world = renderWorldFor(owner.internals);
   const gpuDrivenScene = owner.scene.compositionGpuDrivenState();
@@ -537,7 +496,11 @@ export function stageRecordQueue(
       })),
       profile: attempt.profileSession,
     });
-  const captures = consumeViewCaptureWork(owner);
+  const captureOutcome = viewCaptureWorkOf(world, entity);
+  if (captureOutcome === undefined)
+    throw new Error(`${RENDER_CAPTURE_SCHEDULE_SYSTEM} did not plan the recorded view`);
+  if (captureOutcome.kind === 'failed') throw captureOutcome.cause;
+  const captures = captureOutcome.value;
   const records = recordsViewWork(attempt.mode, captures);
   stageViewPassPlan(
     owner,
@@ -564,6 +527,7 @@ export function stageRecordQueue(
       shadowCasterProjection: scene.shadowCasterProjection,
       materialBindingClasses: scene.reflectionProbes.bindingClasses,
       gpuDriven,
+      onSourceSceneIndexDemand: attempt.opts.onSourceSceneIndexDemand,
       captureShadows:
         captures.faces.length > 0 ||
         scene.reflectionProbes.graph.work.some((work) => work.rawCaptureFace !== undefined),
@@ -574,7 +538,7 @@ export function stageRecordQueue(
         cloudShadowProjectionFor(frame.cloudLayer),
       ),
     });
-  return { gpuDriven, records, sorted };
+  return { gpuDriven, records, sorted, captures };
 }
 
 /** Scene depth belongs to the selected shader, even if several occupied materials use it. */
@@ -609,7 +573,7 @@ function retainEmptyForwardShadowGraph(
     scene !== undefined &&
     scene.slots.length > 0 &&
     (frame.compiledFrameGraph?.forwardShadowCoverage === true ||
-      frame.unsubmittedCompiledFrameGraph?.installed.forwardShadowCoverage === true)
+      frame.unsubmittedCompiledFrameGraph?.forwardShadowCoverage === true)
   );
 }
 
@@ -751,31 +715,30 @@ export function cameraFrameTime(attempt: RecordAttempt): number {
 export function presentedRenderableRecorder(
   owner: ViewSettlementOwner,
   attempt: RecordAttempt,
-  gpuOwnedFrame: GpuOwnedFrame | undefined,
+  gpuRows: Pick<GpuOwnedFrame, 'row'> | undefined,
 ) {
-  const presentedDraws = createPresentationDraws();
+  const cpuDraws = createPresentationDraws();
+  let presentedDraws: PresentationDrawEvidence = cpuDraws;
   const drawObservation = createDrawObservation(owner.internals);
   const viewReceipt = viewDrawReceipt(renderWorldFor(owner.internals), owner.internals.viewEntity);
   const consumeDynamicGeometry = viewReceipt?.dynamicGeometry.onRenderableDraw(attempt.sourceScope);
   let gpuSelection = EMPTY_GPU_DRAW_SELECTION;
-  // Rows the submitted selection draws get no per-row receipt; their
-  // consumers ask the frozen frame and selection on demand.
-  const gpuOwned =
-    gpuOwnedFrame === undefined
+  // GPU execution publishes its selection once; each consumer addresses only its required row.
+  const publishGpuSelection =
+    gpuRows === undefined
       ? undefined
-      : {
-          frame: gpuOwnedFrame,
-          submitted: (selection: GpuDrawSelection): void => {
-            gpuSelection = selection;
-            if (!selection.empty) drawObservation.recordGpuLane();
-            viewReceipt?.dynamicGeometry.onGpuOwnedDraws(attempt.sourceScope, (entity, mesh) => {
-              const row = gpuOwnedFrame.row(entity);
-              return (
-                row?.assetHandle === mesh &&
-                row.gpuDrivenDraws?.some((draw, index) => selection.owns(row, draw, index)) === true
-              );
-            });
-          },
+      : (selection: GpuDrawSelection): void => {
+          gpuSelection = selection;
+          if (selection.empty) {
+            presentedDraws = cpuDraws;
+            return;
+          }
+          presentedDraws = submittedDrawEvidence(cpuDraws, gpuRows, selection);
+          drawObservation.recordGpuLane();
+          viewReceipt?.dynamicGeometry.onGpuOwnedDraws(attempt.sourceScope, (entity, mesh) => {
+            const row = gpuRows.row(entity);
+            return row?.assetHandle === mesh && selection.ownsAny(row);
+          });
         };
   const sourceWorld = attempt.sourceWorld;
   const markPresentedRenderable = (
@@ -783,20 +746,20 @@ export function presentedRenderableRecorder(
     submeshIndex?: number,
     receipt?: RenderableDrawReceipt,
   ): void => {
-    const entityKey = entry.source.entityKey;
+    const source = entry.source;
+    const entityKey = source.entityKey;
     if (receipt?.ready !== false) {
-      presentedDraws.record(
+      cpuDraws.record(
         entityKey,
         submeshIndex,
-        submeshIndex === undefined ? undefined : entry.source.terrainSection?.index,
+        submeshIndex === undefined ? undefined : source.terrainSection?.index,
       );
-      if (receipt?.waterBaked !== undefined) {
+      if (viewReceipt !== undefined && receipt?.waterBaked !== undefined) {
         const materialWorldIdentity = sourceWorld?.identity;
-        const viewIdentity =
-          entry.source.waterOwner?.viewIdentity ?? entry.source.waterMeshTiles?.viewIdentity;
+        const viewIdentity = source.waterOwner?.viewIdentity ?? source.waterMeshTiles?.viewIdentity;
         const deviceGeneration = owner.internals.deviceGeneration;
         const graphGeneration = owner.internals.observationGraphGeneration;
-        viewReceipt?.stageWaterBakedDraw(
+        viewReceipt.stageWaterBakedDraw(
           observationFrameId(owner),
           {
             ...receipt.waterBaked,
@@ -809,44 +772,55 @@ export function presentedRenderableRecorder(
           },
         );
       }
-      const material = receipt?.material,
-        materialSlot =
-          submeshIndex === undefined
-            ? undefined
-            : entry.mesh?.submeshes[submeshIndex]?.materialSlot,
-        sourceRevision = material?.sourceAssets?.revision,
-        worldIdentity = sourceWorld?.identity,
-        deviceGeneration = owner.internals.deviceGeneration,
-        graphGeneration = owner.internals.observationGraphGeneration;
+      const materialHandle = receipt?.material?.materialHandle;
+      const sourceRevision = receipt?.material?.sourceAssets?.revision;
       if (
+        viewReceipt !== undefined &&
         submeshIndex !== undefined &&
-        materialSlot !== undefined &&
-        material?.materialHandle !== undefined &&
         sourceRevision !== undefined &&
-        worldIdentity !== undefined &&
-        deviceGeneration !== undefined &&
-        graphGeneration !== undefined
-      )
-        viewReceipt?.materials.record(
-          observationFrameId(owner),
-          worldIdentity,
-          entityKey,
-          submeshIndex,
-          materialSlot,
-          material.materialHandle,
-          sourceRevision,
-          deviceGeneration,
-          graphGeneration,
-        );
+        materialHandle !== undefined
+      ) {
+        const materialSlot = entry.mesh?.submeshes[submeshIndex]?.materialSlot;
+        const worldIdentity = sourceWorld?.identity;
+        const { deviceGeneration, observationGraphGeneration } = owner.internals;
+        if (
+          materialSlot !== undefined &&
+          worldIdentity !== undefined &&
+          deviceGeneration !== undefined &&
+          observationGraphGeneration !== undefined
+        )
+          viewReceipt.materials.record(
+            observationFrameId(owner),
+            worldIdentity,
+            entityKey,
+            submeshIndex,
+            materialSlot,
+            materialHandle,
+            sourceRevision,
+            deviceGeneration,
+            observationGraphGeneration,
+          );
+      }
     }
     drawObservation.record(entry, submeshIndex, receipt, sourceWorld);
     consumeDynamicGeometry?.(entry, receipt?.lane ?? 'cpu');
   };
+  const drawRecorder: RenderableDrawRecorder = Object.assign(markPresentedRenderable, {
+    borrowsRows: true as const,
+    readsCurrentPose: false as const,
+    needsMaterialReceipt: (material: MaterialSnapshot): boolean =>
+      drawObservation.collecting ||
+      (viewReceipt !== undefined &&
+        material.materialHandle !== undefined &&
+        material.sourceAssets?.revision !== undefined),
+  });
   return {
-    presentedDraws,
+    get presentedDraws() {
+      return presentedDraws;
+    },
     drawObservation,
-    markPresentedRenderable,
-    gpuOwned,
+    markPresentedRenderable: drawRecorder,
+    publishGpuSelection,
     readGpuSelection: () => gpuSelection,
   };
 }
@@ -859,7 +833,7 @@ export function prepareViewFrameInput(
   frame: ExtractedFrame,
   view: RecordView,
   scene: RecordScene,
-  features: RecordFeatures,
+  captures: ViewCaptureFrame,
   queued: RecordQueue,
 ) {
   const { cameras, lights } = view;
@@ -891,7 +865,7 @@ export function prepareViewFrameInput(
     })(),
   });
   owner.frameState.surfaceSubmissionObservation = surfaceSubmissionCandidate;
-  const draws = presentedRenderableRecorder(owner, attempt, frame.gpuOwned);
+  const draws = presentedRenderableRecorder(owner, attempt, submittedDrawRows(frame));
   const input: FrameRecordingInput = {
     internals: owner.internals,
     world: resourceScope(attempt),
@@ -910,10 +884,13 @@ export function prepareViewFrameInput(
     profilePhase: recordProfileRunner(attempt.profileSession),
     gpuDriven: {
       ...queued.gpuDriven,
-      ...(draws.gpuOwned === undefined ? {} : { gpuOwned: draws.gpuOwned }),
+      ...(frame.gpuOwned === undefined ? {} : { gpuOwned: frame.gpuOwned }),
+      ...(draws.publishGpuSelection === undefined
+        ? {}
+        : { onSubmittedSelection: draws.publishGpuSelection }),
     },
     renderReadLease: attempt.readLease,
-    cubeCapture: cubeCaptureFrameInput(owner, attempt, scene, features),
+    cubeCapture: cubeCaptureFrameInput(owner, attempt, scene, captures),
     environmentSignature: environment?.environmentSignature ?? '',
     fogSignature: environment?.fogSignature ?? '',
     environmentReady: frame.environmentReady && environment !== undefined,
@@ -932,11 +909,11 @@ export function prepareViewFrameInput(
 }
 
 /** Retained-scene captures recorded beside this view: Cube faces, planar mirrors, probes, scene inputs. */
-export function hasCaptureConsumers(scene: RecordScene, features: RecordFeatures): boolean {
+function hasCaptureConsumers(scene: RecordScene, captures: ViewCaptureFrame): boolean {
   return (
-    features.auxiliaryCameras.length > 0 ||
-    features.sceneInputWork.length > 0 ||
-    features.scheduledCaptureWork.length > 0 ||
+    captures.auxiliaryCameras.length > 0 ||
+    captures.sceneInputs.length > 0 ||
+    captures.cube.length > 0 ||
     scene.reflectionProbes.graph.work.some((work) => work.rawCaptureFace !== undefined)
   );
 }
@@ -945,21 +922,21 @@ export function cubeCaptureFrameInput(
   owner: ViewSettlementOwner,
   attempt: RecordAttempt,
   scene: RecordScene,
-  features: RecordFeatures,
+  captures: ViewCaptureFrame,
 ): CubeCaptureFrameInput {
   const shadowCasterProjection = scene.shadowCasterProjection;
   return {
-    scheduledWork: features.scheduledCaptureWork,
+    scheduledWork: captures.cube,
     captureOnly: attempt.mode !== true,
-    sceneInputs: features.sceneInputWork,
-    auxiliaryCameras: features.auxiliaryCameras,
-    faces: features.faces,
+    sceneInputs: captures.sceneInputs,
+    auxiliaryCameras: captures.auxiliaryCameras,
+    faces: captures.faces,
     state: owner.captures,
     reflectionProbes: scene.reflectionProbes,
     fits:
       viewCaptureFitsOf(renderWorldFor(owner.internals), owner.internals.viewEntity) ??
       NO_CAPTURE_FITS,
-    ...(shadowCasterProjection === undefined || !hasCaptureConsumers(scene, features)
+    ...(shadowCasterProjection === undefined || !hasCaptureConsumers(scene, captures)
       ? {}
       : { subsurfaceDemand: shadowCasterProjection.content.subsurface.authorVisible }),
   };

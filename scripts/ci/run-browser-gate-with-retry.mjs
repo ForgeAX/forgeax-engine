@@ -36,7 +36,7 @@ const retryPatterns = Object.freeze({
     /Pre-transform error: The file does not exist at "[^"\n]+\/node_modules\/\.vite\/vitest\/[^"\n]+\/deps\/[^"\n]+\.js" which is in the optimize deps directory/,
     /bootstrap inconclusive within \d+s[\s\S]*runner instability, rerun/,
     /ForgeAX linear HDR observation failed: observation-unavailable/,
-    // Headed Chrome Beta + lavapipe can occasionally stall an isolated
+    // Headed Chrome + lavapipe can occasionally stall an isolated
     // advanced-lighting WebGPU bootstrap until its bounded 60s test budget.
     // Retry only this exact gate timeout; assertions and other test timeouts
     // remain hard failures on the first attempt.
@@ -48,7 +48,7 @@ const retryPatterns = Object.freeze({
     // a hard red result on the second attempt.
     /apps\/learn-render\/5\.advanced-lighting\/6\.hdr\/src\/__tests__\/onerror-gate\.browser\.test\.ts[\s\S]*\[learn-render bootstrap\] timed out after \d+ms; stage=hdr\.assets\.catalog\.resolve\.start\b/,
     // Bloom's headed first bootstrap can miss its own bounded readiness
-    // deadline on the same cold Chrome Beta + lavapipe runner. Retry only
+    // deadline on the same cold Chrome + lavapipe runner. Retry only
     // this exact gate/stage pair; assertion failures and other Bloom stages
     // remain hard failures on the first attempt.
     /apps\/learn-render\/5\.advanced-lighting\/7\.bloom\/src\/__tests__\/onerror-gate\.browser\.test\.ts[\s\S]*\[learn-render bootstrap\] timed out after \d+ms; stage=waitForLearnRenderTestBootstrap\b/,
@@ -67,7 +67,7 @@ const retryPatterns = Object.freeze({
     // shape; a real 422 importer failure and every other asset error remain
     // hard failures.
     /apps\/learn-render\/5\.advanced-lighting\/9\.ssao\/src\/__tests__\/onerror-gate\.browser\.test\.ts[\s\S]*import failed for [^\n]+ \(HTTP 503\): import-failed[\s\S]*asset-not-imported/,
-    // SSAO has the same headed Chrome Beta + lavapipe cold-start shape as
+    // SSAO has the same headed Chrome + lavapipe cold-start shape as
     // deferred shading, but its asset bootstrap can cross the bounded 60s
     // budget on a contended container. Retry only this exact gate timeout;
     // a second timeout remains a hard failure.

@@ -30,6 +30,55 @@ function prepare(
 }
 
 describe('Renderer cube capture ownership', () => {
+  it('publishes all six accepted faces without a display submission', async () => {
+    const adapter = (await rhi.requestAdapter()).unwrap();
+    const device = (await adapter.requestDevice()).unwrap();
+    const owner = createRendererCaptureOwner((target) => host.getPhysicalTarget(target));
+    const host = createRenderTargetHost({
+      getDevice: () => device,
+      canPromoteTarget: (target) => !owner.isPending(target),
+    });
+    const created = host.createRenderTarget({
+      shape: 'cube',
+      width: 16,
+      height: 16,
+      format: 'rgba8unorm',
+      mipLevels: 1,
+      sampleCount: 1,
+      sampled: true,
+      readback: true,
+    });
+    if (!created.ok) throw created.error;
+    const target = created.value;
+    const camera = { ...snapshot(1), target };
+    for (let layer = 0; layer < 6; layer++) {
+      host.beginFrame();
+      expect(prepare(owner, [camera])).toHaveLength(1);
+      const physical = host.getPhysicalTarget(target);
+      if (physical === undefined) throw new Error('Missing cube target');
+      host.stageRenderTargetWrite({ target, physical, layer });
+      const fence = Promise.resolve({ ok: true, value: undefined } as const);
+      expect(owner.complete(true, fence).ok).toBe(true);
+      host.onFrameSubmitted(fence, { frameId: layer + 1, deviceGeneration: 0 });
+      await fence;
+      expect(host.environmentTarget(target)?.revision).toBe(layer === 5 ? 6 : undefined);
+    }
+    host.beginFrame();
+    const encoder = device.createCommandEncoder().unwrap();
+    const ticket = host.requestTargetReadback(target, { mipLevel: 0, layer: 0 });
+    if (!ticket.ok) throw ticket.error;
+    host.encodePendingReadbacks(encoder);
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    const completed = device.queue
+      .onSubmittedWorkDone()
+      .then(() => ({ ok: true, value: undefined }) as const);
+    const receipt = { frameId: 7, deviceGeneration: 0 };
+    host.onFrameSubmitted(completed, receipt);
+    await completed;
+    expect((await host.observeTargetReadbacks(receipt, [ticket.value])).ok).toBe(true);
+    host.dispose();
+  });
+
   it('keeps completed faces across unencoded preparation and ignores another target or generation', () => {
     const owner = createRendererCaptureOwner((target) => target);
     const camera = snapshot(1);

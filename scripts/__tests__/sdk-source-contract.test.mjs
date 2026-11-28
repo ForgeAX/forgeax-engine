@@ -122,6 +122,7 @@ test('SDK source contract keeps the source root and prebuilt WASM closure explic
       '@forgeax/engine-wgpu-wasm',
       '@forgeax/engine-fbx',
       '@forgeax/engine-codec',
+      '@forgeax/modeling-kernel-wasm',
     ],
   );
   assert.equal(

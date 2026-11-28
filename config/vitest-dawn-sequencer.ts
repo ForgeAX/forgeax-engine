@@ -4,6 +4,7 @@ import { coreValidationFiles } from '../scripts/ci/core-validation.mjs';
 import {
   DAWN_GATE_GROUPS,
   DAWN_GATE_SHARDS,
+  DAWN_ORDINARY_EXCLUSIVE_FILES,
   DAWN_ORDINARY_FILE_FAMILIES,
   dawnAuthoringCapturesOutsideCi,
   dawnNativeLaneReserve,
@@ -199,13 +200,28 @@ export class DawnSequencer extends BaseSequencer {
     if (lane < 0) throw new Error(`Dawn ordinary owner has no native lane: ${owner}`);
     // An OOM-affected lane can execute serially while every lane still uses
     // the same admitted partition. The remaining lanes use their project pool.
+    const phase = process.env.FORGEAX_DAWN_ORDINARY_MEMORY_PHASE;
+    if (
+      phase !== undefined &&
+      (owner !== 'ordinary-4' || (phase !== 'exclusive' && phase !== 'bounded'))
+    )
+      throw new Error(`Invalid Dawn memory phase ${phase} for ${owner}`);
     const plannedWorkers = process.env.FORGEAX_DAWN_SERIAL_ORDINARY;
+    // Both memory phases are admitted by the same two-worker parent.
     const workers =
-      plannedWorkers === undefined ? files[0]?.project.config.maxWorkers : Number(plannedWorkers);
+      phase !== undefined
+        ? 2
+        : plannedWorkers === undefined
+          ? files[0]?.project.config.maxWorkers
+          : Number(plannedWorkers);
     if (workers !== 1 && workers !== 2)
       throw new Error('Dawn project must resolve exactly one or two ordinary workers');
     const selected = planDawnShards(files, this.ctx.config.root, workers)[lane];
     if (!selected) throw new Error(`Dawn shard index is outside ${shard.count} partitions`);
-    return selected;
+    if (phase === undefined) return selected;
+    return selected.filter(({ moduleId }) => {
+      const file = relative(this.ctx.config.root, moduleId).replaceAll('\\', '/');
+      return DAWN_ORDINARY_EXCLUSIVE_FILES.has(file) === (phase === 'exclusive');
+    });
   }
 }

@@ -35,6 +35,7 @@ const NATIVE_INPUTS = [
   'packages/physics-rapier2d/pkg',
   'packages/physics-rapier3d/pkg',
   'packages/ui-blitz/pkg',
+  'packages/modeling-kernel-wasm/pkg',
   'packages/wgpu-wasm/pkg',
   'packages/fbx/pkg',
   'packages/codec/pkg',
@@ -463,14 +464,14 @@ async function nextDevelopmentVersion(sourceCommit) {
 
 function assertLocalReleaseChannel(version) {
   const { channel } = releasePolicy(version);
-  if (channel !== 'next' && (channel !== 'rc' || has('legacy-sdk')))
+  if (channel !== 'next' && has('legacy-sdk'))
     throw new Error('local-engine-release-channel-unsupported');
   return channel;
 }
 
-async function resolveRcSource(version, sourceCommit) {
+async function resolveReleaseBranchSource(version, sourceCommit) {
   if (!/^[0-9a-f]{40}$/.test(sourceCommit ?? ''))
-    throw new Error('local-engine-rc-full-source-sha-required');
+    throw new Error('local-engine-release-full-source-sha-required');
   await execCapture(
     'git',
     [
@@ -487,17 +488,16 @@ async function resolveRcSource(version, sourceCommit) {
     rc: git(root, 'rev-parse', 'origin/rc'),
     stable: git(root, 'rev-parse', 'origin/stable'),
   };
-  assertReleaseSource(
-    version,
-    sourceCommit,
-    tips,
-    (ancestor, descendant) =>
-      spawnSync('git', ['merge-base', '--is-ancestor', ancestor, descendant], {
-        cwd: root,
-      }).status === 0,
-  );
+  const ancestor = (before, after) =>
+    spawnSync('git', ['merge-base', '--is-ancestor', before, after], { cwd: root }).status === 0;
+  const branch = assertReleaseSource(version, sourceCommit, tips, ancestor);
+  if (
+    releasePolicy(version).channel === 'stable' &&
+    (sourceCommit !== tips.rc || !ancestor(tips.stable, sourceCommit))
+  )
+    throw new Error('local-engine-stable-requires-exact-rc-tip-and-fast-forward');
   git(root, 'cat-file', '-e', `${sourceCommit}:scripts/forgeax/engine-authoring-package.mjs`);
-  return { sourceCommit, branchTip: tips.rc };
+  return { sourceCommit, branchTip: tips[branch] };
 }
 
 function assertVersionSource(version, sourceCommit) {
@@ -516,8 +516,11 @@ async function selectRelease() {
   const current = await resumeCurrentRelease(base, requestedVersion, requestedSha);
   const previous = current ?? (await resumeSelectedVersion(base, requestedVersion, requestedSha));
   const selectedVersion = previous?.version ?? requestedVersion;
-  if (selectedVersion && assertLocalReleaseChannel(selectedVersion) === 'rc') {
-    const source = await resolveRcSource(selectedVersion, previous?.sourceCommit ?? requestedSha);
+  if (selectedVersion && assertLocalReleaseChannel(selectedVersion) !== 'next') {
+    const source = await resolveReleaseBranchSource(
+      selectedVersion,
+      previous?.sourceCommit ?? requestedSha,
+    );
     return {
       base,
       version: selectedVersion,
@@ -808,7 +811,7 @@ async function ensureGitHubAuth() {
 async function verifyLocalHost(run) {
   run.xdgRuntimeDir = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-xdg-runtime-'));
   process.env.XDG_RUNTIME_DIR = run.xdgRuntimeDir;
-  const required = ['Xvfb', 'google-chrome-beta', 'zip'];
+  const required = ['Xvfb', 'google-chrome', 'zip'];
   for (const command of required) {
     try {
       await execFile('which', [command], { cwd: root, maxBuffer: 4096 });
@@ -828,7 +831,7 @@ async function verifyLocalHost(run) {
   process.env.VK_ICD_FILENAMES = path;
   process.env.VK_DRIVER_FILES = path;
   process.env.LP_NUM_THREADS = '4';
-  process.env.FORGEAX_CHROME_CHANNEL = 'chrome-beta';
+  process.env.FORGEAX_CHROME_CHANNEL = 'chrome';
   process.env.FORGEAX_BROWSER_HEADLESS = '0';
   process.env.FORGEAX_TEMPLATE_SMOKE_SERVER_STARTUP_TIMEOUT_MS = '180000';
 }
@@ -2040,6 +2043,18 @@ async function runEngineRelease(run, stage) {
     await mkdir(proofDir, { recursive: true });
     const githubToken = await ensureGitHubAuth();
     const mirrorEnabled = policy.mirror !== null && (await sourceMirrorEnabled());
+    if (policy.channel === 'stable' && !mirrorEnabled)
+      throw new Error('local-engine-stable-public-source-mirror-required');
+    if (policy.channel === 'stable' && stage !== 'preflight') {
+      await resolveReleaseBranchSource(run.version, run.sourceCommit);
+      await runCommand(
+        run,
+        'engine-stable-fast-forward',
+        'git',
+        ['push', 'origin', `${run.sourceCommit}:refs/heads/stable`],
+        { env: releaseEnvironment(), githubAuth: true },
+      );
+    }
     const preflight = resolve(proofDir, 'public-source-preflight.json');
     const projection = resolve(run.root, 'public-source');
     if (mirrorEnabled) {
@@ -2156,6 +2171,24 @@ async function runEngineRelease(run, stage) {
         () => exists(mirrorProof),
       );
     }
+    if (policy.channel === 'stable') {
+      const publicReleaseProof = resolve(proofDir, 'public-release.json');
+      await step(
+        run,
+        'engine-public-release',
+        async () => {
+          const result = await runCommand(
+            run,
+            'engine-public-release',
+            process.execPath,
+            [resolve(root, 'scripts/forgeax/publish-public-release.mjs'), run.version],
+            { env: await sourceMirrorEnvironment(githubToken), githubAuth: true },
+          );
+          await writeFile(publicReleaseProof, `${result.stdout.trim().split('\n').at(-1)}\n`);
+        },
+        () => exists(publicReleaseProof),
+      );
+    }
     run.state.status = 'complete';
     run.state.completedAt = new Date().toISOString();
     await saveState(run);
@@ -2201,7 +2234,7 @@ async function main() {
   if (nodeBootstrap === 'reexecuted') return;
   if (has('help')) {
     process.stdout.write(
-      'Usage: pnpm sdk:release:local -- [--version <dev-or-rc-version>] [--source-sha <full-sha>] [--stage candidate|preflight|promote|all] [--npm-token-file <path>] [--output <path>] [--worktrees <path>]\n',
+      'Usage: pnpm sdk:release:local -- [--version <release-version>] [--source-sha <full-sha>] [--stage candidate|preflight|promote|all] [--npm-token-file <path>] [--output <path>] [--worktrees <path>]\n',
     );
     return;
   }

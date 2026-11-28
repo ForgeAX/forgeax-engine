@@ -8,7 +8,7 @@ import {
   validateDynamicGeometryMeshBudget,
   validateRenderProfile,
   validateRenderQualityLimits,
-} from '@forgeax/engine-render';
+} from '@forgeax/engine-render/internal/host-data';
 import { invalid, ownConfigurationData } from './configuration-data';
 import {
   type EngineConfigurationDefinition,

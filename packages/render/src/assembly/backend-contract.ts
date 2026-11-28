@@ -44,6 +44,17 @@ export interface RhiBackendPack {
     device: RhiDevice,
     desc: { code: string; label?: string | undefined },
   ) => Promise<Result<ShaderModule, RhiError>>;
+  /** Prepare a native module whose validation must settle before pipeline admission. */
+  readonly prepareShaderModule?: (
+    device: RhiDevice,
+    desc: { code: string; label?: string | undefined },
+  ) => Result<
+    {
+      readonly module: ShaderModule;
+      readonly completion: Promise<Result<ShaderModule, RhiError>>;
+    },
+    RhiError
+  >;
   /**
    * Internal render-path fast path. WebGPU creates a shader module
    * synchronously and reports WGSL diagnostics through the async
@@ -80,6 +91,7 @@ export function loadRhiPack(
   const createShaderModuleImmediate = mod.createShaderModuleImmediate as
     | RhiBackendPack['createShaderModuleImmediate']
     | undefined;
+  const prepareShaderModule = mod.prepareShaderModule as RhiBackendPack['prepareShaderModule'];
   const translateErrorEventToRhiError = mod.translateErrorEventToRhiError as
     | RhiBackendPack['translateErrorEventToRhiError']
     | undefined;
@@ -90,6 +102,7 @@ export function loadRhiPack(
   return {
     rhi,
     ...(createShaderModule === undefined ? {} : { createShaderModule }),
+    ...(prepareShaderModule === undefined ? {} : { prepareShaderModule }),
     ...(createShaderModuleImmediate === undefined ? {} : { createShaderModuleImmediate }),
     ...(translateErrorEventToRhiError === undefined ? {} : { translateErrorEventToRhiError }),
     ...(disposeDevice === undefined ? {} : { disposeDevice }),

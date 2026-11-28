@@ -3,6 +3,7 @@ import {
   bilateralCloudUpsample,
   composeCloudTransport,
   selectCloudDepthTransport,
+  selectUeCloudUpsample,
 } from '../composition';
 import { type CloudReconstructionInput, selectCloudReconstructionSample } from '../reconstruction';
 
@@ -87,4 +88,17 @@ it('rejects cloud behind every candidate and uses bilinear far only on smooth de
   const result = bilateralCloudUpsample([current, history], 10000, [0.25, 0.75]);
   for (const [i, expected] of [3.25, 5, 6.75, 0.725].entries())
     expect(result[i]).toBeCloseTo(expected, 12);
+});
+
+it('applies UE kilometer thresholds and deterministic far-before-near ties', () => {
+  const select = (depth: readonly [number, number, number, number], sceneKm: number) =>
+    selectUeCloudUpsample([depth, depth, depth, depth], sceneKm, 5);
+  expect(select([3, 8, 2, 8], 2)).toEqual({ kind: 'occluded' });
+  expect(select([2.001, 8, 2, 8], 2)).toEqual({ kind: 'near', index: 0 });
+  expect(select([1.5, 8, 2, 8], 2)).toEqual({ kind: 'near', index: 0 });
+  expect(select([1.5, 8, 2, 8], 5)).toEqual({ kind: 'far', index: 0 });
+  expect(select([1.5, 8, 2, 2.99], 2)).toEqual({ kind: 'bilinear' });
+  expect(select([1.5, 8, 2, 3], 2)).toEqual({ kind: 'near', index: 0 });
+  expect(select([1.5, 8, 5, 8], 6)).toEqual({ kind: 'bilinear' });
+  expect(select([1.5, 4.99, 5, 8], 6)).toEqual({ kind: 'near', index: 0 });
 });

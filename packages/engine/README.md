@@ -54,6 +54,22 @@ guide and local skills and reports their paths in `value.onboarding.read`.
 | `@forgeax/engine/ecs` | ECS world, components, queries, and systems |
 | `@forgeax/engine/<package-directory>` | The matching focused Engine package |
 
+### API tiers
+
+`api-tiers.json` assigns every public package exactly one tier:
+
+| Tier | Meaning |
+|:--|:--|
+| `game` | Core game API: the API index, templates and training examples use it |
+| `addon` | Optional game features installed as plugins |
+| `compat` | The Three.js facade: supported, but not used in training examples |
+| `tools` | CLI, editor, importer and build steps |
+| `internal` | Engine implementation reached by generated host code, not by games |
+
+`pnpm check:public-api` records the exports of every `game`, `addon` and
+`compat` facade entry in `config/public-api-baseline.json`. A new export needs
+`--write --accept-increase`; a name may have only one recorded owner entry.
+
 The focused `@forgeax/engine-*` packages remain physical ownership units.
 The official npm tarball includes their complete locked runtime dependency graph
 through standard `bundledDependencies`, with unpatched, single-version third-party

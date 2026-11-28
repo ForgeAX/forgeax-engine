@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kernel-core",
+    "crates/kernel-wasm",
+    "crates/kernel-wgpu",
+]
+exclude = [
+    "crates/kernel-napi",
+]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "none"

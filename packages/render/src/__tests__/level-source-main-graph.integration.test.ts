@@ -2,6 +2,7 @@ import { type CompiledRenderGraph, RenderGraphError } from '@forgeax/engine-rend
 import { err } from '@forgeax/engine-types';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import type { SourceViewPreparation } from '../assembly/source-view-preparation';
+import { ANTIALIAS_MSAA, Camera } from '../components/camera';
 import * as graphOwner from '../record/graph-adoption';
 import * as fault from '../record/gtao-candidate-preparation-fault';
 import * as compiler from '../record/typed-frame-graph';
@@ -72,7 +73,7 @@ it.each([
   }
   assert(!prepared.ok && source?.ok);
   const staged = source.value;
-  const previous = owner.frameState.compiledFrameGraph;
+  let accepted = owner.frameState.compiledFrameGraph;
   let held: graphOwner.PreparedViewGraph | undefined;
   let retiredOnAdoption: ReturnType<graphOwner.PreparedViewGraph['retire']> | undefined;
   const hold = graphOwner.holdPreparedViewGraph;
@@ -81,11 +82,15 @@ it.each([
     held = lease;
     if (mode === 'superseded-during-hiz') {
       const preparation = vi
-        .spyOn(lease.installed.graph, 'prepareResources')
+        .spyOn(lease.installed.nativeResources, 'prepareResources')
         .mockImplementationOnce(function* (current) {
           expect(current()).toBe(true);
-          yield Promise.resolve().then(() => {
-            owner.frameState.compiledFrameGraphGeneration++;
+          yield Promise.resolve().then(async () => {
+            f.world.set(f.camera, Camera, { antialias: ANTIALIAS_MSAA }).unwrap();
+            expect((await f.draw()).presentation).toBe('ready');
+            const replacement = owner.frameState.compiledFrameGraph;
+            expect(replacement?.graph).not.toBe(accepted?.graph);
+            accepted = replacement;
           });
           expect(current()).toBe(false);
           return err(
@@ -103,14 +108,16 @@ it.each([
         });
       restore.push(() => preparation.mockRestore());
     } else if (mode === 'retired-during-resource-preparation') {
-      const { graph } = lease.installed;
-      const prepare = graph.prepareResources.bind(graph);
-      const capture = vi.spyOn(graph, 'prepareResources').mockImplementation(function* (current) {
-        const retirement = lease.retire();
-        retiredOnAdoption = retirement;
-        yield retirement.then((result) => result.unwrap());
-        return yield* prepare(current);
-      });
+      const { nativeResources } = lease.installed;
+      const prepare = nativeResources.prepareResources.bind(nativeResources);
+      const capture = vi
+        .spyOn(nativeResources, 'prepareResources')
+        .mockImplementation(function* (current) {
+          const retirement = lease.retire();
+          retiredOnAdoption = retirement;
+          yield retirement.then((result) => result.unwrap());
+          return yield* prepare(current);
+        });
       restore.push(() => capture.mockRestore());
     }
     return lease;
@@ -182,7 +189,7 @@ it.each([
 
     (await work.retire()).unwrap();
   }
-  expect(owner.frameState.compiledFrameGraph).toBe(previous);
+  expect(owner.frameState.compiledFrameGraph).toBe(accepted);
   expect(owner.frameState.unsubmittedCompiledFrameGraph).toBeUndefined();
   expect(composition.entry?.topology.captureResidencySelection().includes(staged.group)).toBe(
     false,

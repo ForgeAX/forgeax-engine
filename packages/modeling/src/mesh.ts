@@ -13,6 +13,32 @@ export const EDGE_SEAM = 2;
 export const FACE_MIRRORED = 1;
 /** Edge treatment (a bevel's round or chamfer, a surface blend band): not panel skin. */
 export const FACE_EDGE_ROUND = 2;
+/** Part role bits (2-3): what the face's part is for. Old snapshots decode as `form` (0). */
+export const FACE_ROLE_SHIFT = 2;
+export const FACE_ROLE_MASK = 0b1100;
+/** A floating detail shell: booleans carry it untouched, the bake reads it as a floater. */
+export const FACE_FLOAT = 16;
+/**
+ * A cell `m.surface` cut along a trim loop. The surface-cut fact lives in this flag; the 'trim' tag
+ * is author vocabulary (any author may tag faces 'trim') and says nothing about how a face was made.
+ */
+export const FACE_SURFACE_TRIM = 32;
+
+/**
+ * What a part is for: `form` makes up the body the low keeps, `detail` (bolts, vents,
+ * recesses) is left to the bake, `tool` (cutters, blank profiles) shapes a form.
+ */
+export type PartRole = 'form' | 'detail' | 'tool';
+export const PART_ROLES: readonly PartRole[] = ['form', 'detail', 'tool'];
+
+export function partRole(mesh: EditMesh, f: number): PartRole {
+  return PART_ROLES[((mesh.fFlags[f] as number) & FACE_ROLE_MASK) >> FACE_ROLE_SHIFT] ?? 'form';
+}
+
+export function setPartRole(mesh: EditMesh, f: number, role: PartRole): void {
+  const flags = (mesh.fFlags[f] as number) & ~FACE_ROLE_MASK;
+  mesh.fFlags[f] = flags | (PART_ROLES.indexOf(role) << FACE_ROLE_SHIFT);
+}
 
 /** Corner channels share one closed vocabulary that maps onto runtime vertex slots. */
 export type CornerChannelName =
@@ -125,6 +151,26 @@ export class EditMesh {
   private readonly freeEdges: number[] = [];
   private readonly freeFaces: number[] = [];
 
+  /** Pre-allocate SoA capacities when counts are known up front (e.g. FXEM decode). */
+  reserve(vertices: number, halves: number, faces: number, tagWords = this.tagWords): void {
+    this.pos = grow(this.pos, vertices * 3);
+    this.vGen = grow(this.vGen, vertices);
+    this.hVert = grow(this.hVert, halves, NONE);
+    this.hNext = grow(this.hNext, halves, NONE);
+    this.hPrev = grow(this.hPrev, halves, NONE);
+    this.hFace = grow(this.hFace, halves, NONE);
+    this.eFlags = grow(this.eFlags, halves >> 1);
+    this.fHalf = grow(this.fHalf, faces, NONE);
+    this.fLen = grow(this.fLen, faces);
+    this.fGen = grow(this.fGen, faces);
+    this.fMaterial = grow(this.fMaterial, faces);
+    this.fLabel = grow(this.fLabel, faces);
+    this.fRole = grow(this.fRole, faces);
+    this.fFlags = grow(this.fFlags, faces);
+    this.tagWords = Math.max(this.tagWords, tagWords);
+    this.fTags = grow(this.fTags, faces * this.tagWords);
+  }
+
   get vertexCount(): number {
     return this.vertexHighWater - this.freeVertices.length;
   }
@@ -190,6 +236,11 @@ export class EditMesh {
 
   /** Check whether a loop can become a face without violating the manifold rules. */
   canAddFace(loop: readonly number[]): Result<void, ModelingError> {
+    const checked = this.faceHalvesForAdd(loop);
+    return checked.ok ? ok(undefined) : checked;
+  }
+
+  private faceHalvesForAdd(loop: readonly number[]): Result<number[], ModelingError> {
     if (loop.length < 3) {
       return err(modelingError('model-degenerate', 'a face needs at least 3 vertices', { loop }));
     }
@@ -203,10 +254,12 @@ export class EditMesh {
       }
       seen.add(v);
     }
+    const halves: number[] = [];
     for (let i = 0; i < loop.length; i++) {
       const a = loop[i] as number;
       const b = loop[(i + 1) % loop.length] as number;
       const h = this.findHalf(a, b);
+      halves.push(h);
       if (h !== NONE && (this.hFace[h] as number) !== NONE) {
         return err(
           modelingError(
@@ -218,22 +271,20 @@ export class EditMesh {
         );
       }
     }
-    return ok(undefined);
+    return ok(halves);
   }
 
   addFace(loop: readonly number[], material = 0): Result<number, ModelingError> {
-    const allowed = this.canAddFace(loop);
+    const allowed = this.faceHalvesForAdd(loop);
     if (!allowed.ok) return allowed;
     const reused = this.freeFaces.pop();
     const f = reused ?? this.faceHighWater++;
     this.ensureFaceCapacity(f + 1);
-    const halves: number[] = [];
+    const halves = allowed.value;
     for (let i = 0; i < loop.length; i++) {
       const a = loop[i] as number;
       const b = loop[(i + 1) % loop.length] as number;
-      let h = this.findHalf(a, b);
-      if (h === NONE) h = this.createEdge(a, b);
-      halves.push(h);
+      if (halves[i] === NONE) halves[i] = this.createEdge(a, b);
     }
     for (let i = 0; i < halves.length; i++) {
       const h = halves[i] as number;
@@ -479,7 +530,7 @@ export class EditMesh {
   }
 
   /**
-   * Canonical dense copy: faces keep ascending id order, vertices are numbered by
+   * Canonical dense copy: faces keep ascending id order, tags are ordered by name, vertices are numbered by
    * first use, edges by creation during the rebuild and unreferenced vertices are
    * dropped. The result is independent of edit history.
    */
@@ -506,6 +557,13 @@ export class EditMesh {
     const roles = prune(this.roleNames, usedOf(this.fRole), true);
     const materials = prune(this.materialNames, usedOf(this.fMaterial), true);
     const tags = prune(this.tagNames, (t) => alive.some((f) => this.hasTag(f, t)), false);
+    const byName = [...tags.kept].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+    const rank = new Map(byName.map((name, i) => [name, i]));
+    for (let t = 0; t < this.tagNames.length; t++) {
+      const name = this.tagNames[t] as string;
+      tags.remap[t] = rank.get(name) ?? 0;
+    }
+    replaceAll(tags.kept, byName);
     pushAll(out.tagNames, tags.kept);
     replaceAll(out.labelNames, labels.kept);
     replaceAll(out.roleNames, roles.kept);

@@ -19,7 +19,7 @@ function compose(
       {
         path: 'surface-v1.wgsl',
         source:
-          '#define_import_path forgeax_material::surface_v1\nstruct SurfaceInput { positionOS: vec3<f32>, positionWS: vec3<f32>, geometricNormalWS: vec3<f32>, vertexNormalWS: vec3<f32>, tangentWS: vec4<f32>, viewDirectionWS: vec3<f32>, uv0: vec2<f32>, uv1: vec2<f32>, uv2: vec2<f32>, uv3: vec2<f32>, uv4: vec2<f32>, uv5: vec2<f32>, uv6: vec2<f32>, uv7: vec2<f32>, vertexColor: vec4<f32>, frontFacing: bool, uvFootprint0: vec4<f32>, uvFootprint1: vec4<f32>, objectToWorld: mat3x3<f32>, frameTime: f32, }\nstruct SurfaceData { baseColor: vec3<f32>, normalWS: vec3<f32>, metallic: f32, roughness: f32, emissive: vec3<f32>, occlusion: f32, opacity: f32, alphaClipThreshold: f32, reactive: f32, }',
+          '#define_import_path forgeax_material::surface_v1\nstruct SurfaceInput { positionOS: vec3<f32>, positionWS: vec3<f32>, geometricNormalWS: vec3<f32>, vertexNormalWS: vec3<f32>, tangentWS: vec4<f32>, viewDirectionWS: vec3<f32>, uv0: vec2<f32>, uv1: vec2<f32>, uv2: vec2<f32>, uv3: vec2<f32>, uv4: vec2<f32>, uv5: vec2<f32>, uv6: vec2<f32>, uv7: vec2<f32>, vertexColor: vec4<f32>, frontFacing: bool, uvFootprint0: vec4<f32>, uvFootprint1: vec4<f32>, objectToWorld: mat3x3<f32>, frameTime: f32, materialTextureMipBias: f32, }\nstruct SurfaceData { baseColor: vec3<f32>, normalWS: vec3<f32>, metallic: f32, roughness: f32, emissive: vec3<f32>, occlusion: f32, opacity: f32, alphaClipThreshold: f32, reactive: f32, }',
       },
     ],
     project: [{ path: 'surface.wgsl', source }],

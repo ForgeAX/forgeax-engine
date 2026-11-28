@@ -7,11 +7,11 @@ import { parse } from 'yaml';
 import {
   aggregateReports,
   buildShardReport,
-  ciSmokeShardTailSeconds,
   discoverCandidates,
   hasUnavailableOrSkipped,
   parseObservedFrameReceipt,
   partitionRunnableEntries,
+  planCiSmokeFleet,
   preflightRunEntries,
   readRoster,
   resolveRunnableEntries,
@@ -343,7 +343,8 @@ test('the observed slow Smoke fixed tail receives no additional long roster batc
 
 test('smoke-fleet shards balance measured gate seconds against their fixed tails', () => {
   const entries = selectSmokeEntries(resolveRunnableEntries({ roster: readRoster() }), 'sharded');
-  const shards = ciSmokeShardTailSeconds.map((_tail, shardIndex) =>
+  const plan = planCiSmokeFleet({ entries });
+  const shards = plan.map((_lane, shardIndex) =>
     partitionRunnableEntries(entries, { shardIndex, scope: 'sharded' }),
   );
   assert.deepEqual(
@@ -353,11 +354,7 @@ test('smoke-fleet shards balance measured gate seconds against their fixed tails
       .sort(),
     entries.map((entry) => entry.gateId).sort(),
   );
-  const totals = shards.map(
-    (assigned, shard) =>
-      ciSmokeShardTailSeconds[shard] +
-      assigned.reduce((seconds, entry) => seconds + smokeGateSeconds(entry), 0),
-  );
+  const totals = plan.map(({ seconds }) => seconds);
   const largest = Math.max(...entries.map(smokeGateSeconds));
   assert.ok(Math.max(...totals) - Math.min(...totals) <= largest, `imbalanced: ${totals}`);
   const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
@@ -558,5 +555,15 @@ test('the complete Bloom carrier and evidence use measured headroom on Smoke lan
   );
   assert.equal(ssr.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 0)");
   assert.equal(ssr.run, 'pnpm --filter @forgeax/hello-ssr smoke');
-  assert.deepEqual(ciSmokeShardTailSeconds, [705, 905, 925, 675]);
+  const entries = selectSmokeEntries(resolveRunnableEntries({ roster: readRoster() }), 'sharded');
+  const assignments = Array.from({ length: 4 }, (_, shardIndex) =>
+    partitionRunnableEntries(entries, { shardIndex, scope: 'sharded' }),
+  );
+  const transmissionLanes = assignments.flatMap((entries, lane) =>
+    entries
+      .filter(({ gateId }) => /transmission-refraction\/features-/.test(gateId))
+      .map(() => lane),
+  );
+  assert.equal(transmissionLanes.length, 2);
+  assert.equal(new Set(transmissionLanes).size, 2);
 });

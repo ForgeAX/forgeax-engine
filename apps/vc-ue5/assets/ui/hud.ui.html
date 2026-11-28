@@ -29,24 +29,61 @@
     <button type="button" data-ui-action="cloud-preset" data-preset="quality-medium" data-quality aria-pressed="false">中</button>
     <button type="button" data-ui-action="cloud-preset" data-preset="quality-high" data-quality aria-pressed="false">高</button>
   </div>
-  <div class="section-label">预设与时钟</div>
-  <div class="mode-buttons" data-ui-part="weather-presets" role="group" aria-label="天气预设与时钟">
-    <button type="button" data-ui-action="cloud-preset" data-preset="reference">参考预设</button>
-    <button type="button" data-ui-action="cloud-preset" data-preset="clear" aria-pressed="false">晴天</button>
-    <button type="button" data-ui-action="cloud-preset" data-preset="backlit" aria-pressed="false">低太阳逆光</button>
-    <button type="button" data-ui-action="cloud-preset" data-preset="overcast" aria-pressed="false">密云</button>
-    <button type="button" data-ui-action="cloud-pause" data-ui-part="clock-pause" aria-pressed="false">暂停</button>
-    <button type="button" data-ui-action="cloud-reset">重置云</button>
-  </div>
-  <div class="section-label">云模式</div>
-  <div class="mode-buttons" aria-label="云渲染模式">
-    <button type="button" data-ui-action="cloud-off" data-ui-part="cloud-off" aria-pressed="false">无云</button>
-    <button type="button" data-ui-action="cloud-uniform" data-ui-part="cloud-uniform" aria-pressed="false">均匀云</button>
-    <button type="button" data-ui-action="cloud-shape" data-ui-part="cloud-shape" aria-pressed="true">生成云</button>
-    <button type="button" data-ui-action="cloud-sample-ue" data-ui-part="cloud-sample-ue" aria-pressed="false">UE 原纹理</button>
-    <button type="button" data-ui-action="cloud-band" data-ui-part="cloud-band" aria-pressed="false">云带</button>
-    <button type="button" data-ui-action="cloud-band-wide" data-ui-part="cloud-band-wide" aria-pressed="false">宽实例</button>
-  </div>
+  <details>
+    <summary>预设与时钟</summary>
+    <div class="mode-buttons" data-ui-part="weather-presets" role="group" aria-label="天气预设与时钟">
+      <button type="button" data-ui-action="cloud-preset" data-preset="reference">参考预设</button>
+      <button type="button" data-ui-action="cloud-preset" data-preset="bsm-reference" aria-pressed="false">UE 云影对照</button>
+      <button type="button" data-ui-action="cloud-preset" data-preset="clear" aria-pressed="false">晴天</button>
+      <button type="button" data-ui-action="cloud-preset" data-preset="backlit" aria-pressed="false">低太阳逆光</button>
+      <button type="button" data-ui-action="cloud-preset" data-preset="overcast" aria-pressed="false">密云</button>
+      <button type="button" data-ui-action="cloud-pause" data-ui-part="clock-pause" aria-pressed="false">暂停</button>
+      <button type="button" data-ui-action="cloud-reset">重置云</button>
+    </div>
+  </details>
+  <details>
+    <summary>白昼变换（-4° ～ 180° · 120s）</summary>
+    <div class="daytime-panel" data-ui-part="daytime-panel">
+      <div class="mode-buttons daytime-primary" role="group" aria-label="白昼变换开关与播放">
+        <button type="button" data-ui-action="daytime-toggle" data-ui-part="daytime-toggle" aria-pressed="false">白昼变换</button>
+        <button type="button" data-ui-action="daytime-play" data-ui-part="daytime-play" aria-pressed="false" disabled>暂停</button>
+      </div>
+      <p class="daytime-stage" data-ui-part="daytime-stage">未开启 · 默认 UE 原纹理</p>
+      <div class="mode-buttons daytime-speeds" role="group" aria-label="白昼变换倍速">
+        <button type="button" data-ui-action="daytime-speed" data-speed="0.5" aria-pressed="false">0.5×</button>
+        <button type="button" data-ui-action="daytime-speed" data-speed="1" aria-pressed="true">1×</button>
+        <button type="button" data-ui-action="daytime-speed" data-speed="2" aria-pressed="false">2×</button>
+        <button type="button" data-ui-action="daytime-speed" data-speed="4" aria-pressed="false">4×</button>
+      </div>
+      <div class="mode-buttons daytime-stages" role="group" aria-label="白昼阶段快捷跳转">
+        <button type="button" data-ui-action="daytime-jump" data-stage="dawn" aria-pressed="false">黎明</button>
+        <button type="button" data-ui-action="daytime-jump" data-stage="morning" aria-pressed="false">上午</button>
+        <button type="button" data-ui-action="daytime-jump" data-stage="noon" aria-pressed="false">中午</button>
+        <button type="button" data-ui-action="daytime-jump" data-stage="sunset" aria-pressed="false">落日</button>
+      </div>
+    </div>
+  </details>
+  <details>
+    <summary>云渲染</summary>
+    <div class="mode-buttons" aria-label="云渲染">
+      <button type="button" data-ui-action="cloud-off" data-ui-part="cloud-off" aria-pressed="false">无云</button>
+      <button type="button" data-ui-action="cloud-uniform" data-ui-part="cloud-uniform" aria-pressed="false">均匀云</button>
+      <button type="button" data-ui-action="cloud-textured" data-ui-part="cloud-textured" aria-pressed="true">纹理云</button>
+      <button type="button" data-ui-action="cloud-band" data-ui-part="cloud-band" aria-pressed="false">云带</button>
+      <button type="button" data-ui-action="cloud-band-wide" data-ui-part="cloud-band-wide" aria-pressed="false">宽实例</button>
+    </div>
+  </details>
+  <details>
+    <summary>云资产</summary>
+    <div class="mode-buttons" aria-label="云资产">
+      <button type="button" data-ui-action="cloud-shape" data-ui-part="cloud-shape" aria-pressed="true">生成云</button>
+      <button type="button" data-ui-action="cloud-sample-ue" data-ui-part="cloud-sample-ue" aria-pressed="false">UE 原纹理</button>
+      <button type="button" data-ui-action="cloud-nubis-dawn" data-ui-part="cloud-nubis-dawn" aria-pressed="false">清晨薄片云</button>
+      <button type="button" data-ui-action="cloud-nubis-sunlit" data-ui-part="cloud-nubis-sunlit" aria-pressed="false">正午阳光云</button>
+      <button type="button" data-ui-action="cloud-nubis-boss" data-ui-part="cloud-nubis-boss" aria-pressed="false">中空 Boss 战云</button>
+      <button type="button" data-ui-action="cloud-alpine-valley" data-ui-part="cloud-alpine-valley" aria-pressed="false">Alpine Valley Clouds</button>
+    </div>
+  </details>
   <div class="section-label">查看</div>
   <div class="mode-buttons view-buttons" aria-label="云查看模式">
     <button type="button" data-ui-action="cloud-view-normal" data-ui-part="cloud-view-normal" aria-pressed="true">画面</button>
@@ -54,26 +91,58 @@
     <button type="button" data-ui-action="cloud-view-contour" data-ui-part="cloud-view-contour" aria-pressed="false">云轮廓</button>
   </div>
   <p class="cloud-status" data-ui-part="cloud-status" role="status" aria-live="polite"></p>
-  <details open><summary>云层</summary><fieldset class="cloud-grid" aria-label="云层参数" data-ui-part="group-layer"></fieldset></details>
-  <details><summary>云形与风</summary>
-    <fieldset class="cloud-grid" aria-label="云形参数" data-ui-part="group-density"></fieldset>
+  <details>
+    <summary>云层配置与创作</summary>
+    <fieldset class="cloud-grid" aria-label="云层参数" data-ui-part="group-layer"></fieldset>
     <fieldset class="cloud-grid" aria-label="物理风与参考时间" data-ui-part="group-motion"></fieldset>
     <button class="section-action" type="button" data-ui-action="cloud-initialize">初始化参考时间</button>
   </details>
-  <details open><summary>太阳与曝光</summary><fieldset class="cloud-grid" aria-label="太阳和相机" data-ui-part="group-sun">
-    <label class="sun-slider span-columns" for="sun-elevation"><span>太阳高度<output for="sun-elevation" data-ui-part="sun-elevation-value">0.00°</output></span><input id="sun-elevation" type="range" min="-90" max="180" step="any" data-ui-part="sun-elevation"></label>
-    <label class="sun-slider span-columns" for="sun-azimuth"><span>太阳方位<output for="sun-azimuth" data-ui-part="sun-azimuth-value">0.00°</output></span><input id="sun-azimuth" type="range" min="-360" max="360" step="any" data-ui-part="sun-azimuth"></label>
-  </fieldset></details>
-  <details><summary>相位与多次散射</summary><fieldset class="cloud-grid" aria-label="光学参数" data-ui-part="group-scattering"></fieldset></details>
-  <details><summary>自阴影与外部云影</summary>
-    <fieldset class="cloud-grid" aria-label="云影参数" data-ui-part="group-shadows"></fieldset>
+  <details>
+    <summary>云密度与体积材质</summary>
+    <fieldset class="cloud-grid" aria-label="云形参数" data-ui-part="group-density"></fieldset>
+  </details>
+  <details>
+    <summary>云光照模型</summary>
+    <div class="section-label">太阳与曝光</div>
+    <fieldset class="cloud-grid" aria-label="太阳与曝光" data-ui-part="group-sun">
+      <div class="sun-slider span-columns">
+        <label for="sun-elevation">太阳高度（°）</label>
+        <input type="number" min="-90" max="180" step="any" aria-label="太阳高度数字输入（度）" data-ui-part="sun-elevation-number">
+        <input id="sun-elevation" type="range" min="-90" max="180" step="any" data-ui-part="sun-elevation">
+      </div>
+      <div class="sun-slider span-columns">
+        <label for="sun-azimuth">太阳方位（°）</label>
+        <input type="number" min="-360" max="360" step="any" aria-label="太阳方位数字输入（度）" data-ui-part="sun-azimuth-number">
+        <input id="sun-azimuth" type="range" min="-360" max="360" step="any" data-ui-part="sun-azimuth">
+      </div>
+    </fieldset>
+    <div class="section-label">相位与多次散射</div>
+    <fieldset class="cloud-grid" aria-label="相位与多次散射" data-ui-part="group-scattering"></fieldset>
+  </details>
+  <details>
+    <summary>云阴影与遮蔽</summary>
+    <div class="section-label">路径与接收端</div>
+    <fieldset class="cloud-grid" aria-label="路径与接收端" data-ui-part="group-shadows"></fieldset>
+    <div class="section-label">二级光路</div>
+    <fieldset class="cloud-grid" aria-label="二级光路" data-ui-part="group-shadow-ray"></fieldset>
+    <div class="section-label">BSM 投影与采样</div>
+    <fieldset class="cloud-grid" aria-label="BSM 投影与采样" data-ui-part="group-shadow-map"></fieldset>
     <button type="button" class="section-action" data-ui-action="shadow-comparison">云带对照</button>
   </details>
-  <details><summary>追踪与重建</summary>
-    <fieldset class="cloud-grid" aria-label="追踪参数" data-ui-part="group-tracing"></fieldset>
-    <dl class="fact-list">
+  <details>
+    <summary>相机光线步进与积分</summary>
+    <fieldset class="cloud-grid" aria-label="相机光线步进" data-ui-part="group-tracing"></fieldset>
+  </details>
+  <details>
+    <summary>云画面重建与合成</summary>
+    <dl class="fact-list" data-ui-part="reconstruction-facts">
       <div><dt>重建模式</dt><dd>Mode 0（只读）</dd></div>
+      <div><dt>宽高比例</dt><dd>追踪 1/4 · 重建 1/2 · 合成全尺寸</dd></div>
+      <div><dt>采样相位</dt><dd>2 × 2，每个完成帧轮换</dd></div>
       <div><dt>历史状态</dt><dd data-ui-part="history">等待中</dd></div>
+      <div><dt>历史重投影</dt><dd>按上一帧视图投影与深度定位</dd></div>
+      <div><dt>上采样与遮挡</dt><dd>按场景深度选择邻近云样点</dd></div>
+      <div><dt>场景混合</dt><dd>云颜色 + 场景颜色 × 云透射率</dd></div>
     </dl>
   </details>
   <details><summary>快照</summary>

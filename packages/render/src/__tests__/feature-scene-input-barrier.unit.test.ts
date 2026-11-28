@@ -10,9 +10,10 @@ import { worldRenderResources } from '../publication/resource-scope';
 import * as frameKernels from '../record/frame';
 import type { RenderSystemInternals } from '../record/render-context';
 import { ViewCaptureWork } from '../world/capture-systems';
-import { ViewGraphSeal, viewGraphEncodingOutcome } from '../world/graph-seal-systems';
+import { viewGraphEncodingOutcome } from '../world/graph-seal-systems';
 import { awaitsRenderRecord } from '../world/graph-systems';
 import { endRenderFrame, RenderRecord } from '../world/render-world';
+import { ViewRecordAttempt } from '../world/view-record-attempt';
 import { stageFeatureFrame } from './feature-frame-driver';
 import { type FrameRecording, submitFrameRecordings } from './frame-recording-driver';
 import { registeredSystem } from './registered-system.fixture';
@@ -109,9 +110,9 @@ it.each([
   );
   const view = host.world
     .spawn({
-      component: ViewGraphSeal,
+      component: ViewRecordAttempt,
       data: {
-        state: host.world.allocUniqueRef('ViewGraphSeal', {
+        state: host.world.allocUniqueRef('ViewRecordAttempt', {
           frame: 1,
           prepared: {
             internals,

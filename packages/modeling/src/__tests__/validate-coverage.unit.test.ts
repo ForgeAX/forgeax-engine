@@ -89,6 +89,14 @@ const FALSIFIERS: Readonly<Record<ValidationCode, Input>> = {
     m.editMesh.setPosition(v, x + 0.2, y + 0.2, z + 0.2);
   }),
   'mesh-open': { build: gridPlane },
+  'session-poisoned': {
+    build: () => {
+      const m = model();
+      m.box({ size: [1, 1, 1], label: 'a' });
+      m.tag(sel.createdBy('missing'), 'x');
+      return m;
+    },
+  },
   'mesh-inverted': {
     build: () => {
       const m = clean();
@@ -214,6 +222,7 @@ const FALSIFIERS: Readonly<Record<ValidationCode, Input>> = {
     },
     options: { uniqueUv: true },
   },
+  surface: { build: clean, options: { surface: { need: ['color'] } } },
   'surface-quality': {
     build: () => {
       const m = clean();
@@ -310,6 +319,7 @@ describe('validate coverage (B32 PR B)', () => {
         'patch-layout',
         'shell-overlap',
         'shut-line',
+        'surface',
         'surface-quality',
         'texel-density',
         'thin-wall',

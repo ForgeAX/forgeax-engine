@@ -26,7 +26,7 @@ try {
     response.end(await readFile(resolve(temporary, request.url.slice(1))));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  browser = await chromium.launch({ headless: true, ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : {}), args: ['--disable-gpu'], chromiumSandbox: true});
+  browser = await chromium.launch({ headless: true, ...(process.env.FORGEAX_BROWSER_EXECUTABLE ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE } : { channel: process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome' }), args: ['--disable-gpu'], chromiumSandbox: true});
   const page = await browser.newPage({ viewport: browserProofWorkload().runtimeViewport, acceptDownloads: true });
   await page.addInitScript(() => {
     const create = URL.createObjectURL.bind(URL), revoke = URL.revokeObjectURL.bind(URL);

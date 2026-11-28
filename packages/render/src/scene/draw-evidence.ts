@@ -41,8 +41,7 @@ export function drawChangesSince(
   if (before === after) return true;
   const temporal = after.temporal;
   if (before.temporal !== temporal) {
-    // A later submission links to the history it replaced: only rows written
-    // since the earlier capture can change their submitted record.
+    // Submitted roots use the Scene journal to compare their admitted rows.
     if (before.temporal === undefined || temporal === undefined) return false;
     if (!temporal.changesSince(before.temporal, visit.row)) return false;
   }

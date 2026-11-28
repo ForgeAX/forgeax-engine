@@ -1,3 +1,4 @@
+import { CLOUD_MODE_ACTIONS, CLOUD_MODES, CLOUD_RENDER_ACTIONS, CLOUD_TEXTURE_SETS, isSampledCloudMode } from '../cloud-controls.ts';
 import {
   FORGEAX_FRAME_COMPLETED_EVENT, subscribeBrowserFrameSubmitted, type BrowserFrameCompleted,
 } from '@forgeax/engine/app';
@@ -156,6 +157,11 @@ export const frontend: Plugin.Object<{ readonly hud: string }> = {
         sunElevation: part('sun-elevation') as HTMLInputElement | undefined,
         sunAzimuth: part('sun-azimuth') as HTMLInputElement | undefined,
       };
+      const solarNumbers = {
+        sunElevation: part('sun-elevation-number') as HTMLInputElement | undefined,
+        sunAzimuth: part('sun-azimuth-number') as HTMLInputElement | undefined,
+      };
+      const solarDrafts = new Set<HTMLInputElement>();
       let solarRequest = 0;
       let solarAcknowledged = 0;
       let cloudRequest = 0;
@@ -166,8 +172,8 @@ export const frontend: Plugin.Object<{ readonly hud: string }> = {
         frameId: latestReady.frameId, deviceGeneration: latestReady.deviceGeneration, worldIdentity: latestReady.worldIdentity ?? null,
       };
       const request = (action: string, payload: object = {}) => {
-        if (['cloud-preset', 'cloud-reset', 'cloud-snapshot-load', 'cloud-off', 'cloud-uniform',
-          'cloud-shape', 'cloud-sample-ue', 'cloud-band', 'cloud-band-wide'].includes(action)) {
+        if (['cloud-preset', 'cloud-reset', 'cloud-snapshot-load', 'daytime-toggle', 'daytime-play', 'daytime-jump',
+          ...CLOUD_RENDER_ACTIONS].includes(action)) {
           pending.clear();
           submitted.clear();
         }
@@ -212,18 +218,49 @@ export const frontend: Plugin.Object<{ readonly hud: string }> = {
             control.value = String(value);
             control.setAttribute('aria-valuetext', `${value.toFixed(2)} 度`);
           }
-          const output = part(key === 'sunElevation' ? 'sun-elevation-value' : 'sun-azimuth-value');
-          if (output) output.textContent = `${value.toFixed(2)}°`;
+          const number = solarNumbers[key];
+          if (number && !solarDrafts.has(number)) number.value = String(Number(value.toFixed(6)));
         }
       };
-      const onSunInput = () => {
-        const sun = readSunFields({ sunElevation: solarInputs.sunElevation?.valueAsNumber, sunAzimuth: solarInputs.sunAzimuth?.valueAsNumber });
-        if (!sun) return;
+      const currentSunInputs = () => ({
+        sunElevation: solarInputs.sunElevation?.valueAsNumber,
+        sunAzimuth: solarInputs.sunAzimuth?.valueAsNumber,
+      });
+      const submitSun = (sun: SunFields) => {
         showSun(sun);
         port?.postMessage({ channel: CHANNEL, action: 'sun-update', sun, requestId: ++solarRequest });
       };
-      for (const control of Object.values(solarInputs)) control?.addEventListener('input', onSunInput);
-      yield () => { for (const control of Object.values(solarInputs)) control?.removeEventListener('input', onSunInput); };
+      const onSunInput = () => {
+        const sun = readSunFields(currentSunInputs());
+        if (sun) submitSun(sun);
+      };
+      for (const key of ['sunElevation', 'sunAzimuth'] as const) {
+        const slider = solarInputs[key];
+        const number = solarNumbers[key];
+        if (!slider || !number) continue;
+        const editNumber = () => solarDrafts.add(number);
+        const commitNumber = () => {
+          if (!solarDrafts.delete(number)) return;
+          const sun = readSunFields({ ...currentSunInputs(), [key]: number.valueAsNumber });
+          if (sun) submitSun(sun);
+          else number.value = String(Number(slider.valueAsNumber.toFixed(6)));
+        };
+        const onNumberKey = (event: KeyboardEvent) => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          number.blur();
+        };
+        slider.addEventListener('input', onSunInput);
+        number.addEventListener('input', editNumber);
+        number.addEventListener('blur', commitNumber);
+        number.addEventListener('keydown', onNumberKey);
+        yield () => {
+          slider.removeEventListener('input', onSunInput);
+          number.removeEventListener('input', editNumber);
+          number.removeEventListener('blur', commitNumber);
+          number.removeEventListener('keydown', onNumberKey);
+        };
+      }
       dispatch = (action, event) => {
         if (action === 'cloud-initialize') {
           const time = fields.get('referenceTimeSeconds');
@@ -231,12 +268,19 @@ export const frontend: Plugin.Object<{ readonly hud: string }> = {
         } else if (action === 'cloud-preset') {
           const clicked = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-preset]');
           request(action, { preset: clicked?.dataset.preset });
+        } else if (action === 'daytime-speed') {
+          const clicked = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-speed]');
+          request(action, { speed: Number(clicked?.dataset.speed) });
+        } else if (action === 'daytime-jump') {
+          const clicked = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-stage]');
+          request(action, { stage: clicked?.dataset.stage });
+        } else if (action === 'daytime-toggle' || action === 'daytime-play') {
+          request(action);
         } else if (action === 'cloud-snapshot-load') {
           let snapshot: unknown;
           try { snapshot = JSON.parse(snapshotJson?.value ?? ''); } catch { snapshot = null; }
           request(action, { snapshot });
-        } else if (['cloud-pause', 'cloud-reset', 'cloud-snapshot-save', 'cloud-off', 'cloud-uniform', 'cloud-shape',
-          'cloud-sample-ue', 'cloud-band', 'cloud-band-wide'].includes(action)) {
+        } else if (['cloud-pause', 'cloud-reset', 'cloud-snapshot-save', ...CLOUD_MODE_ACTIONS].includes(action)) {
           request(action, action === 'cloud-snapshot-save' ? { frame: projectedFrame() } : {});
         } else if (action === 'shadow-comparison') {
           port?.postMessage({ channel: CHANNEL, action, sunRequestId: solarRequest });
@@ -429,6 +473,32 @@ export const frontend: Plugin.Object<{ readonly hud: string }> = {
           return row;
         }));
       };
+      const showDaytimeControls = (value: unknown) => {
+        const daytime = isRecord(value) ? value : undefined;
+        const daytimeActive = daytime?.active === true;
+        const daytimePlaying = daytime?.playing === true;
+        const daytimeCompleted = daytime?.completed === true;
+        part('daytime-toggle')?.setAttribute('aria-pressed', String(daytimeActive));
+        const playButton = part('daytime-play') as HTMLButtonElement | undefined;
+        if (playButton) {
+          playButton.disabled = !daytimeActive;
+          playButton.setAttribute('aria-pressed', String(daytimePlaying));
+          playButton.textContent = daytimeCompleted ? '重播' : daytimePlaying ? '暂停' : '继续';
+        }
+        const stage = isRecord(daytime?.stage) ? daytime.stage : undefined;
+        const elevation = typeof daytime?.elevation === 'number' ? daytime.elevation : undefined;
+        const progress = typeof stage?.progress === 'number' ? Math.round(stage.progress * 100) : 0;
+        write('daytime-stage', daytimeActive && typeof stage?.label === 'string' && elevation !== undefined
+          ? `${stage.label}（${elevation.toFixed(1)}° · ${daytimeCompleted ? '已到终点' : `${progress}%`}）`
+          : '未开启 · 默认 UE 原纹理');
+        for (const button of ui.host.shadowRoot?.querySelectorAll<HTMLElement>('[data-ui-action="daytime-speed"]') ?? []) {
+          button.setAttribute('aria-pressed', String(Number(button.dataset.speed) === daytime?.speed));
+        }
+        for (const button of ui.host.shadowRoot?.querySelectorAll<HTMLElement>('[data-ui-action="daytime-jump"]') ?? []) {
+          const activeStage = daytimeActive && stage?.transitioning !== true && button.dataset.stage === stage?.id;
+          button.setAttribute('aria-pressed', String(activeStage));
+        }
+      };
       const showCloudControls = (cloud: Record<string, unknown>) => {
         part('route')?.setAttribute('aria-pressed', String(cloud.routeRunning === true));
         part('camera-ground')?.setAttribute('aria-pressed', String(cloud.cameraView === 'ground'));
@@ -441,12 +511,19 @@ export const frontend: Plugin.Object<{ readonly hud: string }> = {
         const pause = part('clock-pause');
         pause?.setAttribute('aria-pressed', String(cloud.paused === true));
         write('clock-pause', cloud.paused === true ? '继续' : '暂停');
-        for (const mode of ['off', 'uniform', 'shape', 'sample-ue', 'band', 'band-wide'])
+        showDaytimeControls(cloud.daytime);
+        const sampled = isSampledCloudMode(cloud.mode);
+        part('cloud-textured')?.setAttribute('aria-pressed', String(sampled));
+        for (const mode of ['off', ...CLOUD_MODES])
           part(`cloud-${mode}`)?.setAttribute('aria-pressed', String(cloud.mode === mode));
+        for (const set of CLOUD_TEXTURE_SETS) {
+          const button = part(`cloud-${set}`) as HTMLButtonElement | undefined;
+          if (button) button.disabled = !sampled;
+        }
         for (const mode of ['normal', 'transmittance', 'contour']) {
           const button = part(`cloud-view-${mode}`) as HTMLButtonElement | undefined;
           button?.setAttribute('aria-pressed', String(cloud.viewMode === mode));
-          if (button) button.disabled = cloud.mode !== 'shape' && cloud.mode !== 'sample-ue';
+          if (button) button.disabled = !sampled;
         }
       };
       const showCloudFields = (cloud: Record<string, unknown>, ack: Record<string, unknown> | undefined) => {

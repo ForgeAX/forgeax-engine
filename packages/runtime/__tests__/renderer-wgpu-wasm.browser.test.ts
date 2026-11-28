@@ -12,7 +12,7 @@
 // w27 chromium playwright e2e for the wgpu-wasm dual-impl variant.
 //
 // Trigger: root vitest.config.ts `browser` project (`*.browser.test.ts` glob).
-// Environment: playwright provider chrome-beta channel + ubuntu-latest
+// Environment: playwright provider chrome channel + ubuntu-latest
 // mesa-vulkan-drivers + lavapipe ICD (ci.yml VK_ICD_FILENAMES setup; the
 // ONLY public path for WebGPU on a GH-hosted runner per research R-09).
 //
@@ -36,7 +36,7 @@
 //       (charter proposition 1 progressive disclosure).
 //
 // Charter mapping:
-//   - proposition 4 (explicit failure): when navigator.gpu / chrome-beta
+//   - proposition 4 (explicit failure): when navigator.gpu / chrome
 //     flags are missing, the test throws code: 'webgpu-unavailable' rather
 //     than silently dropping to a webgl2 false-green.
 //   - proposition 5 (consistent abstraction): the dual-impl boundary
@@ -77,7 +77,7 @@ describe.skip('renderer-wgpu-wasm.browser - chromium real path with rhi-wgpu esc
     // fallback to webgl2 must not turn AC-04 into a false green).
     if (typeof navigator.gpu === 'undefined') {
       throw new Error(
-        "[renderer-wgpu-wasm.browser] code: 'webgpu-unavailable'; hint: WebGPU is not enabled in this browser; ci.yml injects via chrome-beta channel + --enable-unsafe-webgpu --enable-features=Vulkan + lavapipe ICD (ubuntu-latest); on local dev use chrome --enable-unsafe-webgpu",
+        "[renderer-wgpu-wasm.browser] code: 'webgpu-unavailable'; hint: WebGPU is not enabled in this browser; ci.yml injects via chrome channel + --enable-unsafe-webgpu --enable-features=Vulkan + lavapipe ICD (ubuntu-latest); on local dev use chrome --enable-unsafe-webgpu",
       );
     }
 

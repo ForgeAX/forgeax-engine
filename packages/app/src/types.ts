@@ -28,6 +28,7 @@ import type {
   RenderFeature,
   RenderProfile,
   SsrAdmissionIdentity,
+  ViewportOutputExtension,
 } from '@forgeax/engine-render';
 import type {
   BundlerOptions as RenderBundlerOptions,
@@ -213,6 +214,8 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly backgroundPipelineLibraryConcurrency?: number;
   /** Warm visible GPU picking pipelines in this viewport after first presentation. Default off. */
   readonly viewportHitWarmup?: boolean;
+  /** Optional opt-in viewport output / GBuffer visualizer extension. Default omitted (tree-shaken). */
+  readonly viewportOutput?: ViewportOutputExtension;
   /** Renderer-owned retained dynamic mesh budget; default 64 MiB, maximum 512 MiB. */
   readonly dynamicGeometryMeshBudgetBytes?: number;
   readonly staticShadowBudgetBytes?: number;

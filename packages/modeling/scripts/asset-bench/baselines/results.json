@@ -1,0 +1,504 @@
+{
+  "kernel": "0.0.0",
+  "generatedAt": "2026-11-10T12:00:57.996Z",
+  "profiles": [
+    "mobile-hero",
+    "mobile-prop",
+    "mobile-scenery",
+    "desktop-hero"
+  ],
+  "assets": [
+    {
+      "id": "crate",
+      "profile": "mobile-prop",
+      "rationale": "a single rigid prop with bevel-free panels",
+      "buildMs": 51,
+      "stats": {
+        "parts": 1,
+        "triangles": 896,
+        "vertices": 911,
+        "materials": 4,
+        "uvCoverage": 0.4421577453613281,
+        "uvOverlap": 0.9965921541899249,
+        "uvOutOfRange": 0.7560139374695617,
+        "perMaterial": [
+          {
+            "material": "crate/Default",
+            "triangles": 122,
+            "uvCoverage": 0.427703857421875,
+            "uvOverlap": 0.8040492329646807
+          },
+          {
+            "material": "crate/metal",
+            "triangles": 764,
+            "uvCoverage": 0.04267120361328125,
+            "uvOverlap": 0.9436795994993742
+          },
+          {
+            "material": "crate/panel",
+            "triangles": 8,
+            "uvCoverage": 0.09645462036132812,
+            "uvOverlap": 1
+          },
+          {
+            "material": "crate/trim",
+            "triangles": 2,
+            "uvCoverage": 0.27996063232421875,
+            "uvOverlap": 0
+          }
+        ],
+        "texelSpread": 1.208641073617497,
+        "degenerateTriangles": 0,
+        "rawBytes": 49104,
+        "quantizedBytes": 23596
+      },
+      "ok": false,
+      "issues": [
+        "budget-materials",
+        "uv-overlap",
+        "uv-out-of-range"
+      ]
+    },
+    {
+      "id": "desk-lamp",
+      "profile": "mobile-prop",
+      "rationale": "multi-part household prop",
+      "buildMs": 59,
+      "stats": {
+        "parts": 1,
+        "triangles": 1550,
+        "vertices": 1685,
+        "materials": 7,
+        "uvCoverage": 0.19328689575195312,
+        "uvOverlap": 0.7741025084371115,
+        "uvOutOfRange": 0.7797095436913899,
+        "perMaterial": [
+          {
+            "material": "desk-lamp/Default",
+            "triangles": 364,
+            "uvCoverage": 0.02631378173828125,
+            "uvOverlap": 0.9836184401275732
+          },
+          {
+            "material": "desk-lamp/metal",
+            "triangles": 644,
+            "uvCoverage": 0.140228271484375,
+            "uvOverlap": 0.919069640914037
+          },
+          {
+            "material": "desk-lamp/rubber",
+            "triangles": 28,
+            "uvCoverage": 0.00426483154296875,
+            "uvOverlap": 0.26833631484794274
+          },
+          {
+            "material": "desk-lamp/enamel",
+            "triangles": 142,
+            "uvCoverage": 0.002613067626953125,
+            "uvOverlap": 0
+          },
+          {
+            "material": "desk-lamp/reflector",
+            "triangles": 54,
+            "uvCoverage": 0.0461883544921875,
+            "uvOverlap": 0
+          },
+          {
+            "material": "desk-lamp/glass",
+            "triangles": 272,
+            "uvCoverage": 0.006443023681640625,
+            "uvOverlap": 0
+          },
+          {
+            "material": "desk-lamp/brass",
+            "triangles": 46,
+            "uvCoverage": 0.00131988525390625,
+            "uvOverlap": 0
+          }
+        ],
+        "texelSpread": 1.27806010203497,
+        "degenerateTriangles": 0,
+        "rawBytes": 90180,
+        "quantizedBytes": 43000
+      },
+      "ok": false,
+      "issues": [
+        "budget-materials",
+        "uv-overlap",
+        "uv-out-of-range"
+      ]
+    },
+    {
+      "id": "wheel-rim",
+      "profile": "mobile-hero",
+      "rationale": "close-up mechanical hero part",
+      "buildMs": 2504,
+      "stats": {
+        "parts": 1,
+        "triangles": 7208,
+        "vertices": 8044,
+        "materials": 4,
+        "uvCoverage": 0.9481391906738281,
+        "uvOverlap": 0.9491689767410048,
+        "uvOutOfRange": 0.9619325768145175,
+        "perMaterial": [
+          {
+            "material": "wheel-rim/barrel",
+            "triangles": 1960,
+            "uvCoverage": 0.80078125,
+            "uvOverlap": 0.8731707317073171
+          },
+          {
+            "material": "wheel-rim/painted",
+            "triangles": 3336,
+            "uvCoverage": 0.9327812194824219,
+            "uvOverlap": 0.7912343624117159
+          },
+          {
+            "material": "wheel-rim/bore",
+            "triangles": 1072,
+            "uvCoverage": 0.5569305419921875,
+            "uvOverlap": 0.424449984931094
+          },
+          {
+            "material": "wheel-rim/machined",
+            "triangles": 840,
+            "uvCoverage": 0,
+            "uvOverlap": 0
+          }
+        ],
+        "texelSpread": 10.03690425815061,
+        "degenerateTriangles": 0,
+        "rawBytes": 429360,
+        "quantizedBytes": 204128
+      },
+      "ok": false,
+      "issues": [
+        "budget-materials",
+        "uv-overlap",
+        "uv-out-of-range",
+        "budget-texel-spread"
+      ]
+    },
+    {
+      "id": "bracket",
+      "profile": "mobile-prop",
+      "rationale": "small machined bracket",
+      "buildMs": 38,
+      "stats": {
+        "parts": 1,
+        "triangles": 876,
+        "vertices": 718,
+        "materials": 2,
+        "uvCoverage": 0.9686126708984375,
+        "uvOverlap": 0.8232722632681674,
+        "uvOutOfRange": 0.577862041700132,
+        "perMaterial": [
+          {
+            "material": "bracket/Default",
+            "triangles": 664,
+            "uvCoverage": 0.9677505493164062,
+            "uvOverlap": 0.6302258662146715
+          },
+          {
+            "material": "bracket/machined",
+            "triangles": 212,
+            "uvCoverage": 0.2833366394042969,
+            "uvOverlap": 0.050447660720296196
+          }
+        ],
+        "texelSpread": 1.3161110022957252,
+        "degenerateTriangles": 0,
+        "rawBytes": 39720,
+        "quantizedBytes": 19616
+      },
+      "ok": false,
+      "issues": [
+        "uv-overlap",
+        "uv-out-of-range"
+      ]
+    },
+    {
+      "id": "armor-bake",
+      "profile": "mobile-hero",
+      "rationale": "two-part armor plate pair used for baking",
+      "buildMs": 94,
+      "stats": {
+        "parts": 2,
+        "triangles": 3160,
+        "vertices": 2906,
+        "materials": 5,
+        "uvCoverage": 0.9560050964355469,
+        "uvOverlap": 0.8690879490525156,
+        "uvOutOfRange": 0.8751670887730265,
+        "perMaterial": [
+          {
+            "material": "armor-bake/base/baked",
+            "triangles": 136,
+            "uvCoverage": 0.6214866638183594,
+            "uvOverlap": 0
+          },
+          {
+            "material": "armor-bake/detail/paint",
+            "triangles": 2024,
+            "uvCoverage": 0.9311408996582031,
+            "uvOverlap": 0.8150418078355381
+          },
+          {
+            "material": "armor-bake/detail/groove",
+            "triangles": 280,
+            "uvCoverage": 0.039257049560546875,
+            "uvOverlap": 0.3737246137401613
+          },
+          {
+            "material": "armor-bake/detail/vent",
+            "triangles": 360,
+            "uvCoverage": 0.08627700805664062,
+            "uvOverlap": 0
+          },
+          {
+            "material": "armor-bake/detail/bolt",
+            "triangles": 360,
+            "uvCoverage": 0.004169464111328125,
+            "uvOverlap": 0.8005489478499542
+          }
+        ],
+        "texelSpread": 5.862164459116922,
+        "degenerateTriangles": 0,
+        "rawBytes": 158448,
+        "quantizedBytes": 77080
+      },
+      "ok": false,
+      "issues": [
+        "budget-materials",
+        "uv-overlap",
+        "uv-out-of-range",
+        "budget-texel-spread"
+      ]
+    },
+    {
+      "id": "pauldron",
+      "profile": "mobile-hero",
+      "rationale": "shoulder armor hero asset",
+      "buildMs": 108,
+      "stats": {
+        "parts": 1,
+        "triangles": 4736,
+        "vertices": 3362,
+        "materials": 4,
+        "uvCoverage": 0,
+        "uvOverlap": 0,
+        "uvOutOfRange": 1,
+        "perMaterial": [
+          {
+            "material": "pauldron/paint",
+            "triangles": 2944,
+            "uvCoverage": 0,
+            "uvOverlap": 0
+          },
+          {
+            "material": "pauldron/trim",
+            "triangles": 896,
+            "uvCoverage": 0,
+            "uvOverlap": 0
+          },
+          {
+            "material": "pauldron/panel",
+            "triangles": 384,
+            "uvCoverage": 0,
+            "uvOverlap": 0
+          },
+          {
+            "material": "pauldron/steel",
+            "triangles": 512,
+            "uvCoverage": 0,
+            "uvOverlap": 0
+          }
+        ],
+        "texelSpread": 1.274792515813222,
+        "degenerateTriangles": 0,
+        "rawBytes": 189792,
+        "quantizedBytes": 95656
+      },
+      "ok": false,
+      "issues": [
+        "budget-materials",
+        "uv-coverage-low",
+        "uv-out-of-range"
+      ]
+    },
+    {
+      "id": "hair-fork",
+      "profile": "mobile-prop",
+      "rationale": "thin forked hair part",
+      "buildMs": 48,
+      "stats": {
+        "parts": 1,
+        "triangles": 1656,
+        "vertices": 1100,
+        "materials": 1,
+        "uvCoverage": 0.06805419921875,
+        "uvOverlap": 0.9635089686098655,
+        "uvOutOfRange": 0.8204966210708807,
+        "perMaterial": [
+          {
+            "material": "hair-fork/Default",
+            "triangles": 1656,
+            "uvCoverage": 0.06805419921875,
+            "uvOverlap": 0.9635089686098655
+          }
+        ],
+        "texelSpread": 2.358667843058529,
+        "degenerateTriangles": 0,
+        "rawBytes": 62736,
+        "quantizedBytes": 31936
+      },
+      "ok": false,
+      "issues": [
+        "uv-coverage-low",
+        "uv-overlap",
+        "uv-out-of-range"
+      ]
+    },
+    {
+      "id": "housing",
+      "profile": "mobile-prop",
+      "rationale": "enclosure with openings",
+      "buildMs": 52,
+      "stats": {
+        "parts": 1,
+        "triangles": 1496,
+        "vertices": 1412,
+        "materials": 3,
+        "uvCoverage": 0.80078125,
+        "uvOverlap": 1,
+        "uvOutOfRange": 0.6817567984670614,
+        "perMaterial": [
+          {
+            "material": "housing/Default",
+            "triangles": 666,
+            "uvCoverage": 0.80078125,
+            "uvOverlap": 0.8358231707317073
+          },
+          {
+            "material": "housing/interior",
+            "triangles": 530,
+            "uvCoverage": 0.759765625,
+            "uvOverlap": 0.7917737789203085
+          },
+          {
+            "material": "housing/lip",
+            "triangles": 300,
+            "uvCoverage": 0.064453125,
+            "uvOverlap": 0.7575757575757576
+          }
+        ],
+        "texelSpread": 1.0966782842831257,
+        "degenerateTriangles": 0,
+        "rawBytes": 76752,
+        "quantizedBytes": 37216
+      },
+      "ok": false,
+      "issues": [
+        "uv-overlap",
+        "uv-out-of-range"
+      ]
+    },
+    {
+      "id": "tunic",
+      "profile": "mobile-scenery",
+      "rationale": "soft cloth shape that tiles",
+      "buildMs": 50,
+      "stats": {
+        "parts": 1,
+        "triangles": 1540,
+        "vertices": 2124,
+        "materials": 2,
+        "uvCoverage": 0.17911911010742188,
+        "uvOverlap": 0.7469066127143009,
+        "uvOutOfRange": 0.5420137751803005,
+        "perMaterial": [
+          {
+            "material": "tunic/Default",
+            "triangles": 446,
+            "uvCoverage": 0.15098190307617188,
+            "uvOverlap": 0.09024987998686172
+          },
+          {
+            "material": "tunic/cloth",
+            "triangles": 1094,
+            "uvCoverage": 0.15877151489257812,
+            "uvOverlap": 0.4376156267268927
+          }
+        ],
+        "texelSpread": 2.786079279911016,
+        "degenerateTriangles": 0,
+        "rawBytes": 111192,
+        "quantizedBytes": 51720
+      },
+      "ok": false,
+      "issues": [
+        "uv-overlap",
+        "uv-out-of-range"
+      ]
+    },
+    {
+      "id": "sheet-bracket",
+      "profile": "mobile-prop",
+      "rationale": "sheet-metal bracket",
+      "buildMs": 36,
+      "stats": {
+        "parts": 1,
+        "triangles": 2280,
+        "vertices": 1448,
+        "materials": 1,
+        "uvCoverage": 0.5348968505859375,
+        "uvOverlap": 0.9591213806874911,
+        "uvOutOfRange": 0.5123778644382937,
+        "perMaterial": [
+          {
+            "material": "sheet-bracket/Default",
+            "triangles": 2280,
+            "uvCoverage": 0.5348968505859375,
+            "uvOverlap": 0.9591213806874911
+          }
+        ],
+        "texelSpread": 1.1646450131379567,
+        "degenerateTriangles": 0,
+        "rawBytes": 83184,
+        "quantizedBytes": 42640
+      },
+      "ok": false,
+      "issues": [
+        "uv-overlap",
+        "uv-out-of-range"
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "id": "thin-vent",
+      "reason": "not an asset: the builder returns a 2-triangle backing plus a hole plan"
+    },
+    {
+      "id": "plate",
+      "reason": "roster cap: 10 entries (6 required + 4 extra); built in about 25 ms when probed"
+    },
+    {
+      "id": "joint-boot",
+      "reason": "roster cap: built in about 7.8 s when probed (within the 60 s limit)"
+    },
+    {
+      "id": "hood-linkage",
+      "reason": "roster cap: built in about 0.4 s when probed"
+    },
+    {
+      "id": "door-hinge",
+      "reason": "roster cap: built in about 0.3 s when probed"
+    },
+    {
+      "id": "hydraulic-joint",
+      "reason": "roster cap: built in about 0.3 s when probed (35k triangles)"
+    }
+  ]
+}

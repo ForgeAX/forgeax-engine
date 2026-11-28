@@ -35,3 +35,60 @@ export async function desktopAddon(platform: NodeJS.Platform, arch: string) {
     },
   };
 }
+
+export interface DesktopRenderKernelAddonHandle {
+  readonly fileName: string;
+  readonly path: string;
+  readonly module: string;
+  read(): Promise<Buffer>;
+}
+
+/**
+ * Resolves the opt-in native Rust wgpu 30 RenderKernel desktop addon
+ * (`forgeax-render-kernel.<platform>-<arch>.node`). Returns `undefined` when
+ * not built unless `required` is set to `true`.
+ */
+export async function desktopRenderKernelAddon(
+  platform: NodeJS.Platform,
+  arch: string,
+  options?: { readonly required?: boolean | undefined },
+): Promise<DesktopRenderKernelAddonHandle | undefined> {
+  const fileName = `forgeax-render-kernel.${platform}-${arch}.node`;
+  const root = findEngineWorkspaceRoot();
+  if (root !== undefined) {
+    const owner = resolve(root, 'packages/render-kernel');
+    const addon = resolve(owner, 'native', fileName);
+    if (existsSync(addon)) {
+      return {
+        fileName,
+        path: addon,
+        module: resolve(owner, 'src/desktop/index.ts'),
+        read: () => readFile(addon),
+      };
+    }
+  }
+  const sdk = await findSdkContext();
+  const relative = `native-player/${platform}-${arch}/${fileName}`;
+  const artifact = sdk?.manifest.artifacts.find((row) => row.path === relative);
+  if (sdk !== undefined && artifact !== undefined) {
+    const addonPath = resolve(sdk.root, relative);
+    return {
+      fileName,
+      path: addonPath,
+      module: fileURLToPath(import.meta.resolve('@forgeax/engine-render-kernel/native')),
+      async read() {
+        const binary = await readFile(addonPath);
+        const digest = sha256(binary);
+        if (binary.length !== artifact.bytes || digest !== artifact.sha256)
+          throw new Error(`SDK render-kernel artifact failed integrity verification: ${relative}`);
+        return binary;
+      },
+    };
+  }
+  if (options?.required) {
+    throw new Error(
+      `Missing native RenderKernel desktop addon ${fileName}. Build it with: pnpm --filter @forgeax/engine-render-kernel build:native`,
+    );
+  }
+  return undefined;
+}

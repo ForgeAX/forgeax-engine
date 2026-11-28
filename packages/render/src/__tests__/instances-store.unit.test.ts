@@ -122,6 +122,20 @@ describe('renderer instance projection', () => {
     expect(before.transforms[12]).toBe(2);
   });
 
+  it('packs reordered direct-draw rows and seeds the unmatched pose from the current frame', () => {
+    const current = new Float32Array([...matrices(9), ...matrices(13), ...matrices(3)]);
+    const previous = new Float32Array([...matrices(2), ...matrices(8)]);
+    const packed = packInstanceStorageBuffer(
+      new Float32Array(3 * 32),
+      current,
+      previous,
+      Uint32Array.of(202, 303, 101),
+      Uint32Array.of(101, 202),
+    );
+    expect([packed[12], packed[44], packed[76]]).toEqual([9, 13, 3]);
+    expect([packed[28], packed[60], packed[92]]).toEqual([8, 13, 2]);
+  });
+
   it('releases removed identities and never aliases a replacement to retained temporal data', () => {
     const world = new World();
     const projection = new InstanceProjectionStore();

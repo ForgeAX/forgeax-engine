@@ -15,7 +15,14 @@ import {
   type StandardMaterialOptions,
   sel,
   type TextureSink,
+  uvCheckerTexture,
 } from '@forgeax/engine-modeling';
+import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import {
+  createRuntimePackPublication,
+  encodeMaterialProgramWire,
+} from '@forgeax/engine-pack/runtime';
+import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import {
   Camera,
   DirectionalLight,
@@ -26,6 +33,7 @@ import {
 } from '@forgeax/engine-render';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { Transform } from '@forgeax/engine-scene';
+import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import type {
   Asset,
   AssetHandle,
@@ -38,12 +46,8 @@ import {
   buildEngineShaderManifest,
   publishShaderManifest,
 } from '@forgeax/engine-vite-plugin-shader';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
-import { createRuntimePackPublication, encodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
-import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
-import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { PNG } from 'pngjs';
-import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { drawSceneFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import type { RecordedStep } from './record';
 
 /**
@@ -99,8 +103,7 @@ export function frame(
     (k) => ((bounds.min[k] as number) + (bounds.max[k] as number)) / 2,
   ) as [number, number, number];
   const radius =
-    Math.hypot(...[0, 1, 2].map((k) => (bounds.max[k] as number) - (bounds.min[k] as number))) /
-    2;
+    Math.hypot(...[0, 1, 2].map((k) => (bounds.max[k] as number) - (bounds.min[k] as number))) / 2;
   const l = Math.hypot(...direction);
   const distance = (radius / Math.sin(fov / 2)) * 1.02;
   const eye = direction.map((c, k) => (center[k] as number) + (c / l) * distance) as [
@@ -186,34 +189,11 @@ export function touched(step: RecordedStep): FaceSelector | undefined {
 /** Slot that renders with the checker texture (V-uv). */
 export const CHECKER_SLOT = 'checker';
 
-/**
- * UV test texture: `cells` x `cells` checker squares whose light squares are tinted by
- * position (red grows with u, green with v), so mirroring and rotation are visible.
- */
+/** UV test texture (the kernel's `uvCheckerTexture`); throws on an invalid size. */
 export function checkerTexture(size = 1024, cells = 32): TextureAsset {
-  const data = new Uint8Array(size * size * 4);
-  const cell = size / cells;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const cx = Math.floor(x / cell);
-      const cy = Math.floor(y / cell);
-      const light = (cx + cy) % 2 === 0;
-      const o = (y * size + x) * 4;
-      data[o] = light ? 150 + Math.round((cx / cells) * 105) : 45;
-      data[o + 1] = light ? 150 + Math.round((cy / cells) * 105) : 45;
-      data[o + 2] = light ? 200 : 55;
-      data[o + 3] = 255;
-    }
-  }
-  return {
-    kind: 'texture',
-    shape: { viewDimension: '2d', extent: { width: size, height: size } },
-    format: 'rgba8unorm-srgb',
-    colorSpace: 'srgb',
-    // Generated mips streak along triangle edges on the lavapipe Dawn path; one level is enough here.
-    mips: { kind: 'none' },
-    data,
-  };
+  const out = uvCheckerTexture({ size, cells });
+  if (!out.ok) throw out.error;
+  return out.value;
 }
 
 /** A session state with its own uv0 on every face, in the checker slot (V-uv). */
@@ -353,9 +333,22 @@ export async function createCaseRenderer(options: {
   readonly materials?: Readonly<Record<string, (texture: TextureSink) => StandardMaterialOptions>>;
   /** Image-based lighting from an equirect (for example `studioEnvironment()`). */
   readonly environment?: EquirectAsset;
+  /**
+   * Constant diffuse irradiance (linear RGB) of one Skylight without an image: faces that no light reaches
+   * show albedo * irradiance / pi instead of exact black. Default none, so existing cases render as before.
+   */
+  readonly ambientIrradiance?: Rgb;
   readonly view: View;
+  /** Linear clear color of the camera (board spec: [0.1095, 0.1195, 0.1413, 1]). */
+  readonly clearColor?: readonly [number, number, number, number];
+  /** Far plane in metres; default 50. */
+  readonly far?: number;
   /** Texture of the `checker` slot (V-uv), sampled with repeat addressing. */
   readonly checker?: TextureAsset;
+  /** Camera near plane in metres; default 0.01. */
+  readonly near?: number;
+  /** RHI backend to render through (for example an RHI Debug recorder's `backend.rhi`). */
+  readonly rhi?: NonNullable<Parameters<typeof constructRuntimeRendererHost>[1]>['rhi'];
 }): Promise<CaseRenderer> {
   const { width: WIDTH, height: HEIGHT } = options;
   const manifest = await buildEngineShaderManifest();
@@ -408,7 +401,11 @@ export async function createCaseRenderer(options: {
   } as unknown as HTMLCanvasElement;
   let host: Awaited<ReturnType<typeof constructRuntimeRendererHost>>;
   try {
-    host = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+    host = await constructRuntimeRendererHost(
+      canvas,
+      options.rhi === undefined ? {} : { rhi: options.rhi },
+      { shaderManifestUrl: manifestUrl },
+    );
   } finally {
     gpu.requestAdapter = requestAdapter;
   }
@@ -504,9 +501,17 @@ export async function createCaseRenderer(options: {
       data: { direction: [0.6, -0.3, 0.55], color: [0.75, 0.82, 1], intensity: 0.9 },
     })
     .unwrap();
+  const ambient =
+    options.ambientIrradiance === undefined
+      ? {}
+      : { ambientIrradiance: [...options.ambientIrradiance] };
   if (options.environment !== undefined) {
     const equirect = assets.create(options.environment).unwrap() as AssetHandle<'equirect'>;
-    world.spawn({ component: Skylight, data: { equirect, intensity: 1 } as never }).unwrap();
+    world
+      .spawn({ component: Skylight, data: { equirect, intensity: 1, ...ambient } as never })
+      .unwrap();
+  } else if (options.ambientIrradiance !== undefined) {
+    world.spawn({ component: Skylight, data: { intensity: 0, ...ambient } as never }).unwrap();
   }
   const camera = world
     .spawn(
@@ -516,7 +521,13 @@ export async function createCaseRenderer(options: {
       },
       {
         component: Camera,
-        data: { fov: CASE_FOV, aspect: WIDTH / HEIGHT, near: 0.01, far: 50 } as never,
+        data: {
+          fov: CASE_FOV,
+          aspect: WIDTH / HEIGHT,
+          near: options.near ?? 0.01,
+          far: options.far ?? 50,
+          ...(options.clearColor === undefined ? {} : { clearColor: options.clearColor }),
+        } as never,
       },
     )
     .unwrap();
@@ -541,7 +552,9 @@ export async function createCaseRenderer(options: {
             { component: MeshFilter, data: { assetHandle: handle } },
             {
               component: MeshRenderer,
-              data: { materials: extra.materialSlots.map((slot) => slotMaterial(slot.slotName, legend)) },
+              data: {
+                materials: extra.materialSlots.map((slot) => slotMaterial(slot.slotName, legend)),
+              },
             },
           )
           .unwrap(),
@@ -562,7 +575,7 @@ export async function createCaseRenderer(options: {
     world.update(1 / 60).unwrap();
     const lease = attached.value;
     for (let i = 0; i < frames; i++) {
-      await drawReadyFrame(renderer, { source: lease });
+      await drawSceneFrame(renderer, lease);
     }
     if (device === undefined || target === undefined) throw new Error('device not captured');
     const buffer = device.createBuffer({ size: bytesPerRow * HEIGHT, usage: 0x0001 | 0x0008 });
@@ -649,8 +662,7 @@ export async function publishMaterials(
 ): Promise<Map<string, AssetHandle<'material'>>> {
   const handles = new Map<string, AssetHandle<'material'>>();
   if (Object.keys(recipes).length === 0) return handles;
-  const guidOf = (key: string) =>
-    AssetGuid.format(AssetGuid.derive(CASE_PACKAGE, key));
+  const guidOf = (key: string) => AssetGuid.format(AssetGuid.derive(CASE_PACKAGE, key));
   const entries: { guid: string; asset: Asset; refs: string[] }[] = [];
   const textures = new Set<string>();
   const texture: TextureSink = (key, asset) => {
@@ -664,14 +676,18 @@ export async function publishMaterials(
   const slots: [string, string][] = [];
   for (const [slot, recipe] of Object.entries(recipes)) {
     const guid = guidOf(`material/${slot}`);
-    const cooked = await caseMaterialCooker.cook({ guid, source: Materials.standard(recipe(texture)) });
+    const cooked = await caseMaterialCooker.cook({
+      guid,
+      source: Materials.standard(recipe(texture)),
+    });
     const record = validateCookedMaterialRecord(
       (cooked.payload as { readonly cooked: unknown }).cooked,
     ).unwrap();
     if (
       record.programs.some(({ selections }) =>
-        selections.some(({ context }) =>
-          context.backend !== 'webgpu' || context.capability === 'uniform-fallback',
+        selections.some(
+          ({ context }) =>
+            context.backend !== 'webgpu' || context.capability === 'uniform-fallback',
         ),
       )
     ) {

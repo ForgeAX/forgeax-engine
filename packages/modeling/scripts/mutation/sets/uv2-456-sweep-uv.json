@@ -1,0 +1,67 @@
+{
+ "tests": [
+  "src/__tests__/metric-uv.unit.test.ts"
+ ],
+ "mutations": [
+  {
+   "id": "456-u-radius",
+   "file": "src/primitives.ts",
+   "old": "(profile[j] as Point2)[0] * i * dPhi;",
+   "new": "i * dPhi;"
+  },
+  {
+   "id": "456-cap-span-v",
+   "file": "src/primitives.ts",
+   "old": "(capOf(j) === undefined ? hypot2(b[0] - a[0], b[1] - a[1]) : 0)",
+   "new": "hypot2(b[0] - a[0], b[1] - a[1])"
+  },
+  {
+   "id": "456-revolve-seam",
+   "file": "src/primitives.ts",
+   "old": "if (capOf(j) === undefined) flagEdge(mesh, at(j, 0), at((j + 1) % m, 0), EDGE_SEAM);",
+   "new": ""
+  },
+  {
+   "id": "456-torus-ring-seam",
+   "file": "src/primitives.ts",
+   "old": "if (loop) for (let i = 0; i < n; i++) flagEdge(mesh, at(0, i), at(0, i + 1), EDGE_SEAM);",
+   "new": ""
+  },
+  {
+   "id": "456-extrude-seam",
+   "file": "src/primitives.ts",
+   "old": "          EDGE_SEAM,\n        );",
+   "new": "          0,\n        );"
+  },
+  {
+   "id": "456-bottom-flip",
+   "file": "src/primitives.ts",
+   "old": "metric ? capUv(true) : []",
+   "new": "metric ? capUv(false) : []"
+  },
+  {
+   "id": "456-planar-flip",
+   "file": "src/ops.ts",
+   "old": "area < 0 ? -p[0] : p[0]",
+   "new": "p[0]"
+  },
+  {
+   "id": "456-pole-mid",
+   "file": "src/primitives.ts",
+   "old": "[(ua0 + ua1) / 2, vk],",
+   "new": "[ua0, vk],"
+  },
+  {
+   "id": "456-wall-v-swap",
+   "file": "src/primitives.ts",
+   "old": "[u1, v0],\n            [u1, v1],",
+   "new": "[u1, v0],\n            [u1, v0 + (v1 - v0) * 0.5],"
+  },
+  {
+   "id": "456-extrude-u",
+   "file": "src/primitives.ts",
+   "old": "along.push((along[i] as number) + hypot2(q[0] - p[0], q[1] - p[1]));",
+   "new": "along.push((along[i] as number) + 1);"
+  }
+ ]
+}

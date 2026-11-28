@@ -11,12 +11,18 @@ import {
   type Sampler,
 } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { stockUtilityShaderFactory } from '../assembly/utility-shader-prewarm';
 import { AtmosphereRasterLutPass } from '../record/gpu-pass-timing/sky-pass-names';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { GraphAtmosphereTables } from './luts';
-import { atmosphereMediumKey, atmosphereStorage, stageAtmospherePublish } from './storage';
+import {
+  atmosphereMediumDirty,
+  atmosphereStorage,
+  stageAtmosphereMedium,
+  stageAtmospherePublish,
+} from './storage';
 import {
   type AtmosphereVisibility,
   atmosphereVisibilityAccesses,
@@ -84,13 +90,6 @@ export function addAtmosphereSkyLuts(
   const captureResult = importCaptureSky(graph, captureInput !== undefined);
   if (!captureResult.ok) return captureResult;
   const captureView = captureResult.value;
-  const mediumDirty = (frame: RenderPipelineFrame) => {
-    const storage = atmosphereStorage(frame);
-    return (
-      storage.submittedMedium !== atmosphereMediumKey(storage.environment) &&
-      storage.recordedMediumEncoder !== frame.encoder
-    );
-  };
   for (const stage of [
     { name: 'transmittance', target: transView.value, inputs: [], captured: false, visibility: {} },
     {
@@ -145,12 +144,12 @@ export function addAtmosphereSkyLuts(
             ? (frame: RenderPipelineFrame) =>
                 atmosphereVisibilityDirty(frame, localVisibility) ||
                 submittedSkyKey !== skyKey(frame)
-            : mediumDirty,
+            : atmosphereMediumDirty,
       encodeDirect: (pass, frame, resources) => {
         const device = frame.runtime.device;
         if (state === undefined) {
           const source = frame.atmosphereShaders?.lutsFragment;
-          const factory = frame.runtime.shaderModuleFactory;
+          const factory = stockUtilityShaderFactory(frame.runtime);
           if (source === undefined || factory === undefined)
             throw new RhiError({
               code: 'shader-compile-failed',
@@ -251,14 +250,7 @@ export function addAtmosphereSkyLuts(
             submittedSkyKey = key;
           });
         }
-        if (stage.name === 'multiple_scattering') {
-          const storage = atmosphereStorage(frame);
-          const key = atmosphereMediumKey(storage.environment);
-          storage.recordedMediumEncoder = frame.encoder;
-          stageAtmospherePublish((frame as _InternalRenderPipelineContext).frameState, () => {
-            storage.submittedMedium = key;
-          });
-        }
+        if (stage.name === 'multiple_scattering') stageAtmosphereMedium(frame);
       },
     });
     if (!added.ok) return added;

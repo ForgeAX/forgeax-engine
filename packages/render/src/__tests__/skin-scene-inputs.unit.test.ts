@@ -35,13 +35,12 @@ it('admits one source joint and one resource definition for 1024 Bindings withou
       expect(available).not.toHaveBeenCalled();
       expect(write).toHaveBeenCalledTimes(1);
       const next = scene.capture(),
-        out = mat4.create(),
-        inverse = mat4.create();
+        out = mat4.create();
       try {
         expect(next.jointCapacity).toBe(1024);
-        expect(before.matrix(1023, 0, out, inverse)).toBe(true);
+        expect(before.matrix(1023, 0, out)).toBe(true);
         expect(out[12]).toBe(4);
-        expect(next.matrix(1023, 0, out, inverse)).toBe(true);
+        expect(next.matrix(1023, 0, out)).toBe(true);
         expect(out[12]).toBe(9);
       } finally {
         next.release();
@@ -116,8 +115,7 @@ it('retires only last references, isolates distinct joint bindings and preserves
     scene.joint(19, matrix(3));
     scene.joint(29, matrix(8));
     const old = scene.capture(),
-      out = mat4.create(),
-      inverse = mat4.create();
+      out = mat4.create();
     try {
       scene.binding(0, binding, undefined);
       expect(scene.hasJoint(19)).toBe(true);
@@ -130,11 +128,11 @@ it('retires only last references, isolates distinct joint bindings and preserves
       scene.joint(19, matrix(11));
       const next = scene.capture();
       try {
-        expect(old.matrix(0, 0, out, inverse)).toBe(true);
+        expect(old.matrix(0, 0, out)).toBe(true);
         expect(out[12]).toBe(4);
-        expect(next.matrix(0, 0, out, inverse)).toBe(true);
+        expect(next.matrix(0, 0, out)).toBe(true);
         expect(out[12]).toBe(12);
-        expect(next.matrix(2, 0, out, inverse)).toBe(true);
+        expect(next.matrix(2, 0, out)).toBe(true);
         expect(out[12]).toBe(10);
         expect(next.jointCapacity).toBe(2);
         expect(next.historyCompatible(old, 0)).toBe(false);
@@ -216,9 +214,8 @@ it('terminates partial Scene adoption while an earlier frame remains independent
     expect(() => scene.joint(19, matrix(8))).toThrow('after write');
     expect(() => scene.capture()).toThrow();
     expect(() => scene.skeletonChanged(7, skeleton())).toThrow();
-    const out = mat4.create(),
-      inverse = mat4.create();
-    expect(old.matrix(0, 0, out, inverse)).toBe(true);
+    const out = mat4.create();
+    expect(old.matrix(0, 0, out)).toBe(true);
     expect(out[12]).toBe(4);
     scene.dispose();
     expect(old.available(0)).toBe(true);

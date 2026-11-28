@@ -10,6 +10,7 @@ import {
   type Sampler,
 } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import { stockUtilityShaderFactory } from '../assembly/utility-shader-prewarm';
 import { SkyPass } from '../record/gpu-pass-timing/sky-pass-names';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
@@ -66,7 +67,10 @@ export function addAtmosphereComposition(
     accesses: [
       ...(!fast ? atmosphereVisibilityAccesses(atmosphere.visibility) : []),
       { resource: view.value, usage: 'uniform-read' },
-      ...textures.map(({ view: resource }) => ({ resource, usage: 'sampled-read' as const })),
+      ...Array.from(new Set(textures.map(({ view }) => view)), (resource) => ({
+        resource,
+        usage: 'sampled-read' as const,
+      })),
       { resource: color.view, usage: 'color-attachment' },
     ],
     colorAttachments: [{ view: color.view, loadOp: 'load', storeOp: 'store' }],
@@ -74,7 +78,7 @@ export function addAtmosphereComposition(
       const device = frame.runtime.device;
       if (state === undefined) {
         const source = frame.atmosphereShaders?.compose;
-        const factory = frame.runtime.shaderModuleFactory;
+        const factory = stockUtilityShaderFactory(frame.runtime);
         if (source === undefined || factory === undefined)
           throw new RhiError({
             code: 'shader-compile-failed',

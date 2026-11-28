@@ -1,7 +1,8 @@
 import { rhi } from '@forgeax/engine-rhi-null';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import { MemberCandidates } from '../gpu-driven/batch-members';
 import type { GpuDrivenBatch, SubmissionPlan } from '../gpu-driven/batch-topology';
+import { mainLayerSuppression } from '../gpu-driven/camera-layer-suppression';
 import { ShadowChannelSlots } from '../gpu-driven/production-raster-shadow';
 import {
   projectShadowLayer,
@@ -10,9 +11,12 @@ import {
 } from '../gpu-driven/shadow-layer-projection';
 import type { SceneContentCursor } from '../gpu-scene-content-boxes';
 import { GpuSceneInputs } from '../gpu-scene-inputs';
+import type { CameraSnapshot } from '../render-contract';
+import { sceneSnapshot, setSceneRow } from '../scene/__tests__/scene-row-writes';
 import { FrameSet } from '../scene/frame-set';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { RowChangeLog } from '../scene/row-change-log';
+import { SceneSlots } from '../scene/scene-slots';
 
 const BATCHES = 4;
 const FLIPS = 8;
@@ -233,6 +237,44 @@ describe('incremental shadow layer projection', () => {
 });
 
 describe('caster channel membership', () => {
+  it('reads native caster and camera layer facts without opening a renderable snapshot', () => {
+    const slots = new SceneSlots();
+    for (const i of [0, 1]) {
+      setSceneRow(slots, i, {
+        slot: i,
+        generation: 0,
+        version: 0,
+        entityKey: i,
+        snapshot: {
+          ...sceneSnapshot(i, new Float32Array(16)),
+          shadowChannels: 1 << i,
+          renderLayers: 1 << i,
+        },
+      });
+    }
+    const frame = slots.capture();
+    const first = frame.slotAt(0);
+    const second = frame.slotAt(1);
+    assert(first && second);
+    const readFirst = vi.spyOn(first, 'snapshot', 'get');
+    const readSecond = vi.spyOn(second, 'snapshot', 'get');
+    const source = { slots: frame, slotAt: frame.slotAt, scene: { rowCapacity: 2 } };
+    const channels = new ShadowChannelSlots().select(2, source, {
+      contentCursor: { journal: new RowChangeLog(), position: 0 },
+      changedSlotsSince: () => undefined,
+    });
+    expect(channels.has(0)).toBe(false);
+    expect(channels.has(1)).toBe(true);
+    const mask = mainLayerSuppression(
+      source as Parameters<typeof mainLayerSuppression>[0],
+      { cullMask: 2 } as CameraSnapshot,
+      new Uint32Array([4]),
+    );
+    expect(mask).toEqual(new Uint32Array([5]));
+    expect(readFirst).not.toHaveBeenCalled();
+    expect(readSecond).not.toHaveBeenCalled();
+  });
+
   it('enumerates scene slots once per mask and then follows the change journal', () => {
     const rows = new Map<number, RenderSceneSlot>();
     const row = (slot: number, shadowChannels: number) =>

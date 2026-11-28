@@ -76,8 +76,8 @@ it.each([
   };
   const admission = createStandardSceneSurfaceAdmission(input);
   expect(admission).toMatchObject({
-    status: 'unavailable',
-    deferredAoCompatible: compatible,
+    status: compatible ? 'available' : 'unavailable',
+    ...(compatible ? {} : { deferredAoCompatible: false }),
     deferredGBufferEmpty: false,
   });
   expect(

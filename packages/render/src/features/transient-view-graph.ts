@@ -117,6 +117,12 @@ interface TransientViewSelection {
   readonly ownsPhysicalChanges: boolean;
 }
 
+const NO_TRANSIENT_VIEWS: TransientViewSelection = {
+  identities: new Set(),
+  topologySignature: undefined,
+  ownsPhysicalChanges: false,
+};
+
 const transientResourceKinds = new Set([
   'buffer',
   'compute-program',
@@ -191,30 +197,33 @@ export function selectTransientViewPlans(
   enabled: boolean,
   scopeOwner: object = owner,
 ): TransientViewSelection {
-  const identities = new Set<string>();
-  const unsupported = new Set<string>();
-  // Shadow hoisting can cross feature boundaries. Keep its complete old path.
-  if (enabled && !executions.some((row) => row.passes.some((pass) => pass.shadowCaster)))
-    for (let i = 0; i < plans.length; i++) {
-      const planned = plans[i];
-      const execution = executions[i];
-      if (
-        planned?.viewGraph === 'transient' &&
-        typeof planned.scope !== 'string' &&
-        planned.plan.resources.every((resource) => transientResourceKinds.has(resource.kind)) &&
-        execution !== undefined &&
-        execution.scope === `view:${planned.scope.view}` &&
-        (execution.placement ?? 'post') === (planned.placement ?? 'post') &&
-        !execution.passes.some((pass) => isStandardFeatureStagePass(pass.name)) &&
-        transientViewExecutionEligible(execution)
-      )
-        identities.add(planned.featureIdentity);
-      else if (planned?.viewGraph === 'transient' && typeof planned.scope !== 'string')
-        unsupported.add(planned.featureIdentity);
+  // Shadow hoisting can cross feature boundaries. Retain its parent graph ownership.
+  if (!enabled || executions.some((row) => row.passes.some((pass) => pass.shadowCaster)))
+    return NO_TRANSIENT_VIEWS;
+  let identities: Set<string> | undefined;
+  let unsupported: Set<string> | undefined;
+  for (let i = 0; i < plans.length; i++) {
+    const planned = plans[i];
+    if (planned?.viewGraph !== 'transient' || typeof planned.scope === 'string') continue;
+    const execution = executions[i];
+    if (
+      planned.plan.resources.every((resource) => transientResourceKinds.has(resource.kind)) &&
+      execution !== undefined &&
+      execution.scope === `view:${planned.scope.view}` &&
+      (execution.placement ?? 'post') === (planned.placement ?? 'post') &&
+      !execution.passes.some((pass) => isStandardFeatureStagePass(pass.name)) &&
+      transientViewExecutionEligible(execution)
+    ) {
+      identities ??= new Set();
+      identities.add(planned.featureIdentity);
+    } else {
+      unsupported ??= new Set();
+      unsupported.add(planned.featureIdentity);
     }
-  for (const identity of unsupported) identities.delete(identity);
-  if (identities.size === 0)
-    return { identities, topologySignature: undefined, ownsPhysicalChanges: false };
+  }
+  if (identities === undefined) return NO_TRANSIENT_VIEWS;
+  if (unsupported !== undefined) for (const identity of unsupported) identities.delete(identity);
+  if (identities.size === 0) return NO_TRANSIENT_VIEWS;
   inspection(owner).selectedPlans += identities.size;
   return {
     identities,

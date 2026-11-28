@@ -26,6 +26,8 @@ import type { MeshGeometry } from '../mesh-geometry.js';
 import { validateAssetReferences } from '../prepare-payload.js';
 import {
   type ArtifactReadRequest,
+  type BundledArtifactRead,
+  prefetchArtifactBundle,
   readArtifact,
   readBundledArtifact,
 } from '../registry/artifact-io.js';
@@ -76,9 +78,14 @@ type AssetSourceSnapshot = AssetGraphSnapshot & {
 type PackEnvelope = VerifiedPack['assets'][number];
 interface OpenedPack {
   readonly assets: ReadonlyMap<string, PackEnvelope>;
+  readonly fetcher: PackageFetcher;
 }
 /** Packs opened by one closure load, keyed by package URL and publication. */
 type PackScope = Map<string, Promise<Result<OpenedPack, AssetLoadError>>>;
+
+// Leave connections available for publications still being produced.
+const EARLY_SCENE_PACK_LIMIT = 8;
+const EARLY_SCENE_BUNDLE_LIMIT = 3;
 
 export interface SourceEntry {
   readonly identity: symbol;
@@ -311,6 +318,27 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
   const lifetime = new AbortController();
   const sourceFetcher = (url: string) =>
     options.catalog.openPackage?.(url) ?? options.fetcher ?? globalThis.fetch.bind(globalThis);
+  const bundleReadOptions = (
+    request: ArtifactReadRequest,
+    fetcher: PackageFetcher,
+    url: string,
+  ): BundledArtifactRead<AssetLoadError> => ({
+    fetcher,
+    url,
+    init: { signal: lifetime.signal },
+    unreadable: (failure) => {
+      const error = artifactError(request.guid, request.descriptor.path);
+      return 'code' in failure
+        ? { ...error, expected: failure.expected, hint: failure.hint }
+        : error;
+    },
+    rejected: ({ expected, hint }) => ({
+      ...artifactError(request.guid, request.artifactKey),
+      expected,
+      hint,
+    }),
+    invalid: (reason) => artifactError(request.guid, reason),
+  });
   const storedArtifact = async (
     request: ArtifactReadRequest,
     signal: AbortSignal,
@@ -334,19 +362,11 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       hint: error.hint,
     });
     if (range !== undefined) {
-      const reading = readBundledArtifact(bundles, request, {
-        fetcher,
-        url,
-        init: { signal: lifetime.signal },
-        unreadable: (failure) => {
-          const error = artifactError(request.guid, descriptor.path);
-          return 'code' in failure
-            ? { ...error, expected: failure.expected, hint: failure.hint }
-            : error;
-        },
-        rejected: decodeError,
-        invalid: (reason) => artifactError(request.guid, reason),
-      });
+      const reading = readBundledArtifact(
+        bundles,
+        request,
+        bundleReadOptions(request, fetcher, url),
+      );
       const decoded = await waitForAsset(reading, signal, request.guid);
       if (!decoded.ok)
         return decoded.error.code === 'asset-integrity-failed'
@@ -389,13 +409,98 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     url: string,
     tuple: Parameters<PackReader['read']>[1],
     signal: AbortSignal,
-    fetcher: ReturnType<typeof sourceFetcher>,
   ): Promise<Result<OpenedPack, AssetLoadError>> => {
+    const fetcher = sourceFetcher(url);
     const pack = await reader.read(url, tuple, signal, fetcher);
     if (!pack.ok) return pack;
     const assets = new Map<string, PackEnvelope>();
     for (const asset of pack.value.assets) assets.set(asset.guid.toLowerCase(), asset);
-    return ok({ assets });
+    return ok({ assets, fetcher });
+  };
+  const openClosurePack = (row: RuntimeCatalogRow, scope: PackScope, signal: AbortSignal) => {
+    const { packageUrl, publication } = row;
+    const { scopeId } = session;
+    const { generation, digest, outputSetDigest } = publication;
+    const key = `${packageUrl}\u0000${scopeId}\u0000${generation}\u0000${digest}\u0000${outputSetDigest}`;
+    const pending = scope.get(key);
+    if (pending !== undefined) return pending;
+    const opened = openPack(packageUrl, { scopeId, generation, digest, outputSetDigest }, signal);
+    scope.set(key, opened);
+    const evict = () => {
+      if (scope.get(key) === opened) scope.delete(key);
+    };
+    void opened.then((result) => {
+      if (!result.ok) evict();
+    }, evict);
+    return opened;
+  };
+  async function prefetchSceneMeshBundle(
+    row: RuntimeCatalogRow,
+    scope: PackScope,
+    started: Set<string>,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const guid = row.guid.toLowerCase();
+    const pack = await openClosurePack(row, scope, lifetime.signal);
+    if (!pack.ok || signal?.aborted || lifetime.signal.aborted) return;
+    const current = currentPublication(guid, { ...row.publication, scopeId: session.scopeId });
+    if (
+      current?.packageUrl !== row.packageUrl ||
+      current.lifecycle === 'stale' ||
+      current.publication?.failure
+    )
+      return;
+    if (!decoders.uses('mesh', meshAssetDecoder)) return;
+    const envelope = pack.value.assets.get(guid);
+    const descriptor = envelope && standaloneMeshBody(envelope).meshBody?.artifacts.body;
+    if (descriptor?.byteRange === undefined || descriptor.delivery === 'stream') return;
+    const path = validateArtifactPath(descriptor.path, {
+      packageRoot: row.packageUrl,
+      guid,
+      artifactKey: 'body',
+    });
+    if (!path.ok) return;
+    const url = resolveArtifactUrl(row.packageUrl, path.value);
+    const key = `${url}\0${descriptor.byteRange.bundleDigest}`;
+    const limit = Math.min(EARLY_SCENE_BUNDLE_LIMIT, options.maxConcurrentReads ?? Infinity);
+    if (started.size >= limit || started.has(key)) return;
+    started.add(key);
+    const request = { packageUrl: row.packageUrl, guid, artifactKey: 'body', descriptor };
+    await prefetchArtifactBundle(
+      bundles,
+      request,
+      bundleReadOptions(request, pack.value.fetcher, url),
+    );
+  }
+
+  const startKnownScenePacks = (root: string, scope: PackScope, signal?: AbortSignal) => {
+    const limit = Math.min(EARLY_SCENE_PACK_LIMIT, options.maxConcurrentReads ?? Infinity);
+    const before = scope.size;
+    const queue = [root.toLowerCase()];
+    const seen = new Set(queue);
+    const started = new Set<string>();
+    for (let index = 0; index < queue.length && scope.size - before < limit; index++) {
+      const guid = queue[index] as string;
+      const row = session.get(guid);
+      if (row?.publication === undefined || row.lifecycle === 'stale' || row.publication.failure)
+        continue;
+      const validated = validateRuntimeRow(row);
+      if (!validated.ok) continue;
+      if (graph.entry(guid) === undefined) {
+        if (row.kind === 'mesh' && decoders.uses('mesh', meshAssetDecoder))
+          void prefetchSceneMeshBundle(validated.value, scope, started, signal).catch(() => {});
+        else void openClosurePack(validated.value, scope, lifetime.signal);
+      }
+      if (decoders.referencePolicy(row.kind) === 'deferred') continue;
+      for (const ref of row.publication.outputs.find((output) => output.guid.toLowerCase() === guid)
+        ?.refs ?? []) {
+        const key = ref.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          queue.push(key);
+        }
+      }
+    }
   };
   const decodeRoot = async (
     guid: string,
@@ -404,7 +509,6 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
   ): Promise<Result<SourceEntry, AssetLoadError>> => {
     const row = session.get(guid);
     if (row === undefined) return err(missing(guid));
-    const fetcher = sourceFetcher(row.packageUrl);
     const validated = validateRuntimeRow(row);
     if (!validated.ok) return validated;
     const publication = validated.value.publication;
@@ -412,14 +516,9 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       ...publication,
       scopeId: session.scopeId,
     });
-    const packKey = `${row.packageUrl}\u0000${tuple.scopeId}\u0000${tuple.generation}\u0000${tuple.digest}\u0000${tuple.outputSetDigest}`;
-    let opened = scope.get(packKey);
-    if (opened === undefined) {
-      opened = openPack(row.packageUrl, tuple, signal, fetcher);
-      scope.set(packKey, opened);
-    }
-    const pack = await opened;
+    const pack = await openClosurePack(validated.value, scope, signal);
     if (!pack.ok) return pack;
+    const { fetcher } = pack.value;
     const envelope = pack.value.assets.get(guid.toLowerCase());
     if (envelope === undefined) return err(missing(guid));
     const output = publication.outputs.find(
@@ -747,6 +846,12 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         const declared = session.get(guid);
         if (declared !== undefined && declared.kind !== expectedKind)
           return err(mismatch(guid, expectedKind, declared.kind));
+        const parallelSceneClosure = expectedKind === 'scene' && loadOptions.usage === 'render';
+        let scope = loadOptions.readScope;
+        if (parallelSceneClosure && !loadOptions.refresh && !loadOptions.signal?.aborted) {
+          scope ??= new Map();
+          startKnownScenePacks(guid, scope, loadOptions.signal);
+        }
         const admitted = await admit(guid, new Set(), loadOptions.refresh);
         if (!admitted.ok) return admitted;
         const row = admitted.value;
@@ -757,7 +862,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           return before;
         }
         invalidateRetiredDecoders(guid);
-        const result = await graph.load(guid, loadOptions.signal, loadOptions.readScope);
+        const result = await graph.load(guid, loadOptions.signal, scope, parallelSceneClosure);
         if (!result.ok) return result;
         if (invalidateRetiredDecoders(guid))
           return err({
@@ -895,6 +1000,20 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     guid: string,
     expected: AssetPublicationTuple,
   ): Result<CatalogEntry, AssetLoadError> {
+    const row = currentPublication(guid, expected);
+    if (row !== undefined) return ok(row);
+    graph.invalidate(guid);
+    return err({
+      code: 'asset-superseded',
+      expected: 'the same root publication until its read completes',
+      hint: 'load the current Catalog publication',
+      detail: { guid, generation: expected.generation },
+    });
+  }
+  function currentPublication(
+    guid: string,
+    expected: AssetPublicationTuple,
+  ): CatalogEntry | undefined {
     const row = session.get(guid);
     const actual = row?.publication;
     if (
@@ -905,16 +1024,9 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       actual.generation !== expected.generation ||
       actual.digest !== expected.digest ||
       actual.outputSetDigest !== expected.outputSetDigest
-    ) {
-      graph.invalidate(guid);
-      return err({
-        code: 'asset-superseded',
-        expected: 'the same root publication until its read completes',
-        hint: 'load the current Catalog publication',
-        detail: { guid, generation: expected.generation },
-      });
-    }
-    return ok(row);
+    )
+      return undefined;
+    return row;
   }
   return registry;
 }

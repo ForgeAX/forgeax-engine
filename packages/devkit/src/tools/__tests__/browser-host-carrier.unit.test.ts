@@ -337,7 +337,7 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
 
   it.each([
     undefined,
-    'chrome-beta',
+    'chrome',
   ])('uses shared browser discovery unless channel is explicit: %s', async (channel) => {
     const root = await fixtureRoot();
     const executable = join(root, 'installed-chromium');

@@ -200,9 +200,14 @@ function exactDifferencesSign(
   c: Point,
   d: Point,
 ): number | undefined {
-  for (const p of [a, b, c]) {
-    for (let k = 0; k < 3; k++)
-      if (!stagedDifference(p[k] as number, d[k] as number)) return undefined;
+  for (let k = 0; k < 3; k++) {
+    if (
+      !stagedDifference(a[k] as number, d[k] as number) ||
+      !stagedDifference(b[k] as number, d[k] as number) ||
+      !stagedDifference(c[k] as number, d[k] as number)
+    ) {
+      return undefined;
+    }
   }
   let length = scale(MINOR, minor(bdx, cdy, cdx, bdy), adz, TOTAL);
   length = accumulate(length, scale(MINOR, minor(cdx, ady, adx, cdy), bdz, SCALED));

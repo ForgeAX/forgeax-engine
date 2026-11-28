@@ -2,6 +2,8 @@ import { type ByteCache, err, ok, type Result } from '@forgeax/engine-types';
 import { type ModelingError, modelingError } from '../errors';
 import type { NormalMode } from '../finish';
 import type { Tuple3 } from '../geom';
+import type { CornerChannelName } from '../mesh';
+import type { NurbsSurface } from '../nurbs';
 import { decodeJobEntry, encodeJobEntry } from './job-cache';
 import type { Flow } from './line-field';
 import { sha256 } from './sha256';
@@ -115,10 +117,92 @@ export interface UvPackJobParams {
   readonly method?: 'skyline' | 'raster';
   /** Raster turns in degrees (90: four orientations, 45: eight; default 90). */
   readonly rotateStep?: 90 | 45;
-  /** Congruent islands (same triangles, same shape up to quarter turns) share one placement. */
-  readonly stack?: boolean;
-  /** Texels per meter (normalize) instead of the largest scale: the scale may fall to target x (1 - tolerance). */
-  readonly density?: { readonly target: number; readonly tolerance: number };
+  /**
+   * Congruent islands (same triangles, same shape up to quarter turns) share one placement; `'mirrored'` also
+   * stacks the island of faces flagged `FACE_MIRRORED` onto the island of the faces they reflect (paired by position within `mirrorTolerance`), taking the leader's UVs per paired vertex.
+   */
+  readonly stack?: boolean | 'mirrored';
+  /** Pairing tolerance of `stack: 'mirrored'` in model units (default 1e-5). */
+  readonly mirrorTolerance?: number;
+  /** Island orientation (see `PackOptions.orient`); absent = 'straight'. */
+  readonly orient?: 'minimal' | 'straight' | 'worldUp';
+  /** Put every island's bounding rectangle on whole texels (see `PackOptions.snap`). */
+  readonly snap?: boolean;
+  /** Face tags of the parts (see `PackOptions.groups`); raster only. */
+  readonly groups?: readonly string[];
+  /** Region search for `groups`: proportional splits only (default) or also the tightest region that holds each side. */
+  readonly fill?: 'proportional' | 'tight';
+  /** More than one atlas per call (raster only): see `PackOptions.tiles`; `zones` is sorted by tag. */
+  readonly tiles?: {
+    readonly across: number;
+    readonly down?: number;
+    readonly by: 'group' | 'zone' | 'fit';
+    readonly zones?: readonly (readonly [string, readonly [number, number]])[];
+  };
+  /** Face tag and priority (see `PackOptions.priority`), sorted by tag; raster only. */
+  readonly priority?: readonly (readonly [string, number])[];
+  /**
+   * Texels per meter instead of the largest scale: the scale may fall to target x (1 - tolerance).
+   * Without `normalize`, `target` is the mean density of the layout. `parts` (normalize only): per tag,
+   * the island density as a multiple of the base density, sorted by tag.
+   */
+  readonly density?: {
+    readonly target?: number;
+    readonly tolerance: number;
+    readonly parts?: readonly (readonly [string, number])[];
+  };
+}
+
+/**
+ * Straighten the boundary chains of the UV islands of one FXEM (uv0): every chain between
+ * corners (a turn above `maxAngle` degrees) whose edges stay within `maxAngle` of its chord
+ * moves onto the chord at its arc-length parameter (its corners stay), the rest of the island
+ * relaxed by SLIM with the chains held. An island keeps the result only if it stays flip-free,
+ * its largest stretch grows by at most `maxStretch` times and it overlaps no more than before.
+ * Boundary edges flagged `EDGE_SHARP` in the input touch faces outside the job: their elements stay put.
+ */
+export interface UvStraightenJobParams {
+  /** Degrees: a boundary turn above it is a corner, and a chain edge may deviate this much from its chord. */
+  readonly maxAngle: number;
+  /** Largest allowed growth factor of an island's L-infinity stretch (>= 1). */
+  readonly maxStretch: number;
+  /** Only chains with an edge flagged `EDGE_SEAM` in the input are straightened. */
+  readonly selected?: boolean;
+}
+
+/**
+ * accepted: every chain straightened; partial: only some; none: no chain to straighten; the others
+ * name why the island kept its UVs: flipped (a folded, mixed-orientation or zero-area triangle in
+ * the input, or a zero-area triangle once the result is rounded to f32), blocked (no chain move stays flip-free), stretch, overlap (the straightened
+ * layout would break the gate), unavailable (no 3D rest shape).
+ */
+export type UvStraightenStatus =
+  | 'accepted'
+  | 'partial'
+  | 'none'
+  | 'flipped'
+  | 'blocked'
+  | 'stretch'
+  | 'overlap'
+  | 'unavailable';
+
+export interface UvStraightenIsland {
+  readonly faces: number;
+  /** Chains eligible for straightening. */
+  readonly chains: number;
+  readonly straightened: number;
+  readonly status: UvStraightenStatus;
+  /** Largest deviation in degrees of an eligible chain edge from its chord before. */
+  readonly angleBefore: number;
+  /** Largest deviation of a straightened chain edge from its chord after (0 when none). */
+  readonly maxAngleError: number;
+  readonly stretchBefore: number;
+  readonly stretchAfter: number;
+}
+
+export interface UvStraightenProvenance {
+  readonly faceIsland: Int32Array;
+  readonly islands: readonly UvStraightenIsland[];
 }
 
 /** One influence of `skin.bind`: a bone fan from its root to every child joint (or the root alone). */
@@ -348,6 +432,38 @@ export type BakeJobNormals =
       readonly sourceNormals?: Exclude<NormalMode, { readonly mode: 'transfer' }>;
     };
 
+/**
+ * A patch the analytic bake (BK63) evaluates exactly. Plain data, so the bake job stays
+ * serializable (Pack cooker, Workers). The `kind` union is the one extension point of the
+ * analytic contract: a new kind adds its plain parameters here and one case to
+ * `evaluate` in `bake-analytic.ts`; the solve, acceptance and verifier are shared.
+ */
+export interface AnalyticPatch {
+  readonly kind: 'nurbs';
+  /** The recorded patch name: the face tag (and its `.k` / `.mirror` forms) that matches faces to the patch. */
+  readonly name: string;
+  readonly surface: NurbsSurface;
+  /** Tessellation criteria of the detail (m, degrees): the allowed disagreement with its ray bake. */
+  readonly chord: number;
+  readonly angle: number;
+}
+
+/** How many analytic texels the ray bake re-derives: none, a stratified sample, or all of them. */
+export type AnalyticVerify = 'off' | 'sample' | 'all';
+
+/** The analytic bake of a job: exact position, normal and height where the base carries the patch domain. */
+export interface BakeAnalyticParams {
+  readonly verify: AnalyticVerify;
+  /** The base corner channel holding the normalized patch domain (`uv1`, or the BK56 carrier). */
+  readonly domain: CornerChannelName;
+  /**
+   * The detail corner channel holding the same domain: the guard compares the detail's own
+   * vertices with the descriptors there (a detail without the channel is not guarded).
+   */
+  readonly detailDomain: CornerChannelName;
+  readonly patches: readonly AnalyticPatch[];
+}
+
 export interface BakeJobParams {
   readonly maps: readonly BakeMapKind[];
   /** Texels of the base's uv0 atlas, or one value per base vertex. */
@@ -437,6 +553,8 @@ export interface BakeJobParams {
   readonly wrap?: { readonly u?: true | Tuple3; readonly v?: true | Tuple3 };
   /** Size of the third input (rgba8 texels sampled through the detail's uv0) for `resample`. */
   readonly resample?: { readonly width: number; readonly height: number };
+  /** Analytic bake (BK63, texture target); absent: every map is ray-baked. */
+  readonly analytic?: BakeAnalyticParams;
 }
 
 /** Axis-aligned box in the bake's units (meters). */
@@ -466,6 +584,21 @@ export interface BakeClipCluster {
 }
 
 /**
+ * Base samples of one feature whose ray found no detail and took the nearest point (M-B2):
+ * `worst` is the largest distance to that fallback point, `bounds` boxes the samples,
+ * `baseFaces` and `detailFaces` (the faces the fallback landed on) are ascending.
+ */
+export interface BakeMissCluster {
+  readonly samples: number;
+  readonly worst: number;
+  readonly bounds: BakeBounds;
+  readonly baseFaces: readonly number[];
+  readonly baseFaceCount: number;
+  readonly detailFaces: readonly number[];
+  readonly detailFaceCount: number;
+}
+
+/**
  * Samples that landed on one hovering detail part (audit A3). `part` numbers the group's
  * hovering parts by their lowest detail face; `gap` is the part's smallest distance to the
  * base, `bounds` boxes the whole part and `detailFaces` are its faces.
@@ -482,12 +615,30 @@ export interface BakeStrayCluster {
 }
 
 /** One bake group's resolved cage and correspondence statistics (V2). */
+/** The outcomes of the normal decision: one per sample, the first that holds in order. */
+export interface BranchCounts {
+  /** The averaged cage ray (or the requested direction) hit a surface facing the base. */
+  cage: number;
+  /** The cage ray hit a wall; the base-normal ray within `maxRay` found the facing surface. */
+  base: number;
+  /** Still a wall; the bounded extended base-normal search found a facing surface. */
+  extended: number;
+  /** No facing surface in reach; the base normal is written flat (no detail wall kept). */
+  flat: number;
+}
+
 export interface BakeGroupReport {
   readonly id: string;
   readonly offset: number;
   readonly maxRay: number;
   /** Base samples (texel samples or vertices) of the group. */
   readonly samples: number;
+  /**
+   * Samples per normal-decision outcome (bake-ts `Baker.find`): cage ray accepted, rescued by the
+   * base-normal ray, rescued by the bounded extended search, or flat (no facing detail: base normal).
+   * They partition `samples`.
+   */
+  readonly branches: BranchCounts;
   readonly rayHits: number;
   /** Samples whose ray missed and took the nearest detail point instead. */
   readonly nearest: number;
@@ -498,6 +649,8 @@ export interface BakeGroupReport {
   readonly clipped: number;
   /** The clipped samples grouped by feature: neighbouring clipped base samples form one cluster. */
   readonly clipClusters: readonly BakeClipCluster[];
+  /** The samples that took the nearest-point fallback, grouped by feature (a through hole is one cluster). */
+  readonly missClusters: readonly BakeMissCluster[];
   /**
    * Detail parts hovering off the base farther than the attached detail rises (audit A3): how
    * many, the smallest gap in meters, the samples that landed on them and, per part that
@@ -538,6 +691,8 @@ export interface BakeProvenance {
    * max channel x intensity, at least 1): a material's emissive intensity.
    */
   readonly emissiveScale: number;
+  /** Analytic bake (BK63): present only when `params.analytic` ran. */
+  readonly analytic?: BakeAnalyticReport;
   /**
    * Mip bleed (V4, texture target): per mip level 1.., the 2^level texel blocks that hold
    * a chart's texels and also texels of another chart or of no chart (background).
@@ -556,6 +711,60 @@ export interface BakeProvenance {
    * the smallest such base face (-1: none).
    */
   readonly handedness: BakeHandedness;
+}
+
+/** The analytic maps whose deviation from the ray bake is measured. */
+export type AnalyticMap = 'position' | 'normal' | 'height';
+
+/** Why a group is ray-baked in an analytic bake. */
+export type AnalyticFallback =
+  | 'no-patches'
+  | 'detail-not-patches'
+  | 'tiled-detail'
+  | 'detail-moved'
+  | 'mismatch';
+
+/**
+ * Report of an analytic bake (BK63). Deviations are measured against the ray bake in
+ * meters (position, height) or degrees (normal) over the verified texels; `tolerance` is the
+ * loosest bound of the patches involved (see reference/uv-bake.md "Analytic bake").
+ */
+export interface BakeAnalyticReport {
+  readonly verify: AnalyticVerify;
+  /** Samples written from the exact patches and samples baked on rays (fallbacks included). */
+  readonly analyticSamples: number;
+  readonly raySamples: number;
+  readonly maps: readonly {
+    readonly map: AnalyticMap;
+    readonly verified: number;
+    readonly max: number;
+    readonly p99: number;
+    readonly tolerance: number;
+  }[];
+  readonly groups: readonly {
+    readonly id: string;
+    readonly patches: readonly string[];
+    readonly analytic: boolean;
+    readonly reason?: AnalyticFallback;
+    readonly verified: number;
+    /** Detail corners compared with the descriptors by the stale-descriptor guard (0: unguarded). */
+    readonly guarded: number;
+    readonly analyticSamples: number;
+    readonly raySamples: number;
+  }[];
+  /**
+   * A patch whose exact result disagreed with the ray bake beyond tolerance, or that the stale-descriptor guard found
+   * away from the detail corners (map 'position', reason 'detail-moved'): its group was ray-baked.
+   * `tolerance` is the limit the verifier applied to that map; a normal `worst` above it is refused.
+   */
+  readonly mismatches: readonly {
+    readonly group: string;
+    readonly patch: string;
+    readonly map: AnalyticMap;
+    readonly worst: number;
+    readonly tolerance: number;
+    readonly count: number;
+  }[];
 }
 
 export interface BakeStack {
@@ -579,6 +788,7 @@ export interface ComputeJobParams {
   readonly 'solve.sparse': SolveSparseParams;
   readonly 'uv.unwrap': UvUnwrapJobParams;
   readonly 'uv.pack': UvPackJobParams;
+  readonly 'uv.straighten': UvStraightenJobParams;
   readonly region: RegionJobParams;
   readonly subdivide: SubdivideJobParams;
   readonly voxel: VoxelJobParams;
@@ -595,6 +805,7 @@ export const COMPUTE_JOB_KINDS: readonly ComputeJobKind[] = [
   'solve.sparse',
   'uv.unwrap',
   'uv.pack',
+  'uv.straighten',
   'voxel',
   'remesh',
   'skin.bind',
@@ -685,6 +896,10 @@ export interface UvPlacement {
   readonly angle?: number;
   /** Stacked: the island whose placement this one shares. */
   readonly leader?: number;
+  /** Stacked by reflection: the island is the mirror image of its leader and shares its texels with inverted triangles. */
+  readonly mirrored?: boolean;
+  /** With `tiles`: the tile (row-major cell of the tile grid) the island lies in; x and y then span the whole grid. */
+  readonly tile?: number;
 }
 
 export interface UvPackProvenance {
@@ -699,6 +914,7 @@ export interface ComputeJobProvenance {
   readonly 'solve.sparse': null;
   readonly 'uv.unwrap': UvIslandProvenance;
   readonly 'uv.pack': UvPackProvenance;
+  readonly 'uv.straighten': UvStraightenProvenance;
   /** Per output face: the input FXEM face it came from (nearest face for voxel surfaces), or -1. */
   readonly voxel: readonly SourceFaceProvenance[];
   readonly remesh: readonly SourceFaceProvenance[];
@@ -777,6 +993,20 @@ export class WorkMeter {
   constructor(budget: number, signal?: { readonly aborted: boolean }) {
     this.budget = budget;
     this.signal = signal;
+  }
+
+  /** A meter for optional refinement: it may use at most `units` of the remaining budget; `absorb` charges it back. */
+  slice(units: number): WorkMeter {
+    return new WorkMeter(Math.max(0, Math.min(units, this.budget - this.units)), this.signal);
+  }
+
+  /** Charges a finished slice; false when the slice was cancelled or the charge exceeds the budget. */
+  absorb(part: WorkMeter): boolean {
+    if (part.failure?.code === 'model-cancelled') {
+      this.failure = part.failure;
+      return false;
+    }
+    return this.spend(part.units);
   }
 
   /** Spend work units; false once the budget is exceeded or the signal aborted. */

@@ -190,18 +190,17 @@ function refreshInspection(
   const current = targets?.current;
   const physical =
     submitted && current === undefined
-      ? frameState.compiledFrameGraph?.graph
-          .inspect()
-          .resources.find(
-            (resource) => resource.kind === 'texture' && resource.label === 'transmission-backdrop',
-          )
+      ? frameState.compiledFrameGraph?.transmissionBackdrop
       : undefined;
-  const descriptor = physical?.descriptor.kind === 'texture' ? physical.descriptor : undefined;
   const extent = {
     width:
-      current?.width ?? descriptor?.width ?? Math.max(1, recordContext(internals).canvas.width),
+      current?.width ??
+      physical?.extent.width ??
+      Math.max(1, recordContext(internals).canvas.width),
     height:
-      current?.height ?? descriptor?.height ?? Math.max(1, recordContext(internals).canvas.height),
+      current?.height ??
+      physical?.extent.height ??
+      Math.max(1, recordContext(internals).canvas.height),
   };
   const topology = submittedBackdropTopology(
     {
@@ -210,13 +209,13 @@ function refreshInspection(
     },
     targets?.copied,
   );
-  const format = current?.format ?? descriptor?.format ?? 'rgba16float';
+  const format = current?.format ?? physical?.format ?? 'rgba16float';
   const mipCount =
     (current === undefined ? undefined : frameState.currentTransmissionTargets?.mipCount) ??
-    descriptor?.mipLevelCount ??
+    physical?.mipCount ??
     (topology.mipCount === 0 ? 1 : numMipLevels(extent));
   const resource =
-    current === undefined && descriptor === undefined
+    current === undefined && physical === undefined
       ? undefined
       : ({
           extent,
@@ -224,7 +223,7 @@ function refreshInspection(
           mipCount,
           bytes:
             current?.color.allocation.bytes ??
-            physical?.byteSize ??
+            physical?.bytes ??
             estimateTransmissionBackdropBytes(extent, mipCount, format),
           deviceGeneration: recordContext(internals).deviceScope.generation,
         } as const);

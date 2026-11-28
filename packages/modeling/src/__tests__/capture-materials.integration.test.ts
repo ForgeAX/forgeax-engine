@@ -50,12 +50,42 @@ beforeAll(async () => {
   directory = await mkdtemp(join(root, '.isolation-capture-materials-'));
   await writeFile(join(directory, 'painted.pack.ts'), PACK(true));
   await writeFile(join(directory, 'bare.pack.ts'), PACK(false));
+  await writeFile(
+    join(directory, 'deferred.pack.ts'),
+    PACK(true).replace(
+      "'texture/green': green.value",
+      "'texture/green': { kind: 'preview-pixel', execution: 'cooked', source: { color: [0, 1, 0, 1] } }",
+    ),
+  );
 });
 afterAll(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
 describe('capture Pack materials', () => {
+  it('retains deferred texture authoring as a cook source rather than a TextureAsset', {
+    timeout: 60000,
+  }, async () => {
+    const response = await runCapture({
+      sourcePath: join(directory, 'deferred.pack.ts'),
+      render: true,
+    });
+    if (!response.ok) throw new Error(response.error.code);
+    expect(Object.keys(response.value.materials?.textures ?? {})).toEqual([]);
+    expect(response.value.materials).toMatchObject({
+      cookSources: {
+        [guid('texture/green')]: {
+          sourceKey: 'texture/green',
+          value: {
+            kind: 'preview-pixel',
+            execution: 'cooked',
+            source: { color: [0, 1, 0, 1] },
+          },
+        },
+      },
+    });
+  });
+
   it('a render carries material outputs by slot name and textures by GUID', {
     timeout: 60000,
   }, async () => {

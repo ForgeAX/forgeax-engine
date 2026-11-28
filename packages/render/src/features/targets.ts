@@ -1,6 +1,13 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import { ANALYTIC_CLOUD_DEPTH, ANALYTIC_CLOUD_LT } from '../cloud/analytic-feature';
+import { CLOUD_DEPTH_RANGE_QUARTER } from '../cloud/contracts';
 import { CLOUD_ATMOSPHERE_TARGETS } from '../cloud/lighting/environment';
+import type { CloudShadowFormat } from '../cloud/lighting/shadow-format';
+import {
+  CLOUD_SHADOW_FINAL_TARGET,
+  CLOUD_SHADOW_INTERMEDIATE_TARGETS,
+  CLOUD_SHADOW_RAW_TARGET,
+} from '../cloud/lighting/shadow-spatial-layout';
 import type { CloudTransportFormat } from '../cloud/reconstruction/history';
 import { isMultisampleAntialias } from '../components/camera';
 import type { RenderFeatureLogicalTarget } from './plan';
@@ -138,7 +145,42 @@ export function resolveStandardRenderFeatureTargets(input: {
   readonly cloudHistory?: boolean;
   readonly analyticCloud?: boolean;
   readonly cloudTransportFormat?: CloudTransportFormat;
+  readonly cloudDepthFormat?: CloudTransportFormat;
+  readonly cloudShadowFormat?: CloudShadowFormat;
 }): readonly RenderFeatureTargetHandle[] {
+  const targets = resolveStandardColorFeatureTargets(input);
+  if (input.antialias !== 'taa' && input.antialias !== 'tsr') return targets;
+  let temporal = temporalTargets.get(targets);
+  if (temporal === undefined) {
+    temporal = Object.freeze([
+      ...targets.slice(0, -1),
+      TEMPORAL_REACTIVITY_TARGET,
+      targets[targets.length - 1] as RenderFeatureTargetHandle,
+    ]);
+    temporalTargets.set(targets, temporal);
+    temporalLogicalTargets.set(temporal, projectLogicalTargets(temporal));
+  }
+  return temporal;
+}
+
+const TEMPORAL_REACTIVITY_TARGET = createRenderFeatureTarget({
+  name: 'temporal-reactivity',
+  kind: 'scene-color',
+  format: 'rgba16float',
+  sampleCount: 1,
+});
+const temporalTargets = new WeakMap<
+  readonly RenderFeatureTargetHandle[],
+  readonly RenderFeatureTargetHandle[]
+>();
+const temporalLogicalTargets = new WeakMap<
+  readonly RenderFeatureTargetHandle[],
+  readonly RenderFeatureLogicalTarget[]
+>();
+
+function resolveStandardColorFeatureTargets(
+  input: Parameters<typeof resolveStandardRenderFeatureTargets>[0],
+): readonly RenderFeatureTargetHandle[] {
   const opaqueSampleCount = isMultisampleAntialias(input.antialias) && input.multisample ? 4 : 1;
   const sampleCount: 1 | 4 =
     isMultisampleAntialias(input.antialias) && input.multisample && input.singleLayerWater !== true
@@ -154,17 +196,50 @@ export function resolveStandardRenderFeatureTargets(input: {
   const colorFormat =
     input.tonemap !== 'none' || linearLdr ? 'rgba16float' : input.colorAttachmentFormat;
   const cloudHistory = input.cloudHistory === true;
-  if (input.analyticCloud === true && sampleCount === 1 && colorFormat === 'rgba16float') {
-    return mode0Targets(opaqueSampleCount, input.cloudTransportFormat);
+  const targets =
+    input.analyticCloud === true && sampleCount === 1 && colorFormat === 'rgba16float'
+      ? mode0Targets(opaqueSampleCount, input.cloudTransportFormat, input.cloudDepthFormat)
+      : colorFormat === 'rgba16float'
+        ? linearSurfaceTargets(sampleCount, opaqueSampleCount, cloudHistory)
+        : standardTargets(sampleCount, cloudHistory, colorFormat, opaqueSampleCount);
+  const format = input.cloudShadowFormat;
+  return format === undefined || format === 'rgba32float'
+    ? targets
+    : cloudShadowTargets(targets, format);
+}
+
+const CLOUD_SHADOW_TARGETS = [
+  CLOUD_SHADOW_FINAL_TARGET,
+  CLOUD_SHADOW_RAW_TARGET,
+  ...CLOUD_SHADOW_INTERMEDIATE_TARGETS,
+] as const;
+
+const shadowTargetVariants = new WeakMap<
+  readonly RenderFeatureTargetHandle[],
+  Map<CloudShadowFormat, readonly RenderFeatureTargetHandle[]>
+>();
+
+function cloudShadowTargets(
+  targets: readonly RenderFeatureTargetHandle[],
+  format: CloudShadowFormat,
+): readonly RenderFeatureTargetHandle[] {
+  let variants = shadowTargetVariants.get(targets);
+  if (variants === undefined) {
+    variants = new Map();
+    shadowTargetVariants.set(targets, variants);
   }
-  // Stable Standard configuration selects an immutable definition, including
-  // Water's single-sample surface beside its multisample opaque depth.
-  // Keep current getter evaluation and the original projection for borrowed
-  // configuration whose reads select an unusual attachment format.
-  if (colorFormat === 'rgba16float') {
-    return linearSurfaceTargets(sampleCount, opaqueSampleCount, cloudHistory);
-  }
-  return standardTargets(sampleCount, cloudHistory, colorFormat, opaqueSampleCount);
+  const cached = variants.get(format);
+  if (cached !== undefined) return cached;
+  const projected = Object.freeze(
+    targets.map((target) => {
+      const { name } = target;
+      return name !== undefined && CLOUD_SHADOW_TARGETS.some((candidate) => candidate === name)
+        ? createRenderFeatureTarget({ name, kind: 'scene-color', format, sampleCount: 1 })
+        : target;
+    }),
+  );
+  variants.set(format, projected);
+  return projected;
 }
 
 /** Standard draws the output lattice only for consumers that sample this port. */
@@ -206,7 +281,13 @@ export function withStandardPresentationTarget(
   return result;
 }
 
-function mode0Targets(opaqueSampleCount: 1 | 4, format: CloudTransportFormat | undefined) {
+function mode0Targets(
+  opaqueSampleCount: 1 | 4,
+  format: CloudTransportFormat | undefined,
+  depthFormat: CloudTransportFormat | undefined,
+) {
+  if (depthFormat === 'rgba16float')
+    return opaqueSampleCount === 4 ? WATER_MSAA_MODE0_UE5_TARGETS : MODE0_UE5_TARGETS;
   const fp32 = format === 'rgba32float';
   if (opaqueSampleCount === 4)
     return fp32 ? WATER_MSAA_MODE0_FP32_TARGETS : WATER_MSAA_MODE0_TARGETS;
@@ -227,6 +308,7 @@ function standardTargets(
   opaqueSampleCount: 1 | 4 = sampleCount,
   analyticCloud = false,
   cloudTransportFormat: CloudTransportFormat = 'rgba16float',
+  cloudDepthFormat: CloudTransportFormat = 'rgba32float',
 ): readonly RenderFeatureTargetHandle[] {
   const targets = Object.freeze([
     createRenderFeatureTarget({
@@ -263,6 +345,12 @@ function standardTargets(
               sampleCount: 1,
             }),
           ),
+          createRenderFeatureTarget({
+            name: CLOUD_DEPTH_RANGE_QUARTER,
+            kind: 'scene-color',
+            format: 'rg16float',
+            sampleCount: 1,
+          }),
           ...[
             'cloud-mode0-trace-far',
             'cloud-mode0-trace-near',
@@ -274,11 +362,14 @@ function standardTargets(
             createRenderFeatureTarget({
               name,
               kind: 'scene-color',
-              format: name.endsWith('depth')
-                ? 'rgba32float'
-                : name.startsWith('cloud-mode0-trace-')
-                  ? cloudTransportFormat
-                  : 'rgba16float',
+              format:
+                name === 'cloud-mode0-trace-depth'
+                  ? cloudDepthFormat
+                  : name.endsWith('depth')
+                    ? 'rgba32float'
+                    : name.startsWith('cloud-mode0-trace-')
+                      ? cloudTransportFormat
+                      : 'rgba16float',
               sampleCount: 1,
             }),
           ),
@@ -299,18 +390,14 @@ function standardTargets(
     // A graph-owned, single-sample map produced before direct-solar lighting.
     // The logical handle lets the feature plan validate its producer before
     // the Standard pipeline allocates the concrete texture.
-    createRenderFeatureTarget({
-      name: 'cloud-shadow',
-      kind: 'scene-color',
-      format: 'rgba32float',
-      sampleCount: 1,
-    }),
-    createRenderFeatureTarget({
-      name: 'cloud-shadow-raw',
-      kind: 'scene-color',
-      format: 'rgba32float',
-      sampleCount: 1,
-    }),
+    ...CLOUD_SHADOW_TARGETS.map((name) =>
+      createRenderFeatureTarget({
+        name,
+        kind: 'scene-color',
+        format: 'rgba32float',
+        sampleCount: 1,
+      }),
+    ),
     // These are declarative aliases only. Standard allocates the actual
     // linear-LDR ping-pong target at the ordered post stage and resolves these
     // names through `contributeFeatures` when that stage is reached.
@@ -373,13 +460,13 @@ function standardTargets(
           createRenderFeatureTarget({
             name: 'cloud-history-depth-previous',
             kind: 'scene-color',
-            format: 'rgba32float',
+            format: cloudDepthFormat,
             sampleCount: 1,
           }),
           createRenderFeatureTarget({
             name: 'cloud-history-depth-current',
             kind: 'scene-color',
-            format: 'rgba32float',
+            format: cloudDepthFormat,
             sampleCount: 1,
           }),
         ]
@@ -396,6 +483,24 @@ function standardTargets(
 
 const TARGETS = standardTargets(1, false, 'rgba16float');
 const ANALYTIC_TARGETS = standardTargets(1, false, 'rgba16float', 1, true);
+const MODE0_UE5_TARGETS = standardTargets(
+  1,
+  true,
+  'rgba16float',
+  1,
+  true,
+  'rgba16float',
+  'rgba16float',
+);
+const WATER_MSAA_MODE0_UE5_TARGETS = standardTargets(
+  1,
+  true,
+  'rgba16float',
+  4,
+  true,
+  'rgba16float',
+  'rgba16float',
+);
 const MODE0_TARGETS = standardTargets(1, true, 'rgba16float', 1, true);
 const MODE0_FP32_TARGETS = standardTargets(1, true, 'rgba16float', 1, true, 'rgba32float');
 const CLOUD_TARGETS = standardTargets(1, true, 'rgba16float');
@@ -442,7 +547,11 @@ export function logicalRenderFeatureTargets(
     case WATER_MSAA_CLOUD_TARGETS:
       return LOGICAL_WATER_MSAA_CLOUD_TARGETS;
     default:
-      return presentationTargetProjections.get(targets) ?? projectLogicalTargets(targets);
+      return (
+        temporalLogicalTargets.get(targets) ??
+        presentationTargetProjections.get(targets) ??
+        projectLogicalTargets(targets)
+      );
   }
 }
 

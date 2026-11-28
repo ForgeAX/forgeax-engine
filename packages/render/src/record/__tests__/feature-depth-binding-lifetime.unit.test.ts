@@ -362,10 +362,12 @@ it('observes current atmosphere and shadow resources and separates their absence
     .unwrap();
   const white = f.device.createTextureView(color, {}).unwrap();
   const sampler = f.device.createSampler({ compare: 'greater-equal' }).unwrap();
+  const distantSky = f.device.createBuffer({ size: 16, usage: 0x80 }).unwrap();
   Object.assign(f.state, {
     atmosphereAvailable: true,
     defaultWhiteTextureView: white,
     atmosphereFallbackView: f.device.createTextureView(volume, {}).unwrap(),
+    atmosphereDistantSkyFallback: distantSky,
     shadowArrayFallbackTextureView: f.state.shadowFallbackTextureView,
     perPassResources: { shadowSampler: sampler },
     viewLinearSampler: sampler,
@@ -384,6 +386,12 @@ it('observes current atmosphere and shadow resources and separates their absence
     viewAndSceneDepthLayoutEntries(true)
       .map((entry) => entry.binding)
       .sort((a, b) => a - b),
+  );
+  expect(groups.mock.calls[0]?.[0].entries.find((entry) => entry.binding === 25)?.resource).toEqual(
+    {
+      kind: 'buffer',
+      value: { buffer: distantSky, size: 16 },
+    },
   );
   f.state.viewUniformBuffer = previousBuffer;
   expect(withAtmosphere).not.toBe(withoutAtmosphere);

@@ -1,15 +1,126 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { PACK_PROGRAM_WORKER_SOURCE } from '@forgeax/engine-pack/runtime-browser';
 import { chromium } from 'playwright';
 import { build, createServer, type Plugin, preview, type ViteDevServer } from 'vite';
 import { describe, expect, it } from 'vitest';
 import { defined } from '../../__tests__/assert-defined.js';
 import { type BrowserCaptureSession, createBrowserCapture } from '../../browser-capture.js';
+import { createDeferred } from '../../target-requests.js';
 import { executionWorkerEntries } from '../execution-workers.js';
 import { runtimePacksSource } from '../runtime-packs-source.js';
 
 describe('native Pack modules in the browser graph', () => {
+  it('claims a Task Worker whose entry was loading during Pack scope activation', async () => {
+    const requested = createDeferred<void>();
+    const release = createDeferred<void>();
+    const moduleRequests: string[] = [];
+    const server = createHttpServer(async (request, response) => {
+      const path = request.url;
+      if (path === '/') {
+        response.setHeader('Content-Type', 'text/html');
+        response.end('<!doctype html><title>Pack scope transition</title>');
+        return;
+      }
+      response.setHeader('Content-Type', 'text/javascript');
+      if (path === '/forgeax-pack-program-worker.js') {
+        response.end(PACK_PROGRAM_WORKER_SOURCE);
+      } else if (path === '/task.js') {
+        requested.resolve();
+        await release.promise;
+        response.end(`postMessage('ready');
+          onmessage = async ({data}) => {
+            try { postMessage((await import(data)).value); }
+            catch (error) { postMessage(String(error)); }
+          };`);
+      } else {
+        if (path?.startsWith('/__forgeax_programs__/')) moduleRequests.push(path);
+        response.writeHead(404).end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing Pack test address');
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    try {
+      browser = await chromium.launch({
+        ...(process.env.FORGEAX_CHROME_CHANNEL !== undefined
+          ? { channel: process.env.FORGEAX_CHROME_CHANNEL }
+          : {}),
+        headless: true,
+        chromiumSandbox: true,
+      });
+      const page = await browser.newPage();
+      await page.goto(`http://127.0.0.1:${address.port}/`);
+      await page.evaluate(() => {
+        const task = new Worker('/task.js', { type: 'module' });
+        const ready = new Promise<void>((resolve) => {
+          task.onmessage = () => resolve();
+        });
+        Object.assign(globalThis, { packScopeTestWorker: task, packScopeTestReady: ready });
+      });
+      const deadline = AbortSignal.timeout(7000);
+      await Promise.race([
+        requested.promise,
+        new Promise<never>((_, reject) =>
+          deadline.addEventListener('abort', () => reject(deadline.reason), { once: true }),
+        ),
+      ]);
+      await page.evaluate(async () => {
+        await navigator.serviceWorker.register('/forgeax-pack-program-worker.js', {
+          type: 'module',
+        });
+        if (!navigator.serviceWorker.controller) {
+          await new Promise<void>((resolve) =>
+            navigator.serviceWorker.addEventListener('controllerchange', () => resolve(), {
+              once: true,
+            }),
+          );
+        }
+      });
+      release.resolve();
+      // Evaluate in the same document. The first worker is already outside the
+      // registration's activation claim when its entry finishes loading.
+      const result = await page.evaluate(async () => {
+        const task = (globalThis as unknown as { packScopeTestWorker: Worker }).packScopeTestWorker;
+        await (globalThis as unknown as { packScopeTestReady: Promise<void> }).packScopeTestReady;
+        const cache = await caches.open('forgeax-program-modules/1');
+        const url = new URL('/__forgeax_programs__/proof/entry.js', location.href).href;
+        await cache.put(
+          url,
+          new Response('export const value = 42;', {
+            headers: { 'Content-Type': 'text/javascript' },
+          }),
+        );
+        const { port1, port2 } = new MessageChannel();
+        const claim = new Promise((resolve) => {
+          port1.onmessage = ({ data }) => {
+            port1.close();
+            resolve(data);
+          };
+        });
+        navigator.serviceWorker.controller?.postMessage('forgeax:claim-pack-program-clients', [
+          port2,
+        ]);
+        const claimed = await claim;
+        const value = await new Promise((resolve) => {
+          task.onmessage = ({ data }) => resolve(data);
+          task.postMessage(url);
+        });
+        task.terminate();
+        return { claimed, value };
+      });
+      expect(result).toEqual({ claimed: true, value: 42 });
+      expect(moduleRequests).toEqual([]);
+    } finally {
+      release.resolve();
+      await browser?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 20000);
+
   it.each([
     'build',
     'dev',

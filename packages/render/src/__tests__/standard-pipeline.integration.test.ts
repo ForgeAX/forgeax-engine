@@ -5,6 +5,11 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/contracts';
+import {
+  CLOUD_SHADOW_SPATIAL_PASSES,
+  type CloudShadowSpatialLayout,
+  cloudShadowSpatialLayout,
+} from '../cloud/lighting/shadow-spatial-layout';
 import { createRenderSurfaceError, type RenderSurfaceExpectedError } from '../errors/render';
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
@@ -161,42 +166,48 @@ async function build(
   postSceneWriter = false,
   contributeDiffuseGi?: RenderPipelineBuildContext<RenderPipelineFrame>['contributeDiffuseGi'],
   cloudShadowProducer = true,
+  cloudShadowFormat?: RenderPipelineBuildContext<RenderPipelineFrame>['cloudShadowFormat'],
+  cloudShadowLayout: CloudShadowSpatialLayout | undefined = cloudShadowResolution === undefined
+    ? undefined
+    : cloudShadowSpatialLayout(cloudShadowResolution),
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const resolvedTopology = topology(profile, overrides);
-  const histogram = graph.createBuffer('standard-auto-exposure-histogram', { size: 1024 });
-  const state = graph.createBuffer('standard-auto-exposure-state', { size: 32 });
-  const candidate = graph.createBuffer('standard-auto-exposure-candidate', { size: 16 });
-  const parameters = graph.createBuffer('standard-auto-exposure-parameters', {
-    size: AUTO_EXPOSURE_PARAMETERS_BYTES,
-  });
-  const lutTexture = graph.createTexture('standard-color-lut-source', {
-    format: 'rgba16float',
-    size: { width: 2, height: 2, depthOrArrayLayers: 2 },
-    dimension: '3d',
-  });
-  if (!histogram.ok || !state.ok || !candidate.ok || !parameters.ok || !lutTexture.ok)
-    throw new Error('standard output test resources could not be declared');
+  const histogram = graph.createBuffer('standard-auto-exposure-histogram', { size: 1024 }).unwrap();
+  const state = graph.createBuffer('standard-auto-exposure-state', { size: 32 }).unwrap();
+  const candidate = graph.createBuffer('standard-auto-exposure-candidate', { size: 16 }).unwrap();
+  const parameters = graph
+    .createBuffer('standard-auto-exposure-parameters', {
+      size: AUTO_EXPOSURE_PARAMETERS_BYTES,
+    })
+    .unwrap();
+  const lutTexture = graph
+    .createTexture('standard-color-lut-source', {
+      format: 'rgba16float',
+      size: { width: 2, height: 2, depthOrArrayLayers: 2 },
+      dimension: '3d',
+    })
+    .unwrap();
   if (overrides?.output?.autoExposure === true) {
-    const parametersInit = graph.addComputePass('standard-auto-exposure-parameters-init', {
-      // Production imports initialized previous state and authored parameters.
-      accesses: [
-        { resource: parameters.value, usage: 'storage-write' },
-        { resource: state.value, usage: 'storage-write' },
-      ],
-      encode: () => undefined,
-    });
-    if (!parametersInit.ok) throw parametersInit.error;
+    graph
+      .addComputePass('standard-auto-exposure-parameters-init', {
+        // Production imports initialized previous state and authored parameters.
+        accesses: [
+          { resource: parameters, usage: 'storage-write' },
+          { resource: state, usage: 'storage-write' },
+        ],
+        encode: () => undefined,
+      })
+      .unwrap();
   }
-  const lutView = graph.view(lutTexture.value, { dimension: '3d' });
-  if (!lutView.ok) throw lutView.error;
-  const lutInit = graph.addComputePass('standard-color-lut-test-init', {
-    accesses: [{ resource: lutView.value, usage: 'storage-write' }],
-    encode: () => undefined,
-  });
-  if (!lutInit.ok) throw lutInit.error;
-  const lutSampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
-  if (!lutSampler.ok) throw lutSampler.error;
+  const lutView = graph.view(lutTexture, { dimension: '3d' }).unwrap();
+  graph
+    .addComputePass('standard-color-lut-test-init', {
+      accesses: [{ resource: lutView, usage: 'storage-write' }],
+      encode: () => undefined,
+    })
+    .unwrap();
+  const lutSampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' }).unwrap();
   const lutGpuTexture = device
     .createTexture({
       label: 'standard-output-test-lut',
@@ -221,7 +232,7 @@ async function build(
       layout: lutBindGroupLayout,
       entries: [
         { binding: 0, resource: { kind: 'textureView', value: lutGpuView } },
-        { binding: 1, resource: { kind: 'sampler', value: lutSampler.value } },
+        { binding: 1, resource: { kind: 'sampler', value: lutSampler } },
       ],
     })
     .unwrap();
@@ -234,13 +245,13 @@ async function build(
       standardLighting: standardLighting.value,
       standardOutput: {
         autoExposure: {
-          histogram: histogram.value,
-          state: state.value,
-          candidate: candidate.value,
-          parameters: parameters.value,
+          histogram: histogram,
+          state: state,
+          candidate: candidate,
+          parameters: parameters,
         },
         colorLut: {
-          view: lutView.value,
+          view: lutView,
           strength: 1,
           bind: () => ({ bindGroupLayout: lutBindGroupLayout, bindGroup: lutBindGroup }),
         },
@@ -265,21 +276,17 @@ async function build(
               }
             : undefined,
         ),
-      ...(cloudShadowResolution === undefined
+      ...(cloudShadowLayout === undefined
         ? {}
         : {
-            cloudShadowResolution,
+            cloudShadowLayout,
+            ...(cloudShadowFormat === undefined ? {} : { cloudShadowFormat }),
             hasFeatureRasterWork: (identity: string, _placement?: string, passName?: string) =>
               identity === CLOUD_LAYER_FEATURE_IDENTITY &&
-              (cloudShadowProducer || passName !== 'cloud-layer-shadow-filter'),
+              (cloudShadowProducer || passName !== 'cloud-layer-shadow'),
           }),
       contributeFeatures: ({ targets, placement, namedTargets = {}, include, passNames }) => {
-        if (
-          postSceneWriter &&
-          placement !== 'scene' &&
-          placement !== 'environment' &&
-          Object.keys(namedTargets).length === 0
-        ) {
+        if (postSceneWriter && placement === undefined && Object.keys(namedTargets).length === 0) {
           const color = targets.find((target) => target.kind === 'scene-color');
           if (color === undefined) throw new Error('post scene writer lost its color target');
           return graph.addRasterPass('test-post-scene-writer', {
@@ -289,29 +296,38 @@ async function build(
           });
         }
         // Graph-only BSM and Mode 0 outputs preserve the production placement contract.
-        if (
-          cloudShadowProducer &&
-          cloudShadowResolution !== undefined &&
-          passNames?.includes('cloud-layer-shadow')
-        ) {
-          expect(passNames).toEqual(['cloud-layer-shadow', 'cloud-layer-shadow-filter']);
-          const raw = namedTargets['cloud-shadow-raw'];
-          if (raw === undefined) throw new Error('Missing raw BSM target');
-          const traced = graph.addRasterPass('test-cloud-layer-shadow-raw', {
-            accesses: [{ resource: raw.view, usage: 'color-attachment' }],
-            colorAttachments: [{ view: raw.view, loadOp: 'clear', storeOp: 'store' }],
-            encode: () => undefined,
-          });
-          if (!traced.ok) return traced;
+        if (cloudShadowProducer && cloudShadowLayout && passNames?.includes('cloud-layer-shadow')) {
+          expect(passNames).toEqual(['cloud-layer-shadow', ...CLOUD_SHADOW_SPATIAL_PASSES]);
+          const addShadowPass = (pass: string, output: string, input?: string) => {
+            const target = namedTargets[output];
+            const sampled = input === undefined ? undefined : namedTargets[input];
+            if (!target || (input !== undefined && !sampled))
+              throw new Error(`Missing BSM target for ${pass}`);
+            return graph.addRasterPass(pass, {
+              accesses: [
+                { resource: target.view, usage: 'color-attachment' },
+                ...(sampled ? [{ resource: sampled.view, usage: 'sampled-read' as const }] : []),
+              ],
+              colorAttachments: [{ view: target.view, loadOp: 'clear', storeOp: 'store' }],
+              encode: () => undefined,
+            });
+          };
+          const hasFilters = cloudShadowLayout.passes.length > 0;
+          const trace = addShadowPass(
+            hasFilters ? 'test-cloud-layer-shadow-raw' : 'test-cloud-layer-shadow',
+            cloudShadowLayout.traceTarget,
+          );
+          if (!trace.ok) return trace;
+          for (const pass of cloudShadowLayout.passes) {
+            const name =
+              pass.output === 'cloud-shadow' ? 'test-cloud-layer-shadow' : `test-${pass.name}`;
+            const result = addShadowPass(name, pass.output, pass.input);
+            if (!result.ok) return result;
+          }
+          return ok(undefined);
         }
         const selectCloudOutput = () =>
-          passNames?.includes('cloud-layer-shadow')
-            ? cloudShadowProducer
-              ? namedTargets['cloud-shadow']
-              : undefined
-            : passNames?.includes('cloud-layer-resolve')
-              ? namedTargets['motion-output']
-              : undefined;
+          passNames?.includes('cloud-layer-resolve') ? namedTargets['motion-output'] : undefined;
         const cloudOutput = selectCloudOutput();
         if (cloudOutput !== undefined) {
           const cloudInput = passNames?.includes('cloud-layer-shadow')
@@ -356,18 +372,24 @@ async function build(
       height: resolvedTopology.surface.height,
     },
   });
-  if (compiled.ok && cloudShadowResolution !== undefined && cloudShadowProducer) {
+  if (compiled.ok && cloudShadowLayout !== undefined && cloudShadowProducer) {
     const resources = compiled.value.inspect().resources;
-    expect(resources.find((resource) => resource.label === 'cloud-layer-shadow-raw')).toMatchObject(
-      { descriptor: { size: { width: cloudShadowResolution, height: cloudShadowResolution } } },
-    );
+    const raw = resources.find((resource) => resource.label === 'cloud-layer-shadow-raw');
+    if (cloudShadowLayout.passes.length > 0) {
+      const width = cloudShadowLayout.rawResolution;
+      expect(raw).toMatchObject({ descriptor: { size: { width, height: width } } });
+    } else {
+      expect(raw).toBeUndefined();
+    }
+    for (const stage of cloudShadowLayout.passes) {
+      if (stage.output === 'cloud-shadow') continue;
+      expect(resources.find((resource) => resource.label === stage.output)).toMatchObject({
+        descriptor: { size: { width: stage.resolution, height: stage.resolution } },
+      });
+    }
+    const width = cloudShadowLayout.filteredResolution;
     expect(resources.find((resource) => resource.label === 'cloud-layer-shadow')).toMatchObject({
-      descriptor: {
-        size: {
-          width: Math.ceil(cloudShadowResolution / 2),
-          height: Math.ceil(cloudShadowResolution / 2),
-        },
-      },
+      descriptor: { size: { width, height: width } },
     });
   }
   return compiled;
@@ -1839,7 +1861,8 @@ describe('forgeax::standard graph', () => {
       expect(names.indexOf('transparent-before-transmission')).toBeLessThan(
         names.indexOf('transmission-backdrop-copy'),
       );
-      expect(names.indexOf('transmission-forward')).toBeLessThan(names.indexOf('temporal'));
+      expect(names.indexOf('transmission-forward')).toBeLessThan(names.indexOf('output-transform'));
+      expect(names).not.toContain('temporal');
       expect(names).not.toContain('transparent');
     }
   });
@@ -1961,6 +1984,34 @@ describe('forgeax::standard graph', () => {
     } finally {
       (await compiled.retire()).unwrap();
     }
+  });
+
+  it.each([
+    ['forward', 'rg11b10ufloat'],
+    ['forward', 'rgba16float'],
+    ['deferred', 'rg11b10ufloat'],
+    ['deferred', 'rgba16float'],
+  ] as const)('keeps both %s cloud shadow targets in %s', async (renderPath, format) => {
+    const graph = (
+      await build(
+        { ...DEFAULT_STANDARD_PROFILE, renderPath },
+        { atmosphere: true },
+        undefined,
+        false,
+        17,
+        true,
+        false,
+        undefined,
+        true,
+        format,
+      )
+    )
+      .unwrap()
+      .inspect();
+    expect(graph.resources.find((row) => row.label === 'cloud-layer-shadow-raw')?.format).toBe(
+      format,
+    );
+    expect(graph.resources.find((row) => row.label === 'cloud-layer-shadow')?.format).toBe(format);
   });
 
   it('feeds the produced Forward cloud shadow to full Atmosphere before opaque shading', async () => {
@@ -2157,18 +2208,16 @@ describe('forgeax::standard graph', () => {
     const names = info.passes.map((pass) => pass.name);
     expect(names).toEqual(
       expect.arrayContaining([
-        'single-layer-medium-opaque-resolve-color-producer',
-        'single-layer-medium-opaque-resolve-depth-producer',
+        'single-layer-medium-opaque-resolve',
         'single-layer-medium-nearest-layer',
-        'single-layer-medium-nearest-resolve-color-producer',
-        'single-layer-medium-nearest-resolve-depth-producer',
+        'single-layer-medium-nearest-resolve',
         'single-layer-medium-color',
       ]),
     );
-    expect(names.indexOf('single-layer-medium-opaque-resolve-depth-producer')).toBeLessThan(
+    expect(names.indexOf('single-layer-medium-opaque-resolve')).toBeLessThan(
       names.indexOf('single-layer-medium-nearest-layer'),
     );
-    expect(names.indexOf('single-layer-medium-nearest-resolve-depth-producer')).toBeLessThan(
+    expect(names.indexOf('single-layer-medium-nearest-resolve')).toBeLessThan(
       names.indexOf('single-layer-medium-color'),
     );
     for (const label of [
@@ -2273,10 +2322,11 @@ describe('forgeax::standard graph', () => {
         'transmission-backdrop-copy',
         'transmission-forward',
         'transparent-before-transmission',
-        'temporal',
+        'output-transform',
       ]),
     );
     expect(names).not.toContain('cluster-membership-producer');
+    expect(names).not.toContain('temporal');
   });
 
   it.each([
@@ -2436,4 +2486,33 @@ it.each([
   } finally {
     (await compiled.retire()).unwrap();
   }
+});
+
+it.each([
+  0, 2, 4,
+])('routes an odd-sized UE BSM through %i filter passes before SkyView', async (rounds) => {
+  const layout = cloudShadowSpatialLayout(33, rounds, true);
+  const compiled = (
+    await build(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
+      { atmosphere: true },
+      undefined,
+      false,
+      33,
+      true,
+      false,
+      undefined,
+      true,
+      'rg11b10ufloat',
+      layout,
+    )
+  )
+    .unwrap()
+    .inspect();
+  const names = compiled.passes.map((pass) => pass.name);
+  const shadowPasses = names.filter((name) => name.startsWith('test-cloud-layer-shadow'));
+  expect(shadowPasses).toHaveLength(rounds + 1);
+  expect(names.indexOf('test-cloud-layer-shadow')).toBeLessThan(
+    names.indexOf('atmosphere-sky-view'),
+  );
 });

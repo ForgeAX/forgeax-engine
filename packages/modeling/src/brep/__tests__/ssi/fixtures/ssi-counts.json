@@ -1,0 +1,202 @@
+[
+  {
+    "id": "plane-plane",
+    "kind": "analytic",
+    "seed": 1000,
+    "branches": 1,
+    "closed": 0,
+    "lengths": [0.476]
+  },
+  {
+    "id": "plane-cylinder-oblique",
+    "kind": "analytic",
+    "seed": 1001,
+    "branches": 1,
+    "closed": 1,
+    "lengths": [0.424]
+  },
+  {
+    "id": "plane-cylinder-parallel",
+    "kind": "analytic",
+    "seed": 1002,
+    "branches": 2,
+    "closed": 0,
+    "lengths": [0.26, 0.26]
+  },
+  {
+    "id": "plane-sphere",
+    "kind": "analytic",
+    "seed": 1003,
+    "branches": 1,
+    "closed": 1,
+    "lengths": [0.652]
+  },
+  {
+    "id": "plane-cone-across",
+    "kind": "analytic",
+    "seed": 1004,
+    "branches": 1,
+    "closed": 1,
+    "lengths": [0.329]
+  },
+  {
+    "id": "plane-cone-parallel",
+    "kind": "analytic",
+    "seed": 1005,
+    "branches": 1,
+    "closed": 0,
+    "lengths": [0.324]
+  },
+  {
+    "id": "plane-torus-equator",
+    "kind": "analytic",
+    "seed": 1006,
+    "branches": 2,
+    "closed": 2,
+    "lengths": [0.59, 1.144]
+  },
+  {
+    "id": "plane-torus-axial",
+    "kind": "analytic",
+    "seed": 1007,
+    "branches": 2,
+    "closed": 2,
+    "lengths": [0.308, 0.308]
+  },
+  {
+    "id": "plane-torus-parallel",
+    "kind": "analytic",
+    "seed": 1008,
+    "branches": 1,
+    "closed": 1,
+    "lengths": [0.595]
+  },
+  {
+    "id": "sphere-sphere",
+    "kind": "analytic",
+    "seed": 1009,
+    "branches": 1,
+    "closed": 1,
+    "lengths": [0.743]
+  },
+  {
+    "id": "sphere-cylinder-through",
+    "kind": "analytic",
+    "seed": 1010,
+    "branches": 2,
+    "closed": 2,
+    "lengths": [0.478, 0.478]
+  },
+  {
+    "id": "cylinder-cylinder-through",
+    "kind": "analytic",
+    "seed": 1011,
+    "branches": 2,
+    "closed": 2,
+    "lengths": [0.353, 0.353]
+  },
+  {
+    "id": "cylinder-cylinder-skew",
+    "kind": "analytic",
+    "seed": 1012,
+    "branches": 2,
+    "closed": 2,
+    "lengths": [0.358, 0.358]
+  },
+  {
+    "id": "cylinder-cylinder-graze",
+    "kind": "analytic",
+    "seed": 1013,
+    "branches": 1,
+    "closed": 1,
+    "lengths": [0.874]
+  },
+  {
+    "id": "sphere-cone-coaxial",
+    "kind": "analytic",
+    "seed": 1014,
+    "branches": 1,
+    "closed": 1,
+    "lengths": [0.542]
+  },
+  {
+    "id": "torus-sphere-concentric",
+    "kind": "analytic",
+    "seed": 1015,
+    "branches": 2,
+    "closed": 2,
+    "lengths": [1.019, 1.019]
+  },
+  {
+    "id": "torus-cylinder-coaxial",
+    "kind": "analytic",
+    "seed": 1016,
+    "branches": 2,
+    "closed": 2,
+    "lengths": [1.114, 1.114]
+  },
+  {
+    "id": "g16-plate-s35",
+    "kind": "freeform",
+    "seed": 35,
+    "branches": 1,
+    "closed": 0,
+    "lengths": [0.081]
+  },
+  {
+    "id": "g16-plate-s60",
+    "kind": "freeform",
+    "seed": 60,
+    "branches": 1,
+    "closed": 0,
+    "lengths": [0.093]
+  },
+  {
+    "id": "g16-plate-s100",
+    "kind": "freeform",
+    "seed": 100,
+    "branches": 1,
+    "closed": 0,
+    "lengths": [0.113]
+  },
+  {
+    "id": "sheet-sheet-bumpy",
+    "kind": "freeform",
+    "seed": 5,
+    "branches": 5,
+    "closed": 0,
+    "lengths": [0.016, 0.14, 0.242, 0.4, 0.464]
+  },
+  {
+    "id": "sheet-sheet-rough",
+    "kind": "freeform",
+    "seed": 4,
+    "branches": 6,
+    "closed": 0,
+    "lengths": [0.063, 0.099, 0.296, 0.403, 0.819, 1.03]
+  },
+  {
+    "id": "tube-sheet",
+    "kind": "freeform",
+    "seed": 2003,
+    "branches": 1,
+    "closed": 0,
+    "lengths": [1.087]
+  },
+  {
+    "id": "tube-ramp",
+    "kind": "freeform",
+    "seed": 2004,
+    "branches": 1,
+    "closed": 1,
+    "lengths": [0.124]
+  },
+  {
+    "id": "ribbon-sheet",
+    "kind": "freeform",
+    "seed": 2005,
+    "branches": 1,
+    "closed": 0,
+    "lengths": [0.39]
+  }
+]

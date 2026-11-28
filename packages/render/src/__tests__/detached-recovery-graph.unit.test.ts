@@ -1,3 +1,4 @@
+import * as renderGraph from '@forgeax/engine-render-graph';
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
@@ -8,13 +9,13 @@ import { frameGraphKeyText } from '../record/frame-graph-identity';
 import * as frameGraphKey from '../record/frame-graph-key';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
+import { inspectRenderGraphGenerationAllocation } from '../record/graph-allocation-owner';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import {
   discardCompiledFrameGraphs,
   ensureShadowDepthLayers,
   getRenderFeatureGraphInspection,
-  inspectRenderGraphGenerationAllocation,
   promoteGraphCandidate,
   type RenderFeatureGraphCandidate,
   rollbackGraphCandidate,
@@ -68,8 +69,6 @@ function createRecoveryGraphHarness(texture = false, sharedInternals?: RenderSys
     temporalView: new TemporalViewHistory(),
     compiledFrameGraph: null,
     graphGeneration: 0,
-    compiledFrameGraphGeneration: 0,
-    standardLightingGraphSignature: '',
     retiredCompiledFrameGraphs: new Set(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     meshBindGroupCache: new WeakMap(),
@@ -250,21 +249,27 @@ describe('detached recovery graph execution boundary', () => {
     harness.accept();
     const parse = vi.spyOn(JSON, 'parse');
     const inspect = vi.spyOn(original, 'inspect');
+    const declarations = vi.spyOn(renderGraph, 'compiledRenderGraphResourceDeclarations');
     const policy = vi.spyOn(frameGraphKey, 'retainedFrameGraphPolicyMatches');
     try {
       expect(harness.compile()).toBe(original);
       expect(parse).not.toHaveBeenCalled();
       expect(inspect).not.toHaveBeenCalled();
       expect(policy).not.toHaveBeenCalled();
+      expect(declarations).not.toHaveBeenCalled();
       // A real compile failure still validates its fallback after normal admission.
       harness.setFail(true);
       expect(harness.compile(2)).toBe(original);
       expect(parse).not.toHaveBeenCalled();
       expect(policy).toHaveBeenCalledTimes(1);
-      expect(inspect).toHaveBeenCalledTimes(1);
+      expect(inspect).not.toHaveBeenCalled();
+      expect(declarations).toHaveBeenCalledTimes(1);
+      expect(declarations.mock.calls[0]?.[0] === original).toBe(true);
+      expect(declarations.mock.calls[0]?.[1]).toBe('planar-reflection.');
     } finally {
       policy.mockRestore();
       parse.mockRestore();
+      declarations.mockRestore();
       inspect.mockRestore();
       await original.retire();
     }
@@ -287,6 +292,7 @@ describe('detached recovery graph execution boundary', () => {
     const pipelineLookup = vi.spyOn(harness.internals, 'getPostProcessPipeline');
     const parse = vi.spyOn(JSON, 'parse');
     const inspect = vi.spyOn(original, 'inspect');
+    const declarations = vi.spyOn(renderGraph, 'compiledRenderGraphResourceDeclarations');
     const policy = vi.spyOn(frameGraphKey, 'retainedFrameGraphPolicyMatches');
     try {
       expect(harness.compile(1, originalRoots)).toBe(original);
@@ -294,25 +300,30 @@ describe('detached recovery graph execution boundary', () => {
         policy.mock.invocationCallOrder[0] ?? 0,
       );
       expect(policy.mock.invocationCallOrder[0]).toBeLessThan(
-        inspect.mock.invocationCallOrder[0] ?? 0,
+        declarations.mock.invocationCallOrder[0] ?? 0,
       );
       expect(parse).not.toHaveBeenCalled();
       expect(policy).toHaveBeenCalledTimes(1);
-      expect(inspect).toHaveBeenCalledTimes(1);
+      expect(inspect).not.toHaveBeenCalled();
+      expect(declarations).toHaveBeenCalledTimes(1);
+      expect(declarations.mock.calls[0]?.[0] === original).toBe(true);
+      expect(declarations.mock.calls[0]?.[1]).toBe('planar-reflection.');
       policy.mockClear();
       parse.mockClear();
-      inspect.mockClear();
+      declarations.mockClear();
       harness.setFail(true);
       // Pending admission and failed-build fallback both refuse changed roots.
       expect(harness.compile(1, [{ entityKey: 8 }])).toBeNull();
       expect(parse).not.toHaveBeenCalled();
       expect(policy).toHaveBeenCalledTimes(2);
+      expect(declarations).not.toHaveBeenCalled();
       expect(inspect).not.toHaveBeenCalled();
       expect(harness.frameState.compiledFrameGraph?.graph).toBe(original);
     } finally {
       pipelineLookup.mockRestore();
       policy.mockRestore();
       parse.mockRestore();
+      declarations.mockRestore();
       inspect.mockRestore();
       await original.retire();
     }
@@ -555,6 +566,10 @@ describe('detached recovery graph execution boundary', () => {
     expect(first).not.toBeNull();
     if (first === null) return;
     harness.accept();
+    const inspectFirst = vi.spyOn(
+      first as typeof first & { inspectAllocation(): unknown },
+      'inspectAllocation',
+    );
 
     // Force two ordinary graph replacements. Do not call the allocation
     // inspection between them: the renderer owner must observe compile and
@@ -575,6 +590,7 @@ describe('detached recovery graph execution boundary', () => {
     // inspection therefore sees one live graph, while peakBytes retains the
     // live + retiring overlap observed during replacement.
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(inspectFirst).not.toHaveBeenCalled();
     const allocation = inspectRenderGraphGenerationAllocation(harness.frameState);
     expect(allocation.liveBytes).toBe(16);
     expect(allocation.pendingRetirementBytes).toBe(0);
@@ -623,8 +639,7 @@ it('restores the complete graph projection and retires a failed resize candidate
   const previous = {
     installed: state.compiledFrameGraph,
     generation: state.graphGeneration,
-    compiledGeneration: state.compiledFrameGraphGeneration,
-    lighting: state.standardLightingGraphSignature,
+    lighting: state.compiledFrameGraph?.standardLighting,
   };
   const candidate = harness.compile(2);
   if (candidate === null) throw new Error('resize graph missing');
@@ -634,8 +649,7 @@ it('restores the complete graph projection and retires a failed resize candidate
   expect(retire).toHaveBeenCalledTimes(1);
   expect(state.compiledFrameGraph).toBe(previous.installed);
   expect(state.graphGeneration).toBe(previous.generation);
-  expect(state.compiledFrameGraphGeneration).toBe(previous.compiledGeneration);
-  expect(state.standardLightingGraphSignature).toBe(previous.lighting);
+  expect(state.compiledFrameGraph?.standardLighting).toBe(previous.lighting);
   const retried = harness.compile(2);
   expect(retried).not.toBe(candidate);
   const retireAccepted = vi.spyOn(accepted, 'retire');
@@ -733,7 +747,7 @@ describe('prepared resource graph identity', () => {
     expect(harness.compile()).toBe(replacement);
     expect(harness.submit()).toBe(true);
     expect(harness.consumedBuffers).toEqual([firstBuffer, nextBuffer, nextBuffer]);
-    expect(harness.frameState.compiledFrameGraphGeneration).toBe(2);
+    expect(harness.frameState.graphGeneration).toBe(2);
     discardCompiledFrameGraphs(harness.frameState);
     device.destroyBuffer(nextBuffer).unwrap();
   });

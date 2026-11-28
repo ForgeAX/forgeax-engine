@@ -39,6 +39,10 @@ const COPLANAR = 0;
 const FRONT = 1;
 const BACK = 2;
 const SPANNING = 3;
+/** Crossing distance, in tolerances, beyond which a band vertex keeps its own side. */
+const SNAP = 4;
+/** Depth, in tolerances, within which a band vertex may be settled onto its own side. */
+const DEEP = 0.1;
 
 export function planeOf(a: Tuple3, b: Tuple3, c: Tuple3): Plane | undefined {
   const ux = b[0] - a[0];
@@ -71,8 +75,48 @@ interface Split {
   aligned: boolean;
 }
 
+/**
+ * A vertex within `eps` of the plane is on it, unless the plane really crosses the
+ * polygon: when the zero crossing of an edge to a clear vertex on the other side lies
+ * farther than SNAP tolerances from the band vertex, the vertex belongs to its own
+ * side (a corner a hair behind a plane that cuts the polygon far from it). Without
+ * this, a face and the face that cuts it at a shallow angle disagree about the cut:
+ * the cutter is split along the line, the cut face is not, and the seam stays open.
+ * Returns the polygon's kind after the change; `types` is updated in place.
+ */
+function settleBand(
+  points: readonly Tuple3[],
+  types: number[],
+  distances: readonly number[],
+  eps: number,
+  kind: number,
+): number {
+  const count = points.length;
+  let out = kind;
+  const snap = SNAP * eps;
+  for (let i = 0; i < count; i++) {
+    if (types[i] !== COPLANAR) continue;
+    const di = distances[i] as number;
+    if (di === 0 || Math.abs(di) > DEEP * eps) continue;
+    const side = di > 0 ? FRONT : BACK;
+    const clear = side === FRONT ? BACK : FRONT;
+    for (const j of [(i + 1) % count, (i + count - 1) % count]) {
+      if (types[j] !== clear) continue;
+      const dj = distances[j] as number;
+      const vi = points[i] as Tuple3;
+      const vj = points[j] as Tuple3;
+      const length = hypot3(vj[0] - vi[0], vj[1] - vi[1], vj[2] - vi[2]);
+      if ((Math.abs(di) / (Math.abs(di) + Math.abs(dj))) * length <= snap) continue;
+      types[i] = side;
+      out |= side;
+      break;
+    }
+  }
+  return out;
+}
+
 /** Split a convex polygon by a plane; vertices within `eps` of the plane are on it. */
-export function splitPoly(plane: Plane, poly: Poly, eps: number): Split {
+export function splitPoly(plane: Plane, poly: Poly, eps: number, settle = true): Split {
   const { n, w } = plane;
   const points = poly.points;
   const types: number[] = [];
@@ -85,6 +129,7 @@ export function splitPoly(plane: Plane, poly: Poly, eps: number): Split {
     types.push(type);
     distances.push(t);
   }
+  if (settle && kind !== COPLANAR) kind = settleBand(points, types, distances, eps, kind);
   switch (kind) {
     case COPLANAR: {
       const m = poly.plane.n;
@@ -124,6 +169,53 @@ export function splitPoly(plane: Plane, poly: Poly, eps: number): Split {
   return out;
 }
 
+const behind = (plane: Plane, p: Tuple3, eps: number) =>
+  plane.n[0] * p[0] + plane.n[1] * p[1] + plane.n[2] * p[2] - plane.w <= eps;
+
+const within = (plane: Plane, p: Tuple3, eps: number) =>
+  Math.abs(plane.n[0] * p[0] + plane.n[1] * p[1] + plane.n[2] * p[2] - plane.w) <= eps;
+
+/**
+ * The autopartition of a convex solid is a chain: no polygon reaches the front of any
+ * node plane, so each node keeps one plane (the first polygon not coplanar with an
+ * earlier plane) and everything else goes to its back child. Detected by proving that
+ * every polygon vertex lies behind every polygon plane, in O(planes x vertices) instead
+ * of the O(polygons x nodes) splits the general build spends. Undefined when the
+ * solid is not convex, or when the general build would exhaust the work budget (it
+ * then fails the same way). `spent` is the work the general build would have metered.
+ */
+function convexChain(
+  polys: readonly Poly[],
+  eps: number,
+  work: WorkMeter,
+): { root: BspNode | null; nodes: number; spent: number } | undefined {
+  const vertices = new Set<Tuple3>();
+  for (const poly of polys) for (const p of poly.points) vertices.add(p);
+  const points = [...vertices];
+  for (const poly of polys)
+    for (const p of points) if (!behind(poly.plane, p, eps)) return undefined;
+  const planes: Plane[] = [];
+  let spent = 0;
+  for (const poly of polys) {
+    let at = 0;
+    while (at < planes.length && !poly.points.every((p) => within(planes[at] as Plane, p, eps)))
+      at++;
+    if (at === planes.length) planes.push(poly.plane);
+    spent += at + 1;
+  }
+  spent -= planes.length;
+  if (work.units + spent > work.budget) return undefined;
+  let root: BspNode | null = null;
+  let tail: BspNode | null = null;
+  for (const plane of planes) {
+    const node: BspNode = { plane, front: null, back: null };
+    if (tail === null) root = node;
+    else tail.back = node;
+    tail = node;
+  }
+  return { root, nodes: planes.length, spent };
+}
+
 /**
  * Autopartition of a closed solid's polygons (iterative, so deep trees cannot exhaust
  * the stack). Returns undefined when the work budget runs out.
@@ -132,7 +224,13 @@ export function buildTree(
   polys: readonly Poly[],
   eps: number,
   work: WorkMeter,
+  settle = true,
 ): { root: BspNode | null; nodes: number } | undefined {
+  const chain = convexChain(polys, eps, work);
+  if (chain !== undefined) {
+    if (!work.spend(chain.spent)) return undefined;
+    return { root: chain.root, nodes: chain.nodes };
+  }
   let root: BspNode | null = null;
   let nodes = 0;
   const stack: { polys: readonly Poly[]; attach: (node: BspNode) => void }[] = [];
@@ -146,7 +244,7 @@ export function buildTree(
     const back: Poly[] = [];
     for (let i = 1; i < list.length; i++) {
       if (!work.spend(1)) return undefined;
-      const split = splitPoly(node.plane, list[i] as Poly, eps);
+      const split = splitPoly(node.plane, list[i] as Poly, eps, settle);
       if (split.front !== undefined) front.push(split.front);
       if (split.back !== undefined) back.push(split.back);
     }
@@ -226,6 +324,7 @@ export function classify(
   bounds: Bounds,
   eps: number,
   work: WorkMeter,
+  settle = true,
 ): { poly: Poly; type: PolyClass }[] | undefined {
   const out: { poly: Poly; type: PolyClass }[] = [];
   const stack: { poly: Poly; node: BspNode; next: Continuation }[] = [];
@@ -265,7 +364,7 @@ export function classify(
     while (stack.length > 0) {
       const { poly: piece, node, next } = stack.pop() as (typeof stack)[number];
       if (!work.spend(1)) return undefined;
-      const split = splitPoly(node.plane, piece, eps);
+      const split = splitPoly(node.plane, piece, eps, settle);
       if (split.front !== undefined) {
         if (node.front !== null) stack.push({ poly: split.front, node: node.front, next });
         else emit(split.front, OUT, next);

@@ -33,7 +33,7 @@ export function prepareStandardLighting(
   const layout =
     owner === undefined
       ? createStandardClusterLayout(directLightSlotCapacity, frame.grid)
-      : owner.graphLayout.layout(directLightSlotCapacity, frame.grid);
+      : owner.layout(directLightSlotCapacity, frame.grid);
   const membership =
     owner === undefined
       ? deriveStandardMembership(frame, layout, scratch)

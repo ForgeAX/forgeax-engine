@@ -1,5 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { Angles } from './affine';
+import { maxOf, minOf } from './arrays';
 import { cos, sin } from './dmath';
 import { type ModelingError, modelingError } from './errors';
 import type { Axis } from './geom';
@@ -270,7 +271,10 @@ export function choreograph(
   const extents = windows.map((w) => {
     const [w0, w1] = w.phase.beat.span;
     const shifts = w.movers.map(offsetOf);
-    return [w0 + Math.min(0, ...shifts), Math.min(duration, w1 + Math.max(0, ...shifts))] as const;
+    return [
+      w0 + Math.min(0, minOf(shifts)),
+      Math.min(duration, w1 + Math.max(0, maxOf(shifts))),
+    ] as const;
   });
   const times = new Set<number>();
   for (const [i, w] of windows.entries()) {
@@ -321,7 +325,7 @@ export function choreograph(
     );
     const next = Math.min(
       duration,
-      ...windows.map(({ phase: o }) => o.beat.span[0]).filter((t0) => t0 >= end - 1e-9),
+      minOf(windows.map(({ phase: o }) => o.beat.span[0]).filter((t0) => t0 >= end - 1e-9)),
     );
     return {
       phase: phase.id,

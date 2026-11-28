@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { freemem } from 'node:os';
+import { isAbsolute } from 'node:path';
 import { MessageChannel, type MessagePort, Worker } from 'node:worker_threads';
 import type {
   AssetsJobError,
@@ -8,6 +9,7 @@ import type {
   MeshJobSetResult,
 } from '@forgeax/engine-modeling';
 import { type Asset, type ByteCache, err, ok } from '@forgeax/engine-types';
+import { confineToRoot } from './confine';
 import type {
   MeshJobCacheMessage,
   MeshJobWorkerData,
@@ -15,6 +17,7 @@ import type {
   MeshJobWorkerJob,
   MeshJobWorkerReply,
 } from './mesh-job-worker';
+import { MAX_DEADLINE_MS } from './protocol';
 
 const GiB = 1024 ** 3;
 
@@ -31,6 +34,15 @@ export interface MeshJobWorkersOptions {
   readonly defaultPeakGb?: number;
   /** V8 heap limit of one job Worker, in MiB (default 8192). */
   readonly maxHeapMb?: number;
+  /** Longest one job may run in its Worker before the Worker is terminated (default 600000 ms, at most 2^31-1). */
+  readonly jobTimeoutMs?: number;
+  /** Requests that may wait for a Worker; further requests fail at once (default 1024). */
+  readonly maxQueue?: number;
+  /**
+   * Directories a job `module` path must stay inside (symlinks resolved). Modules come
+   * from registered job code, never from Pack source, so the default is unconfined.
+   */
+  readonly moduleRoots?: readonly string[];
   /** Longest wait of one synchronous cache read before it counts as a miss (default 5000 ms). */
   readonly cacheWaitMs?: number;
   /** Available host memory in bytes (default: Linux MemAvailable, else `os.freemem()`). */
@@ -74,6 +86,9 @@ const failure = (failed: MeshJobWorkerFailure): MeshJobSetResult => err(failed a
 
 const typeStrippedModule = /\.[cm]?ts$/;
 
+const inRoots = (module: string, roots: readonly string[]) =>
+  isAbsolute(module) && roots.some((root) => confineToRoot(root, module) !== undefined);
+
 interface Pending {
   readonly request: MeshJobRequest;
   readonly cache: ByteCache | undefined;
@@ -82,6 +97,7 @@ interface Pending {
 }
 interface Active extends Pending {
   readonly id: number;
+  deadline: ReturnType<typeof setTimeout> | undefined;
   current: number;
   peak: number;
 }
@@ -109,6 +125,10 @@ interface Lane {
  * memory, sampled every 0.5 s and at the end) recorded as `peak:<job>@<identity>` in the
  * store, else `defaultPeakGb`. Records only schedule; they never reach outputs.
  *
+ * A job that outlives `jobTimeoutMs` ends its Worker and fails with `model-work-budget`;
+ * a full queue (`maxQueue`) fails new requests the same way, and invalid options fail
+ * every request with `model-invalid-argument` instead of throwing at construction.
+ *
  * `maxHeapMb` bounds the V8 heap only: a heap OOM ends that Worker and fails its build,
  * but external memory (the kernel's typed arrays) is not capped and can still exhaust the
  * build process. Admission estimates include it for that reason.
@@ -120,8 +140,27 @@ interface Lane {
  */
 export function meshJobWorkers(options: MeshJobWorkersOptions = {}): MeshJobExecutor {
   const maxJobs = options.maxJobs ?? 4;
-  if (!Number.isInteger(maxJobs) || maxJobs < 1 || maxJobs > 16)
-    throw new RangeError('meshJobWorkers: maxJobs is an integer in [1, 16]');
+  const jobTimeoutMs = options.jobTimeoutMs ?? 600_000;
+  const maxQueue = options.maxQueue ?? 1024;
+  const moduleRoots = options.moduleRoots;
+  if (
+    !Number.isInteger(maxJobs) ||
+    maxJobs < 1 ||
+    maxJobs > 16 ||
+    !Number.isFinite(jobTimeoutMs) ||
+    jobTimeoutMs <= 0 ||
+    jobTimeoutMs > MAX_DEADLINE_MS ||
+    !Number.isInteger(maxQueue) ||
+    maxQueue < 0
+  ) {
+    const rejected = failure({
+      code: 'model-invalid-argument',
+      expected: `maxJobs is an integer in [1, 16], jobTimeoutMs is milliseconds in (0, ${MAX_DEADLINE_MS}] and maxQueue is a non-negative integer`,
+      detail: { maxJobs, jobTimeoutMs, maxQueue },
+      hint: 'fix the meshJobWorkers options',
+    });
+    return () => Promise.resolve(rejected);
+  }
   const floor = (options.minFreeGb ?? envFloor()) * GiB;
   const defaultPeak = (options.defaultPeakGb ?? 3) * GiB;
   const maxHeapMb = options.maxHeapMb ?? 8192;
@@ -138,6 +177,7 @@ export function meshJobWorkers(options: MeshJobWorkersOptions = {}): MeshJobExec
     const job = lane.job;
     if (job === undefined) return;
     lane.job = undefined;
+    clearTimeout(job.deadline);
     lane.worker.unref();
     const peak = Math.max(job.peak, measured);
     if (peak > 0)
@@ -238,7 +278,20 @@ export function meshJobWorkers(options: MeshJobWorkersOptions = {}): MeshJobExec
   };
 
   const start = (lane: Lane, pending: Pending) => {
-    const job: Active = { ...pending, id: ++nextId, current: 0, peak: 0 };
+    const job: Active = { ...pending, id: ++nextId, deadline: undefined, current: 0, peak: 0 };
+    job.deadline = setTimeout(() => {
+      const name = job.request.job;
+      retire(
+        lane,
+        failure({
+          code: 'model-work-budget',
+          expected: `the job ${name} completes within ${jobTimeoutMs} ms`,
+          detail: { job: name, timeoutMs: jobTimeoutMs },
+          hint: 'raise jobTimeoutMs or split the job',
+        }),
+      );
+    }, jobTimeoutMs);
+    job.deadline.unref();
     lane.job = job;
     lane.modules.add(pending.request.module);
     lane.worker.ref();
@@ -296,10 +349,34 @@ export function meshJobWorkers(options: MeshJobWorkersOptions = {}): MeshJobExec
       }
       return Promise.resolve(undefined);
     }
+    if (moduleRoots !== undefined && !inRoots(request.module, moduleRoots)) {
+      return Promise.resolve(
+        failure({
+          code: 'model-invalid-argument',
+          expected: 'the job module is inside one of moduleRoots',
+          detail: { module: request.module },
+          hint: 'register the job from a module under the project, or widen moduleRoots',
+        }),
+      );
+    }
     const estimate = readPeak(cache, request) ?? defaultPeak;
     return new Promise<MeshJobSetResult>((resolve) => {
-      queue.push({ request, cache, estimate, resolve });
+      const pending: Pending = { request, cache, estimate, resolve };
+      queue.push(pending);
       pump();
+      // Only a request that must wait counts against the bound: maxQueue 0 serves what an
+      // idle Worker takes at once and refuses the rest.
+      if (queue.length > maxQueue && queue[queue.length - 1] === pending) {
+        queue.pop();
+        resolve(
+          failure({
+            code: 'model-work-budget',
+            expected: `at most ${maxQueue} job requests wait for a Worker`,
+            detail: { job: request.job, queued: queue.length },
+            hint: 'raise maxQueue or cook fewer outputs at once',
+          }),
+        );
+      }
     });
   };
 }

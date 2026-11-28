@@ -1,0 +1,11 @@
+{
+  "tests": ["src/brep/__tests__/trim.unit.test.ts"],
+  "mutations": [
+    {
+      "id": "l1-old-trim-spacing",
+      "file": "src/brep/tessellate-trimmed.ts",
+      "old": "const COARSEST = 1 / 4;",
+      "new": "const COARSEST = 1 / 2;"
+    }
+  ]
+}

@@ -1,11 +1,4 @@
-import {
-  type Context,
-  type Fiber,
-  mountPluginAsset,
-  type Plugin,
-  type PluginPrograms,
-  startNativePlugin,
-} from '@forgeax/engine-plugin';
+import type { Plugin, PluginPrograms } from '@forgeax/engine-plugin';
 import {
   type AsyncDynamicGeometryHost,
   createAsyncDynamicGeometryHost,
@@ -20,10 +13,13 @@ import {
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { freezeConfiguration } from '../configuration-data';
 import { EngineConfigurationError } from '../configuration-error';
-import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
+import type { AppError as AppErrorType } from '../errors';
 import type { RuntimePackOptions } from '../runtime-packs.js';
 import type { CanvasDrawingBufferSize } from '../types';
+import { bootstrapError, validateExecutionBootstrapData } from './bootstrap-url';
 import type { ExecutionBootstrapValue } from './types';
+
+export { validateExecutionBootstrapData } from './bootstrap-url';
 
 /** Realm-local engine assembly returned by an execution bootstrap module. */
 export interface PreparedExecutionBootstrap {
@@ -136,32 +132,6 @@ export type ExecutionBootstrapEntry = (
   startup?: import('../configuration-types').EngineStartupPlan,
 ) => PreparedExecutionBootstrap | Promise<PreparedExecutionBootstrap>;
 
-function bootstrapError(
-  phase: 'import' | 'export' | 'prepare' | 'bootstrap' | 'data',
-  moduleUrl: string,
-  cause: unknown,
-): AppErrorType {
-  return new AppError({
-    code: 'app-execution-bootstrap-failed',
-    expected: APP_EXPECTED['app-execution-bootstrap-failed'],
-    hint: APP_ERROR_HINTS['app-execution-bootstrap-failed'],
-    detail: { phase, moduleUrl, cause },
-  });
-}
-
-export function validateExecutionBootstrapData(
-  data: ExecutionBootstrapValue | undefined,
-  moduleUrl: string,
-): Result<void, AppErrorType> {
-  if (data === undefined) return ok(undefined);
-  try {
-    structuredClone(data);
-    return ok(undefined);
-  } catch (cause) {
-    return err(bootstrapError('data', moduleUrl, cause));
-  }
-}
-
 export async function loadBootstrapEntry(
   moduleUrl: string,
 ): Promise<Result<ExecutionBootstrapEntry, AppErrorType>> {
@@ -240,35 +210,4 @@ export async function prepareBootstrapEntry(
   }
 }
 
-/** Start outside apply so children may inject services provided by their parent. */
-export async function activateExecutionRoot(
-  context: Context,
-  root: NonNullable<PreparedExecutionBootstrap['root']>,
-  options: { readonly signal?: AbortSignal; readonly timeoutMs?: number | null } = {},
-): Promise<{ readonly fiber: Fiber }> {
-  const result = await startNativePlugin(
-    context,
-    {
-      name: 'forgeax:project-root',
-      inject: ['assets', 'pluginPrograms'],
-      async apply(ctx) {
-        const mounted = await mountPluginAsset(ctx, root.guid, options.signal);
-        if (!mounted.ok) {
-          throw Object.assign(
-            new Error(`Root PluginAsset mount failed: ${mounted.error.code}`, {
-              cause: mounted.error,
-            }),
-            mounted.error,
-          );
-        }
-      },
-    },
-    undefined,
-    {
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    },
-  );
-  if (!result.ok) throw result.error;
-  return { fiber: result.value };
-}
+export { activateExecutionRoot } from './project-root';

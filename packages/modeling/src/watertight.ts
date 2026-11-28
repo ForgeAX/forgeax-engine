@@ -1,8 +1,8 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { pushAll } from './arrays';
 import { type ModelingError, modelingError } from './errors';
-import { dot, length, sub, type Tuple3 } from './geom';
-import { type EditMesh, NONE } from './mesh';
+import { dot, faceNormal, length, sub, type Tuple3 } from './geom';
+import { type EditMesh, FACE_SURFACE_TRIM, NONE } from './mesh';
 import { regionGroups } from './ops';
 import type { Issue } from './report';
 import type { EdgeSelector } from './selectors';
@@ -129,6 +129,9 @@ const FACING = 0.5;
 const ALONG = 4;
 /** Share of a loop's length on trim-tagged faces that makes it a trim loop. */
 const TRIM_SHARE = 0.5;
+
+/** Dihedral cosine above which two tagged faces count as one flat panel surface. */
+const RIM_FLAT = 0.9;
 /** Located elements listed per issue. */
 const MAX_LISTED = 32;
 
@@ -232,13 +235,20 @@ interface BoundaryEdge {
   chain: number;
 }
 
-/** The face edges carrying `tag`, bucketed for the shut-line reach. */
-function panelGrid(mesh: EditMesh, tag: number, reach: number): SegmentGrid {
+/**
+ * The face edges carrying `tag`, bucketed for the reach. With `rimOnly`, only the panel's own
+ * boundary: edges flat across the tag on both sides are interior (a shut line runs along a
+ * panel's edge, never across its surface), while a fold such as a shell wall stays a rim.
+ */
+function panelGrid(mesh: EditMesh, tag: number, reach: number, rimOnly: boolean): SegmentGrid {
   const segments: Segment[] = [];
   for (const e of mesh.edges()) {
     const fa = mesh.hFace[e * 2] as number;
     const fb = mesh.hFace[e * 2 + 1] as number;
-    if (!((fa !== NONE && mesh.hasTag(fa, tag)) || (fb !== NONE && mesh.hasTag(fb, tag)))) continue;
+    const ta = fa !== NONE && mesh.hasTag(fa, tag);
+    const tb = fb !== NONE && mesh.hasTag(fb, tag);
+    if (!(ta || tb)) continue;
+    if (rimOnly && ta && tb && dot(faceNormal(mesh, fa), faceNormal(mesh, fb)) > RIM_FLAT) continue;
     const [va, vb] = mesh.edgeVertices(e);
     segments.push({ a: mesh.position(va), b: mesh.position(vb) });
   }
@@ -281,11 +291,11 @@ function classifier(
   open: ReadonlySet<number>,
 ): (edge: number, face: number) => { designed: DesignedBoundary; row?: DtsRow } | undefined {
   const grids = new Map<string, SegmentGrid>();
-  const grid = (tag: number, within: number) => {
-    const key = `${tag}:${within}`;
+  const grid = (tag: number, within: number, rimOnly: boolean) => {
+    const key = `${tag}:${within}:${rimOnly}`;
     let g = grids.get(key);
     if (g === undefined) {
-      g = panelGrid(mesh, tag, within);
+      g = panelGrid(mesh, tag, within, rimOnly);
       grids.set(key, g);
     }
     return g;
@@ -305,7 +315,10 @@ function classifier(
     const mid = lerp(pa, sub(mesh.position(vb), pa), 0.5);
     for (const d of declared) {
       const within = d.designed === 'shut-line' ? reach : radius;
-      if (mesh.hasTag(face, d.own) && near(grid(d.other, within), mid, within))
+      if (
+        mesh.hasTag(face, d.own) &&
+        near(grid(d.other, within, d.designed === 'shut-line'), mid, within)
+      )
         return { designed: d.designed, row: d.row };
     }
     return open.has(edge) ? { designed: 'open' } : undefined;
@@ -444,16 +457,19 @@ export function checkWatertight(
   // `m.surface` tags the faces of the cells its trim cuts (not all of them along the cut), and a
   // cut cell on a patch side owns side edges too: a loop is a trim loop when trim faces own at
   // least TRIM_SHARE of its length.
-  const trim = mesh.tagIndex('trim', false);
-  if (trim >= 0)
-    for (const [k, l] of walked.entries()) {
-      const trimmed = l.members.reduce(
-        (s, e) => s + (mesh.hasTag(e.face, trim) ? length(sub(e.to, e.from)) : 0),
-        0,
-      );
-      if (trimmed >= TRIM_SHARE * (loopLength[k] as number))
-        for (const e of l.members) e.designed = 'trim';
-    }
+  // The ordinary tag 'trim' designs nothing: only the surface's own face flag does.
+  for (const [k, l] of walked.entries()) {
+    const trimmed = l.members.reduce(
+      (s, e) =>
+        s +
+        (((mesh.fFlags[e.face] as number) & FACE_SURFACE_TRIM) !== 0
+          ? length(sub(e.to, e.from))
+          : 0),
+      0,
+    );
+    if (trimmed >= TRIM_SHARE * (loopLength[k] as number))
+      for (const e of l.members) e.designed = 'trim';
+  }
   const groups = walked.flatMap(runs);
   for (const [k, group] of groups.entries()) for (const e of group) e.chain = k;
   const grid = new SegmentGrid(

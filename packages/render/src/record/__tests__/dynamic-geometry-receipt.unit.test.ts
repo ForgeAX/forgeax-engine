@@ -22,8 +22,20 @@ it('reuses completed receipt storage without registering every entity again', ()
   const record = receipt.onRenderableDraw(scope);
   const set = Map.prototype.set;
   const get = WeakMap.prototype.get;
+  const publish = WeakMap.prototype.set;
   let writes = 0;
   let reads = 0;
+  const deref = WeakRef.prototype.deref;
+  let scopeReads = 0;
+  let scopeWrites = 0;
+  WeakMap.prototype.set = function (key: object, value: unknown) {
+    scopeWrites++;
+    return publish.call(this, key, value);
+  };
+  WeakRef.prototype.deref = function () {
+    scopeReads++;
+    return deref.call(this);
+  };
   WeakMap.prototype.get = function (key: object) {
     reads++;
     return get.call(this, key);
@@ -37,12 +49,16 @@ it('reuses completed receipt storage without registering every entity again', ()
   } finally {
     Map.prototype.set = set;
     WeakMap.prototype.get = get;
+    WeakMap.prototype.set = publish;
+    WeakRef.prototype.deref = deref;
   }
   expect(receipt.recordStageLane(scope, 7, 9)).toBe('gpu');
   receipt.commit();
   expect(receipt.recordStageLane(scope, 7, 9)).toBe('cpu');
   expect(writes).toBeLessThanOrEqual(4);
-  expect(reads).toBeLessThanOrEqual(4);
+  expect(reads).toBeLessThanOrEqual(1);
+  expect(scopeReads).toBe(0);
+  expect(scopeWrites).toBe(0);
   const sparse = receipt.onRenderableDraw(scope);
   sparse(row(0));
   receipt.commit();
@@ -92,6 +108,21 @@ it('isolates replaced source epochs and discards entries from empty accepted fra
   receipt.commit();
   expect(receipt.recordStageLane(a, 7, 9)).toBeUndefined();
   expect(receipt.recordStageLane(a, 8, 9)).toBe('cpu');
+});
+
+it('uses the last recorded source when pending callbacks interleave', () => {
+  const a = worldRenderResources(new World());
+  const b = worldRenderResources(new World());
+  const receipt = new DynamicGeometryReceipt();
+  const first = receipt.onRenderableDraw(a);
+  const second = receipt.onRenderableDraw(b);
+  first(row(7), 'cpu');
+  second(row(8), 'gpu');
+  first(row(9), 'gpu');
+  receipt.commit();
+  expect(receipt.recordStageLane(a, 7, 9)).toBeUndefined();
+  expect(receipt.recordStageLane(b, 8, 9)).toBeUndefined();
+  expect(receipt.recordStageLane(a, 9, 9)).toBe('gpu');
 });
 
 it('keeps an old callback out of a recycled pending receipt', () => {

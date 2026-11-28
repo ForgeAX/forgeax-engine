@@ -165,8 +165,9 @@ class RecordingNullQueue extends RhiNullQueue {
       data instanceof ArrayBuffer
         ? new Uint8Array(data)
         : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    const start = dataOffset ?? 0;
-    const end = size === undefined ? source.byteLength : start + size;
+    const elementBytes = 'BYTES_PER_ELEMENT' in data ? Number(data.BYTES_PER_ELEMENT) : 1;
+    const start = (dataOffset ?? 0) * elementBytes;
+    const end = size === undefined ? source.byteLength : start + size * elementBytes;
     this.writes.push({ buffer, offset: bufferOffset, bytes: source.slice(start, end) });
     return super.writeBuffer(buffer, bufferOffset, data, dataOffset, size);
   }
